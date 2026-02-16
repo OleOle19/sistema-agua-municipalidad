@@ -25,6 +25,7 @@ pnpm-debug.log*
 *.dump
 *.bak
 *.backup
+server/CATORCE.txt
 
 # OS
 .DS_Store

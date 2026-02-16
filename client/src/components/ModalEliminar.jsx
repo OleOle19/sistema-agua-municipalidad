@@ -25,6 +25,8 @@ const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
 
   const nombreMes = (n) => ["","Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"][n];
 
+  const deudasPendientes = deudas.filter((recibo) => recibo.estado === "PENDIENTE");
+
   // Estilos
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
   const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-danger text-white"}`;
@@ -47,15 +49,15 @@ const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
 
             <h6 className="mb-3">Contribuyente: <strong>{usuario.nombre_completo}</strong></h6>
 
-            {deudas.length === 0 ? (
+            {deudasPendientes.length === 0 ? (
               <p className="text-muted text-center py-3">Este usuario no tiene deudas pendientes para eliminar.</p>
             ) : (
               <ul className="list-group">
-                {deudas.map((recibo) => (
+                {deudasPendientes.map((recibo) => (
                   <li key={recibo.id_recibo} className={listGroupItemClass}>
                     <div>
                       <strong>{nombreMes(recibo.mes)} - {recibo.anio}</strong>
-                      <div className="text-muted small">Monto: S/. {recibo.total_pagar}</div>
+                      <div className="text-muted small">Monto: S/. {recibo.deuda_mes ?? recibo.total_pagar}</div>
                     </div>
                     <button className="btn btn-outline-danger btn-sm" onClick={() => eliminarDeuda(recibo.id_recibo, nombreMes(recibo.mes), recibo.anio)}>
                       <FaTrashAlt /> Eliminar

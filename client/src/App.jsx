@@ -13,19 +13,17 @@ import ReporteCortes from "./components/ReporteCortes";
 import ModalAuditoria from "./components/ModalAuditoria";
 import LoginPage from "./components/LoginPage";
 import ModalUsuarios from "./components/ModalUsuarios";
-import ModalIncidencias from "./components/ModalIncidencias";
 import RecibosMasivos from "./components/RecibosMasivos";
 import ModalImpresionMasiva from "./components/ModalImpresionMasiva";
 import ModalImportar from "./components/ModalImportar";
 import ModalDeudaMasiva from "./components/ModalDeudaMasiva";
-import ReciboAgrupado from "./components/ReciboAgrupado";
 
 // Iconos
 import { 
   FaUserPlus, FaMoneyBillWave, FaFileInvoiceDollar, 
   FaPrint, FaTrashAlt, FaSearch, FaUserEdit, FaUserTimes, 
   FaSort, FaCut, FaShieldAlt, FaFileExcel, FaSignOutAlt, 
-  FaUserShield, FaMoon, FaSun, FaTools, FaWhatsapp, FaDatabase,
+  FaUserShield, FaMoon, FaSun, FaWhatsapp, FaDatabase,
   FaCloudUploadAlt
 } from "react-icons/fa";
 
@@ -35,7 +33,7 @@ import {
 const Sidebar = ({ 
   setMostrarRegistro, mostrarRegistro, usuarioSeleccionado, 
   setMostrarModalPago, setMostrarModalCierre, setMostrarModalAuditoria, 
-  setMostrarModalUsuarios, setMostrarModalIncidencias, 
+  setMostrarModalUsuarios, 
   usuarioActivo, onLogout, 
   darkMode, setDarkMode, descargarBackup, 
   setMostrarImportar,
@@ -56,13 +54,6 @@ const Sidebar = ({
       <li>
         <button className={`nav-link text-white w-100 text-start d-flex align-items-center gap-2 ${mostrarRegistro ? "active bg-primary" : ""}`} onClick={() => setMostrarRegistro(true)}>
           <FaUserPlus/> <span>Registro Nuevo</span>
-        </button>
-      </li>
-
-      <li className="nav-item mt-3 text-white-50 text-uppercase small fw-bold">Operaciones</li>
-      <li>
-        <button className="nav-link text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => setMostrarModalIncidencias(true)}>
-          <FaTools/> <span>Incidencias / Reclamos</span>
         </button>
       </li>
 
@@ -220,11 +211,23 @@ const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, rowHeight }
   </tr>
 ));
 
+const areSetsEqual = (a, b) => {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.size !== b.size) return false;
+  for (const value of a) {
+    if (!b.has(value)) return false;
+  }
+  return true;
+};
+
 function App() {
   const [usuarioSistema, setUsuarioSistema] = useState(readStoredUser);
   const [contribuyentes, setContribuyentes] = useState([]);
   const [usuarioSeleccionado, setUsuarioSeleccionado] = useState(null);
   const [historial, setHistorial] = useState([]);
+  const [historialYear, setHistorialYear] = useState("all");
+  const [historialYears, setHistorialYears] = useState([]);
   const [isDragging, setIsDragging] = useState(false); 
   
   // ESTADOS UI
@@ -236,7 +239,6 @@ function App() {
   const [mostrarModalEditarUsuario, setMostrarModalEditarUsuario] = useState(false);
   const [mostrarModalAuditoria, setMostrarModalAuditoria] = useState(false);
   const [mostrarModalUsuarios, setMostrarModalUsuarios] = useState(false);
-  const [mostrarModalIncidencias, setMostrarModalIncidencias] = useState(false);
   const [mostrarModalMasivo, setMostrarModalMasivo] = useState(false);
   const [mostrarImportar, setMostrarImportar] = useState(false);
   const [mostrarModalDeudaMasiva, setMostrarModalDeudaMasiva] = useState(false);
@@ -251,11 +253,13 @@ function App() {
   const tableScrollRef = useRef(null);
   const pointerRef = useRef({ x: 0, y: 0, inside: false });
   const suppressClearRef = useRef(false);
+  const selectedIdsRef = useRef(new Set());
   const [tableViewportHeight, setTableViewportHeight] = useState(0);
   const [tableScrollTop, setTableScrollTop] = useState(0);
   const scrollTopRef = useRef(0);
   const scrollRafRef = useRef(0);
   const lastHoverIdRef = useRef(null);
+  const historialCacheRef = useRef(new Map());
   const rowHeight = 32;
   const overscan = 6;
 
@@ -267,47 +271,78 @@ function App() {
   const busquedaDeferred = useDeferredValue(busqueda);
 
   const masivoRef = useRef(null);
+  const isPrintingMasivoRef = useRef(false);
   const [datosMasivos, setDatosMasivos] = useState(null);
   const currentYear = new Date().getFullYear();
+  const monthLabels = ["","Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 
-  const reciboAgrupadoRef = useRef(null);
-const [datosReciboAgrupado, setDatosReciboAgrupado] = useState(null);
+  const formatMonto = (value) => {
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed.toFixed(2) : "0.00";
+  };
 
-const handlePrintAgrupado = useReactToPrint({ 
-    contentRef: reciboAgrupadoRef, 
-    documentTitle: 'Recibo_Agrupado',
-    onAfterPrint: () => setDatosReciboAgrupado(null) 
-});
+const a5PageStyle = `
+  @page {
+    size: A5 portrait;
+    margin: 0;
+  }
+  @media print {
+    html, body {
+      margin: 0;
+      padding: 0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+  }
+`;
 
-// Efecto para imprimir en cuanto lleguen los datos
-useEffect(() => {
-    if (!datosReciboAgrupado) return;
-    const raf = requestAnimationFrame(() => {
-        if (reciboAgrupadoRef.current) handlePrintAgrupado();
-    });
-    return () => cancelAnimationFrame(raf);
-}, [datosReciboAgrupado, handlePrintAgrupado]);
-
-  const handlePrintMasivo = useReactToPrint({ 
-    contentRef: masivoRef, 
+  const handlePrintMasivo = useReactToPrint({
+    contentRef: masivoRef,
     documentTitle: 'Recibos_Masivos',
-    onAfterPrint: () => setDatosMasivos(null)
+    pageStyle: a5PageStyle,
+    onAfterPrint: () => {
+      isPrintingMasivoRef.current = false;
+      setDatosMasivos(null);
+    }
   });
 
   useEffect(() => {
     if (!datosMasivos) return;
+    if (isPrintingMasivoRef.current) return;
+    isPrintingMasivoRef.current = true;
     const raf = requestAnimationFrame(() => {
-      if (masivoRef.current) handlePrintMasivo();
+      if (masivoRef.current) {
+        handlePrintMasivo();
+      } else {
+        isPrintingMasivoRef.current = false;
+      }
     });
     return () => cancelAnimationFrame(raf);
   }, [datosMasivos, handlePrintMasivo]);
 
   const componentRef = useRef(null);
+  const isPrintingReciboRef = useRef(false);
   const cortesRef = useRef(null);
   const [datosReciboImprimir, setDatosReciboImprimir] = useState(null);
 
+  useEffect(() => {
+    selectedIdsRef.current = selectedIds;
+  }, [selectedIds]);
+
+  const setSelectedIdsIfChanged = useCallback((nextSelected) => {
+    setSelectedIds((prev) => (areSetsEqual(prev, nextSelected) ? prev : nextSelected));
+  }, []);
+
   const handlePrintCortes = useReactToPrint({ contentRef: cortesRef, documentTitle: 'Orden_Cortes' });
-  const handlePrintRecibo = useReactToPrint({ contentRef: componentRef, documentTitle: 'Recibo_Agua', onAfterPrint: () => setDatosReciboImprimir(null) });
+  const handlePrintRecibo = useReactToPrint({
+    contentRef: componentRef,
+    documentTitle: 'Recibo_Agua',
+    pageStyle: a5PageStyle,
+    onAfterPrint: () => {
+      isPrintingReciboRef.current = false;
+      setDatosReciboImprimir(null);
+    }
+  });
 
   const imprimirCortes = () => {
     if (cortesRef.current) { handlePrintCortes(); return; }
@@ -316,23 +351,131 @@ useEffect(() => {
 
   useEffect(() => {
     if (!datosReciboImprimir) return;
-    const raf = requestAnimationFrame(() => { if (componentRef.current) handlePrintRecibo(); });
+    if (isPrintingReciboRef.current) return;
+    isPrintingReciboRef.current = true;
+    const raf = requestAnimationFrame(() => {
+      if (componentRef.current) {
+        handlePrintRecibo();
+      } else {
+        isPrintingReciboRef.current = false;
+      }
+    });
     return () => cancelAnimationFrame(raf);
   }, [datosReciboImprimir, handlePrintRecibo]);
 
-  const cargarContribuyentes = async () => {
+  const cargarContribuyentes = async (retry = 0) => {
     try {
       const res = await api.get("/contribuyentes");
-      setContribuyentes(res.data);
+      setContribuyentes(Array.isArray(res.data) ? res.data : []);
     } catch (error) {
+      const mensaje = String(error?.message || "");
+      const esTimeout = error?.code === "ECONNABORTED" || mensaje.toLowerCase().includes("timeout");
+      if (esTimeout && retry < 1) {
+        setTimeout(() => cargarContribuyentes(retry + 1), 1200);
+        return;
+      }
       console.error("Error datos:", error.response?.status, error.response?.data || error.message);
+      setContribuyentes([]);
     }
   };
-  const cargarHistorial = async (id_contribuyente) => { try { const res = await api.get(`/recibos/historial/${id_contribuyente}?anio=${currentYear}`); setHistorial(res.data); } catch (error) { console.error("Error historial"); } };
+  const cargarHistorial = async (id_contribuyente, anio = historialYear, force = false) => {
+    const cacheKey = `${id_contribuyente}:${anio}`;
+    if (!force && historialCacheRef.current.has(cacheKey)) {
+      const cached = historialCacheRef.current.get(cacheKey);
+      setHistorial(cached.rows);
+      if (anio === "all") setHistorialYears(cached.years);
+      return;
+    }
+    try {
+      const res = await api.get(`/recibos/historial/${id_contribuyente}?anio=${anio}`);
+      const rows = Array.isArray(res.data) ? res.data : [];
+      setHistorial(rows);
+      if (anio === "all") {
+        const years = Array.from(new Set(rows.map((r) => Number(r.anio)).filter(Boolean))).sort((a, b) => a - b);
+        setHistorialYears(years);
+        historialCacheRef.current.set(cacheKey, { rows, years });
+      } else {
+        historialCacheRef.current.set(cacheKey, { rows, years: [] });
+      }
+    } catch (error) {
+      console.error("Error historial");
+    }
+  };
+
+  const handleHistorialYearChange = (e) => {
+    const value = e.target.value;
+    setHistorialYear(value);
+    if (usuarioSeleccionado) cargarHistorial(usuarioSeleccionado.id_contribuyente, value);
+  };
+
+  const historialTabla = useMemo(() => {
+    if (!usuarioSeleccionado) return [];
+
+    const dataMap = new Map();
+    historial.forEach((r) => {
+      const anio = Number(r.anio);
+      const mes = Number(r.mes);
+      if (!Number.isFinite(anio) || !Number.isFinite(mes)) return;
+      const key = `${anio}-${mes}`;
+      const current = dataMap.get(key) || {
+        anio,
+        mes,
+        subtotal_agua: 0,
+        subtotal_desague: 0,
+        subtotal_limpieza: 0,
+        subtotal_admin: 0,
+        deuda_mes: 0,
+        abono_mes: 0
+      };
+      current.subtotal_agua += parseFloat(r.subtotal_agua) || 0;
+      current.subtotal_desague += parseFloat(r.subtotal_desague) || 0;
+      current.subtotal_limpieza += parseFloat(r.subtotal_limpieza) || 0;
+      current.subtotal_admin += parseFloat(r.subtotal_admin) || 0;
+      current.deuda_mes += parseFloat(r.deuda_mes) || 0;
+      current.abono_mes += parseFloat(r.abono_mes) || 0;
+      dataMap.set(key, current);
+    });
+
+    let yearsToShow = [];
+    if (historialYear === "all") {
+      yearsToShow = historialYears;
+    } else {
+      const y = Number(historialYear);
+      if (Number.isFinite(y)) yearsToShow = [y];
+    }
+
+    if (yearsToShow.length === 0) return [];
+
+    const rows = [];
+    yearsToShow.forEach((anio) => {
+      rows.push({ type: "year", anio });
+      for (let mes = 1; mes <= 12; mes++) {
+        const key = `${anio}-${mes}`;
+        const data = dataMap.get(key) || {
+          anio,
+          mes,
+          subtotal_agua: 0,
+          subtotal_desague: 0,
+          subtotal_limpieza: 0,
+          subtotal_admin: 0,
+          deuda_mes: 0,
+          abono_mes: 0
+        };
+        rows.push({ type: "month", ...data });
+      }
+    });
+    return rows;
+  }, [usuarioSeleccionado, historial, historialYear, historialYears]);
+
+  const yearsForSelect = useMemo(() => {
+    if (historialYears.length > 0) return historialYears;
+    return [currentYear];
+  }, [historialYears, currentYear]);
 
   const recargarTodo = () => {
+    historialCacheRef.current.clear();
     cargarContribuyentes();
-    if (usuarioSeleccionado) cargarHistorial(usuarioSeleccionado.id_contribuyente);
+    if (usuarioSeleccionado) cargarHistorial(usuarioSeleccionado.id_contribuyente, "all", true);
     setRefreshDashboard(prev => prev + 1);
     setSelectedIds(new Set());
   };
@@ -341,7 +484,15 @@ useEffect(() => {
     if (!usuarioSistema) return;
     cargarContribuyentes();
   }, [usuarioSistema]);
-  useEffect(() => { if (usuarioSeleccionado) cargarHistorial(usuarioSeleccionado.id_contribuyente); else setHistorial([]); }, [usuarioSeleccionado, contribuyentes]);
+  useEffect(() => {
+    if (usuarioSeleccionado) {
+      setHistorialYear("all");
+      cargarHistorial(usuarioSeleccionado.id_contribuyente, "all");
+    } else {
+      setHistorial([]);
+      setHistorialYears([]);
+    }
+  }, [usuarioSeleccionado]);
   useEffect(() => {
     if (usuarioSeleccionado) {
       const usuarioActualizado = contribuyentes.find(c => c.id_contribuyente === usuarioSeleccionado.id_contribuyente);
@@ -401,18 +552,18 @@ useEffect(() => {
     } catch (error) { alert("Error al generar la copia."); console.error(error); }
   };
 
-  const startScrollSelect = (anchorId, mode, baseIds) => {
+  const startScrollSelect = useCallback((anchorId, mode, baseIds) => {
     setScrollSelect({
       active: true,
       anchorId,
       mode,
       baseIds: Array.from(baseIds)
     });
-  };
+  }, []);
 
-  const clearScrollSelect = () => {
+  const clearScrollSelect = useCallback(() => {
     setScrollSelect({ active: false, anchorId: null, mode: "replace", baseIds: [] });
-  };
+  }, []);
 
   const handleFilaClick = (e, usuario) => {
     const id = usuario.id_contribuyente;
@@ -444,7 +595,7 @@ useEffect(() => {
     clearScrollSelect();
   };
 
-  const beginDragSelection = (e, usuario) => {
+  const beginDragSelection = useCallback((e, usuario) => {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
@@ -454,7 +605,7 @@ useEffect(() => {
     let mode = "replace";
 
     if (e.ctrlKey || e.metaKey) {
-      baseSelected = new Set(selectedIds);
+      baseSelected = new Set(selectedIdsRef.current);
       if (baseSelected.has(id)) baseSelected.delete(id);
       else baseSelected.add(id);
       mode = "add";
@@ -462,13 +613,11 @@ useEffect(() => {
       baseSelected = new Set([id]);
     }
 
-    setSelectedIds(baseSelected);
+    setSelectedIdsIfChanged(baseSelected);
     setUsuarioSeleccionado(usuario);
     startScrollSelect(id, mode, baseSelected);
     setIsDragging(true);
-
-    requestAnimationFrame(() => applyScrollSelectAtPoint(e.clientX, e.clientY));
-  };
+  }, [setSelectedIdsIfChanged, startScrollSelect]);
 
   const datosProcesados = useMemo(() => {
     const needle = busquedaDeferred.trim().toLowerCase();
@@ -558,9 +707,11 @@ useEffect(() => {
       ? new Set([...scrollSelect.baseIds, ...rangeIds])
       : new Set(rangeIds);
 
-    setSelectedIds(nextSelected);
+    setSelectedIdsIfChanged(nextSelected);
     const hoveredUsuario = datosProcesados[hoverIndex];
-    if (hoveredUsuario) setUsuarioSeleccionado(hoveredUsuario);
+    if (hoveredUsuario && hoveredUsuario.id_contribuyente !== usuarioSeleccionado?.id_contribuyente) {
+      setUsuarioSeleccionado(hoveredUsuario);
+    }
   };
 
   const scheduleScrollTopUpdate = useCallback((nextTop) => {
@@ -687,7 +838,6 @@ useEffect(() => {
         setMostrarRegistro={setMostrarRegistro} mostrarRegistro={mostrarRegistro} usuarioSeleccionado={usuarioSeleccionado}
         setMostrarModalPago={setMostrarModalPago} setMostrarModalCierre={setMostrarModalCierre}
         setMostrarModalAuditoria={setMostrarModalAuditoria} setMostrarModalUsuarios={setMostrarModalUsuarios}
-        setMostrarModalIncidencias={setMostrarModalIncidencias}
         usuarioActivo={usuarioSistema} onLogout={handleLogout}
         darkMode={darkMode} setDarkMode={setDarkMode}
         descargarBackup={descargarBackup}
@@ -742,8 +892,8 @@ useEffect(() => {
                       <ThOrdenable label="Nombre" campo="nombre_completo" />
                       <ThOrdenable label="Dirección" campo="direccion_completa" />
                       <ThOrdenable label="Meses Deuda" campo="meses_deuda" />
-                      <ThOrdenable label="Deuda Año" campo="deuda_anio" />
-                      <ThOrdenable label="Abono Año" campo="abono_anio" />
+                      <ThOrdenable label="Deuda Total" campo="deuda_anio" />
+                      <ThOrdenable label="Abono Total" campo="abono_anio" />
                     </tr>
                   </thead>
                   <tbody>
@@ -780,9 +930,23 @@ useEffect(() => {
 
             {/* TABLA HISTORIAL */}
             <div className={`flex-grow-1 mx-3 mb-3 shadow-sm d-flex flex-column ${bgCard}`} style={{ flexBasis: "50%", borderTop: "4px solid #0d6efd", overflow: "hidden", ...cardStyle }} onClick={(e) => e.stopPropagation()}>
-              <div className="bg-secondary text-white p-2 small fw-bold flex-shrink-0 d-flex justify-content-between">
-                  <span>ARBITRIOS MUNICIPALES - DETALLE {currentYear}</span>
-                  <span>{usuarioSeleccionado?.nombre_completo}</span>
+              <div className="bg-secondary text-white p-2 small fw-bold flex-shrink-0 d-flex justify-content-between align-items-center">
+                  <span>ARBITRIOS MUNICIPALES - DETALLE {historialYear === "all" ? "TODOS" : historialYear}</span>
+                  <div className="d-flex align-items-center gap-2">
+                    <select
+                      className={`form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
+                      style={{ width: "110px" }}
+                      value={historialYear}
+                      onChange={handleHistorialYearChange}
+                      disabled={!usuarioSeleccionado}
+                    >
+                      <option value="all">Todos</option>
+                      {yearsForSelect.map((y) => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                    <span>{usuarioSeleccionado?.nombre_completo}</span>
+                  </div>
               </div>
               <div className="flex-grow-1 table-responsive" style={{ overflowY: "auto" }}>
                 <table className={tableClass}>
@@ -797,13 +961,34 @@ useEffect(() => {
                     </tr>
                   </thead>
                   <tbody className="text-center">
-                    {!usuarioSeleccionado ? <tr><td colSpan="7" className="p-3">Seleccione usuario arriba</td></tr> : 
-                     historial.length === 0 ? <tr><td colSpan="7" className="p-3">Sin movimientos</td></tr> :
-                     historial.map((h, i) => (
-                      <tr key={i}>
-                        <td className="fw-bold text-start ps-3">{h.mes ? ["","Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"][h.mes] : "-"}</td><td>{h.subtotal_agua}</td><td>{h.subtotal_desague}</td><td>{h.subtotal_limpieza}</td><td>{h.subtotal_admin}</td><td className="fw-bold text-danger">{h.deuda_mes}</td><td className="fw-bold text-success">{h.abono_mes}</td>
-                      </tr>
-                    ))}
+                    {!usuarioSeleccionado ? (
+                      <tr><td colSpan="7" className="p-3">Seleccione usuario arriba</td></tr>
+                    ) : historialTabla.length === 0 ? (
+                      <tr><td colSpan="7" className="p-3">Sin movimientos</td></tr>
+                    ) : (
+                      historialTabla.map((h, i) => {
+                        if (h.type === "year") {
+                          return (
+                            <tr key={`year-${h.anio}`}>
+                              <td colSpan="7" className={`text-start fw-bold ${darkMode ? "bg-dark text-white" : "bg-light"}`} style={{ paddingLeft: "12px" }}>
+                                Año {h.anio}
+                              </td>
+                            </tr>
+                          );
+                        }
+                        return (
+                          <tr key={`${h.anio}-${h.mes}-${i}`}>
+                            <td className="fw-bold text-start ps-3">{monthLabels[h.mes] || "-"}</td>
+                            <td>{formatMonto(h.subtotal_agua)}</td>
+                            <td>{formatMonto(h.subtotal_desague)}</td>
+                            <td>{formatMonto(h.subtotal_limpieza)}</td>
+                            <td>{formatMonto(h.subtotal_admin)}</td>
+                            <td className="fw-bold text-danger">{formatMonto(h.deuda_mes)}</td>
+                            <td className="fw-bold text-success">{formatMonto(h.abono_mes)}</td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -815,20 +1000,19 @@ useEffect(() => {
       {/* CAMBIO: Se pasa el prop darkMode a TODOS los modales */}
       {mostrarModalDeuda && usuarioSeleccionado && (<ModalDeuda usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalDeuda(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
       {mostrarModalPago && usuarioSeleccionado && (
-  <ModalPago 
-     usuario={{...usuarioSeleccionado, recibos: historial}} // Pasamos el historial actual como recibos
-     cerrarModal={() => setMostrarModalPago(false)} 
-     alGuardar={recargarTodo} 
-     darkMode={darkMode}
-     onImprimirAgrupado={(datos) => setDatosReciboAgrupado(datos)} // <--- CONEXIÓN CLAVE
-  />
-)}
+        <ModalPago
+          usuario={{...usuarioSeleccionado, recibos: historial}} // Pasamos el historial actual como recibos
+          cerrarModal={() => setMostrarModalPago(false)}
+          alGuardar={recargarTodo}
+          darkMode={darkMode}
+          onImprimirRecibo={(datos) => setDatosReciboImprimir(datos)}
+        />
+      )}
       {mostrarModalEliminar && usuarioSeleccionado && (<ModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
       {mostrarModalCierre && (<ModalCierre cerrarModal={() => setMostrarModalCierre(false)} darkMode={darkMode} />)}
       {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
       {mostrarModalAuditoria && (<ModalAuditoria cerrarModal={() => setMostrarModalAuditoria(false)} darkMode={darkMode} />)}
       {mostrarModalUsuarios && (<ModalUsuarios cerrarModal={() => setMostrarModalUsuarios(false)} usuarioActivo={usuarioSistema} darkMode={darkMode} />)}
-      {mostrarModalIncidencias && (<ModalIncidencias cerrarModal={() => setMostrarModalIncidencias(false)} usuarioSeleccionado={usuarioSeleccionado} darkMode={darkMode} />)}
       
       {/* Modales Masivos */}
       {mostrarModalMasivo && (<ModalImpresionMasiva cerrarModal={() => setMostrarModalMasivo(false)} alConfirmar={(datos) => {setDatosMasivos(datos);}} idsSeleccionados={Array.from(selectedIds)} darkMode={darkMode} />)}
@@ -851,12 +1035,9 @@ useEffect(() => {
           <ReporteCortes ref={cortesRef} contribuyentes={contribuyentes} />
       </div>
 
-      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "297mm", height: "auto" }}>
+      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "148mm", height: "auto" }}>
           <RecibosMasivos ref={masivoRef} datos={datosMasivos} />
       </div>
-      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "100%", height: "auto" }}>
-    <ReciboAgrupado ref={reciboAgrupadoRef} datos={datosReciboAgrupado} />
-</div>
     </div>
   );
 }

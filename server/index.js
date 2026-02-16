@@ -51,6 +51,52 @@ const parseMonto = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const buildDireccionSql = (calleAlias = "ca", predioAlias = "p") => `
+  TRIM(
+    REGEXP_REPLACE(
+      CONCAT_WS(
+        ' ',
+        CASE
+          WHEN COALESCE(TRIM(${calleAlias}.nombre), '') = '' THEN NULLIF(TRIM(${predioAlias}.referencia_direccion), '')
+          WHEN COALESCE(TRIM(${predioAlias}.referencia_direccion), '') = '' THEN TRIM(${calleAlias}.nombre)
+          WHEN POSITION(
+            REGEXP_REPLACE(LOWER(COALESCE(TRIM(${calleAlias}.nombre), '')), '[^[:alnum:]]', '', 'g')
+            IN REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.referencia_direccion), '')), '[^[:alnum:]]', '', 'g')
+          ) > 0
+            OR POSITION(
+              REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.referencia_direccion), '')), '[^[:alnum:]]', '', 'g')
+              IN REGEXP_REPLACE(LOWER(COALESCE(TRIM(${calleAlias}.nombre), '')), '[^[:alnum:]]', '', 'g')
+            ) > 0
+          THEN
+            CASE
+              WHEN LENGTH(REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.referencia_direccion), '')), '[^[:alnum:]]', '', 'g'))
+                   >= LENGTH(REGEXP_REPLACE(LOWER(COALESCE(TRIM(${calleAlias}.nombre), '')), '[^[:alnum:]]', '', 'g'))
+              THEN TRIM(${predioAlias}.referencia_direccion)
+              ELSE TRIM(${calleAlias}.nombre)
+            END
+          ELSE CONCAT(TRIM(${calleAlias}.nombre), ' ', TRIM(${predioAlias}.referencia_direccion))
+        END,
+        CASE
+          WHEN COALESCE(TRIM(${predioAlias}.numero_casa), '') = '' THEN NULL
+          WHEN POSITION(
+            REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.numero_casa), '')), '[^[:alnum:]]', '', 'g')
+            IN REGEXP_REPLACE(
+              LOWER(CONCAT(COALESCE(TRIM(${calleAlias}.nombre), ''), ' ', COALESCE(TRIM(${predioAlias}.referencia_direccion), ''))),
+              '[^[:alnum:]]',
+              '',
+              'g'
+            )
+          ) > 0 THEN NULL
+          ELSE TRIM(${predioAlias}.numero_casa)
+        END
+      ),
+      '\\s+',
+      ' ',
+      'g'
+    )
+  )
+`;
+
 // --- CONFIGURACIÓN JWT (SEGURIDAD) ---
 const JWT_SECRET = process.env.JWT_SECRET || "cambia_esto_en_produccion";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
@@ -153,51 +199,45 @@ app.delete("/calles/:id", async (req, res) => {
 // ==========================================
 app.get("/contribuyentes", async (req, res) => {
   try {
-    // MODIFICADO: Concatenación solicitada: Ca_Nombre + con_direccion + Con_Nro_MZ_Lote
+    const anioActual = getCurrentYear();
+    const mesActual = new Date().getMonth() + 1;
+
+    // Consulta optimizada: agregamos deuda/abono/meses por predio una sola vez
     const query = `
       WITH pagos_por_recibo AS (
         SELECT id_recibo, SUM(monto_pagado) AS total_pagado
         FROM pagos
         GROUP BY id_recibo
+      ),
+      resumen_predio AS (
+        SELECT
+          r.id_predio,
+          SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
+          SUM(COALESCE(pp.total_pagado, 0)) AS abono_total,
+          COUNT(*) FILTER (WHERE (r.total_pagar - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
+        FROM recibos r
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+        WHERE (r.anio < $1) OR (r.anio = $1 AND r.mes <= $2)
+        GROUP BY r.id_predio
       )
       SELECT c.id_contribuyente, c.codigo_municipal, c.dni_ruc, c.nombre_completo, c.telefono,
              p.id_predio, 
-             TRIM(
-               CONCAT(
-                 COALESCE(ca.nombre, ''), ' ', 
-                 COALESCE(p.referencia_direccion, ''), ' ', 
-                 COALESCE(p.numero_casa, '')
-               )
-             ) as direccion_completa,
+             ${buildDireccionSql("ca", "p")} as direccion_completa,
              p.id_calle, p.numero_casa, p.manzana, p.lote,
              
              -- Campos adicionales guardados en BD
              p.agua_sn, p.desague_sn, p.limpieza_sn, p.activo_sn,
              
-             COALESCE((
-               SELECT SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0))
-               FROM recibos r
-               LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-               WHERE r.id_predio = p.id_predio
-             ), 0) as deuda_anio,
-             COALESCE((
-               SELECT SUM(COALESCE(pp.total_pagado, 0))
-               FROM recibos r
-               LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-               WHERE r.id_predio = p.id_predio
-             ), 0) as abono_anio,
-             (
-               SELECT COUNT(*)
-               FROM recibos r
-               LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-               WHERE r.id_predio = p.id_predio AND (r.total_pagar - COALESCE(pp.total_pagado, 0)) > 0
-             ) as meses_deuda
+             COALESCE(rp.deuda_total, 0) as deuda_anio,
+             COALESCE(rp.abono_total, 0) as abono_anio,
+             COALESCE(rp.meses_deuda_total, 0) as meses_deuda
       FROM contribuyentes c
       LEFT JOIN predios p ON c.id_contribuyente = p.id_contribuyente
       LEFT JOIN calles ca ON p.id_calle = ca.id_calle
+      LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
       ORDER BY c.nombre_completo ASC
     `;
-    const todos = await pool.query(query);
+    const todos = await pool.query(query, [anioActual, mesActual]);
     res.json(todos.rows);
   } catch (err) { res.status(500).send("Error del servidor"); }
 });
@@ -280,7 +320,6 @@ app.delete("/contribuyentes/:id", async (req, res) => {
     await client.query('BEGIN');
     await client.query(`DELETE FROM pagos WHERE id_recibo IN (SELECT id_recibo FROM recibos WHERE id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1))`, [id]);
     await client.query(`DELETE FROM recibos WHERE id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)`, [id]);
-    await client.query("DELETE FROM incidencias WHERE id_contribuyente = $1", [id]);
     await client.query("DELETE FROM predios WHERE id_contribuyente = $1", [id]);
     await client.query("DELETE FROM contribuyentes WHERE id_contribuyente = $1", [id]);
     await client.query('COMMIT');
@@ -289,45 +328,6 @@ app.delete("/contribuyentes/:id", async (req, res) => {
     await client.query('ROLLBACK');
     res.status(500).send("Error al eliminar usuario.");
   } finally { client.release(); }
-});
-
-// ==========================================
-// INCIDENCIAS
-// ==========================================
-app.get("/incidencias", async (req, res) => {
-  try {
-    const lista = await pool.query(`
-      SELECT i.*, c.nombre_completo as nombre_contribuyente 
-      FROM incidencias i
-      LEFT JOIN contribuyentes c ON i.id_contribuyente = c.id_contribuyente
-      ORDER BY CASE WHEN i.estado = 'PENDIENTE' THEN 1 ELSE 2 END, i.fecha_reporte DESC
-    `);
-    res.json(lista.rows);
-  } catch (err) { res.status(500).send("Error incidencias"); }
-});
-
-app.post("/incidencias", async (req, res) => {
-  try {
-    const { id_contribuyente, nombre_reportante, telefono_contacto, tipo_incidencia, descripcion } = req.body;
-    await pool.query(
-      "INSERT INTO incidencias (id_contribuyente, nombre_reportante, telefono_contacto, tipo_incidencia, descripcion) VALUES ($1, $2, $3, $4, $5)",
-      [id_contribuyente || null, nombre_reportante, telefono_contacto, tipo_incidencia, descripcion]
-    );
-    res.json({ mensaje: "Incidencia registrada" });
-  } catch (err) { res.status(500).send("Error al registrar"); }
-});
-
-app.put("/incidencias/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { estado, solucion_tecnica } = req.body;
-    let query = "UPDATE incidencias SET estado = $1, solucion_tecnica = $2 WHERE id_incidencia = $3";
-    if (estado === 'RESUELTO') {
-       query = "UPDATE incidencias SET estado = $1, solucion_tecnica = $2, fecha_solucion = CURRENT_TIMESTAMP WHERE id_incidencia = $3";
-    }
-    await pool.query(query, [estado, solucion_tecnica, id]);
-    res.json({ mensaje: "Incidencia actualizada" });
-  } catch (err) { res.status(500).send("Error actualizar"); }
 });
 
 // ==========================================
@@ -417,10 +417,29 @@ app.post("/recibos/generar-masivo", async (req, res) => {
 app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
   try {
     const { id_contribuyente } = req.params;
-    const pendientes = await pool.query(
-      "SELECT * FROM recibos WHERE id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1) AND estado = 'PENDIENTE' ORDER BY anio, mes",
-      [id_contribuyente]
-    );
+    const anioActual = getCurrentYear();
+    const mesActual = new Date().getMonth() + 1;
+    const pendientes = await pool.query(`
+      SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
+        r.total_pagar,
+        COALESCE(p.total_pagado, 0) as abono_mes,
+        GREATEST(r.total_pagar - COALESCE(p.total_pagado, 0), 0) as deuda_mes,
+        CASE
+          WHEN COALESCE(p.total_pagado, 0) >= r.total_pagar THEN 'PAGADO'
+          WHEN COALESCE(p.total_pagado, 0) > 0 THEN 'PARCIAL'
+          ELSE 'PENDIENTE'
+        END as estado
+      FROM recibos r
+      LEFT JOIN (
+        SELECT id_recibo, SUM(monto_pagado) as total_pagado
+        FROM pagos
+        GROUP BY id_recibo
+      ) p ON p.id_recibo = r.id_recibo
+      WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
+      AND (r.total_pagar - COALESCE(p.total_pagado, 0)) > 0
+      AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))
+      ORDER BY r.anio, r.mes
+    `, [id_contribuyente, anioActual, mesActual]);
     res.json(pendientes.rows);
   } catch (err) { res.status(500).send("Error"); }
 });
@@ -486,13 +505,22 @@ app.post("/pagos", async (req, res) => {
 app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
   try {
     const { id_contribuyente } = req.params;
-    const anio = Number(req.query.anio) || getCurrentYear();
+    const anioActual = getCurrentYear();
+    const mesActual = new Date().getMonth() + 1;
+    const anioParam = req.query.anio;
+    const filtrarAnio = anioParam !== 'all';
+    const anio = filtrarAnio ? (Number(anioParam) || getCurrentYear()) : null;
+
     const historial = await pool.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
         r.total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
-        GREATEST(r.total_pagar - COALESCE(p.total_pagado, 0), 0) as deuda_mes,
         CASE
+          WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 0
+          ELSE GREATEST(r.total_pagar - COALESCE(p.total_pagado, 0), 0)
+        END as deuda_mes,
+        CASE
+          WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 'NO_EXIGIBLE'
           WHEN COALESCE(p.total_pagado, 0) >= r.total_pagar THEN 'PAGADO'
           WHEN COALESCE(p.total_pagado, 0) > 0 THEN 'PARCIAL'
           ELSE 'PENDIENTE'
@@ -504,8 +532,9 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
-      AND r.anio = $2 ORDER BY r.mes ASC
-    `, [id_contribuyente, anio]);
+      ${filtrarAnio ? 'AND r.anio = $4' : ''}
+      ORDER BY r.anio ASC, r.mes ASC
+    `, filtrarAnio ? [id_contribuyente, anioActual, mesActual, anio] : [id_contribuyente, anioActual, mesActual]);
     res.json(historial.rows);
   } catch (err) { res.status(500).send("Error historial"); }
 });
@@ -549,6 +578,8 @@ app.delete("/recibos/:id", async (req, res) => {
 app.get("/dashboard/resumen", async (req, res) => {
   try {
     const hoy = toISODate();
+    const anioActual = getCurrentYear();
+    const mesActual = new Date().getMonth() + 1;
     const recaudacion = await pool.query("SELECT SUM(monto_pagado) as total FROM pagos WHERE DATE(fecha_pago) = $1", [hoy]);
     const usuarios = await pool.query("SELECT COUNT(*) as total FROM contribuyentes");
     const morosos = await pool.query(`
@@ -560,7 +591,8 @@ app.get("/dashboard/resumen", async (req, res) => {
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       WHERE (r.total_pagar - COALESCE(p.total_pagado, 0)) > 0
-    `);
+        AND ((r.anio < $1) OR (r.anio = $1 AND r.mes <= $2))
+    `, [anioActual, mesActual]);
     res.json({
       recaudado_hoy: recaudacion.rows[0].total || 0,
       total_usuarios: usuarios.rows[0].total || 0,
@@ -733,9 +765,16 @@ app.get("/admin/backup", authenticateToken, requireSuperAdmin, (req, res) => {
 // ==========================================
 app.post("/recibos/masivos", async (req, res) => {
   try {
-    const { tipo_seleccion, ids_usuarios, id_calle, anio, mes } = req.body;
+    const { tipo_seleccion, ids_usuarios, id_calle, anio, mes, meses } = req.body;
+    const mesesSeleccionados = (Array.isArray(meses) ? meses : [mes])
+      .map((m) => Number(m))
+      .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
+    if (mesesSeleccionados.length === 0) {
+      return res.status(400).json({ error: "Seleccione al menos un mes valido." });
+    }
+
     let filtro = "";
-    const params = [anio, mes]; 
+    const params = [anio, mesesSeleccionados]; 
 
     if (tipo_seleccion === 'calle') {
         filtro = "AND p.id_calle = $3";
@@ -745,23 +784,44 @@ app.post("/recibos/masivos", async (req, res) => {
         params.push(ids_usuarios);
     }
 
-    // Usamos la misma lógica de dirección concatenada para la impresión
+    // Incluimos deuda acumulada para completar la tabla "Deuda Anterior" del recibo.
     const query = `
-      SELECT r.*, c.nombre_completo, c.codigo_municipal, c.dni_ruc,
-             TRIM(
-               CONCAT(
-                 COALESCE(ca.nombre, ''), ' ', 
-                 COALESCE(p.referencia_direccion, ''), ' ', 
-                 COALESCE(p.numero_casa, '')
-               )
-             ) AS direccion_completa,
-             p.numero_casa, ca.nombre as nombre_calle
+      WITH pagos_por_recibo AS (
+        SELECT id_recibo, SUM(monto_pagado) AS total_pagado
+        FROM pagos
+        GROUP BY id_recibo
+      ),
+      resumen_predio AS (
+        SELECT
+          r.id_predio,
+          SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
+        FROM recibos r
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+        WHERE (r.anio < $1) OR (r.anio = $1 AND r.mes <= (
+          SELECT MAX(m) FROM unnest($2::int[]) AS t(m)
+        ))
+        GROUP BY r.id_predio
+      )
+      SELECT
+        r.*,
+        c.nombre_completo,
+        c.codigo_municipal,
+        c.dni_ruc,
+        ${buildDireccionSql("ca", "p")} AS direccion_completa,
+        p.numero_casa,
+        ca.nombre as nombre_calle,
+        GREATEST(
+          COALESCE(rp.deuda_total, 0) - GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0),
+          0
+        ) AS deuda_anio
       FROM recibos r
       JOIN predios p ON r.id_predio = p.id_predio
       JOIN contribuyentes c ON p.id_contribuyente = c.id_contribuyente
       LEFT JOIN calles ca ON p.id_calle = ca.id_calle
-      WHERE r.anio = $1 AND r.mes = $2 ${filtro}
-      ORDER BY ca.nombre ASC, p.numero_casa ASC, c.nombre_completo ASC
+      LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
+      LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+      WHERE r.anio = $1 AND r.mes = ANY($2::int[]) ${filtro}
+      ORDER BY r.mes ASC, ca.nombre ASC, p.numero_casa ASC, c.nombre_completo ASC
     `;
     
     const resultados = await pool.query(query, params);
