@@ -42,6 +42,14 @@ npm --prefix client ci
 
 ### 4.3 Configurar `server/.env` (minimo recomendado)
 
+Primero copiar plantilla:
+
+```powershell
+Copy-Item server/.env.example server/.env
+```
+
+Luego ajustar valores:
+
 ```env
 DB_USER=postgres
 DB_PASSWORD=CAMBIAR_ESTA_CLAVE
