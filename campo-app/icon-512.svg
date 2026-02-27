@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="App Campo">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b5ed7"/>
+      <stop offset="1" stop-color="#0a3f8a"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#g)"/>
+  <circle cx="256" cy="192" r="92" fill="#ffffff" opacity="0.95"/>
+  <path d="M256 336c-67 0-120 44-120 101v7h240v-7c0-57-53-101-120-101z" fill="#ffffff" opacity="0.95"/>
+  <path d="M372 156h58v24h-58zM372 198h58v24h-58zM372 240h58v24h-58z" fill="#d6e7ff"/>
+</svg>

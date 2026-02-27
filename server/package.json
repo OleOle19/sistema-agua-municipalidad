@@ -4,8 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "sanear:recibos:report": "node scripts/sanear_recibos_montos.js",
+    "sanear:recibos:apply": "node scripts/sanear_recibos_montos.js --apply"
   },
   "keywords": [],
   "author": "",

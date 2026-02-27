@@ -1,5 +1,6 @@
 import { useState } from "react";
 import axios from "axios";
+import { API_BASE_URL } from "../api";
 
 const DEFAULT_SERVICIOS = { agua: true, desague: true, limpieza: true, admin: true };
 
@@ -144,7 +145,7 @@ const ModalPago = ({
     return deudaAnteriorByRecibo;
   };
 
-  const buildReciboUnicoDesdeMultiples = (recibosParaImpresion) => {
+  const buildReciboUnicoDesdeMultiples = (recibosParaImpresion, codigoImpresion) => {
     const ordenados = [...recibosParaImpresion].sort((a, b) => getPeriodo(a) - getPeriodo(b));
     const primero = ordenados[0];
     const ultimo = ordenados[ordenados.length - 1];
@@ -170,6 +171,7 @@ const ModalPago = ({
       },
       recibo: {
         id_recibo: ultimo?.id_recibo,
+        codigo_impresion: codigoImpresion,
         mes: ultimo?.mes,
         anio: primero?.anio ?? ultimo?.anio,
         mes_nombre: "Pago Multiple",
@@ -269,6 +271,19 @@ const ModalPago = ({
         .filter(Boolean)
         .sort((a, b) => getPeriodo(a) - getPeriodo(b));
 
+      if (imprimir) {
+        const hayPagoParcial = recibosSeleccionados.some((reciboData) => {
+          const monto = round2(getMontoManualValue(reciboData.id_recibo, reciboData));
+          const saldoActual = round2(getMontoRecibo(reciboData));
+          return monto + 0.001 < saldoActual;
+        });
+        if (hayPagoParcial) {
+          alert("Para pagar e imprimir con codigo incremental, debe cancelar el total de cada recibo seleccionado.");
+          setCargando(false);
+          return;
+        }
+      }
+
       for (const reciboData of recibosSeleccionados) {
         const idRecibo = reciboData.id_recibo;
         const monto = getMontoManualValue(idRecibo, reciboData);
@@ -278,7 +293,7 @@ const ModalPago = ({
           return;
         }
 
-        await axios.post("http://localhost:5000/pagos", {
+        await axios.post(`${API_BASE_URL}/pagos`, {
           id_recibo: idRecibo,
           monto_pagado: monto
         });
@@ -308,6 +323,27 @@ const ModalPago = ({
           ...r,
           deuda_anio: deudaAnteriorMap.get(r.id_recibo) ?? 0
         }));
+        let codigoImpresion = "";
+
+        try {
+          const totalImpresion = round2(recibosParaImpresion.reduce((sum, r) => sum + (parseFloat(r.total_pagar) || 0), 0));
+          const respuestaCodigo = await axios.post(`${API_BASE_URL}/impresiones/generar-codigo`, {
+            ids_recibos: recibosParaImpresion.map((r) => r.id_recibo),
+            id_contribuyente: usuario.id_contribuyente,
+            total_monto: totalImpresion
+          });
+          codigoImpresion = String(respuestaCodigo.data?.codigo_impresion || "").trim();
+        } catch (errCodigo) {
+          console.error(errCodigo);
+          const mensaje = errCodigo?.response?.data?.error || "Pago registrado, pero no se pudo generar codigo de impresion.";
+          alert(mensaje);
+        }
+
+        if (!codigoImpresion) {
+          alGuardar();
+          cerrarModal();
+          return;
+        }
 
         if (recibosParaImpresion.length === 1) {
           const r = recibosParaImpresion[0];
@@ -323,6 +359,7 @@ const ModalPago = ({
             },
             recibo: {
               id_recibo: r.id_recibo,
+              codigo_impresion: codigoImpresion,
               mes: r.mes,
               anio: r.anio,
               total: r.total_pagar
@@ -335,7 +372,7 @@ const ModalPago = ({
             }
           });
         } else if (recibosParaImpresion.length > 1) {
-          const reciboUnico = buildReciboUnicoDesdeMultiples(recibosParaImpresion);
+          const reciboUnico = buildReciboUnicoDesdeMultiples(recibosParaImpresion, codigoImpresion);
           onImprimirRecibo?.(reciboUnico);
         }
       }

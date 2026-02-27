@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import api from "../api";
 import { FaMoneyBillWave, FaUsers, FaExclamationCircle } from "react-icons/fa";
 
@@ -18,7 +18,7 @@ const DashboardStats = ({ triggerUpdate, darkMode }) => {
   // En Modo Claro: Fondo del color con texto blanco (Clásico)
   const Card = ({ titulo, valor, color, icon }) => (
     <div 
-      className={`card mb-3 shadow-sm ${darkMode ? `text-${color} border-${color}` : `text-white bg-${color}`}`} 
+      className={`card shadow-sm ${darkMode ? `text-${color} border-${color}` : `text-white bg-${color}`}`} 
       style={{ flex: 1, minWidth: '200px', backgroundColor: darkMode ? "#2b3035" : "" }}
     >
       <div className="card-body d-flex align-items-center justify-content-between">
@@ -32,7 +32,7 @@ const DashboardStats = ({ triggerUpdate, darkMode }) => {
   );
 
   return (
-    <div className="d-flex gap-3 mb-3 flex-wrap">
+    <div className="d-flex gap-3 flex-wrap">
       <Card 
         titulo="Recaudado Hoy" 
         valor={`S/. ${parseFloat(stats.recaudado_hoy).toFixed(2)}`} 
@@ -55,4 +55,4 @@ const DashboardStats = ({ triggerUpdate, darkMode }) => {
   );
 };
 
-export default DashboardStats;
+export default memo(DashboardStats);

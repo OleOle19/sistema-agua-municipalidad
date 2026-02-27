@@ -125,7 +125,7 @@ const ModalImpresionMasiva = ({ cerrarModal, alConfirmar, idsSeleccionados = [],
                   </div>
                 </div>
                 <div className="col-12">
-                  <label className="form-label fw-bold">Ano</label>
+                  <label className="form-label fw-bold">Año</label>
                   <input type="number" className={inputClass} value={seleccion.anio} onChange={(e) => setSeleccion({ ...seleccion, anio: e.target.value })} />
                 </div>
               </div>

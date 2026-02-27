@@ -1,0 +1,12 @@
+﻿{
+    "started_at":  "2026-02-27T12:47:25.1247797-05:00",
+    "repo_root":  "C:\\Users\\oskit\\Desktop\\muni-pueblo\\sistema-agua-municipal",
+    "backend_pid":  2308,
+    "tunnel_pid":  2352,
+    "base_url":  "https://principle-fans-referred-advisory.trycloudflare.com",
+    "campo_url":  "https://principle-fans-referred-advisory.trycloudflare.com/campo-app/",
+    "backend_out_log":  "C:\\Users\\oskit\\Desktop\\muni-pueblo\\sistema-agua-municipal\\ops\\runtime\\backend.out.log",
+    "backend_err_log":  "C:\\Users\\oskit\\Desktop\\muni-pueblo\\sistema-agua-municipal\\ops\\runtime\\backend.err.log",
+    "tunnel_out_log":  "C:\\Users\\oskit\\Desktop\\muni-pueblo\\sistema-agua-municipal\\ops\\runtime\\tunnel.out.log",
+    "tunnel_err_log":  "C:\\Users\\oskit\\Desktop\\muni-pueblo\\sistema-agua-municipal\\ops\\runtime\\tunnel.err.log"
+}

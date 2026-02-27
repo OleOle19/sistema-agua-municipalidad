@@ -34,7 +34,8 @@ const Recibo = forwardRef(({ datos }, ref) => {
   const anioLabel = recibo.anio ?? "";
   const deudaMesesLabel = contribuyente.deuda_meses_label ? ` (${contribuyente.deuda_meses_label})` : "";
   const deudaAnioLabel = `${anioLabel}${deudaMesesLabel}`.trim();
-  const reciboNumero = recibo.id_recibo ? recibo.id_recibo.toString().padStart(6, "0") : "";
+  const reciboNumero = String(recibo.codigo_impresion || "").trim()
+    || (recibo.id_recibo ? recibo.id_recibo.toString().padStart(6, "0") : "");
   const fechaEmision = new Date().toLocaleDateString();
   const ultimoDiaPago = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toLocaleDateString();
   const fechaCorte = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 5).toLocaleDateString();

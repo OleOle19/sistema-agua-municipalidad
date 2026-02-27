@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <base href="/campo-app/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0b5ed7" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="App Campo" />
+    <title>App Campo - Agua Municipal</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="hero">
+        <h1>App Campo</h1>
+        <p>Registro de cambios desde brigada hacia la bandeja de revision del administrador.</p>
+      </header>
+
+      <section id="apiConfigCard" class="card hidden">
+        <h2>Configuracion API</h2>
+        <div class="row">
+          <label for="apiBaseUrl">URL API</label>
+          <input id="apiBaseUrl" type="text" placeholder="http://localhost:5000" />
+        </div>
+        <div class="actions">
+          <button id="saveApiBtn" type="button">Guardar URL</button>
+        </div>
+      </section>
+
+      <section id="authSection" class="card">
+        <h2>Ingreso de brigada</h2>
+        <form id="loginForm">
+          <div class="row">
+            <label for="username">Usuario</label>
+            <input id="username" name="username" type="text" autocomplete="username" required />
+          </div>
+          <div class="row">
+            <label for="password">Contraseña</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required />
+          </div>
+          <div class="actions">
+            <button type="submit">Ingresar</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="appSection" class="card hidden">
+        <div class="toolbar">
+          <div>
+            <h2>Reporte brigada - orden de cortes</h2>
+            <p id="userInfo" class="muted"></p>
+          </div>
+          <button id="logoutBtn" class="secondary" type="button">Salir</button>
+        </div>
+
+        <div class="offline-tools">
+          <div class="offline-actions">
+            <button id="syncOfflineBtn" class="secondary" type="button">Sincronizar offline</button>
+            <button id="syncQueueBtn" class="secondary" type="button">Enviar pendientes</button>
+          </div>
+          <p id="offlineInfo" class="muted">Conexion: verificando...</p>
+          <div class="offline-guide">
+            <strong>Modo recomendado:</strong>
+            <ol>
+              <li>Antes de salir: iniciar sesion y tocar "Sincronizar offline".</li>
+              <li>En campo: registrar solicitudes sin internet.</li>
+              <li>Al volver a red: tocar "Enviar pendientes".</li>
+            </ol>
+          </div>
+        </div>
+
+        <section class="queue-panel">
+          <div class="queue-header">
+            <h3>Pendientes offline</h3>
+            <button id="refreshQueueBtn" class="secondary" type="button">Actualizar lista</button>
+          </div>
+          <div id="queueList" class="queue-list">
+            <p class="muted">Sin pendientes.</p>
+          </div>
+        </section>
+
+        <div class="filters">
+          <div class="row">
+            <label for="searchInput">Buscar contribuyente (nombre, DNI, codigo o direccion)</label>
+            <input id="searchInput" type="search" placeholder="Escribe nombre, DNI o direccion..." />
+          </div>
+          <div class="row">
+            <label for="streetFilter">Filtrar por calle</label>
+            <select id="streetFilter">
+              <option value="">Todas las calles</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="searchResults" class="results"></div>
+
+        <form id="solicitudForm" class="hidden accordion">
+          <div id="selectedInfo" class="selected-inline"></div>
+
+          <div class="row">
+            <label for="nombreVerificado">Nombre verificado</label>
+            <input id="nombreVerificado" type="text" maxlength="200" />
+          </div>
+
+          <div class="row">
+            <label for="dniVerificado">DNI verificado</label>
+            <input id="dniVerificado" type="text" maxlength="30" />
+          </div>
+
+          <div class="row">
+            <label for="direccionVerificada">Direccion verificada</label>
+            <input id="direccionVerificada" type="text" maxlength="250" />
+          </div>
+
+          <div class="row">
+            <label for="aguaSn">Servicio de Agua Potable</label>
+            <select id="aguaSn" required>
+              <option value="S">SI</option>
+              <option value="N">NO</option>
+            </select>
+          </div>
+
+          <div class="row">
+            <label for="desagueSn">Servicio de Desague</label>
+            <select id="desagueSn" required>
+              <option value="S">SI</option>
+              <option value="N">NO</option>
+            </select>
+          </div>
+
+          <div class="row">
+            <label>Servicio de Limpieza Publica</label>
+            <input type="text" value="SI (fijo)" disabled />
+          </div>
+
+          <div class="row">
+            <label for="visitadoSn">Visitado</label>
+            <select id="visitadoSn" required>
+              <option value="N">NO</option>
+              <option value="S">SI</option>
+            </select>
+          </div>
+
+          <div class="row">
+            <label for="cortadoSn">Cortado</label>
+            <select id="cortadoSn" required>
+              <option value="N">NO</option>
+              <option value="S">SI</option>
+            </select>
+          </div>
+
+          <div class="row">
+            <label for="fechaCorte">Fecha corte</label>
+            <input id="fechaCorte" type="date" />
+          </div>
+
+          <div class="row">
+            <label for="motivoObs">Motivo / Observaciones</label>
+            <textarea id="motivoObs" rows="3" maxlength="1200" placeholder="Detalle de hallazgos en campo..."></textarea>
+          </div>
+
+          <div class="row">
+            <label for="inspector">Inspector</label>
+            <input id="inspector" type="text" maxlength="120" />
+          </div>
+
+          <div class="actions">
+            <button id="submitSolicitudBtn" type="submit">Enviar solicitud</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="statusSection" class="status hidden"></section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

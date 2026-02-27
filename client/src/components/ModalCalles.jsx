@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import api from "../api";
 import { FaTrashAlt, FaEdit, FaSave, FaTimes, FaPlus } from "react-icons/fa";
 
-const ModalCalles = ({ cerrarModal, darkMode }) => {
+const ModalCalles = ({ cerrarModal, darkMode, canDeleteCalles = false }) => {
   const [calles, setCalles] = useState([]);
   const [nuevaCalle, setNuevaCalle] = useState({ nombre: "", zona_barrio: "" });
   const [calleEditando, setCalleEditando] = useState(null);
@@ -81,7 +81,9 @@ const ModalCalles = ({ cerrarModal, darkMode }) => {
                       <span>{c.nombre} {c.zona_barrio && c.zona_barrio.trim() !== "" ? ` (${c.zona_barrio})` : ""}</span>
                       <div>
                         <button className="btn btn-sm text-primary me-2" onClick={() => activarEdicion(c)}><FaEdit/></button>
-                        <button className="btn btn-sm text-danger" onClick={() => eliminarCalle(c.id_calle)}><FaTrashAlt/></button>
+                        {canDeleteCalles && (
+                          <button className="btn btn-sm text-danger" onClick={() => eliminarCalle(c.id_calle)}><FaTrashAlt/></button>
+                        )}
                       </div>
                     </>
                   )}
