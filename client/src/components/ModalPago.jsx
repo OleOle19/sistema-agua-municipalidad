@@ -1,387 +1,177 @@
-import { useState } from "react";
-import axios from "axios";
-import { API_BASE_URL } from "../api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import api from "../api";
 
-const DEFAULT_SERVICIOS = { agua: true, desague: true, limpieza: true, admin: true };
+const ROLE_ORDER = { BRIGADA: 1, CONSULTA: 2, CAJERO: 3, ADMIN_SEC: 4, ADMIN: 5 };
 
-const ModalPago = ({
-  usuario,
-  cerrarModal,
-  alGuardar,
-  darkMode,
-  onImprimirRecibo
-}) => {
-  const [selectedRecibos, setSelectedRecibos] = useState(new Set());
+const normalizeRole = (role) => {
+  const raw = String(role || "").trim().toUpperCase();
+  if (["ADMIN", "SUPERADMIN", "ADMIN_PRINCIPAL", "NIVEL_1"].includes(raw)) return "ADMIN";
+  if (["ADMIN_SEC", "ADMIN_SECUNDARIO", "JEFE_CAJA", "NIVEL_2"].includes(raw)) return "ADMIN_SEC";
+  if (["CAJERO", "OPERADOR_CAJA", "OPERADOR", "NIVEL_3"].includes(raw)) return "CAJERO";
+  if (["BRIGADA", "BRIGADISTA", "CAMPO", "NIVEL_5"].includes(raw)) return "BRIGADA";
+  return "CONSULTA";
+};
+
+const hasMinRole = (role, requiredRole) => {
+  const currentLevel = ROLE_ORDER[normalizeRole(role)] || 0;
+  const requiredLevel = ROLE_ORDER[normalizeRole(requiredRole)] || 0;
+  return currentLevel >= requiredLevel;
+};
+
+const toNum = (v) => {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const round2 = (v) => Math.round((toNum(v) + Number.EPSILON) * 100) / 100;
+
+const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }) => {
+  const rol = normalizeRole(usuarioSistema?.rol);
+  const isCaja = rol === "CAJERO";
+  const canEmitir = hasMinRole(rol, "ADMIN_SEC");
   const [cargando, setCargando] = useState(false);
-  const [montosManual, setMontosManual] = useState({});
-  const [serviciosSeleccionados, setServiciosSeleccionados] = useState({});
-  const currentYear = new Date().getFullYear();
+  const [seleccion, setSeleccion] = useState({});
+  const [ordenes, setOrdenes] = useState([]);
+  const [ordenId, setOrdenId] = useState(0);
+  const [cargandoOrdenes, setCargandoOrdenes] = useState(false);
 
-  const formatMonto = (value) => {
-    const parsed = parseFloat(value);
-    return Number.isFinite(parsed) ? parsed.toFixed(2) : "0.00";
-  };
-  const parseNumber = (value) => {
-    const parsed = parseFloat(value);
-    return Number.isFinite(parsed) ? parsed : 0;
-  };
-  const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
-  const getAnioRecibo = (recibo) => recibo?.anio ?? currentYear;
-  const getPeriodo = (recibo) => (Number(getAnioRecibo(recibo)) * 100) + Number(recibo?.mes ?? 0);
-  const getMesCorto = (mes) => {
-    const meses = ["", "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
-    return meses[Number(mes)] || String(mes ?? "");
-  };
+  const recibosPendientes = useMemo(
+    () => (Array.isArray(usuario?.recibos) ? usuario.recibos : [])
+      .filter((r) => r && (r.estado === "PENDIENTE" || r.estado === "PARCIAL")),
+    [usuario?.recibos]
+  );
 
-  const getMontoRecibo = (recibo) => {
-    const raw = recibo?.deuda_mes ?? recibo?.total_pagar ?? recibo?.monto_pagado ?? 0;
-    const parsed = parseFloat(raw);
-    return Number.isFinite(parsed) ? parsed : 0;
-  };
-
-  const getServiciosBase = (recibo) => ({
-    agua: parseNumber(recibo?.subtotal_agua ?? 0),
-    desague: parseNumber(recibo?.subtotal_desague ?? 0),
-    limpieza: parseNumber(recibo?.subtotal_limpieza ?? 0),
-    admin: parseNumber(recibo?.subtotal_admin ?? 0)
-  });
-  const getServiciosSeleccion = (id) => serviciosSeleccionados[id] ?? DEFAULT_SERVICIOS;
-
-  const getTotalServicios = (recibo, seleccion) => {
-    const base = getServiciosBase(recibo);
-    const baseSum = base.agua + base.desague + base.limpieza + base.admin;
-    const max = getMontoRecibo(recibo);
-    if (baseSum <= 0) return max;
-    const total = (seleccion.agua ? base.agua : 0)
-      + (seleccion.desague ? base.desague : 0)
-      + (seleccion.limpieza ? base.limpieza : 0)
-      + (seleccion.admin ? base.admin : 0);
-    return Math.min(total, max);
-  };
-
-  const getMaxMontoRecibo = (id, recibo) => {
-    const seleccion = serviciosSeleccionados[id];
-    if (!seleccion) return getMontoRecibo(recibo);
-    return getTotalServicios(recibo, seleccion);
-  };
-
-  const getMontoManualValue = (id, recibo) => {
-    const raw = montosManual[id];
-    const parsed = parseFloat(typeof raw === "string" ? raw.replace(",", ".") : raw);
-    if (Number.isFinite(parsed)) return Math.min(Math.max(parsed, 0), getMaxMontoRecibo(id, recibo));
-    return getMaxMontoRecibo(id, recibo);
-  };
-
-  const getMontoInputValue = (id, recibo) => {
-    if (montosManual[id] !== undefined) return montosManual[id];
-    return getMaxMontoRecibo(id, recibo).toFixed(2);
-  };
-
-  const setMontoTotal = (id, recibo) => {
-    setMontosManual((prev) => ({ ...prev, [id]: getMaxMontoRecibo(id, recibo).toFixed(2) }));
-  };
-
-  const normalizeDecimal = (value) => value.replace(",", ".");
-  const isValidDecimalInput = (value) => /^\d*(\.\d{0,2})?$/.test(value);
-
-  const getDetalleImpresion = (idRecibo, recibo, montoPagado) => {
-    const base = getServiciosBase(recibo);
-    const seleccion = getServiciosSeleccion(idRecibo);
-    const detalleSeleccionado = {
-      agua: seleccion.agua ? base.agua : 0,
-      desague: seleccion.desague ? base.desague : 0,
-      limpieza: seleccion.limpieza ? base.limpieza : 0,
-      admin: seleccion.admin ? base.admin : 0
-    };
-    const totalDetalle = detalleSeleccionado.agua
-      + detalleSeleccionado.desague
-      + detalleSeleccionado.limpieza
-      + detalleSeleccionado.admin;
-
-    if (totalDetalle <= 0) return { agua: round2(montoPagado), desague: 0, limpieza: 0, admin: 0 };
-
-    const factor = montoPagado / totalDetalle;
-    const detalleEscalado = {
-      agua: round2(detalleSeleccionado.agua * factor),
-      desague: round2(detalleSeleccionado.desague * factor),
-      limpieza: round2(detalleSeleccionado.limpieza * factor),
-      admin: round2(detalleSeleccionado.admin * factor)
-    };
-    const totalEscalado = detalleEscalado.agua
-      + detalleEscalado.desague
-      + detalleEscalado.limpieza
-      + detalleEscalado.admin;
-    const diff = round2(montoPagado - totalEscalado);
-    if (Math.abs(diff) > 0) detalleEscalado.admin = round2(detalleEscalado.admin + diff);
-
-    return detalleEscalado;
-  };
-
-  const buildDeudaAnteriorMap = (pagosAplicados) => {
-    const recibosBase = Array.isArray(usuario.recibos) ? usuario.recibos : [];
-    const saldoPostPago = new Map();
-
-    recibosBase.forEach((r) => {
-      if (!r?.id_recibo) return;
-      const saldoOriginal = getMontoRecibo(r);
-      const pagoAplicado = pagosAplicados.get(r.id_recibo) || 0;
-      saldoPostPago.set(r.id_recibo, Math.max(round2(saldoOriginal - pagoAplicado), 0));
+  useEffect(() => {
+    if (isCaja) return;
+    const base = {};
+    recibosPendientes.forEach((r) => {
+      const saldo = round2(toNum(r.deuda_mes ?? r.total_pagar));
+      base[r.id_recibo] = { checked: false, monto: saldo.toFixed(2) };
     });
+    setSeleccion(base);
+  }, [isCaja, recibosPendientes]);
 
-    const deudaAnteriorByRecibo = new Map();
-    recibosBase.forEach((target) => {
-      if (!target?.id_recibo) return;
-      const periodoTarget = getPeriodo(target);
-      let deudaAnterior = 0;
-      recibosBase.forEach((r) => {
-        if (!r?.id_recibo || r.id_recibo === target.id_recibo) return;
-        if (getPeriodo(r) < periodoTarget) {
-          deudaAnterior += saldoPostPago.get(r.id_recibo) ?? getMontoRecibo(r);
-        }
+  const cargarOrdenes = useCallback(async () => {
+    if (!isCaja || !usuario?.id_contribuyente) return;
+    setCargandoOrdenes(true);
+    try {
+      const res = await api.get("/caja/ordenes-cobro/pendientes", {
+        params: { id_contribuyente: usuario.id_contribuyente, limit: 100 }
       });
-      deudaAnteriorByRecibo.set(target.id_recibo, round2(deudaAnterior));
-    });
-
-    return deudaAnteriorByRecibo;
-  };
-
-  const buildReciboUnicoDesdeMultiples = (recibosParaImpresion, codigoImpresion) => {
-    const ordenados = [...recibosParaImpresion].sort((a, b) => getPeriodo(a) - getPeriodo(b));
-    const primero = ordenados[0];
-    const ultimo = ordenados[ordenados.length - 1];
-
-    const totalAgua = ordenados.reduce((sum, r) => sum + (parseFloat(r.subtotal_agua) || 0), 0);
-    const totalDesague = ordenados.reduce((sum, r) => sum + (parseFloat(r.subtotal_desague) || 0), 0);
-    const totalLimpieza = ordenados.reduce((sum, r) => sum + (parseFloat(r.subtotal_limpieza) || 0), 0);
-    const totalAdmin = ordenados.reduce((sum, r) => sum + (parseFloat(r.subtotal_admin) || 0), 0);
-    const totalPagar = ordenados.reduce((sum, r) => sum + (parseFloat(r.total_pagar) || 0), 0);
-    const deudaMesesLabel = ordenados.map((r) => getMesCorto(r.mes)).join(",");
-
-    return {
-      contribuyente: {
-        nombre_completo: usuario.nombre_completo,
-        codigo_municipal: usuario.codigo_municipal,
-        dni_ruc: usuario.dni_ruc,
-        // En pago multiple mostramos la suma pagada en la tabla central.
-        deuda_anio: round2(totalPagar),
-        deuda_meses_label: deudaMesesLabel
-      },
-      predio: {
-        direccion_completa: usuario.direccion_completa
-      },
-      recibo: {
-        id_recibo: ultimo?.id_recibo,
-        codigo_impresion: codigoImpresion,
-        mes: ultimo?.mes,
-        anio: primero?.anio ?? ultimo?.anio,
-        mes_nombre: "Pago Multiple",
-        total: round2(totalPagar)
-      },
-      detalles: {
-        agua: round2(totalAgua),
-        desague: round2(totalDesague),
-        limpieza: round2(totalLimpieza),
-        admin: round2(totalAdmin)
-      }
-    };
-  };
-
-  const recibosPendientes = usuario.recibos
-    ? usuario.recibos.filter((r) => r.estado === "PENDIENTE" || r.estado === "PARCIAL")
-    : [];
-
-  const handleCheckbox = (recibo) => {
-    const idRecibo = recibo.id_recibo;
-    const nuevoSet = new Set(selectedRecibos);
-    if (nuevoSet.has(idRecibo)) {
-      nuevoSet.delete(idRecibo);
-    } else {
-      nuevoSet.add(idRecibo);
-      setServiciosSeleccionados((prev) => {
-        if (prev[idRecibo]) return prev;
-        return { ...prev, [idRecibo]: { ...DEFAULT_SERVICIOS } };
-      });
-      setMontosManual((prev) => {
-        if (prev[idRecibo] !== undefined) return prev;
-        const totalServicios = getTotalServicios(recibo, DEFAULT_SERVICIOS);
-        return { ...prev, [idRecibo]: totalServicios.toFixed(2) };
-      });
+      const rows = Array.isArray(res.data) ? res.data : [];
+      setOrdenes(rows);
+      setOrdenId(rows[0]?.id_orden || 0);
+    } catch (err) {
+      alert(err?.response?.data?.error || "No se pudo cargar ordenes pendientes.");
+    } finally {
+      setCargandoOrdenes(false);
     }
-    setSelectedRecibos(nuevoSet);
+  }, [isCaja, usuario?.id_contribuyente]);
+
+  useEffect(() => {
+    cargarOrdenes().catch(() => {});
+  }, [cargarOrdenes]);
+
+  const ordenSeleccionada = useMemo(
+    () => ordenes.find((o) => Number(o.id_orden) === Number(ordenId)) || null,
+    [ordenes, ordenId]
+  );
+
+  const toggleRecibo = (id) => {
+    setSeleccion((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] || {}), checked: !prev[id]?.checked }
+    }));
   };
 
-  const handleServicioToggle = (idRecibo, recibo, key) => {
-    setServiciosSeleccionados((prev) => {
-      const current = prev[idRecibo] ?? { ...DEFAULT_SERVICIOS };
-      const next = { ...current, [key]: !current[key] };
-      const totalServicios = getTotalServicios(recibo, next);
-      setMontosManual((prevMontos) => ({ ...prevMontos, [idRecibo]: totalServicios.toFixed(2) }));
-      return { ...prev, [idRecibo]: next };
-    });
+  const setMonto = (id, value, maxSaldo) => {
+    const cleaned = String(value || "").replace(",", ".");
+    if (cleaned && !/^\d*(\.\d{0,2})?$/.test(cleaned)) return;
+    const parsed = toNum(cleaned);
+    const clamped = cleaned === "" ? "" : Math.min(Math.max(parsed, 0), round2(maxSaldo)).toFixed(2);
+    setSeleccion((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] || {}), monto: clamped }
+    }));
   };
 
-  const handleMontoChange = (idRecibo, value, recibo) => {
-    if (value === "") {
-      setMontosManual((prev) => ({ ...prev, [idRecibo]: value }));
-      return;
-    }
+  const totalOrden = useMemo(() => {
+    return round2(recibosPendientes.reduce((acc, r) => {
+      const s = seleccion[r.id_recibo];
+      if (!s?.checked) return acc;
+      return acc + toNum(s.monto);
+    }, 0));
+  }, [recibosPendientes, seleccion]);
 
-    const normalized = normalizeDecimal(value);
-    if (!isValidDecimalInput(normalized)) return;
-
-    const parsed = parseFloat(normalized);
-    if (!Number.isFinite(parsed)) {
-      setMontosManual((prev) => ({ ...prev, [idRecibo]: normalized }));
-      return;
-    }
-
-    const max = getMaxMontoRecibo(idRecibo, recibo);
-    if (parsed > max) {
-      setMontosManual((prev) => ({ ...prev, [idRecibo]: max.toFixed(2) }));
-      return;
-    }
-    setMontosManual((prev) => ({ ...prev, [idRecibo]: normalized }));
+  const buildDetalle = (r, monto) => {
+    const agua = toNum(r.subtotal_agua);
+    const desague = toNum(r.subtotal_desague);
+    const limpieza = toNum(r.subtotal_limpieza);
+    const admin = toNum(r.subtotal_admin);
+    const base = agua + desague + limpieza + admin;
+    if (base <= 0) return { agua: monto, desague: 0, limpieza: 0, admin: 0 };
+    const factor = monto / base;
+    let dAgua = round2(agua * factor);
+    let dDes = round2(desague * factor);
+    let dLimp = round2(limpieza * factor);
+    let dAdm = round2(admin * factor);
+    dAdm = round2(dAdm + (monto - (dAgua + dDes + dLimp + dAdm)));
+    return { agua: dAgua, desague: dDes, limpieza: dLimp, admin: dAdm };
   };
 
-  const handleMontoBlur = (idRecibo, value, recibo) => {
-    if (value === "") return;
-    const normalized = normalizeDecimal(value);
-    const parsed = parseFloat(normalized);
-    if (!Number.isFinite(parsed)) {
-      setMontosManual((prev) => ({ ...prev, [idRecibo]: "" }));
-      return;
-    }
-    const max = getMaxMontoRecibo(idRecibo, recibo);
-    const clamped = Math.min(Math.max(parsed, 0), max);
-    setMontosManual((prev) => ({ ...prev, [idRecibo]: clamped.toFixed(2) }));
-  };
+  const emitirOrden = async () => {
+    if (!canEmitir) return alert("No tiene permisos para emitir ordenes.");
+    const items = recibosPendientes
+      .filter((r) => seleccion[r.id_recibo]?.checked)
+      .map((r) => {
+        const monto = round2(toNum(seleccion[r.id_recibo]?.monto));
+        const d = buildDetalle(r, monto);
+        return {
+          id_recibo: r.id_recibo,
+          mes: r.mes,
+          anio: r.anio,
+          monto_autorizado: monto,
+          subtotal_agua: d.agua,
+          subtotal_desague: d.desague,
+          subtotal_limpieza: d.limpieza,
+          subtotal_admin: d.admin
+        };
+      })
+      .filter((i) => i.monto_autorizado > 0);
 
-  const procesarPago = async ({ imprimir }) => {
-    if (selectedRecibos.size === 0) return alert("Seleccione al menos un recibo.");
-    if (!window.confirm(`Confirmar pago de ${selectedRecibos.size} recibos?`)) return;
+    if (items.length === 0) return alert("Seleccione al menos un recibo con monto valido.");
+    if (!window.confirm(`Emitir orden por S/. ${totalOrden.toFixed(2)}?`)) return;
 
     setCargando(true);
-
     try {
-      const pagosAplicados = new Map();
-      const recibosPagadosDetalle = [];
+      const res = await api.post("/caja/ordenes-cobro", {
+        id_contribuyente: usuario.id_contribuyente,
+        items
+      });
+      const id = res?.data?.orden?.id_orden;
+      alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.`);
+      alGuardar?.();
+      cerrarModal?.();
+    } catch (err) {
+      alert(err?.response?.data?.error || "No se pudo emitir la orden.");
+    } finally {
+      setCargando(false);
+    }
+  };
 
-      const recibosSeleccionados = Array.from(selectedRecibos)
-        .map((idRecibo) => recibosPendientes.find((r) => r.id_recibo === idRecibo))
-        .filter(Boolean)
-        .sort((a, b) => getPeriodo(a) - getPeriodo(b));
+  const cobrarOrden = async () => {
+    if (!isCaja) return;
+    if (!ordenSeleccionada) return alert("Seleccione una orden pendiente.");
+    if (!window.confirm(`Cobrar orden #${ordenSeleccionada.id_orden} por S/. ${toNum(ordenSeleccionada.total_orden).toFixed(2)}?`)) return;
 
-      if (imprimir) {
-        const hayPagoParcial = recibosSeleccionados.some((reciboData) => {
-          const monto = round2(getMontoManualValue(reciboData.id_recibo, reciboData));
-          const saldoActual = round2(getMontoRecibo(reciboData));
-          return monto + 0.001 < saldoActual;
-        });
-        if (hayPagoParcial) {
-          alert("Para pagar e imprimir con codigo incremental, debe cancelar el total de cada recibo seleccionado.");
-          setCargando(false);
-          return;
-        }
-      }
-
-      for (const reciboData of recibosSeleccionados) {
-        const idRecibo = reciboData.id_recibo;
-        const monto = getMontoManualValue(idRecibo, reciboData);
-        if (monto <= 0) {
-          alert("El monto a pagar debe ser mayor a 0.");
-          setCargando(false);
-          return;
-        }
-
-        await axios.post(`${API_BASE_URL}/pagos`, {
-          id_recibo: idRecibo,
-          monto_pagado: monto
-        });
-
-        pagosAplicados.set(idRecibo, round2((pagosAplicados.get(idRecibo) || 0) + monto));
-        const detalleImpresion = getDetalleImpresion(idRecibo, reciboData, monto);
-
-        recibosPagadosDetalle.push({
-          id_recibo: reciboData.id_recibo,
-          mes: reciboData.mes,
-          anio: getAnioRecibo(reciboData),
-          nombre_completo: usuario.nombre_completo,
-          codigo_municipal: usuario.codigo_municipal,
-          dni_ruc: usuario.dni_ruc,
-          direccion_completa: usuario.direccion_completa,
-          subtotal_agua: detalleImpresion.agua,
-          subtotal_desague: detalleImpresion.desague,
-          subtotal_limpieza: detalleImpresion.limpieza,
-          subtotal_admin: detalleImpresion.admin,
-          total_pagar: monto
-        });
-      }
-
-      if (imprimir) {
-        const deudaAnteriorMap = buildDeudaAnteriorMap(pagosAplicados);
-        const recibosParaImpresion = recibosPagadosDetalle.map((r) => ({
-          ...r,
-          deuda_anio: deudaAnteriorMap.get(r.id_recibo) ?? 0
-        }));
-        let codigoImpresion = "";
-
-        try {
-          const totalImpresion = round2(recibosParaImpresion.reduce((sum, r) => sum + (parseFloat(r.total_pagar) || 0), 0));
-          const respuestaCodigo = await axios.post(`${API_BASE_URL}/impresiones/generar-codigo`, {
-            ids_recibos: recibosParaImpresion.map((r) => r.id_recibo),
-            id_contribuyente: usuario.id_contribuyente,
-            total_monto: totalImpresion
-          });
-          codigoImpresion = String(respuestaCodigo.data?.codigo_impresion || "").trim();
-        } catch (errCodigo) {
-          console.error(errCodigo);
-          const mensaje = errCodigo?.response?.data?.error || "Pago registrado, pero no se pudo generar codigo de impresion.";
-          alert(mensaje);
-        }
-
-        if (!codigoImpresion) {
-          alGuardar();
-          cerrarModal();
-          return;
-        }
-
-        if (recibosParaImpresion.length === 1) {
-          const r = recibosParaImpresion[0];
-          onImprimirRecibo?.({
-            contribuyente: {
-              nombre_completo: r.nombre_completo,
-              codigo_municipal: r.codigo_municipal,
-              dni_ruc: r.dni_ruc,
-              deuda_anio: r.deuda_anio
-            },
-            predio: {
-              direccion_completa: r.direccion_completa
-            },
-            recibo: {
-              id_recibo: r.id_recibo,
-              codigo_impresion: codigoImpresion,
-              mes: r.mes,
-              anio: r.anio,
-              total: r.total_pagar
-            },
-            detalles: {
-              agua: r.subtotal_agua,
-              desague: r.subtotal_desague,
-              limpieza: r.subtotal_limpieza,
-              admin: r.subtotal_admin
-            }
-          });
-        } else if (recibosParaImpresion.length > 1) {
-          const reciboUnico = buildReciboUnicoDesdeMultiples(recibosParaImpresion, codigoImpresion);
-          onImprimirRecibo?.(reciboUnico);
-        }
-      }
-
-      alGuardar();
-      cerrarModal();
-    } catch (error) {
-      console.error(error);
-      alert("Error al procesar el pago.");
+    setCargando(true);
+    try {
+      await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`);
+      alert("Cobro registrado correctamente.");
+      alGuardar?.();
+      cerrarModal?.();
+    } catch (err) {
+      alert(err?.response?.data?.error || "No se pudo cobrar la orden.");
     } finally {
       setCargando(false);
     }
@@ -392,154 +182,106 @@ const ModalPago = ({
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
-      <div className="modal-dialog">
+      <div className="modal-dialog modal-lg">
         <div className="modal-content" style={modalStyle}>
           <div className="modal-header">
-            <h5 className="modal-title">Registrar Pago - {usuario.nombre_completo}</h5>
+            <h5 className="modal-title">
+              {isCaja ? "Caja - Cobrar Orden Pendiente" : "Ventanilla - Emitir Orden de Cobro"} - {usuario?.nombre_completo}
+            </h5>
             <button type="button" className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
           <div className="modal-body">
-            <h6>Seleccione los meses a cancelar:</h6>
-            <div className="list-group mb-3" style={{ maxHeight: "300px", overflowY: "auto" }}>
-              {recibosPendientes.length === 0 && (
-                <p className="text-muted text-center p-3">No hay deudas pendientes.</p>
-              )}
-
-              {recibosPendientes.map((r) => {
-                const serviciosBase = getServiciosBase(r);
-                const serviciosSel = getServiciosSeleccion(r.id_recibo);
-                const totalServicios = getTotalServicios(r, serviciosSel);
-                return (
-                  <div
-                    key={r.id_recibo}
-                    className={`${listClass} d-flex justify-content-between align-items-start`}
-                    style={{ cursor: "pointer" }}
-                    onClick={() => handleCheckbox(r)}
-                  >
-                    <div className="flex-grow-1">
-                      <div>
-                        <input
-                          type="checkbox"
-                          className="form-check-input me-2"
-                          checked={selectedRecibos.has(r.id_recibo)}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={() => handleCheckbox(r)}
-                        />
-                        <span>{r.mes}/{getAnioRecibo(r)}</span>
-                      </div>
-
-                      {selectedRecibos.has(r.id_recibo) && (
-                        <div className="mt-2 ms-4" onClick={(e) => e.stopPropagation()}>
-                          <div className="small fw-bold text-primary mb-1">Servicios a cobrar</div>
-                          <div className="d-flex flex-column gap-1 small">
-                            <div className="form-check d-flex align-items-center gap-2">
-                              <input
-                                className="form-check-input"
-                                type="checkbox"
-                                checked={serviciosSel.agua}
-                                onClick={(e) => e.stopPropagation()}
-                                onChange={() => handleServicioToggle(r.id_recibo, r, "agua")}
-                              />
-                              <label className="form-check-label">Agua Potable</label>
-                              <span className="ms-auto text-muted">S/. {formatMonto(serviciosBase.agua)}</span>
-                            </div>
-                            <div className="form-check d-flex align-items-center gap-2">
-                              <input
-                                className="form-check-input"
-                                type="checkbox"
-                                checked={serviciosSel.desague}
-                                onClick={(e) => e.stopPropagation()}
-                                onChange={() => handleServicioToggle(r.id_recibo, r, "desague")}
-                              />
-                              <label className="form-check-label">Desague</label>
-                              <span className="ms-auto text-muted">S/. {formatMonto(serviciosBase.desague)}</span>
-                            </div>
-                            <div className="form-check d-flex align-items-center gap-2">
-                              <input
-                                className="form-check-input"
-                                type="checkbox"
-                                checked={serviciosSel.limpieza}
-                                onClick={(e) => e.stopPropagation()}
-                                onChange={() => handleServicioToggle(r.id_recibo, r, "limpieza")}
-                              />
-                              <label className="form-check-label">Limpieza Publica</label>
-                              <span className="ms-auto text-muted">S/. {formatMonto(serviciosBase.limpieza)}</span>
-                            </div>
-                            <div className="form-check d-flex align-items-center gap-2">
-                              <input
-                                className="form-check-input"
-                                type="checkbox"
-                                checked={serviciosSel.admin}
-                                onClick={(e) => e.stopPropagation()}
-                                onChange={() => handleServicioToggle(r.id_recibo, r, "admin")}
-                              />
-                              <label className="form-check-label">Gastos Administrativos</label>
-                              <span className="ms-auto text-muted">S/. {formatMonto(serviciosBase.admin)}</span>
-                            </div>
-                          </div>
+            {isCaja ? (
+              <>
+                {cargandoOrdenes && <p className="text-muted">Cargando ordenes...</p>}
+                {!cargandoOrdenes && ordenes.length === 0 && (
+                  <p className="text-muted text-center p-3">No hay ordenes pendientes para este contribuyente.</p>
+                )}
+                {!cargandoOrdenes && ordenes.length > 0 && (
+                  <div className="list-group mb-3" style={{ maxHeight: "260px", overflowY: "auto" }}>
+                    {ordenes.map((o) => (
+                      <button
+                        type="button"
+                        key={o.id_orden}
+                        className={`${listClass} text-start ${Number(ordenId) === Number(o.id_orden) ? "border border-primary border-2" : ""}`}
+                        onClick={() => setOrdenId(o.id_orden)}
+                      >
+                        <div className="d-flex justify-content-between">
+                          <strong>Orden #{o.id_orden}</strong>
+                          <span className="fw-bold">S/. {toNum(o.total_orden).toFixed(2)}</span>
                         </div>
-                      )}
-                    </div>
-
-                    <div className="d-flex flex-column align-items-end gap-2">
-                      <small className="text-muted">Saldo: S/. {getMontoRecibo(r).toFixed(2)}</small>
-                      <div className="input-group input-group-sm" style={{ width: "180px" }}>
-                        <span className="input-group-text">S/.</span>
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          pattern="\\d*(\\.\\d{0,2})?"
-                          className="form-control text-end"
-                          value={getMontoInputValue(r.id_recibo, r)}
-                          onChange={(e) => handleMontoChange(r.id_recibo, e.target.value, r)}
-                          onBlur={(e) => handleMontoBlur(r.id_recibo, e.target.value, r)}
-                          onClick={(e) => e.stopPropagation()}
-                          disabled={!selectedRecibos.has(r.id_recibo)}
-                        />
-                        <button
-                          type="button"
-                          className="btn btn-outline-secondary"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setMontoTotal(r.id_recibo, r);
-                          }}
-                          disabled={!selectedRecibos.has(r.id_recibo)}
-                        >
-                          Total
-                        </button>
-                      </div>
-                      {selectedRecibos.has(r.id_recibo) && (
-                        <div className="small fw-bold">Total servicios: S/. {formatMonto(totalServicios)}</div>
-                      )}
-                    </div>
+                        <div className="small text-muted">
+                          Recibos: {o.cantidad_recibos} | Emitida: {new Date(o.creado_en).toLocaleString()}
+                        </div>
+                      </button>
+                    ))}
                   </div>
-                );
-              })}
-            </div>
-
-            <div className="alert alert-success text-center fw-bold">
-              Total a Pagar: S/. {Array.from(selectedRecibos)
-                .reduce((sum, id) => sum + getMontoManualValue(id, recibosPendientes.find((r) => r.id_recibo === id)), 0)
-                .toFixed(2)}
-            </div>
+                )}
+                {ordenSeleccionada && (
+                  <div className="border rounded p-2">
+                    <div className="small fw-bold mb-2">Detalle de orden #{ordenSeleccionada.id_orden}</div>
+                    <table className="table table-sm mb-0">
+                      <thead><tr><th>Periodo</th><th className="text-end">Monto</th></tr></thead>
+                      <tbody>
+                        {(ordenSeleccionada.items || []).map((it) => (
+                          <tr key={`${ordenSeleccionada.id_orden}-${it.id_recibo}`}>
+                            <td>{it.mes}/{it.anio}</td>
+                            <td className="text-end fw-bold">S/. {toNum(it.monto_autorizado).toFixed(2)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="list-group mb-3" style={{ maxHeight: "320px", overflowY: "auto" }}>
+                  {recibosPendientes.length === 0 && <p className="text-muted text-center p-3">No hay deudas pendientes.</p>}
+                  {recibosPendientes.map((r) => {
+                    const saldo = round2(toNum(r.deuda_mes ?? r.total_pagar));
+                    const row = seleccion[r.id_recibo] || { checked: false, monto: saldo.toFixed(2) };
+                    return (
+                      <div key={r.id_recibo} className={`${listClass} d-flex justify-content-between align-items-center`}>
+                        <div>
+                          <input
+                            type="checkbox"
+                            className="form-check-input me-2"
+                            checked={!!row.checked}
+                            onChange={() => toggleRecibo(r.id_recibo)}
+                          />
+                          <span>{r.mes}/{r.anio}</span>
+                          <small className="ms-2 text-muted">Saldo: S/. {saldo.toFixed(2)}</small>
+                        </div>
+                        <div className="input-group input-group-sm" style={{ width: "150px" }}>
+                          <span className="input-group-text">S/.</span>
+                          <input
+                            type="text"
+                            className="form-control text-end"
+                            value={row.monto ?? ""}
+                            onChange={(e) => setMonto(r.id_recibo, e.target.value, saldo)}
+                            disabled={!row.checked}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="alert alert-info text-center fw-bold">Total orden: S/. {totalOrden.toFixed(2)}</div>
+              </>
+            )}
           </div>
-
           <div className="modal-footer">
-            <button className="btn btn-secondary" onClick={cerrarModal} disabled={cargando}>Cancelar</button>
-            <button
-              className="btn btn-primary fw-bold"
-              onClick={() => procesarPago({ imprimir: false })}
-              disabled={cargando}
-            >
-              {cargando ? "Procesando..." : "PAGAR"}
-            </button>
-            <button
-              className="btn btn-success fw-bold"
-              onClick={() => procesarPago({ imprimir: true })}
-              disabled={cargando}
-            >
-              {cargando ? "Procesando..." : "PAGAR E IMPRIMIR"}
-            </button>
+            <button className="btn btn-secondary" onClick={cerrarModal} disabled={cargando}>Cerrar</button>
+            {isCaja ? (
+              <button className="btn btn-primary fw-bold" onClick={cobrarOrden} disabled={cargando || !ordenSeleccionada}>
+                {cargando ? "Procesando..." : "COBRAR ORDEN"}
+              </button>
+            ) : (
+              <button className="btn btn-primary fw-bold" onClick={emitirOrden} disabled={cargando}>
+                {cargando ? "Procesando..." : "EMITIR ORDEN"}
+              </button>
+            )}
           </div>
         </div>
       </div>

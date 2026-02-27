@@ -80,6 +80,11 @@ const ESTADOS_SOLICITUD_CAMPO = {
   APROBADO: "APROBADO",
   RECHAZADO: "RECHAZADO"
 };
+const ESTADOS_ORDEN_COBRO = {
+  PENDIENTE: "PENDIENTE",
+  COBRADA: "COBRADA",
+  ANULADA: "ANULADA"
+};
 const FUENTE_SOLICITUD_CAMPO = "APP_CAMPO";
 const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || (10 * 60 * 1000));
 const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = Number(process.env.LOGIN_RATE_LIMIT_MAX_ATTEMPTS || 25);
@@ -160,6 +165,16 @@ const parsePositiveInt = (value, fallback = 0) => {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
+};
+const roundMonto2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+const parsePositiveMonto = (value) => {
+  const parsed = roundMonto2(parseMonto(value, 0));
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return parsed;
+};
+const clampArray = (rows, max = 200) => {
+  if (!Array.isArray(rows)) return [];
+  return rows.slice(0, Math.max(1, Math.min(1000, max)));
 };
 
 const normalizeCodigoMunicipal = (value, padTo = 6) => {
@@ -456,6 +471,10 @@ const ACCESS_RULES = [
   { methods: ["POST"], pattern: /^\/recibos\/generar-masivo$/, minRole: "ADMIN_SEC" },
   { methods: ["DELETE"], pattern: /^\/recibos\/\d+$/, minRole: "ADMIN" },
   { methods: ["POST"], pattern: /^\/actas-corte\/generar$/, minRole: "CAJERO" },
+  { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro$/, minRole: "ADMIN_SEC" },
+  { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro\/pendientes$/, minRole: "CAJERO" },
+  { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro\/\d+\/cobrar$/, minRole: "CAJERO" },
+  { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro\/\d+\/anular$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/caja\/reporte\/excel$/, minRole: "ADMIN_SEC" },
 
   { methods: ["POST"], pattern: /^\/pagos$/, minRole: "CAJERO" },
@@ -551,6 +570,60 @@ const ensureActasCorteTable = async (client) => {
       meses_deuda INTEGER NOT NULL DEFAULT 0,
       deuda_total NUMERIC(12, 2) NOT NULL DEFAULT 0
     )
+  `);
+};
+
+const ensureOrdenesCobroTable = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS ordenes_cobro (
+      id_orden BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      actualizado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+      id_usuario_emite INTEGER NULL,
+      id_usuario_cobra INTEGER NULL,
+      id_usuario_anula INTEGER NULL,
+      id_contribuyente INTEGER NOT NULL REFERENCES contribuyentes(id_contribuyente),
+      codigo_municipal VARCHAR(32) NULL,
+      total_orden NUMERIC(12, 2) NOT NULL DEFAULT 0,
+      recibos_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      observacion TEXT NULL,
+      motivo_anulacion TEXT NULL,
+      cobrado_en TIMESTAMP NULL,
+      anulado_en TIMESTAMP NULL
+    )
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_ordenes_cobro_estado'
+      ) THEN
+        ALTER TABLE ordenes_cobro
+        ADD CONSTRAINT chk_ordenes_cobro_estado
+        CHECK (estado IN ('PENDIENTE', 'COBRADA', 'ANULADA'));
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_ordenes_cobro_total_positive'
+      ) THEN
+        ALTER TABLE ordenes_cobro
+        ADD CONSTRAINT chk_ordenes_cobro_total_positive
+        CHECK (total_orden > 0);
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_ordenes_cobro_estado_creado
+    ON ordenes_cobro (estado, creado_en DESC)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_ordenes_cobro_contribuyente_estado
+    ON ordenes_cobro (id_contribuyente, estado, creado_en DESC)
   `);
 };
 
@@ -804,6 +877,7 @@ const ensureDataIntegrityGuards = async (client) => {
 
 const ensurePerformanceIndexes = async (client) => {
   await ensureCodigosImpresionTable(client);
+  await ensureOrdenesCobroTable(client);
   await ensureEstadoConexionContribuyentes(client);
   await ensureEstadoConexionEventosTable(client);
   await ensureCampoSolicitudesTable(client);
@@ -2205,6 +2279,46 @@ app.delete("/contribuyentes/:id", async (req, res) => {
 // ==========================================
 // FACTURACIÓN Y PAGOS
 // ==========================================
+const parseSubtotalOrden = (value) => {
+  const parsed = roundMonto2(parseMonto(value, 0));
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return parsed;
+};
+
+const sanitizeOrdenCobroItems = (itemsRaw = []) => {
+  const rows = clampArray(itemsRaw, 120);
+  const out = [];
+  const seen = new Set();
+  for (const row of rows) {
+    const idRecibo = parsePositiveInt(row?.id_recibo, 0);
+    const monto = parsePositiveMonto(row?.monto_autorizado ?? row?.monto_pagado);
+    if (!idRecibo || !monto || seen.has(idRecibo)) continue;
+    seen.add(idRecibo);
+    out.push({
+      id_recibo: idRecibo,
+      monto_autorizado: monto,
+      mes: parsePositiveInt(row?.mes, 0) || null,
+      anio: parsePositiveInt(row?.anio, 0) || null,
+      subtotal_agua: parseSubtotalOrden(row?.subtotal_agua),
+      subtotal_desague: parseSubtotalOrden(row?.subtotal_desague),
+      subtotal_limpieza: parseSubtotalOrden(row?.subtotal_limpieza),
+      subtotal_admin: parseSubtotalOrden(row?.subtotal_admin)
+    });
+  }
+  return out;
+};
+
+const safeJsonArray = (value) => {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
 app.post("/recibos", async (req, res) => {
   try {
     const { id_contribuyente, anio, mes, montos } = req.body;
@@ -2338,9 +2452,487 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
   } catch (err) { res.status(500).send("Error"); }
 });
 
+app.post("/caja/ordenes-cobro", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const idContribuyente = parsePositiveInt(req.body?.id_contribuyente, 0);
+    const observacion = normalizeLimitedText(req.body?.observacion, 500) || null;
+    const items = sanitizeOrdenCobroItems(req.body?.items);
+    if (!idContribuyente) {
+      return res.status(400).json({ error: "Contribuyente invalido." });
+    }
+    if (items.length === 0) {
+      return res.status(400).json({ error: "Debe incluir al menos un recibo con monto autorizado." });
+    }
+
+    await client.query("BEGIN");
+    await ensureOrdenesCobroTable(client);
+
+    const contrib = await client.query(`
+      SELECT id_contribuyente, codigo_municipal
+      FROM contribuyentes
+      WHERE id_contribuyente = $1
+      LIMIT 1
+    `, [idContribuyente]);
+    if (contrib.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Contribuyente no encontrado." });
+    }
+
+    const idsRecibos = items.map((r) => r.id_recibo);
+    const ordenPendienteSolapada = await client.query(`
+      SELECT oc.id_orden
+      FROM ordenes_cobro oc
+      WHERE oc.estado = 'PENDIENTE'
+        AND EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(oc.recibos_json) elem
+          WHERE (elem->>'id_recibo') ~ '^[0-9]+$'
+            AND ((elem->>'id_recibo')::int = ANY($1::int[]))
+        )
+      LIMIT 1
+    `, [idsRecibos]);
+    if (ordenPendienteSolapada.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: `Ya existe una orden pendiente para al menos un recibo seleccionado (orden ${ordenPendienteSolapada.rows[0].id_orden}).`
+      });
+    }
+
+    const recibosRows = await client.query(`
+      WITH pagos_agg AS (
+        SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+        FROM pagos
+        WHERE id_recibo = ANY($2::int[])
+        GROUP BY id_recibo
+      )
+      SELECT
+        r.id_recibo,
+        r.mes,
+        r.anio,
+        r.total_pagar,
+        r.subtotal_agua,
+        r.subtotal_desague,
+        r.subtotal_limpieza,
+        r.subtotal_admin,
+        COALESCE(pa.total_pagado, 0) AS total_pagado
+      FROM recibos r
+      INNER JOIN predios p ON p.id_predio = r.id_predio
+      LEFT JOIN pagos_agg pa ON pa.id_recibo = r.id_recibo
+      WHERE p.id_contribuyente = $1
+        AND r.id_recibo = ANY($2::int[])
+      FOR UPDATE OF r
+    `, [idContribuyente, idsRecibos]);
+    if (recibosRows.rows.length !== idsRecibos.length) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Uno o mas recibos no pertenecen al contribuyente seleccionado." });
+    }
+
+    const recibosMap = new Map(recibosRows.rows.map((r) => [Number(r.id_recibo), r]));
+    const detalleOrden = [];
+    for (const item of items) {
+      const row = recibosMap.get(item.id_recibo);
+      if (!row) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: `Recibo ${item.id_recibo} no valido para el contribuyente.` });
+      }
+      const totalPagar = parseMonto(row.total_pagar, 0);
+      const totalPagado = parseMonto(row.total_pagado, 0);
+      const saldo = roundMonto2(Math.max(totalPagar - totalPagado, 0));
+      if (saldo <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: `El recibo ${item.id_recibo} ya no tiene saldo pendiente.` });
+      }
+      if (item.monto_autorizado > saldo + 0.001) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `Monto autorizado excede saldo del recibo ${item.id_recibo}.`,
+          saldo_disponible: saldo
+        });
+      }
+
+      let agua = parseSubtotalOrden(item.subtotal_agua);
+      let desague = parseSubtotalOrden(item.subtotal_desague);
+      let limpieza = parseSubtotalOrden(item.subtotal_limpieza);
+      let admin = parseSubtotalOrden(item.subtotal_admin);
+      const baseDetalle = agua + desague + limpieza + admin;
+      if (baseDetalle > 0) {
+        const factor = item.monto_autorizado / baseDetalle;
+        agua = roundMonto2(agua * factor);
+        desague = roundMonto2(desague * factor);
+        limpieza = roundMonto2(limpieza * factor);
+        admin = roundMonto2(admin * factor);
+        const ajuste = roundMonto2(item.monto_autorizado - (agua + desague + limpieza + admin));
+        admin = roundMonto2(admin + ajuste);
+      } else {
+        agua = roundMonto2(item.monto_autorizado);
+        desague = 0;
+        limpieza = 0;
+        admin = 0;
+      }
+
+      detalleOrden.push({
+        id_recibo: item.id_recibo,
+        mes: parsePositiveInt(item.mes, 0) || Number(row.mes),
+        anio: parsePositiveInt(item.anio, 0) || Number(row.anio),
+        monto_autorizado: roundMonto2(item.monto_autorizado),
+        saldo_al_emitir: saldo,
+        subtotal_agua: agua,
+        subtotal_desague: desague,
+        subtotal_limpieza: limpieza,
+        subtotal_admin: admin
+      });
+    }
+
+    const totalOrden = roundMonto2(detalleOrden.reduce((acc, r) => acc + parseMonto(r.monto_autorizado, 0), 0));
+    if (totalOrden <= 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Total de orden invalido." });
+    }
+
+    const insertOrden = await client.query(`
+      INSERT INTO ordenes_cobro (
+        estado,
+        id_usuario_emite,
+        id_contribuyente,
+        codigo_municipal,
+        total_orden,
+        recibos_json,
+        observacion
+      )
+      VALUES ('PENDIENTE', $1, $2, $3, $4, $5::jsonb, $6)
+      RETURNING id_orden, creado_en, estado, total_orden, codigo_municipal
+    `, [
+      req.user?.id_usuario || null,
+      idContribuyente,
+      contrib.rows[0].codigo_municipal || null,
+      totalOrden,
+      JSON.stringify(detalleOrden),
+      observacion
+    ]);
+
+    const orden = insertOrden.rows[0];
+    const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
+    const ip = getRequestIp(req);
+    await registrarAuditoria(
+      client,
+      "ORDEN_COBRO_EMITIDA",
+      `orden=${orden.id_orden}; contribuyente=${idContribuyente}; total=${totalOrden.toFixed(2)}; recibos=${detalleOrden.length}; ip=${ip}`,
+      usuarioAuditoria
+    );
+
+    await client.query("COMMIT");
+    res.json({
+      mensaje: "Orden de cobro emitida.",
+      orden: {
+        id_orden: Number(orden.id_orden),
+        creado_en: orden.creado_en,
+        estado: orden.estado,
+        total_orden: parseMonto(orden.total_orden, 0),
+        id_contribuyente: idContribuyente,
+        codigo_municipal: orden.codigo_municipal || null,
+        observacion,
+        items: detalleOrden
+      }
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("Error creando orden de cobro:", err.message);
+    res.status(500).json({ error: "Error creando orden de cobro." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
+  try {
+    const idContribuyente = parsePositiveInt(req.query?.id_contribuyente, 0);
+    const codigoMunicipal = normalizeLimitedText(req.query?.codigo_municipal, 32);
+    const limit = Math.min(200, Math.max(10, parsePositiveInt(req.query?.limit, 50)));
+    const params = [limit];
+    const where = [`oc.estado = 'PENDIENTE'`];
+    if (idContribuyente) {
+      params.push(idContribuyente);
+      where.push(`oc.id_contribuyente = $${params.length}`);
+    }
+    if (codigoMunicipal) {
+      params.push(codigoMunicipal);
+      where.push(`oc.codigo_municipal = $${params.length}`);
+    }
+
+    const resultado = await pool.query(`
+      SELECT
+        oc.id_orden,
+        oc.creado_en,
+        oc.actualizado_en,
+        oc.estado,
+        oc.id_contribuyente,
+        oc.codigo_municipal,
+        oc.total_orden,
+        oc.observacion,
+        oc.recibos_json,
+        oc.id_usuario_emite,
+        COALESCE(ue.username, '') AS usuario_emite,
+        COALESCE(ue.nombre_completo, '') AS nombre_emite
+      FROM ordenes_cobro oc
+      LEFT JOIN usuarios_sistema ue ON ue.id_usuario = oc.id_usuario_emite
+      WHERE ${where.join(" AND ")}
+      ORDER BY oc.creado_en DESC, oc.id_orden DESC
+      LIMIT $1
+    `, params);
+
+    const data = resultado.rows.map((r) => {
+      const items = sanitizeOrdenCobroItems(safeJsonArray(r.recibos_json));
+      return {
+        id_orden: Number(r.id_orden),
+        creado_en: r.creado_en,
+        actualizado_en: r.actualizado_en,
+        estado: r.estado,
+        id_contribuyente: Number(r.id_contribuyente),
+        codigo_municipal: r.codigo_municipal || null,
+        total_orden: parseMonto(r.total_orden, 0),
+        observacion: r.observacion || null,
+        cantidad_recibos: items.length,
+        items,
+        emisor: {
+          id_usuario: r.id_usuario_emite ? Number(r.id_usuario_emite) : null,
+          username: r.usuario_emite || null,
+          nombre: r.nombre_emite || null
+        }
+      };
+    });
+    res.json(data);
+  } catch (err) {
+    console.error("Error listando ordenes pendientes:", err.message);
+    res.status(500).json({ error: "Error listando ordenes pendientes." });
+  }
+});
+
+app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const idOrden = parsePositiveInt(req.params.id, 0);
+    if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
+
+    await client.query("BEGIN");
+    await ensureOrdenesCobroTable(client);
+
+    const ordenResult = await client.query(`
+      SELECT *
+      FROM ordenes_cobro
+      WHERE id_orden = $1
+      FOR UPDATE
+    `, [idOrden]);
+    if (ordenResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada." });
+    }
+    const orden = ordenResult.rows[0];
+    if (orden.estado !== ESTADOS_ORDEN_COBRO.PENDIENTE) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: `La orden ya no esta pendiente (estado: ${orden.estado}).` });
+    }
+
+    const items = sanitizeOrdenCobroItems(safeJsonArray(orden.recibos_json));
+    if (items.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "La orden no contiene recibos validos." });
+    }
+
+    const idsRecibos = items.map((i) => i.id_recibo);
+    const recibosRows = await client.query(`
+      WITH pagos_agg AS (
+        SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+        FROM pagos
+        WHERE id_recibo = ANY($1::int[])
+        GROUP BY id_recibo
+      )
+      SELECT
+        r.id_recibo,
+        r.mes,
+        r.anio,
+        r.total_pagar,
+        COALESCE(pa.total_pagado, 0) AS total_pagado
+      FROM recibos r
+      LEFT JOIN pagos_agg pa ON pa.id_recibo = r.id_recibo
+      WHERE r.id_recibo = ANY($1::int[])
+      FOR UPDATE OF r
+    `, [idsRecibos]);
+    if (recibosRows.rows.length !== idsRecibos.length) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Uno o mas recibos de la orden no existen." });
+    }
+
+    const recibosMap = new Map(recibosRows.rows.map((r) => [Number(r.id_recibo), {
+      id_recibo: Number(r.id_recibo),
+      mes: Number(r.mes),
+      anio: Number(r.anio),
+      total_pagar: parseMonto(r.total_pagar, 0),
+      total_pagado: parseMonto(r.total_pagado, 0)
+    }]));
+
+    const pagosAplicados = [];
+    let totalAplicado = 0;
+    for (const item of items) {
+      const recibo = recibosMap.get(item.id_recibo);
+      if (!recibo) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: `Recibo ${item.id_recibo} no disponible para cobro.` });
+      }
+      const monto = parsePositiveMonto(item.monto_autorizado);
+      const saldoPrevio = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado, 0));
+      if (saldoPrevio <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: `Recibo ${item.id_recibo} ya fue cancelado.` });
+      }
+      if (monto > saldoPrevio + 0.001) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: `Monto autorizado ya no coincide con saldo disponible para recibo ${item.id_recibo}.`,
+          saldo_disponible: saldoPrevio
+        });
+      }
+
+      await client.query(
+        "INSERT INTO pagos (id_recibo, monto_pagado, usuario_cajero) VALUES ($1, $2, $3)",
+        [item.id_recibo, monto, req.user?.username || req.user?.nombre || null]
+      );
+
+      const totalPagadoNuevo = roundMonto2(recibo.total_pagado + monto);
+      const nuevoEstado = totalPagadoNuevo >= recibo.total_pagar - 0.001 ? "PAGADO" : "PARCIAL";
+      await client.query(
+        "UPDATE recibos SET estado = $1 WHERE id_recibo = $2",
+        [nuevoEstado, item.id_recibo]
+      );
+
+      const saldoPosterior = roundMonto2(Math.max(recibo.total_pagar - totalPagadoNuevo, 0));
+      pagosAplicados.push({
+        id_recibo: item.id_recibo,
+        mes: recibo.mes,
+        anio: recibo.anio,
+        monto_cobrado: monto,
+        total_pagar: recibo.total_pagar,
+        total_pagado: totalPagadoNuevo,
+        saldo: saldoPosterior,
+        estado: nuevoEstado,
+        subtotal_agua: parseSubtotalOrden(item.subtotal_agua),
+        subtotal_desague: parseSubtotalOrden(item.subtotal_desague),
+        subtotal_limpieza: parseSubtotalOrden(item.subtotal_limpieza),
+        subtotal_admin: parseSubtotalOrden(item.subtotal_admin)
+      });
+      totalAplicado = roundMonto2(totalAplicado + monto);
+      recibo.total_pagado = totalPagadoNuevo;
+    }
+
+    await client.query(`
+      UPDATE ordenes_cobro
+      SET
+        estado = 'COBRADA',
+        id_usuario_cobra = $2,
+        cobrado_en = NOW(),
+        actualizado_en = NOW()
+      WHERE id_orden = $1
+    `, [idOrden, req.user?.id_usuario || null]);
+
+    const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
+    const ip = getRequestIp(req);
+    await registrarAuditoria(
+      client,
+      "ORDEN_COBRO_COBRADA",
+      `orden=${idOrden}; contribuyente=${orden.id_contribuyente}; total=${totalAplicado.toFixed(2)}; recibos=${pagosAplicados.length}; ip=${ip}`,
+      usuarioAuditoria
+    );
+
+    await client.query("COMMIT");
+    invalidateContribuyentesCache();
+    res.json({
+      mensaje: "Cobro registrado correctamente.",
+      orden: {
+        id_orden: idOrden,
+        estado: ESTADOS_ORDEN_COBRO.COBRADA,
+        id_contribuyente: Number(orden.id_contribuyente),
+        codigo_municipal: orden.codigo_municipal || null,
+        total_orden: parseMonto(orden.total_orden, totalAplicado),
+        total_cobrado: totalAplicado
+      },
+      pagos: pagosAplicados
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("Error cobrando orden:", err.message);
+    res.status(500).json({ error: "Error cobrando orden." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/caja/ordenes-cobro/:id/anular", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const idOrden = parsePositiveInt(req.params.id, 0);
+    const motivo = normalizeLimitedText(req.body?.motivo, 500);
+    if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
+    if (!motivo || motivo.length < 5) {
+      return res.status(400).json({ error: "Motivo de anulacion obligatorio (minimo 5 caracteres)." });
+    }
+
+    await client.query("BEGIN");
+    await ensureOrdenesCobroTable(client);
+
+    const orden = await client.query(`
+      SELECT id_orden, id_contribuyente, estado
+      FROM ordenes_cobro
+      WHERE id_orden = $1
+      FOR UPDATE
+    `, [idOrden]);
+    if (orden.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada." });
+    }
+    if (orden.rows[0].estado !== ESTADOS_ORDEN_COBRO.PENDIENTE) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: `Solo se pueden anular ordenes pendientes (estado actual: ${orden.rows[0].estado}).` });
+    }
+
+    await client.query(`
+      UPDATE ordenes_cobro
+      SET
+        estado = 'ANULADA',
+        motivo_anulacion = $2,
+        id_usuario_anula = $3,
+        anulado_en = NOW(),
+        actualizado_en = NOW()
+      WHERE id_orden = $1
+    `, [idOrden, motivo, req.user?.id_usuario || null]);
+
+    const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
+    const ip = getRequestIp(req);
+    await registrarAuditoria(
+      client,
+      "ORDEN_COBRO_ANULADA",
+      `orden=${idOrden}; contribuyente=${orden.rows[0].id_contribuyente}; motivo=${motivo}; ip=${ip}`,
+      usuarioAuditoria
+    );
+
+    await client.query("COMMIT");
+    res.json({ mensaje: "Orden anulada.", id_orden: idOrden, estado: ESTADOS_ORDEN_COBRO.ANULADA });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("Error anulando orden:", err.message);
+    res.status(500).json({ error: "Error anulando orden." });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/pagos", async (req, res) => {
   const client = await pool.connect();
   try {
+    if (normalizeRole(req.user?.rol) === "CAJERO") {
+      return res.status(403).json({
+        error: "Caja no puede registrar pagos directos. Debe cobrar desde una orden de cobro pendiente."
+      });
+    }
     const { id_recibo, monto_pagado } = req.body;
     const monto = parseFloat(monto_pagado);
     if (!id_recibo || !Number.isFinite(monto) || monto <= 0) {

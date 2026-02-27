@@ -138,7 +138,7 @@ const Sidebar = memo(({
           <li className="nav-item mt-2 text-white-50 text-uppercase small fw-bold">Caja</li>
           <li>
             <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => usuarioSeleccionado ? setMostrarModalPago(true) : alert("Seleccione usuario")}>
-              <FaMoneyBillWave/> <span>Efectuar Pago (F7)</span>
+              <FaMoneyBillWave/> <span>Gestion Cobros (F7)</span>
             </button>
           </li>
         </>
@@ -1570,6 +1570,7 @@ const actaPageStyle = `
       {mostrarModalPago && usuarioSeleccionado && (
         <ModalPago
           usuario={{...usuarioSeleccionado, recibos: historial}} // Pasamos el historial actual como recibos
+          usuarioSistema={usuarioSistema}
           cerrarModal={() => setMostrarModalPago(false)}
           alGuardar={recargarTodo}
           darkMode={darkMode}
