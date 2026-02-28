@@ -90,6 +90,25 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
     },
     rango: { desde: "", hasta_exclusivo: "" }
   });
+  const [efectivoDeclarado, setEfectivoDeclarado] = useState("");
+  const [observacionCierre, setObservacionCierre] = useState("");
+  const [registrandoCierre, setRegistrandoCierre] = useState(false);
+  const [resultadoCierre, setResultadoCierre] = useState(null);
+  const [cargandoAlertas, setCargandoAlertas] = useState(false);
+  const [alertasRiesgo, setAlertasRiesgo] = useState({
+    severidad: "NORMAL",
+    resumen: {
+      total_alertas: 0,
+      anulaciones_frecuentes: 0,
+      reemisiones_recibo: 0,
+      cobros_fuera_horario: 0
+    },
+    alertas: {
+      anulaciones_frecuentes: [],
+      reemisiones_recibo: [],
+      cobros_fuera_horario: []
+    }
+  });
 
   const componentRef = useRef();
 
@@ -176,6 +195,60 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
     }
   };
 
+  const cargarAlertasRiesgo = async (signal) => {
+    try {
+      setCargandoAlertas(true);
+      const res = await api.get("/caja/alertas-riesgo", {
+        params: { window_hours: 24 },
+        signal
+      });
+      setAlertasRiesgo(res?.data || {
+        severidad: "NORMAL",
+        resumen: {
+          total_alertas: 0,
+          anulaciones_frecuentes: 0,
+          reemisiones_recibo: 0,
+          cobros_fuera_horario: 0
+        },
+        alertas: {
+          anulaciones_frecuentes: [],
+          reemisiones_recibo: [],
+          cobros_fuera_horario: []
+        }
+      });
+    } catch (error) {
+      if (error?.code === "ERR_CANCELED" || error?.name === "CanceledError") return;
+      console.error(error);
+    } finally {
+      if (!signal?.aborted) setCargandoAlertas(false);
+    }
+  };
+
+  const registrarCierre = async () => {
+    const efectivo = parseFloat(String(efectivoDeclarado || "").replace(",", "."));
+    if (!Number.isFinite(efectivo) || efectivo < 0) {
+      alert("Ingrese un monto valido para efectivo declarado.");
+      return;
+    }
+    setRegistrandoCierre(true);
+    try {
+      const res = await api.post("/caja/cierre", {
+        tipo,
+        fecha: fechaConsulta,
+        efectivo_declarado: efectivo,
+        observacion: observacionCierre
+      });
+      const cierre = res?.data?.cierre || null;
+      setResultadoCierre(cierre);
+      await cargarCaja();
+      await cargarAlertasRiesgo();
+    } catch (error) {
+      alert(error?.response?.data?.error || "No se pudo registrar el cierre de caja.");
+    } finally {
+      setRegistrandoCierre(false);
+    }
+  };
+
   useEffect(() => {
     const filtroCambio = lastFiltroKeyRef.current !== filtroKey;
     if (filtroCambio) {
@@ -196,6 +269,24 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
     };
   }, [filtroKey, paginaMovimientos]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    cargarAlertasRiesgo(controller.signal);
+    const timer = setInterval(() => {
+      cargarAlertasRiesgo(controller.signal);
+    }, 30000);
+    return () => {
+      clearInterval(timer);
+      controller.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!resultadoCierre && !efectivoDeclarado) {
+      setEfectivoDeclarado(String(reporte.total || "0.00"));
+    }
+  }, [reporte.total, resultadoCierre, efectivoDeclarado]);
+
   const movimientos = Array.isArray(reporte.movimientos) ? reporte.movimientos : [];
   const totalPaginas = Math.max(1, Number(reporte?.paginacion?.total_paginas || 1));
   const paginaActual = Math.max(1, Number(reporte?.paginacion?.pagina || paginaMovimientos));
@@ -209,6 +300,8 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
     () => chartTop.map((r) => ({ label: `${r.codigo_municipal} - ${r.nombre_completo}`, total: r.total })),
     [chartTop]
   );
+  const alertasResumen = alertasRiesgo?.resumen || {};
+  const alertasDetalle = alertasRiesgo?.alertas || {};
 
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : { backgroundColor: "#fff" };
 
@@ -257,6 +350,80 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
               <div className="ms-auto fs-4 fw-bold text-success">
                 Total: S/. {total}
               </div>
+            </div>
+
+            <div className="border rounded p-3 mb-3 no-print">
+              <div className="fw-bold mb-2">Cierre de caja automatizado</div>
+              <div className="d-flex flex-wrap gap-2 align-items-end">
+                <div>
+                  <label className="form-label small mb-1">Efectivo declarado</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={efectivoDeclarado}
+                    onChange={(e) => setEfectivoDeclarado(e.target.value)}
+                    placeholder="0.00"
+                  />
+                </div>
+                <div className="flex-grow-1">
+                  <label className="form-label small mb-1">Observacion (opcional)</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={observacionCierre}
+                    onChange={(e) => setObservacionCierre(e.target.value)}
+                    placeholder="Detalle de cierre"
+                  />
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-outline-primary"
+                  onClick={registrarCierre}
+                  disabled={registrandoCierre || cargando}
+                >
+                  {registrandoCierre ? "Registrando..." : "Registrar cierre"}
+                </button>
+              </div>
+              {resultadoCierre && (
+                <div className={`mt-3 alert ${resultadoCierre.alerta_desviacion ? "alert-danger" : "alert-success"} mb-0`}>
+                  <div className="fw-bold">Ultimo cierre registrado (ID {resultadoCierre.id_cierre})</div>
+                  <div>
+                    Sistema: S/. {formatMoney(resultadoCierre.total_sistema)} | Declarado: S/. {formatMoney(resultadoCierre.efectivo_declarado)} | Desviacion: S/. {formatMoney(resultadoCierre.desviacion)}
+                  </div>
+                  <div>
+                    Umbral alerta: S/. {formatMoney(resultadoCierre.umbral_alerta)} | Estado: {resultadoCierre.alerta_desviacion ? "ALERTA" : "OK"}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="border rounded p-3 mb-3 no-print">
+              <div className="d-flex justify-content-between align-items-center mb-2">
+                <div className="fw-bold">Alertas de riesgo (ultimas 24h)</div>
+                <div className={`badge ${alertasRiesgo?.severidad === "ALTA" ? "bg-danger" : alertasRiesgo?.severidad === "MEDIA" ? "bg-warning text-dark" : "bg-success"}`}>
+                  {alertasRiesgo?.severidad || "NORMAL"}
+                </div>
+              </div>
+              {cargandoAlertas && <div className="small text-muted mb-2">Actualizando alertas...</div>}
+              <div className="row g-2 mb-2">
+                <div className="col-md-3"><div className="border rounded p-2 small">Total alertas: <strong>{alertasResumen.total_alertas || 0}</strong></div></div>
+                <div className="col-md-3"><div className="border rounded p-2 small">Anulaciones frecuentes: <strong>{alertasResumen.anulaciones_frecuentes || 0}</strong></div></div>
+                <div className="col-md-3"><div className="border rounded p-2 small">Reemisiones recibo: <strong>{alertasResumen.reemisiones_recibo || 0}</strong></div></div>
+                <div className="col-md-3"><div className="border rounded p-2 small">Cobros fuera horario: <strong>{alertasResumen.cobros_fuera_horario || 0}</strong></div></div>
+              </div>
+              {(alertasResumen.total_alertas || 0) > 0 && (
+                <div className="small">
+                  {(alertasDetalle?.anulaciones_frecuentes || []).slice(0, 3).map((a, idx) => (
+                    <div key={`anul-${idx}`}>- Anulaciones altas: {a.username} ({a.total_anulaciones})</div>
+                  ))}
+                  {(alertasDetalle?.reemisiones_recibo || []).slice(0, 3).map((a, idx) => (
+                    <div key={`ree-${idx}`}>- Reemision recibo {a.id_recibo}: {a.total_ordenes} ordenes</div>
+                  ))}
+                  {(alertasDetalle?.cobros_fuera_horario || []).slice(0, 3).map((a, idx) => (
+                    <div key={`off-${idx}`}>- Cobro fuera horario: orden {a.id_orden} ({a.username})</div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div ref={componentRef} className="p-3" style={{ backgroundColor: "#fff", color: "#000" }}>

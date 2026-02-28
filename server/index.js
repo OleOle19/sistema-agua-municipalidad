@@ -90,6 +90,19 @@ const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS
 const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = Number(process.env.LOGIN_RATE_LIMIT_MAX_ATTEMPTS || 25);
 const LOGIN_LOCK_THRESHOLD = Number(process.env.LOGIN_LOCK_THRESHOLD || 5);
 const LOGIN_LOCK_DURATION_MS = Number(process.env.LOGIN_LOCK_DURATION_MS || (15 * 60 * 1000));
+const CAJA_CIERRE_ALERTA_UMBRAL = parseMonto(process.env.CAJA_CIERRE_ALERTA_UMBRAL, 2);
+const CAJA_RIESGO_WINDOW_HOURS = Math.min(168, Math.max(1, Number(process.env.CAJA_RIESGO_WINDOW_HOURS || 24)));
+const CAJA_RIESGO_ANULACIONES_UMBRAL = Math.min(20, Math.max(1, Number(process.env.CAJA_RIESGO_ANULACIONES_UMBRAL || 3)));
+const normalizeHoraHM = (value, fallback) => {
+  const raw = String(value || "").trim();
+  if (!/^\d{2}:\d{2}$/.test(raw)) return fallback;
+  const hh = Number(raw.slice(0, 2));
+  const mm = Number(raw.slice(3, 5));
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return fallback;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+};
+const CAJA_HORA_INICIO = normalizeHoraHM(process.env.CAJA_HORA_INICIO, "07:00");
+const CAJA_HORA_FIN = normalizeHoraHM(process.env.CAJA_HORA_FIN, "19:00");
 const loginIpRateMap = new Map();
 const loginUserFailMap = new Map();
 
@@ -475,6 +488,8 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro\/pendientes$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro\/\d+\/cobrar$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro\/\d+\/anular$/, minRole: "ADMIN_SEC" },
+  { methods: ["POST"], pattern: /^\/caja\/cierre$/, minRole: "CAJERO" },
+  { methods: ["GET"], pattern: /^\/caja\/alertas-riesgo$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/reporte\/excel$/, minRole: "ADMIN_SEC" },
 
   { methods: ["POST"], pattern: /^\/pagos$/, minRole: "CAJERO" },
@@ -624,6 +639,57 @@ const ensureOrdenesCobroTable = async (client) => {
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_ordenes_cobro_contribuyente_estado
     ON ordenes_cobro (id_contribuyente, estado, creado_en DESC)
+  `);
+};
+
+const ensureCajaCierresTable = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS caja_cierres (
+      id_cierre BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      id_usuario INTEGER NULL,
+      tipo VARCHAR(20) NOT NULL,
+      fecha_referencia DATE NOT NULL,
+      desde DATE NOT NULL,
+      hasta_exclusivo DATE NOT NULL,
+      total_sistema NUMERIC(12, 2) NOT NULL DEFAULT 0,
+      efectivo_declarado NUMERIC(12, 2) NOT NULL DEFAULT 0,
+      desviacion NUMERIC(12, 2) NOT NULL DEFAULT 0,
+      alerta_desviacion_sn CHAR(1) NOT NULL DEFAULT 'N',
+      observacion TEXT NULL
+    )
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_caja_cierres_tipo'
+      ) THEN
+        ALTER TABLE caja_cierres
+        ADD CONSTRAINT chk_caja_cierres_tipo
+        CHECK (tipo IN ('diario', 'semanal', 'mensual', 'anual'));
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_caja_cierres_alerta'
+      ) THEN
+        ALTER TABLE caja_cierres
+        ADD CONSTRAINT chk_caja_cierres_alerta
+        CHECK (alerta_desviacion_sn IN ('S', 'N'));
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_caja_cierres_creado_en
+    ON caja_cierres (creado_en DESC)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_caja_cierres_tipo_fecha
+    ON caja_cierres (tipo, fecha_referencia DESC)
   `);
 };
 
@@ -878,6 +944,7 @@ const ensureDataIntegrityGuards = async (client) => {
 const ensurePerformanceIndexes = async (client) => {
   await ensureCodigosImpresionTable(client);
   await ensureOrdenesCobroTable(client);
+  await ensureCajaCierresTable(client);
   await ensureEstadoConexionContribuyentes(client);
   await ensureEstadoConexionEventosTable(client);
   await ensureCampoSolicitudesTable(client);
@@ -3512,6 +3579,238 @@ app.get("/caja/diaria", async (req, res) => {
     });
   } catch (err) {
     res.status(500).send("Error caja");
+  }
+});
+
+app.post("/caja/cierre", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const tipoRaw = String(req.body?.tipo || "diario").toLowerCase();
+    const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
+    const fecha = normalizeDateOnly(req.body?.fecha) || toISODate();
+    const efectivoDeclarado = roundMonto2(parseMonto(req.body?.efectivo_declarado, Number.NaN));
+    const umbralAlerta = Math.max(0, roundMonto2(parseMonto(req.body?.umbral_alerta, CAJA_CIERRE_ALERTA_UMBRAL)));
+    const observacion = normalizeLimitedText(req.body?.observacion, 500) || null;
+
+    if (!Number.isFinite(efectivoDeclarado) || efectivoDeclarado < 0) {
+      return res.status(400).json({ error: "Efectivo declarado invalido." });
+    }
+
+    const resumen = await construirResumenCaja(tipo, fecha);
+    const totalSistema = roundMonto2(parseMonto(resumen?.total, 0));
+    const desviacion = roundMonto2(efectivoDeclarado - totalSistema);
+    const alerta = Math.abs(desviacion) > umbralAlerta + 0.001;
+
+    await client.query("BEGIN");
+    await ensureCajaCierresTable(client);
+    const rango = await obtenerRangoCaja(tipo, fecha);
+    const insert = await client.query(`
+      INSERT INTO caja_cierres (
+        id_usuario,
+        tipo,
+        fecha_referencia,
+        desde,
+        hasta_exclusivo,
+        total_sistema,
+        efectivo_declarado,
+        desviacion,
+        alerta_desviacion_sn,
+        observacion
+      )
+      VALUES ($1, $2, $3::date, $4::date, $5::date, $6, $7, $8, $9, $10)
+      RETURNING
+        id_cierre,
+        creado_en,
+        tipo,
+        fecha_referencia,
+        desde,
+        hasta_exclusivo,
+        total_sistema,
+        efectivo_declarado,
+        desviacion,
+        alerta_desviacion_sn,
+        observacion
+    `, [
+      req.user?.id_usuario || null,
+      tipo,
+      fecha,
+      rango?.desde || fecha,
+      rango?.hasta || fecha,
+      totalSistema,
+      efectivoDeclarado,
+      desviacion,
+      alerta ? "S" : "N",
+      observacion
+    ]);
+
+    const row = insert.rows[0];
+    const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
+    const ip = getRequestIp(req);
+    await registrarAuditoria(
+      client,
+      "CAJA_CIERRE_REGISTRADO",
+      `id_cierre=${row.id_cierre}; tipo=${tipo}; fecha=${fecha}; total_sistema=${totalSistema.toFixed(2)}; efectivo=${efectivoDeclarado.toFixed(2)}; desviacion=${desviacion.toFixed(2)}; alerta=${alerta ? "S" : "N"}; ip=${ip}`,
+      usuarioAuditoria
+    );
+
+    await client.query("COMMIT");
+    res.json({
+      mensaje: "Cierre de caja registrado.",
+      cierre: {
+        id_cierre: Number(row.id_cierre),
+        creado_en: row.creado_en,
+        tipo: row.tipo,
+        fecha_referencia: row.fecha_referencia,
+        rango: {
+          desde: row.desde,
+          hasta_exclusivo: row.hasta_exclusivo
+        },
+        total_sistema: parseMonto(row.total_sistema, 0),
+        efectivo_declarado: parseMonto(row.efectivo_declarado, 0),
+        desviacion: parseMonto(row.desviacion, 0),
+        umbral_alerta: umbralAlerta,
+        alerta_desviacion: row.alerta_desviacion_sn === "S",
+        observacion: row.observacion || null
+      }
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("Error registrando cierre de caja:", err.message);
+    res.status(500).json({ error: "Error registrando cierre de caja." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/caja/alertas-riesgo", async (req, res) => {
+  try {
+    const windowHours = Math.min(168, Math.max(1, parsePositiveInt(req.query?.window_hours, CAJA_RIESGO_WINDOW_HOURS)));
+    const umbralAnulaciones = Math.min(50, Math.max(1, parsePositiveInt(req.query?.umbral_anulaciones, CAJA_RIESGO_ANULACIONES_UMBRAL)));
+
+    const anulaciones = await pool.query(`
+      SELECT
+        oc.id_usuario_anula AS id_usuario,
+        COALESCE(u.username, 'SISTEMA') AS username,
+        COALESCE(u.nombre_completo, '') AS nombre,
+        COUNT(*)::int AS total_anulaciones,
+        MAX(oc.anulado_en) AS ultima_anulacion
+      FROM ordenes_cobro oc
+      LEFT JOIN usuarios_sistema u ON u.id_usuario = oc.id_usuario_anula
+      WHERE oc.estado = 'ANULADA'
+        AND oc.anulado_en IS NOT NULL
+        AND oc.anulado_en >= NOW() - make_interval(hours => $1::int)
+      GROUP BY oc.id_usuario_anula, u.username, u.nombre_completo
+      HAVING COUNT(*) >= $2
+      ORDER BY COUNT(*) DESC, MAX(oc.anulado_en) DESC
+      LIMIT 20
+    `, [windowHours, umbralAnulaciones]);
+
+    const reemisiones = await pool.query(`
+      WITH eventos AS (
+        SELECT
+          ((elem->>'id_recibo')::int) AS id_recibo,
+          COUNT(DISTINCT oc.id_orden)::int AS total_ordenes,
+          MIN(oc.creado_en) AS primera_emision,
+          MAX(oc.creado_en) AS ultima_emision
+        FROM ordenes_cobro oc
+        CROSS JOIN LATERAL jsonb_array_elements(oc.recibos_json) elem
+        WHERE oc.creado_en >= NOW() - make_interval(hours => $1::int)
+          AND (elem->>'id_recibo') ~ '^[0-9]+$'
+        GROUP BY ((elem->>'id_recibo')::int)
+        HAVING COUNT(DISTINCT oc.id_orden) >= 2
+      )
+      SELECT
+        e.id_recibo,
+        e.total_ordenes,
+        e.primera_emision,
+        e.ultima_emision,
+        COALESCE(c.codigo_municipal, '') AS codigo_municipal,
+        COALESCE(c.nombre_completo, '') AS nombre_completo,
+        COALESCE(r.mes, 0) AS mes,
+        COALESCE(r.anio, 0) AS anio
+      FROM eventos e
+      LEFT JOIN recibos r ON r.id_recibo = e.id_recibo
+      LEFT JOIN predios p ON p.id_predio = r.id_predio
+      LEFT JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
+      ORDER BY e.total_ordenes DESC, e.ultima_emision DESC
+      LIMIT 30
+    `, [windowHours]);
+
+    const cobrosFueraHorario = await pool.query(`
+      SELECT
+        oc.id_orden,
+        oc.cobrado_en,
+        COALESCE(oc.codigo_municipal, '') AS codigo_municipal,
+        COALESCE(oc.total_orden, 0)::numeric AS total_orden,
+        COALESCE(u.username, 'SISTEMA') AS username,
+        COALESCE(u.nombre_completo, '') AS nombre
+      FROM ordenes_cobro oc
+      LEFT JOIN usuarios_sistema u ON u.id_usuario = oc.id_usuario_cobra
+      WHERE oc.estado = 'COBRADA'
+        AND oc.cobrado_en IS NOT NULL
+        AND oc.cobrado_en >= NOW() - make_interval(hours => $1::int)
+        AND (
+          CASE
+            WHEN $2::time <= $3::time
+              THEN (oc.cobrado_en::time < $2::time OR oc.cobrado_en::time > $3::time)
+            ELSE (oc.cobrado_en::time < $2::time AND oc.cobrado_en::time > $3::time)
+          END
+        )
+      ORDER BY oc.cobrado_en DESC
+      LIMIT 50
+    `, [windowHours, CAJA_HORA_INICIO, CAJA_HORA_FIN]);
+
+    const totalAlertas =
+      anulaciones.rows.length +
+      reemisiones.rows.length +
+      cobrosFueraHorario.rows.length;
+    const severidad = totalAlertas === 0 ? "NORMAL" : (totalAlertas >= 5 ? "ALTA" : "MEDIA");
+
+    res.json({
+      window_hours: windowHours,
+      parametros: {
+        umbral_anulaciones: umbralAnulaciones,
+        horario_caja_inicio: CAJA_HORA_INICIO,
+        horario_caja_fin: CAJA_HORA_FIN
+      },
+      severidad,
+      resumen: {
+        total_alertas: totalAlertas,
+        anulaciones_frecuentes: anulaciones.rows.length,
+        reemisiones_recibo: reemisiones.rows.length,
+        cobros_fuera_horario: cobrosFueraHorario.rows.length
+      },
+      alertas: {
+        anulaciones_frecuentes: anulaciones.rows.map((r) => ({
+          id_usuario: r.id_usuario ? Number(r.id_usuario) : null,
+          username: r.username,
+          nombre: r.nombre || null,
+          total_anulaciones: Number(r.total_anulaciones || 0),
+          ultima_anulacion: r.ultima_anulacion
+        })),
+        reemisiones_recibo: reemisiones.rows.map((r) => ({
+          id_recibo: Number(r.id_recibo),
+          total_ordenes: Number(r.total_ordenes || 0),
+          primera_emision: r.primera_emision,
+          ultima_emision: r.ultima_emision,
+          codigo_municipal: r.codigo_municipal || null,
+          nombre_completo: r.nombre_completo || null,
+          mes: Number(r.mes || 0),
+          anio: Number(r.anio || 0)
+        })),
+        cobros_fuera_horario: cobrosFueraHorario.rows.map((r) => ({
+          id_orden: Number(r.id_orden),
+          cobrado_en: r.cobrado_en,
+          codigo_municipal: r.codigo_municipal || null,
+          total_orden: parseMonto(r.total_orden, 0),
+          username: r.username || null,
+          nombre: r.nombre || null
+        }))
+      }
+    });
+  } catch (err) {
+    console.error("Error consultando alertas de riesgo de caja:", err.message);
+    res.status(500).json({ error: "Error consultando alertas de riesgo." });
   }
 });
 

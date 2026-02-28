@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "../api";
 
 const ROLE_ORDER = { BRIGADA: 1, CONSULTA: 2, CAJERO: 3, ADMIN_SEC: 4, ADMIN: 5 };
@@ -34,6 +34,8 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
   const [ordenes, setOrdenes] = useState([]);
   const [ordenId, setOrdenId] = useState(0);
   const [cargandoOrdenes, setCargandoOrdenes] = useState(false);
+  const [avisoOrden, setAvisoOrden] = useState("");
+  const maxOrdenConocidaRef = useRef(0);
 
   const recibosPendientes = useMemo(
     () => (Array.isArray(usuario?.recibos) ? usuario.recibos : [])
@@ -59,6 +61,11 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
         params: { id_contribuyente: usuario.id_contribuyente, limit: 100 }
       });
       const rows = Array.isArray(res.data) ? res.data : [];
+      const maxActual = rows.reduce((acc, r) => Math.max(acc, Number(r?.id_orden || 0)), 0);
+      if (maxOrdenConocidaRef.current > 0 && maxActual > maxOrdenConocidaRef.current) {
+        setAvisoOrden(`Nueva orden de cobro detectada (#${maxActual}).`);
+      }
+      maxOrdenConocidaRef.current = Math.max(maxOrdenConocidaRef.current, maxActual);
       setOrdenes(rows);
       setOrdenId(rows[0]?.id_orden || 0);
     } catch (err) {
@@ -71,6 +78,14 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
   useEffect(() => {
     cargarOrdenes().catch(() => {});
   }, [cargarOrdenes]);
+
+  useEffect(() => {
+    if (!isCaja) return undefined;
+    const timer = setInterval(() => {
+      cargarOrdenes().catch(() => {});
+    }, 8000);
+    return () => clearInterval(timer);
+  }, [isCaja, cargarOrdenes]);
 
   const ordenSeleccionada = useMemo(
     () => ordenes.find((o) => Number(o.id_orden) === Number(ordenId)) || null,
@@ -193,6 +208,14 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
           <div className="modal-body">
             {isCaja ? (
               <>
+                {avisoOrden && (
+                  <div className="alert alert-warning py-2 d-flex justify-content-between align-items-center">
+                    <span>{avisoOrden}</span>
+                    <button type="button" className="btn btn-sm btn-outline-dark" onClick={() => setAvisoOrden("")}>
+                      OK
+                    </button>
+                  </div>
+                )}
                 {cargandoOrdenes && <p className="text-muted">Cargando ordenes...</p>}
                 {!cargandoOrdenes && ordenes.length === 0 && (
                   <p className="text-muted text-center p-3">No hay ordenes pendientes para este contribuyente.</p>
