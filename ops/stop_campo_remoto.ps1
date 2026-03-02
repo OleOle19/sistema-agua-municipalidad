@@ -9,6 +9,12 @@ function Is-Running([int]$ProcessId) {
   return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
 }
 
+function To-Bool($Value) {
+  if ($Value -is [bool]) { return $Value }
+  $text = ([string]$Value).Trim().ToLower()
+  return $text -eq "1" -or $text -eq "true"
+}
+
 function Stop-Safe([int]$ProcessId) {
   if (!(Is-Running $ProcessId)) { return }
   try {
@@ -31,9 +37,14 @@ try {
 
 $backendPid = [int]($state.backend_pid | ForEach-Object { $_ })
 $tunnelPid = [int]($state.tunnel_pid | ForEach-Object { $_ })
+$backendManaged = To-Bool(($state.backend_managed | ForEach-Object { $_ }))
 
 Stop-Safe $tunnelPid
-Stop-Safe $backendPid
+if ($backendManaged) {
+  Stop-Safe $backendPid
+} else {
+  Write-Host "Backend externo detectado; no se detendra."
+}
 
 Remove-Item -Path $stateFile -Force -ErrorAction SilentlyContinue
 

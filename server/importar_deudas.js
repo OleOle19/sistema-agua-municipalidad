@@ -9,6 +9,24 @@ const DEFAULT_BATCH_SIZE = 2000;
 const DEFAULT_MAX_RECHAZOS = 500;
 const EPS = 0.001;
 const DEFAULT_COMMIT_PER_BATCH = process.env.IMPORT_COMMIT_PER_BATCH !== '0';
+const IMPORT_TIMEZONE = process.env.IMPORT_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || 'America/Lima';
+const IMPORT_ALLOW_FUTURE_PAYMENTS = process.env.IMPORT_ALLOW_FUTURE_PAYMENTS === '1';
+
+const getFechaPartesZona = (date = new Date(), timeZone = IMPORT_TIMEZONE) => {
+  const dtf = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  const parts = dtf.formatToParts(date);
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return {
+    anio: Number(map.year),
+    mes: Number(map.month),
+    dia: Number(map.day)
+  };
+};
 
 const getLogger = (logger) => ({
   log: (msg) => (logger && typeof logger.log === 'function' ? logger.log(msg) : console.log(msg)),
@@ -93,6 +111,7 @@ async function importarDeudas(options = {}) {
     ? options.commitPerBatch
     : DEFAULT_COMMIT_PER_BATCH;
   const ioLogger = getLogger(options.logger);
+  const fechaActual = getFechaPartesZona(new Date(), IMPORT_TIMEZONE);
 
   const client = await pool.connect();
   const input = resolveInput({
@@ -126,7 +145,8 @@ async function importarDeudas(options = {}) {
   };
   const resumenAjustes = {
     total_desde_abono: 0,
-    abono_recortado_a_total: 0
+    abono_recortado_a_total: 0,
+    abono_futuro_omitido: 0
   };
   const rechazos = [];
 
@@ -213,8 +233,8 @@ async function importarDeudas(options = {}) {
               FROM (VALUES ${valuesPagos}) AS v (id_predio, anio, mes, monto_pagado)
               GROUP BY v.id_predio::int, v.anio::int, v.mes::int
             )
-            INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago)
-            SELECT r.id_recibo, b.monto_pagado, make_date(b.anio, b.mes, 1)
+            INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero)
+            SELECT r.id_recibo, b.monto_pagado, make_date(b.anio, b.mes, 1), 'IMPORTACION_HISTORIAL'
             FROM pagos_batch b
             JOIN recibos r ON r.id_predio = b.id_predio AND r.anio = b.anio AND r.mes = b.mes
             LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
@@ -293,6 +313,7 @@ async function importarDeudas(options = {}) {
       const subtotalAdmin = parseDecimal(parts[6]);
       let total = parseDecimal(parts[8]);
       let abono = parseDecimal(parts[9]);
+      const esPeriodoFuturo = anio > fechaActual.anio || (anio === fechaActual.anio && mes > fechaActual.mes);
 
       if ([subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin].some((v) => v < 0)) {
         registrarRechazo('formato_invalido', {
@@ -303,6 +324,11 @@ async function importarDeudas(options = {}) {
           motivo: 'Subtotales negativos no permitidos'
         });
         continue;
+      }
+
+      if (esPeriodoFuturo && abono > 0 && !IMPORT_ALLOW_FUTURE_PAYMENTS) {
+        abono = 0;
+        resumenAjustes.abono_futuro_omitido += 1;
       }
 
       if (total <= 0 && abono > 0) {
@@ -401,6 +427,7 @@ async function importarDeudas(options = {}) {
     ioLogger.log(`Total Rechazados: ${resultado.total_rechazados}`);
     ioLogger.log(`Ajustes total_desde_abono: ${resultado.resumen_ajustes.total_desde_abono}`);
     ioLogger.log(`Ajustes abono_recortado_a_total: ${resultado.resumen_ajustes.abono_recortado_a_total}`);
+    ioLogger.log(`Ajustes abono_futuro_omitido: ${resultado.resumen_ajustes.abono_futuro_omitido}`);
     ioLogger.log('==========================================');
 
     return resultado;

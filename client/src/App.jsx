@@ -22,6 +22,7 @@ import ModalExportaciones from "./components/ModalExportaciones";
 import ModalReporteCortes from "./components/ModalReporteCortes";
 import ModalActaCorteSelector from "./components/ModalActaCorteSelector";
 import ModalCampoSolicitudes from "./components/ModalCampoSolicitudes";
+import realtime from "./realtime";
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -68,6 +69,13 @@ const ESTADO_CONEXION_LABELS = {
 };
 
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+const getLocalCampoAppUrl = () => `${API_BASE_URL}/campo-app/`;
+const normalizeCampoAppUrl = (value) => {
+  const raw = String(value || "").trim();
+  if (!/^https?:\/\//i.test(raw)) return "";
+  if (/\/campo-app\/?$/i.test(raw)) return `${raw.replace(/\/+$/g, "")}/`;
+  return `${raw.replace(/\/+$/g, "")}/campo-app/`;
+};
 
 const normalizeEstadoConexion = (value) => {
   const raw = String(value || "").trim().toUpperCase();
@@ -106,8 +114,13 @@ const Sidebar = memo(({
   setMostrarModalMasivo,
   setMostrarModalExportaciones,
   setMostrarModalCampo,
-  permisos
-}) => (
+  permisos,
+  resumenPendientesCaja
+}) => {
+  const isSoloCobrosCajero = permisos.role === "CAJERO";
+  const showReportesSection = !isSoloCobrosCajero && (permisos.canReportesCaja || permisos.canExportPadron);
+
+  return (
   <div className={`d-flex flex-column flex-shrink-0 p-2 text-white ${darkMode ? 'bg-black' : 'bg-dark'}`} style={{ width: "240px", height: "100vh", maxHeight: "100vh", transition: '0.3s' }}>
     <a href="/" className="d-flex align-items-center mb-2 me-md-auto text-white text-decoration-none flex-shrink-0 gap-2">
       <img
@@ -120,12 +133,14 @@ const Sidebar = memo(({
     <hr className="my-2 flex-shrink-0"/>
     
     <ul className="nav nav-pills flex-column flex-grow-1" style={{ overflowY: "auto", overflowX: "hidden", minHeight: 0, paddingRight: "2px" }}>
-      <li className="nav-item">
-        <button className={`nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2 ${!mostrarRegistro ? "active bg-primary" : ""}`} onClick={() => setMostrarRegistro(false)}>
-          <FaSearch/> <span>Deuda Tributaria</span>
-        </button>
-      </li>
-      {permisos.canManageContribuyentes && (
+      {!isSoloCobrosCajero && (
+        <li className="nav-item">
+          <button className={`nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2 ${!mostrarRegistro ? "active bg-primary" : ""}`} onClick={() => setMostrarRegistro(false)}>
+            <FaSearch/> <span>Deuda Tributaria</span>
+          </button>
+        </li>
+      )}
+      {!isSoloCobrosCajero && permisos.canManageContribuyentes && (
         <li>
           <button className={`nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2 ${mostrarRegistro ? "active bg-primary" : ""}`} onClick={() => setMostrarRegistro(true)}>
             <FaUserPlus/> <span>Registro Nuevo</span>
@@ -139,21 +154,33 @@ const Sidebar = memo(({
           <li>
             <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => usuarioSeleccionado ? setMostrarModalPago(true) : alert("Seleccione usuario")}>
               <FaMoneyBillWave/> <span>Gestion Cobros (F7)</span>
+              {Number(resumenPendientesCaja?.total_ordenes || 0) > 0 && (
+                <span className="badge bg-danger ms-auto">{Number(resumenPendientesCaja?.total_ordenes || 0)}</span>
+              )}
             </button>
+            {Number(resumenPendientesCaja?.total_ordenes || 0) > 0 && (
+              <div className="small text-warning mt-1 ms-4">
+                Pendientes: {Number(resumenPendientesCaja?.total_ordenes || 0)} | S/. {Number(resumenPendientesCaja?.total_monto || 0).toFixed(2)}
+              </div>
+            )}
           </li>
         </>
       )}
 
-      <li className="nav-item mt-2 text-white-50 text-uppercase small fw-bold">Reportes</li>
-      {permisos.canReportesCaja && (
-        <li><button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => setMostrarModalCierre(true)}><FaFileInvoiceDollar/> <span>Ver Cobranzas (F9)</span></button></li>
-      )}
-      {permisos.canExportPadron && (
-        <li>
-          <button className="nav-link py-2 text-success w-100 text-start d-flex align-items-center gap-2" onClick={descargarPadron}>
-            <FaFileExcel/> <span>Descargar Excel</span>
-          </button>
-        </li>
+      {showReportesSection && (
+        <>
+          <li className="nav-item mt-2 text-white-50 text-uppercase small fw-bold">Reportes</li>
+          {permisos.canReportesCaja && (
+            <li><button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => setMostrarModalCierre(true)}><FaFileInvoiceDollar/> <span>Ver Cobranzas (F9)</span></button></li>
+          )}
+          {permisos.canExportPadron && (
+            <li>
+              <button className="nav-link py-2 text-success w-100 text-start d-flex align-items-center gap-2" onClick={descargarPadron}>
+                <FaFileExcel/> <span>Descargar Excel</span>
+              </button>
+            </li>
+          )}
+        </>
       )}
       
       {permisos.canAuditoria && (
@@ -200,7 +227,8 @@ const Sidebar = memo(({
       <button className="btn btn-outline-danger btn-sm w-100 d-flex align-items-center justify-content-center gap-2" onClick={onLogout}><FaSignOutAlt /> Cerrar Sesion</button>
     </div>
   </div>
-));
+  );
+});
 
 // --- TOOLBAR ---
 const Toolbar = memo(({ 
@@ -280,7 +308,7 @@ const Toolbar = memo(({
           <button className="btn btn-danger btn-sm shadow-sm d-flex align-items-center justify-content-center" onClick={handlePrintCortes} title="Cortes"><FaCut/></button>
         )}
         
-        {permisos.canCaja && (
+        {permisos.canImpresionMasiva && (
           <button className="btn btn-dark btn-sm shadow-sm d-flex align-items-center gap-1" onClick={() => setMostrarModalMasivo(true)} title="Imprimir Recibos">
               <FaPrint/> <span>Impresion</span>
           </button>
@@ -341,6 +369,14 @@ const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, rowHeight }
       const verificadoCampo = String(c.estado_conexion_verificado_sn || "N").trim().toUpperCase() === "S";
       const estadoLabel = ESTADO_CONEXION_LABELS[estadoNorm];
       const fuente = String(c.estado_conexion_fuente || "INFERIDO").trim().toUpperCase();
+      const pendienteCaja = Number(c._pendienteCajaNum ?? c.pendiente_caja_monto) || 0;
+      const ordenesPendientes = Number(c._pendienteOrdenesNum ?? c.pendiente_caja_ordenes) || 0;
+      const deudaVisible = Number(c._deudaVisibleNum ?? c.deuda_anio) || 0;
+      const abonoVisible = Number(c._abonoVisibleNum ?? c.abono_anio) || 0;
+      const marcaPendienteCaja = pendienteCaja > 0.001;
+      const titlePendienteCaja = marcaPendienteCaja
+        ? `Incluye S/. ${pendienteCaja.toFixed(2)} reservado en ${ordenesPendientes || 1} orden(es) pendiente(s) de caja.`
+        : undefined;
       return (
         <>
     <td className="fw-bold opacity-75">{c.codigo_municipal}</td>
@@ -355,8 +391,8 @@ const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, rowHeight }
       </span>
     </td>
     <td className="text-center fw-bold">{c.meses_deuda > 0 ? c.meses_deuda : "-"}</td>
-    <td className="text-end fw-bold">S/. {c.deuda_anio}</td>
-    <td className="text-end fw-bold text-success">S/. {c.abono_anio}</td>
+    <td className="text-end fw-bold" title={titlePendienteCaja}>S/. {deudaVisible.toFixed(2)}{marcaPendienteCaja ? " *" : ""}</td>
+    <td className="text-end fw-bold text-success" title={titlePendienteCaja}>S/. {abonoVisible.toFixed(2)}{marcaPendienteCaja ? " *" : ""}</td>
         </>
       );
     })()}
@@ -422,6 +458,22 @@ function App() {
 
   const [darkMode, setDarkMode] = useState(false);
   const [refreshDashboard, setRefreshDashboard] = useState(0);
+  const [realtimeStatus, setRealtimeStatus] = useState("disabled");
+  const [realtimeTick, setRealtimeTick] = useState(0);
+  const realtimeRefreshTimerRef = useRef(0);
+  const realtimeNeedsCajaRef = useRef(false);
+  const realtimeContextRef = useRef({ canCaja: false, selectedId: null, historialYear: "all" });
+  const realtimeOpsRef = useRef({
+    cargarContribuyentes: () => {},
+    cargarResumen: () => {},
+    cargarHistorial: () => {}
+  });
+  const [resumenPendientesCaja, setResumenPendientesCaja] = useState({
+    total_ordenes: 0,
+    total_monto: 0,
+    total_contribuyentes: 0
+  });
+  const [campoAppUrl, setCampoAppUrl] = useState(getLocalCampoAppUrl);
 
   const [busqueda, setBusqueda] = useState("");
   const [filtroEstadoConexion, setFiltroEstadoConexion] = useState("TODOS");
@@ -434,7 +486,7 @@ function App() {
     canCaja: hasMinRole(rolActual, "CAJERO"),
     canManageOps: hasMinRole(rolActual, "ADMIN_SEC"),
     canManageContribuyentes: hasMinRole(rolActual, "ADMIN_SEC"),
-    canReportesCaja: hasMinRole(rolActual, "CAJERO"),
+    canReportesCaja: hasMinRole(rolActual, "ADMIN_SEC"),
     canExportPadron: hasMinRole(rolActual, "ADMIN_SEC"),
     canAuditoria: hasMinRole(rolActual, "ADMIN_SEC"),
     canManageUsers: hasMinRole(rolActual, "ADMIN"),
@@ -442,10 +494,35 @@ function App() {
     canDeleteRecibos: hasMinRole(rolActual, "ADMIN"),
     canDeleteCalles: hasMinRole(rolActual, "ADMIN"),
     canCambiarEstadoConexion: hasMinRole(rolActual, "ADMIN_SEC"),
-    canGenerarActaCorte: hasMinRole(rolActual, "CAJERO"),
+    canGenerarActaCorte: hasMinRole(rolActual, "ADMIN_SEC"),
+    canImpresionMasiva: hasMinRole(rolActual, "ADMIN_SEC"),
     canReporteCortes: hasMinRole(rolActual, "ADMIN_SEC"),
     canGestionCampo: hasMinRole(rolActual, "ADMIN_SEC")
   }), [rolActual]);
+  const cargarCampoAppUrl = useCallback(async () => {
+    const fallbackUrl = getLocalCampoAppUrl();
+    if (!hasMinRole(rolActual, "ADMIN_SEC")) {
+      setCampoAppUrl(fallbackUrl);
+      return;
+    }
+    try {
+      const res = await api.get("/admin/campo-remoto/estado", { timeout: 5000 });
+      const remoteUrl = normalizeCampoAppUrl(res?.data?.campo_url);
+      setCampoAppUrl(remoteUrl || fallbackUrl);
+    } catch {
+      setCampoAppUrl(fallbackUrl);
+    }
+  }, [rolActual]);
+
+  useEffect(() => {
+    if (!usuarioSistema) return;
+    cargarCampoAppUrl();
+  }, [usuarioSistema, cargarCampoAppUrl]);
+
+  useEffect(() => {
+    if (!mostrarModalCampo) return;
+    cargarCampoAppUrl();
+  }, [mostrarModalCampo, cargarCampoAppUrl]);
 
   const masivoRef = useRef(null);
   const isPrintingMasivoRef = useRef(false);
@@ -790,6 +867,23 @@ const actaPageStyle = `
       setContribuyentes([]);
     }
   };
+  const cargarResumenPendientesCaja = async () => {
+    try {
+      const res = await api.get("/caja/ordenes-cobro/resumen-pendientes");
+      const data = res?.data || {};
+      setResumenPendientesCaja({
+        total_ordenes: Number(data.total_ordenes || 0),
+        total_monto: Number(data.total_monto || 0),
+        total_contribuyentes: Number(data.total_contribuyentes || 0)
+      });
+    } catch {
+      setResumenPendientesCaja({
+        total_ordenes: 0,
+        total_monto: 0,
+        total_contribuyentes: 0
+      });
+    }
+  };
   const cargarHistorial = async (id_contribuyente, anio = historialYear, force = false) => {
     const cacheKey = `${id_contribuyente}:${anio}`;
     if (!force && historialCacheRef.current.has(cacheKey)) {
@@ -850,10 +944,10 @@ const actaPageStyle = `
 
     let yearsToShow = [];
     if (historialYear === "all") {
-      yearsToShow = historialYears;
+      yearsToShow = historialYears.length > 0 ? historialYears : [currentYear];
     } else {
       const y = Number(historialYear);
-      if (Number.isFinite(y)) yearsToShow = [y];
+      yearsToShow = Number.isFinite(y) ? [y] : [currentYear];
     }
 
     if (yearsToShow.length === 0) return [];
@@ -877,7 +971,7 @@ const actaPageStyle = `
       }
     });
     return rows;
-  }, [usuarioSeleccionado, historial, historialYear, historialYears]);
+  }, [usuarioSeleccionado, historial, historialYear, historialYears, currentYear]);
 
   const yearsForSelect = useMemo(() => {
     if (historialYears.length > 0) return historialYears;
@@ -896,7 +990,7 @@ const actaPageStyle = `
         return (
           <tr key={`year-${h.anio}`}>
             <td colSpan="7" className={`text-start fw-bold ${darkMode ? "bg-dark text-white" : "bg-light"}`} style={{ paddingLeft: "12px" }}>
-              Anio {h.anio}
+              Año {h.anio}
             </td>
           </tr>
         );
@@ -918,15 +1012,96 @@ const actaPageStyle = `
   const recargarTodo = () => {
     historialCacheRef.current.clear();
     cargarContribuyentes();
+    if (permisos.canCaja) cargarResumenPendientesCaja();
     if (usuarioSeleccionado) cargarHistorial(usuarioSeleccionado.id_contribuyente, "all", true);
     setRefreshDashboard(prev => prev + 1);
     setSelectedIds(new Set());
   };
 
   useEffect(() => {
+    realtimeContextRef.current = {
+      canCaja: permisos.canCaja,
+      selectedId: usuarioSeleccionado?.id_contribuyente || null,
+      historialYear
+    };
+  }, [permisos.canCaja, usuarioSeleccionado, historialYear]);
+
+  useEffect(() => {
+    realtimeOpsRef.current = {
+      cargarContribuyentes,
+      cargarResumen: cargarResumenPendientesCaja,
+      cargarHistorial
+    };
+  }, [cargarContribuyentes, cargarResumenPendientesCaja, cargarHistorial]);
+
+  useEffect(() => {
+    const unsubscribeStatus = realtime.onStatus((status) => {
+      setRealtimeStatus(status);
+    });
+
+    const unsubscribeEvent = realtime.onEvent((event) => {
+      if (!event || event.type !== "event") return;
+      if (event.channel === "caja") {
+        realtimeNeedsCajaRef.current = true;
+      }
+      setRealtimeTick((prev) => prev + 1);
+      if (realtimeRefreshTimerRef.current) return;
+      realtimeRefreshTimerRef.current = setTimeout(() => {
+        realtimeRefreshTimerRef.current = 0;
+        const ops = realtimeOpsRef.current;
+        const context = realtimeContextRef.current;
+        ops.cargarContribuyentes();
+        if (context.selectedId) {
+          ops.cargarHistorial(context.selectedId, context.historialYear || "all", true);
+        }
+        if (realtimeNeedsCajaRef.current && context.canCaja) {
+          ops.cargarResumen();
+        }
+        realtimeNeedsCajaRef.current = false;
+        setRefreshDashboard((prev) => prev + 1);
+      }, 180);
+    });
+
+    return () => {
+      unsubscribeStatus();
+      unsubscribeEvent();
+      if (realtimeRefreshTimerRef.current) {
+        clearTimeout(realtimeRefreshTimerRef.current);
+        realtimeRefreshTimerRef.current = 0;
+      }
+      realtimeNeedsCajaRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!usuarioSistema) {
+      realtime.disconnect(true);
+      setRealtimeStatus(realtime.enabled ? "fallback" : "disabled");
+      return;
+    }
+    const token = localStorage.getItem("token") || "";
+    realtime.connect(token);
+  }, [usuarioSistema]);
+
+  useEffect(() => {
     if (!usuarioSistema) return;
     cargarContribuyentes();
   }, [usuarioSistema]);
+  useEffect(() => {
+    if (!usuarioSistema || !permisos.canCaja) {
+      setResumenPendientesCaja({
+        total_ordenes: 0,
+        total_monto: 0,
+        total_contribuyentes: 0
+      });
+      return undefined;
+    }
+    cargarResumenPendientesCaja();
+    const timer = setInterval(() => {
+      cargarResumenPendientesCaja();
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [usuarioSistema, permisos.canCaja]);
   useEffect(() => {
     if (usuarioSeleccionado) {
       setHistorialYear("all");
@@ -956,6 +1131,7 @@ const actaPageStyle = `
 
   const handleLogout = () => {
     if (window.confirm("Cerrar sesion?")) {
+      realtime.disconnect(true);
       localStorage.removeItem("token");
       setUsuarioSistema(null);
       setUsuarioSeleccionado(null);
@@ -1131,6 +1307,11 @@ const actaPageStyle = `
     return rows.map((c) => {
       const estadoNorm = normalizeEstadoConexion(c.estado_conexion);
       const estadoLabel = ESTADO_CONEXION_LABELS[estadoNorm] || "";
+      const deudaNum = Number.parseFloat(c.deuda_anio) || 0;
+      const abonoNum = Number.parseFloat(c.abono_anio) || 0;
+      const pendienteCajaNum = Number.parseFloat(c.pendiente_caja_monto) || 0;
+      const deudaVisibleNum = Math.max(deudaNum - pendienteCajaNum, 0);
+      const abonoVisibleNum = abonoNum + pendienteCajaNum;
       return {
         ...c,
         _estadoNorm: estadoNorm,
@@ -1138,8 +1319,12 @@ const actaPageStyle = `
         _codigoLc: String(c.codigo_municipal || "").toLowerCase(),
         _direccionLc: String(c.direccion_completa || "").toLowerCase(),
         _estadoLabelLc: estadoLabel.toLowerCase(),
-        _deudaNum: Number.parseFloat(c.deuda_anio) || 0,
-        _abonoNum: Number.parseFloat(c.abono_anio) || 0,
+        _deudaNum: deudaNum,
+        _abonoNum: abonoNum,
+        _deudaVisibleNum: deudaVisibleNum,
+        _abonoVisibleNum: abonoVisibleNum,
+        _pendienteCajaNum: pendienteCajaNum,
+        _pendienteOrdenesNum: Number.parseFloat(c.pendiente_caja_ordenes) || 0,
         _mesesNum: Number.parseFloat(c.meses_deuda) || 0
       };
     });
@@ -1159,8 +1344,8 @@ const actaPageStyle = `
     });
 
     const numericSortMap = {
-      deuda_anio: "_deudaNum",
-      abono_anio: "_abonoNum",
+      deuda_anio: "_deudaVisibleNum",
+      abono_anio: "_abonoVisibleNum",
       meses_deuda: "_mesesNum"
     };
     const textSortMap = {
@@ -1378,6 +1563,12 @@ const actaPageStyle = `
   const bgCard = darkMode ? 'text-white' : 'bg-white border text-dark';
   const cardStyle = darkMode ? { backgroundColor: "#2b3035", borderTop: "1px solid #495057", borderRight: "1px solid #495057", borderBottom: "1px solid #495057", borderLeft: "1px solid #495057" } : {};
   const tableClass = darkMode ? 'table table-dark table-hover mb-0 table-sm small' : 'table table-hover table-bordered mb-0 table-sm small';
+  const realtimeBadge = useMemo(() => {
+    if (realtimeStatus === "connected") return { label: "Tiempo real: Conectado", className: "bg-success" };
+    if (realtimeStatus === "connecting" || realtimeStatus === "reconnecting") return { label: "Tiempo real: Reconectando", className: "bg-warning text-dark" };
+    if (realtimeStatus === "disabled") return { label: "Tiempo real: Desactivado", className: "bg-secondary" };
+    return { label: "Sin tiempo real (modo respaldo)", className: "bg-dark" };
+  }, [realtimeStatus]);
 
   if (!usuarioSistema) {
     return (
@@ -1400,7 +1591,7 @@ const actaPageStyle = `
               Este panel es para administracion. Para brigada use la app de campo.
             </p>
             <div className="d-flex gap-2">
-              <a className="btn btn-primary" href={`${API_BASE_URL}/campo-app/`}>
+              <a className="btn btn-primary" href={campoAppUrl}>
                 Ir a App Campo
               </a>
               <button className="btn btn-outline-secondary" onClick={handleLogout}>
@@ -1428,11 +1619,13 @@ const actaPageStyle = `
         setMostrarModalExportaciones={setMostrarModalExportaciones}
         setMostrarModalCampo={setMostrarModalCampo}
         permisos={permisos}
+        resumenPendientesCaja={resumenPendientesCaja}
       />
       
       <div className={`flex-grow-1 d-flex flex-column ${bgMain}`} style={{ overflow: "hidden" }}>
         <header className="bg-primary text-white p-3 shadow-sm flex-shrink-0 d-flex justify-content-between align-items-center">
           <h5 className="m-0">Area de Administracion Tributaria - Agua</h5>
+          <span className={`badge ${realtimeBadge.className}`}>{realtimeBadge.label}</span>
         </header>
 
         {/* CAMBIO: Se pasa darkMode a RegistroForm */}
@@ -1441,34 +1634,39 @@ const actaPageStyle = `
         ) : (
           <div className="d-flex flex-column flex-grow-1" style={{ overflow: "hidden" }} onClick={handleBackgroundClick}>
             
-            <Toolbar 
-              busqueda={busqueda} setBusqueda={setBusqueda} 
-              usuarioSeleccionado={usuarioSeleccionado} 
-              setMostrarModalDeuda={setMostrarModalDeuda} 
-              setMostrarModalEliminar={setMostrarModalEliminar} 
-              setMostrarModalEditarUsuario={setMostrarModalEditarUsuario} 
-              eliminarUsuarioCompleto={eliminarUsuarioCompleto} 
-              handlePrintCortes={abrirModalReporteCortes} 
-              abrirModalActaCorte={abrirModalActaCorte}
-              generandoActaCorte={generandoActaCorte}
-              darkMode={darkMode} 
-              setMostrarModalMasivo={setMostrarModalMasivo}
-              selectedIds={selectedIds}
-              setMostrarModalDeudaMasiva={setMostrarModalDeudaMasiva}
-              permisos={permisos}
-              filtroEstadoConexion={filtroEstadoConexion}
-              setFiltroEstadoConexion={setFiltroEstadoConexion}
-              aplicarCorteSeleccionado={aplicarCorteSeleccionado}
-              reconectarSeleccionado={reconectarSeleccionado}
-            />
+            <div className="mx-3 mt-3 flex-shrink-0">
+              <Toolbar 
+                busqueda={busqueda} setBusqueda={setBusqueda} 
+                usuarioSeleccionado={usuarioSeleccionado} 
+                setMostrarModalDeuda={setMostrarModalDeuda} 
+                setMostrarModalEliminar={setMostrarModalEliminar} 
+                setMostrarModalEditarUsuario={setMostrarModalEditarUsuario} 
+                eliminarUsuarioCompleto={eliminarUsuarioCompleto} 
+                handlePrintCortes={abrirModalReporteCortes} 
+                abrirModalActaCorte={abrirModalActaCorte}
+                generandoActaCorte={generandoActaCorte}
+                darkMode={darkMode} 
+                setMostrarModalMasivo={setMostrarModalMasivo}
+                selectedIds={selectedIds}
+                setMostrarModalDeudaMasiva={setMostrarModalDeudaMasiva}
+                permisos={permisos}
+                filtroEstadoConexion={filtroEstadoConexion}
+                setFiltroEstadoConexion={setFiltroEstadoConexion}
+                aplicarCorteSeleccionado={aplicarCorteSeleccionado}
+                reconectarSeleccionado={reconectarSeleccionado}
+              />
+            </div>
             
-            <div className="mx-3 my-3 flex-shrink-0"><DashboardStats triggerUpdate={refreshDashboard} /></div>
+            <div className="mx-3 my-3 flex-shrink-0"><DashboardStats triggerUpdate={refreshDashboard} darkMode={darkMode} /></div>
             
             {/* TABLA PRINCIPAL */}
             <div className={`flex-grow-1 mx-3 mb-3 shadow-sm d-flex flex-column ${bgCard}`} style={{ flexBasis: "45%", overflow: "hidden", ...cardStyle }}>
               <div className="bg-dark text-white p-2 small fw-bold flex-shrink-0 d-flex justify-content-between align-items-center">
                 <span>RELACION DE CONTRIBUYENTES</span>
-                <span className="text-warning fw-normal">* no verificado en campo</span>
+                <div className="d-flex align-items-center gap-3">
+                  <span className="text-warning fw-normal">* no verificado en campo</span>
+                  <span className="text-info fw-normal">* deuda/abono incluye orden pendiente de caja</span>
+                </div>
               </div>
               <div
                 className="flex-grow-1 table-responsive"
@@ -1574,6 +1772,8 @@ const actaPageStyle = `
           cerrarModal={() => setMostrarModalPago(false)}
           alGuardar={recargarTodo}
           darkMode={darkMode}
+          realtimeConnected={realtimeStatus === "connected"}
+          realtimeTick={realtimeTick}
           onImprimirRecibo={(datos) => setDatosReciboImprimir(datos)}
         />
       )}
@@ -1587,6 +1787,7 @@ const actaPageStyle = `
           cerrarModal={() => setMostrarModalCampo(false)}
           darkMode={darkMode}
           onAplicado={recargarTodo}
+          campoAppUrl={campoAppUrl}
         />
       )}
       {mostrarModalReporteCortes && (
@@ -1655,4 +1856,3 @@ const actaPageStyle = `
 }
 
 export default App;
-

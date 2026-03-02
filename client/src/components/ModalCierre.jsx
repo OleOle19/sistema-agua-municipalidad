@@ -293,6 +293,8 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
   const pageSizeActual = Math.max(1, Number(reporte?.paginacion?.page_size || MOVIMIENTOS_PAGE_SIZE));
   const inicioIndice = (paginaActual - 1) * pageSizeActual;
   const total = formatMoney(reporte.total);
+  const totalReimpresion = formatMoney(reporte.total_reimpresion);
+  const totalGeneral = formatMoney(reporte.total_general || ((Number(reporte.total || 0) || 0) + (Number(reporte.total_reimpresion || 0) || 0)));
   const chartTemporal = reporte?.graficos?.recaudacion_temporal || [];
   const chartTop = reporte?.graficos?.top_contribuyentes || [];
   const chartPeriodo = reporte?.graficos?.recaudacion_por_periodo || [];
@@ -347,8 +349,10 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
                 </div>
               )}
 
-              <div className="ms-auto fs-4 fw-bold text-success">
-                Total: S/. {total}
+              <div className="ms-auto d-flex flex-column align-items-end">
+                <div className="small text-muted">Pagos: <strong className="text-success">S/. {total}</strong></div>
+                <div className="small text-muted">Reimpresion: <strong className="text-warning">S/. {totalReimpresion}</strong></div>
+                <div className="fs-5 fw-bold text-primary">Total Caja: S/. {totalGeneral}</div>
               </div>
             </div>
 
@@ -473,12 +477,13 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
                     <th>CONTRIBUYENTE</th>
                     <th className="text-center">PERIODO</th>
                     <th className="text-end">MONTO (S/.)</th>
+                    <th className="text-end">REIMP. (S/.)</th>
                   </tr>
                 </thead>
                 <tbody>
                   {movimientos.length === 0 ? (
                     <tr>
-                      <td colSpan="8" className="text-center p-3">No hay movimientos para el periodo seleccionado.</td>
+                      <td colSpan="9" className="text-center p-3">No hay movimientos para el periodo seleccionado.</td>
                     </tr>
                   ) : (
                     movimientos.map((m, i) => (
@@ -491,14 +496,24 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
                         <td>{m.nombre_completo}</td>
                         <td className="text-center">{m.mes}/{m.anio}</td>
                         <td className="text-end fw-bold">{formatMoney(m.monto_pagado)}</td>
+                        <td className="text-end fw-bold text-warning">{formatMoney(m.cargo_reimpresion)}</td>
                       </tr>
                     ))
                   )}
                 </tbody>
                 <tfoot>
                   <tr className="table-light border-top border-dark fw-bold" style={{ fontSize: "14px" }}>
-                    <td colSpan="7" className="text-end pe-3">TOTAL RECAUDADO:</td>
+                    <td colSpan="7" className="text-end pe-3">TOTAL PAGOS:</td>
                     <td className="text-end">S/. {total}</td>
+                    <td className="text-end">-</td>
+                  </tr>
+                  <tr className="table-light border-top border-dark fw-bold" style={{ fontSize: "14px" }}>
+                    <td colSpan="8" className="text-end pe-3">TOTAL REIMPRESION:</td>
+                    <td className="text-end text-warning">S/. {totalReimpresion}</td>
+                  </tr>
+                  <tr className="table-light border-top border-dark fw-bold" style={{ fontSize: "14px" }}>
+                    <td colSpan="8" className="text-end pe-3">TOTAL CAJA:</td>
+                    <td className="text-end text-primary">S/. {totalGeneral}</td>
                   </tr>
                 </tfoot>
               </table>

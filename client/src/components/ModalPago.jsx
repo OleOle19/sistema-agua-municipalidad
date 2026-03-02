@@ -24,17 +24,20 @@ const toNum = (v) => {
 };
 
 const round2 = (v) => Math.round((toNum(v) + Number.EPSILON) * 100) / 100;
+const CARGO_REIMPRESION = 0.5;
 
-const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }) => {
+const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, realtimeConnected = false, realtimeTick = 0 }) => {
   const rol = normalizeRole(usuarioSistema?.rol);
   const isCaja = rol === "CAJERO";
   const canEmitir = hasMinRole(rol, "ADMIN_SEC");
+  const canCobrarReimpresion = hasMinRole(rol, "ADMIN_SEC");
   const [cargando, setCargando] = useState(false);
   const [seleccion, setSeleccion] = useState({});
   const [ordenes, setOrdenes] = useState([]);
   const [ordenId, setOrdenId] = useState(0);
   const [cargandoOrdenes, setCargandoOrdenes] = useState(false);
   const [avisoOrden, setAvisoOrden] = useState("");
+  const [aplicarRecargoReimpresion, setAplicarRecargoReimpresion] = useState(false);
   const maxOrdenConocidaRef = useRef(0);
 
   const recibosPendientes = useMemo(
@@ -43,18 +46,34 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
     [usuario?.recibos]
   );
 
+  const pendientePorRecibo = useMemo(() => {
+    const map = new Map();
+    (Array.isArray(ordenes) ? ordenes : []).forEach((orden) => {
+      (Array.isArray(orden?.items) ? orden.items : []).forEach((it) => {
+        const id = Number(it?.id_recibo);
+        if (!Number.isInteger(id) || id <= 0) return;
+        const monto = round2(toNum(it?.monto_autorizado));
+        if (monto <= 0) return;
+        map.set(id, round2((map.get(id) || 0) + monto));
+      });
+    });
+    return map;
+  }, [ordenes]);
+
   useEffect(() => {
     if (isCaja) return;
     const base = {};
     recibosPendientes.forEach((r) => {
-      const saldo = round2(toNum(r.deuda_mes ?? r.total_pagar));
+      const saldoBase = round2(toNum(r.deuda_mes ?? r.total_pagar));
+      const pendiente = round2(toNum(pendientePorRecibo.get(Number(r.id_recibo))));
+      const saldo = round2(Math.max(saldoBase - pendiente, 0));
       base[r.id_recibo] = { checked: false, monto: saldo.toFixed(2) };
     });
     setSeleccion(base);
-  }, [isCaja, recibosPendientes]);
+  }, [isCaja, recibosPendientes, pendientePorRecibo]);
 
   const cargarOrdenes = useCallback(async () => {
-    if (!isCaja || !usuario?.id_contribuyente) return;
+    if (!usuario?.id_contribuyente) return;
     setCargandoOrdenes(true);
     try {
       const res = await api.get("/caja/ordenes-cobro/pendientes", {
@@ -62,7 +81,7 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
       });
       const rows = Array.isArray(res.data) ? res.data : [];
       const maxActual = rows.reduce((acc, r) => Math.max(acc, Number(r?.id_orden || 0)), 0);
-      if (maxOrdenConocidaRef.current > 0 && maxActual > maxOrdenConocidaRef.current) {
+      if (isCaja && maxOrdenConocidaRef.current > 0 && maxActual > maxOrdenConocidaRef.current) {
         setAvisoOrden(`Nueva orden de cobro detectada (#${maxActual}).`);
       }
       maxOrdenConocidaRef.current = Math.max(maxOrdenConocidaRef.current, maxActual);
@@ -80,19 +99,34 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
   }, [cargarOrdenes]);
 
   useEffect(() => {
-    if (!isCaja) return undefined;
+    if (!usuario?.id_contribuyente) return undefined;
+    const fallbackMs = realtimeConnected ? 30000 : 10000;
     const timer = setInterval(() => {
       cargarOrdenes().catch(() => {});
-    }, 8000);
+    }, fallbackMs);
     return () => clearInterval(timer);
-  }, [isCaja, cargarOrdenes]);
+  }, [usuario?.id_contribuyente, realtimeConnected, cargarOrdenes]);
+
+  useEffect(() => {
+    if (!realtimeTick || !usuario?.id_contribuyente) return;
+    cargarOrdenes().catch(() => {});
+  }, [realtimeTick, usuario?.id_contribuyente, cargarOrdenes]);
+
+  useEffect(() => {
+    if (!isCaja) return;
+    setAplicarRecargoReimpresion(false);
+  }, [isCaja, ordenId, usuario?.id_contribuyente]);
 
   const ordenSeleccionada = useMemo(
     () => ordenes.find((o) => Number(o.id_orden) === Number(ordenId)) || null,
     [ordenes, ordenId]
   );
+  const totalOrdenCaja = round2(toNum(ordenSeleccionada?.total_orden));
+  const recargoReimpresion = canCobrarReimpresion && aplicarRecargoReimpresion ? CARGO_REIMPRESION : 0;
+  const totalCobroCaja = round2(totalOrdenCaja + recargoReimpresion);
 
-  const toggleRecibo = (id) => {
+  const toggleRecibo = (id, disabled = false) => {
+    if (disabled) return;
     setSeleccion((prev) => ({
       ...prev,
       [id]: { ...(prev[id] || {}), checked: !prev[id]?.checked }
@@ -177,12 +211,19 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
   const cobrarOrden = async () => {
     if (!isCaja) return;
     if (!ordenSeleccionada) return alert("Seleccione una orden pendiente.");
-    if (!window.confirm(`Cobrar orden #${ordenSeleccionada.id_orden} por S/. ${toNum(ordenSeleccionada.total_orden).toFixed(2)}?`)) return;
+    if (!window.confirm(`Cobrar orden #${ordenSeleccionada.id_orden} por S/. ${totalCobroCaja.toFixed(2)}?`)) return;
 
     setCargando(true);
     try {
-      await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`);
-      alert("Cobro registrado correctamente.");
+      const res = await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`, {
+        cargo_reimpresion: recargoReimpresion
+      });
+      const cargoAplicado = toNum(res?.data?.orden?.cargo_reimpresion);
+      if (cargoAplicado > 0) {
+        alert(`Cobro registrado correctamente.\nIncluye reimpresion: S/. ${cargoAplicado.toFixed(2)}`);
+      } else {
+        alert("Cobro registrado correctamente.");
+      }
       alGuardar?.();
       cerrarModal?.();
     } catch (err) {
@@ -254,15 +295,42 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
                         ))}
                       </tbody>
                     </table>
+                    {canCobrarReimpresion && (
+                      <div className="form-check mt-2">
+                        <input
+                          className="form-check-input"
+                          type="checkbox"
+                          id="chk-recargo-reimpresion"
+                          checked={aplicarRecargoReimpresion}
+                          onChange={(e) => setAplicarRecargoReimpresion(Boolean(e.target.checked))}
+                          disabled={cargando}
+                        />
+                        <label className="form-check-label" htmlFor="chk-recargo-reimpresion">
+                          Cobrar nueva impresion: S/. {CARGO_REIMPRESION.toFixed(2)}
+                        </label>
+                      </div>
+                    )}
+                    <div className="small fw-bold text-end mt-2">
+                      Total a cobrar: S/. {totalCobroCaja.toFixed(2)}
+                      {aplicarRecargoReimpresion ? " (incluye reimpresion)" : ""}
+                    </div>
                   </div>
                 )}
               </>
             ) : (
               <>
+                {ordenes.length > 0 && (
+                  <div className="alert alert-warning py-2 small">
+                    Existen {ordenes.length} orden(es) pendiente(s) para este contribuyente. Los recibos en orden pendiente se muestran bloqueados.
+                  </div>
+                )}
                 <div className="list-group mb-3" style={{ maxHeight: "320px", overflowY: "auto" }}>
                   {recibosPendientes.length === 0 && <p className="text-muted text-center p-3">No hay deudas pendientes.</p>}
                   {recibosPendientes.map((r) => {
-                    const saldo = round2(toNum(r.deuda_mes ?? r.total_pagar));
+                    const saldoBase = round2(toNum(r.deuda_mes ?? r.total_pagar));
+                    const pendiente = round2(toNum(pendientePorRecibo.get(Number(r.id_recibo))));
+                    const saldo = round2(Math.max(saldoBase - pendiente, 0));
+                    const bloqueadoPorOrden = pendiente > 0.001;
                     const row = seleccion[r.id_recibo] || { checked: false, monto: saldo.toFixed(2) };
                     return (
                       <div key={r.id_recibo} className={`${listClass} d-flex justify-content-between align-items-center`}>
@@ -271,10 +339,14 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
                             type="checkbox"
                             className="form-check-input me-2"
                             checked={!!row.checked}
-                            onChange={() => toggleRecibo(r.id_recibo)}
+                            onChange={() => toggleRecibo(r.id_recibo, bloqueadoPorOrden)}
+                            disabled={bloqueadoPorOrden}
                           />
                           <span>{r.mes}/{r.anio}</span>
                           <small className="ms-2 text-muted">Saldo: S/. {saldo.toFixed(2)}</small>
+                          {bloqueadoPorOrden && (
+                            <small className="ms-2 text-warning fw-bold">* En orden pendiente: S/. {pendiente.toFixed(2)}</small>
+                          )}
                         </div>
                         <div className="input-group input-group-sm" style={{ width: "150px" }}>
                           <span className="input-group-text">S/.</span>
@@ -283,7 +355,7 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode }
                             className="form-control text-end"
                             value={row.monto ?? ""}
                             onChange={(e) => setMonto(r.id_recibo, e.target.value, saldo)}
-                            disabled={!row.checked}
+                            disabled={!row.checked || bloqueadoPorOrden}
                           />
                         </div>
                       </div>

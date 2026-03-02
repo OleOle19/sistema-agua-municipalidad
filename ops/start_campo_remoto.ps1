@@ -12,6 +12,7 @@ $backendOutLog = Join-Path $runtimeDir "backend.out.log"
 $backendErrLog = Join-Path $runtimeDir "backend.err.log"
 $tunnelOutLog = Join-Path $runtimeDir "tunnel.out.log"
 $tunnelErrLog = Join-Path $runtimeDir "tunnel.err.log"
+$backendHealthUrl = "http://127.0.0.1:5000/health"
 
 New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
 
@@ -29,11 +30,26 @@ function Is-Running([int]$ProcessId) {
   return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
 }
 
+function To-Bool($Value) {
+  if ($Value -is [bool]) { return $Value }
+  $text = ([string]$Value).Trim().ToLower()
+  return $text -eq "1" -or $text -eq "true"
+}
+
 function Stop-Safe([int]$ProcessId) {
   if (!(Is-Running $ProcessId)) { return }
   try {
     Stop-Process -Id $ProcessId -Force -ErrorAction Stop
   } catch {}
+}
+
+function Test-BackendHealth([string]$Url) {
+  try {
+    $res = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2
+    return $res.StatusCode -eq 200
+  } catch {
+    return $false
+  }
 }
 
 function Resolve-CommandPath([string]$Name) {
@@ -46,7 +62,11 @@ $existing = Read-State
 if ($existing -and !$ForceRestart) {
   $backendPid = [int]($existing.backend_pid | ForEach-Object { $_ })
   $tunnelPid = [int]($existing.tunnel_pid | ForEach-Object { $_ })
-  if ((Is-Running $backendPid) -and (Is-Running $tunnelPid)) {
+  $backendManaged = To-Bool(($existing.backend_managed | ForEach-Object { $_ }))
+  $existingHealthUrl = [string]($existing.backend_health_url | ForEach-Object { $_ })
+  if ([string]::IsNullOrWhiteSpace($existingHealthUrl)) { $existingHealthUrl = $backendHealthUrl }
+  $backendRunning = if ($backendManaged) { Is-Running $backendPid } else { Test-BackendHealth $existingHealthUrl }
+  if ($backendRunning -and (Is-Running $tunnelPid)) {
     Write-Host "Ya existe una sesion activa."
     Write-Host "URL Campo: $($existing.campo_url)"
     Write-Host "Usa stop_campo_remoto.ps1 para detenerla, o ejecuta con -ForceRestart."
@@ -55,7 +75,10 @@ if ($existing -and !$ForceRestart) {
 }
 
 if ($existing) {
-  Stop-Safe ([int]($existing.backend_pid | ForEach-Object { $_ }))
+  $existingManaged = To-Bool(($existing.backend_managed | ForEach-Object { $_ }))
+  if ($existingManaged) {
+    Stop-Safe ([int]($existing.backend_pid | ForEach-Object { $_ }))
+  }
   Stop-Safe ([int]($existing.tunnel_pid | ForEach-Object { $_ }))
   Remove-Item -Path $stateFile -Force -ErrorAction SilentlyContinue
 }
@@ -76,28 +99,35 @@ if ([string]::IsNullOrWhiteSpace($cloudflaredCmd)) {
 }
 
 Write-Host "Iniciando backend..."
-$backendProc = Start-Process -FilePath $npmCmd `
-  -ArgumentList @("--prefix", "server", "start") `
-  -WorkingDirectory $repoRoot `
-  -RedirectStandardOutput $backendOutLog `
-  -RedirectStandardError $backendErrLog `
-  -WindowStyle Hidden `
-  -PassThru
+$backendProc = $null
+$backendManaged = $false
+if (Test-BackendHealth $backendHealthUrl) {
+  Write-Host "Backend ya estaba activo en $backendHealthUrl. Se reutilizara."
+} else {
+  $backendProc = Start-Process -FilePath $npmCmd `
+    -ArgumentList @("--prefix", "server", "start") `
+    -WorkingDirectory $repoRoot `
+    -RedirectStandardOutput $backendOutLog `
+    -RedirectStandardError $backendErrLog `
+    -WindowStyle Hidden `
+    -PassThru
+  $backendManaged = $true
 
-$backendReady = $false
-for ($i = 0; $i -lt 50; $i++) {
-  Start-Sleep -Milliseconds 500
-  try {
-    $res = Invoke-WebRequest -Uri "http://127.0.0.1:5000/health" -UseBasicParsing -TimeoutSec 2
-    if ($res.StatusCode -eq 200) {
+  $backendReady = $false
+  for ($i = 0; $i -lt 60; $i++) {
+    Start-Sleep -Milliseconds 500
+    if (!(Is-Running $backendProc.Id)) {
+      throw "Backend termino inesperadamente. Revisa logs: $backendOutLog / $backendErrLog"
+    }
+    if (Test-BackendHealth $backendHealthUrl) {
       $backendReady = $true
       break
     }
-  } catch {}
-}
-if (-not $backendReady) {
-  Stop-Safe $backendProc.Id
-  throw "Backend no quedo listo. Revisa logs: $backendOutLog / $backendErrLog"
+  }
+  if (-not $backendReady) {
+    Stop-Safe $backendProc.Id
+    throw "Backend no quedo listo. Revisa logs: $backendOutLog / $backendErrLog"
+  }
 }
 
 Write-Host "Iniciando Quick Tunnel..."
@@ -110,11 +140,12 @@ $tunnelProc = Start-Process -FilePath $cloudflaredCmd `
   -PassThru
 
 $baseUrl = $null
+$tunnelRegistered = $false
 $urlRegex = "https://[a-z0-9-]+\.trycloudflare\.com"
-for ($i = 0; $i -lt 120; $i++) {
+for ($i = 0; $i -lt 180; $i++) {
   Start-Sleep -Milliseconds 500
   if (!(Is-Running $tunnelProc.Id)) {
-    Stop-Safe $backendProc.Id
+    if ($backendManaged -and $backendProc) { Stop-Safe $backendProc.Id }
     throw "cloudflared termino inesperadamente. Revisa logs: $tunnelOutLog / $tunnelErrLog"
   }
   $logFiles = @($tunnelOutLog, $tunnelErrLog) | Where-Object { Test-Path $_ }
@@ -124,22 +155,42 @@ for ($i = 0; $i -lt 120; $i++) {
       $last = $matches | Select-Object -Last 1
       if ($last.Matches.Count -gt 0) {
         $baseUrl = $last.Matches[0].Value
-        break
       }
     }
+    if (!$tunnelRegistered) {
+      $ready = Select-String -Path $logFiles -Pattern "Registered tunnel connection" -ErrorAction SilentlyContinue
+      if ($ready) { $tunnelRegistered = $true }
+    }
+  }
+  if (($i + 1) % 20 -eq 0) {
+    if ([string]::IsNullOrWhiteSpace($baseUrl)) {
+      Write-Host "Esperando URL publica del tunnel..."
+    } elseif (-not $tunnelRegistered) {
+      Write-Host "URL detectada. Esperando confirmacion de conexion con Cloudflare..."
+    }
+  }
+  if (!([string]::IsNullOrWhiteSpace($baseUrl)) -and $tunnelRegistered) {
+    break
   }
 }
 if ([string]::IsNullOrWhiteSpace($baseUrl)) {
   Stop-Safe $tunnelProc.Id
-  Stop-Safe $backendProc.Id
+  if ($backendManaged -and $backendProc) { Stop-Safe $backendProc.Id }
   throw "No se detecto URL de Quick Tunnel. Revisa logs: $tunnelOutLog / $tunnelErrLog"
 }
+if (-not $tunnelRegistered) {
+  Stop-Safe $tunnelProc.Id
+  if ($backendManaged -and $backendProc) { Stop-Safe $backendProc.Id }
+  throw "No se confirmo conexion del tunnel con Cloudflare. Revisa logs: $tunnelOutLog / $tunnelErrLog"
+}
 
-$campoUrl = "$baseUrl/campo-app/"
+$campoUrl = "$($baseUrl.TrimEnd('/'))/campo-app/"
 $state = [pscustomobject]@{
   started_at = (Get-Date).ToString("o")
   repo_root = "$repoRoot"
-  backend_pid = $backendProc.Id
+  backend_pid = if ($backendProc) { $backendProc.Id } else { 0 }
+  backend_managed = $backendManaged
+  backend_health_url = $backendHealthUrl
   tunnel_pid = $tunnelProc.Id
   base_url = $baseUrl
   campo_url = $campoUrl

@@ -91,6 +91,24 @@ Prueba minima:
 Invoke-WebRequest http://127.0.0.1:5000/health
 ```
 
+### 4.6 Atajos `.bat` para backend (recomendado)
+
+Tambien hay accesos directos en la raiz:
+
+- `INICIAR_BACKEND.bat`
+- `DETENER_BACKEND.bat`
+
+Notas:
+
+- `DETENER_BACKEND.bat` detiene el backend solo si fue iniciado por `INICIAR_BACKEND.bat` (usa PID guardado en `ops/runtime/backend_state.json`).
+- Si el backend fue iniciado manualmente (otra consola, `npm run dev`, etc.), usar:
+
+```powershell
+DETENER_BACKEND.bat --force
+```
+
+Ese modo intenta cerrar el proceso que escucha en el puerto `5000` (tambien acepta `-Force`).
+
 ## 5) Uso en red municipal (LAN)
 
 ### 5.1 Abrir firewall (puerto 5000, perfil privado)
@@ -152,11 +170,30 @@ No, no hace falta desplegar frontend como servicio separado.
 1. Base de datos operativa.
 2. `server/.env` correcto (`AUTH_OPTIONAL_DEV=0`, `SERVER_HOST=0.0.0.0`).
 3. `npm --prefix client run build` (solo cuando cambia `client`).
-4. `npm --prefix server start`.
+4. Levantar backend (`INICIAR_BACKEND.bat` o `npm --prefix server start`).
 5. Probar LAN: `/` y `/campo-app/`.
 6. Si hay salida remota temporal: ejecutar `INICIAR_CAMPO_REMOTO.bat`.
 
-## 10) Backup (obligatorio)
+## 10) Sincronizacion en tiempo real entre PCs (WebSocket)
+
+Para habilitar actualizacion inmediata (sin F5) en caja/deuda:
+
+1. En `server/.env` activar:
+   - `REALTIME_WS_ENABLED=1`
+2. En `client/.env` (o variable de entorno al hacer build) activar:
+   - `VITE_REALTIME_WS_ENABLED=1`
+3. Reconstruir frontend:
+   - `npm --prefix client run build`
+4. Reiniciar backend:
+   - `npm --prefix server start`
+
+Si necesitas rollback rapido:
+
+1. Poner `REALTIME_WS_ENABLED=0`.
+2. Poner `VITE_REALTIME_WS_ENABLED=0`.
+3. Rebuild frontend y reiniciar backend.
+
+## 11) Backup (obligatorio)
 
 - Backup diario automatico con `pg_dump`.
 - Retencion sugerida: 30 diarios + 12 mensuales.

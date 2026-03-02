@@ -21,15 +21,6 @@ const TIPOS_IMPORTACION = {
       { icono: <FaHistory className="me-1" />, titulo: "TXT/CSV", detalle: "historial de deudas y pagos (ej. CATORCE.txt)." }
     ],
     procesando: "Importando historial de deudas y pagos (puede tardar varios minutos)..."
-  },
-  verificacion: {
-    titulo: "Verificacion Campo",
-    endpoint: "/importar/verificacion-campo",
-    accept: ".xlsx,.xls,.csv",
-    ayuda: [
-      { icono: <FaFileExcel className="me-1" />, titulo: "Plantilla de campo", detalle: "archivo de brigada para actualizar datos y estado de conexion." }
-    ],
-    procesando: "Importando verificacion de campo..."
   }
 };
 
@@ -77,9 +68,6 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
       if (tipo === "historial") {
         const resumen = `Recibos: ${datos.total_recibos_procesados ?? 0} | Pagos: ${datos.total_pagos_registrados ?? 0} | Leidas: ${datos.lineas_leidas ?? 0} | Omitidas: ${datos.lineas_omitidas ?? 0} | Rechazadas: ${datos.total_rechazados ?? 0}`;
         setMensaje(`${datos.mensaje || "Historial importado correctamente."}\n${resumen}`);
-      } else if (tipo === "verificacion") {
-        const resumen = `Recibidos: ${datos.total_recibidos ?? 0} | Actualizados: ${datos.total_importados ?? 0} | Eventos estado: ${datos.total_eventos_estado ?? 0} | Rechazados: ${datos.total_rechazados ?? 0}`;
-        setMensaje(`${datos.mensaje || "Verificacion importada correctamente."}\n${resumen}`);
       } else {
         const resumen = `Recibidos: ${datos.total_recibidos ?? 0} | Importados: ${datos.total_importados ?? 0} | Rechazados: ${datos.total_rechazados ?? 0}`;
         setMensaje(`${datos.mensaje || "Importacion completada."}\n${resumen}`);
@@ -142,22 +130,6 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
                 }}
               >
                 Historial
-              </button>
-              <button
-                type="button"
-                className={tabClass("verificacion")}
-                disabled={cargando}
-                onClick={() => {
-                  setTipo("verificacion");
-                  setArchivo(null);
-                  setMensaje("");
-                  setRechazos([]);
-                  setResumenRechazos({});
-                  setTotalRechazados(0);
-                  setRechazosMostrados(0);
-                }}
-              >
-                Verificacion Campo
               </button>
             </div>
 

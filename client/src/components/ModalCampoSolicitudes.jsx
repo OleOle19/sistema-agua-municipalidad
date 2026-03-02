@@ -46,7 +46,7 @@ const estadoBadgeClass = (estado) => {
   return "bg-warning text-dark";
 };
 
-const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
+const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl }) => {
   const [filtroEstado, setFiltroEstado] = useState("PENDIENTE");
   const [solicitudes, setSolicitudes] = useState([]);
   const [cargando, setCargando] = useState(false);
@@ -153,8 +153,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
   const modalContentStyle = darkMode ? { backgroundColor: "#2b3035", border: "1px solid #495057" } : {};
   const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-primary text-white"}`;
   const closeBtnClass = `btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`;
-  const tableClass = `table align-middle ${darkMode ? "table-dark table-hover" : "table-hover"}`;
+  const tableClass = `table mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
   const inputClass = `form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
+  const campoHref = campoAppUrl || `${API_BASE_URL}/campo-app/`;
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
@@ -182,7 +183,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
               <button type="button" className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" onClick={cargarSolicitudes} disabled={cargando}>
                 <FaSyncAlt /> Recargar
               </button>
-              <a href={`${API_BASE_URL}/campo-app/`} target="_blank" rel="noreferrer" className="btn btn-sm btn-outline-info d-flex align-items-center gap-1">
+              <a href={campoHref} target="_blank" rel="noreferrer" className="btn btn-sm btn-outline-info d-flex align-items-center gap-1">
                 <FaMobileAlt /> Abrir App Campo
               </a>
               <div className="ms-auto small opacity-75">
@@ -215,16 +216,16 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
                     const disabled = procesandoId === s.id_solicitud;
                     return (
                       <tr key={s.id_solicitud}>
-                        <td className="small">
+                        <td className="small align-top">
                           <div>{formatDateTime(s.creado_en)}</div>
                           <div className="opacity-75">Rev: {formatDateTime(s.revisado_en)}</div>
                         </td>
-                        <td>
+                        <td className="align-top">
                           <div className="fw-bold">{s.codigo_municipal || "-"}</div>
                           <div>{s.nombre_actual_db || "-"}</div>
                           <div className="small opacity-75">Solicita: {s.nombre_solicitante || "Usuario"}</div>
                         </td>
-                        <td className="small">
+                        <td className="small align-top">
                           <div>
                             Estado: <strong>{s.estado_conexion_actual}</strong> {"->"} <strong>{s.estado_conexion_nuevo}</strong>
                           </div>
@@ -243,15 +244,15 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
                           <div className="mt-1 opacity-75">{s.observacion_campo || "Sin observacion."}</div>
                           {s.motivo_revision && <div className="mt-1 text-info">Revision: {s.motivo_revision}</div>}
                         </td>
-                        <td>
+                        <td className="align-top">
                           {changes.length > 0 ? changes : <span className="small opacity-75">Sin cambios de ficha.</span>}
                         </td>
-                        <td>
+                        <td className="align-top">
                           <span className={`badge ${estadoBadgeClass(s.estado_solicitud)}`}>
                             {ESTADO_LABELS[s.estado_solicitud] || s.estado_solicitud}
                           </span>
                         </td>
-                        <td>
+                        <td className="align-top">
                           {pending ? (
                             <div className="d-flex gap-2">
                               <button

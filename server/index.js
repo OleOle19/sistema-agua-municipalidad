@@ -1,6 +1,7 @@
 ﻿const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 const https = require('https');
 const express = require("express");
 const app = express();
@@ -15,6 +16,8 @@ require("dotenv").config();
 const { Readable } = require('stream');
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { WebSocketServer } = require("ws");
+const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
 
 // --- HELPERS DE DIRECCIÓN ---
 const normalizarNombreCalle = (valor) => {
@@ -45,8 +48,34 @@ const extraerCalleYNumero = (direccionRaw) => {
   return { calle: direccion, numero: '' };
 };
 
-const toISODate = (date = new Date()) => date.toISOString().split('T')[0];
-const getCurrentYear = () => new Date().getFullYear();
+const getFechaPartesZona = (date = new Date(), timeZone = APP_TIMEZONE) => {
+  const dtf = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+  const parts = dtf.formatToParts(date);
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return {
+    anio: Number(map.year),
+    mes: Number(map.month),
+    dia: Number(map.day),
+    hora: Number(map.hour) % 24,
+    minuto: Number(map.minute),
+    segundo: Number(map.second)
+  };
+};
+const toISODate = (date = new Date()) => {
+  const { anio, mes, dia } = getFechaPartesZona(date, APP_TIMEZONE);
+  return `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
+};
+const getCurrentYear = () => getFechaPartesZona(new Date(), APP_TIMEZONE).anio;
+const getCurrentMonth = () => getFechaPartesZona(new Date(), APP_TIMEZONE).mes;
 const parseMonto = (value, fallback = 0) => {
   if (value === undefined || value === null || value === "") return fallback;
   const normalized = typeof value === "string" ? value.replace(",", ".") : value;
@@ -54,9 +83,13 @@ const parseMonto = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 const MAX_RECHAZOS_IMPORTACION = Number(process.env.MAX_RECHAZOS_IMPORTACION || 500);
-const AUTO_DEUDA_TIMEZONE = process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
+const AUTO_DEUDA_TIMEZONE = process.env.AUTO_DEUDA_TIMEZONE || APP_TIMEZONE;
 const AUTO_DEUDA_CHECK_MS = Number(process.env.AUTO_DEUDA_CHECK_MS || (60 * 60 * 1000));
 const AUTO_DEUDA_ACTIVA = process.env.AUTO_DEUDA_ACTIVA !== "0";
+const ALLOW_DIRECT_PAYMENTS = process.env.ALLOW_DIRECT_PAYMENTS === "1";
+const REALTIME_WS_ENABLED = process.env.REALTIME_WS_ENABLED === "1";
+const REALTIME_AUTH_TIMEOUT_MS = Math.max(1000, Number(process.env.REALTIME_AUTH_TIMEOUT_MS || 5000));
+const REALTIME_PING_TIMEOUT_MS = Math.max(10000, Number(process.env.REALTIME_PING_TIMEOUT_MS || 45000));
 const AUTO_DEUDA_BASE = {
   agua: parseMonto(process.env.AUTO_DEUDA_AGUA, 7.5),
   desague: parseMonto(process.env.AUTO_DEUDA_DESAGUE, 3.5),
@@ -93,6 +126,8 @@ const LOGIN_LOCK_DURATION_MS = Number(process.env.LOGIN_LOCK_DURATION_MS || (15 
 const CAJA_CIERRE_ALERTA_UMBRAL = parseMonto(process.env.CAJA_CIERRE_ALERTA_UMBRAL, 2);
 const CAJA_RIESGO_WINDOW_HOURS = Math.min(168, Math.max(1, Number(process.env.CAJA_RIESGO_WINDOW_HOURS || 24)));
 const CAJA_RIESGO_ANULACIONES_UMBRAL = Math.min(20, Math.max(1, Number(process.env.CAJA_RIESGO_ANULACIONES_UMBRAL || 3)));
+const CARGO_REIMPRESION_MONTO = 0.5;
+const PAGO_OPERATIVO_CAJA_SQL = "(p.id_orden_cobro IS NOT NULL OR COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '')";
 const normalizeHoraHM = (value, fallback) => {
   const raw = String(value || "").trim();
   if (!/^\d{2}:\d{2}$/.test(raw)) return fallback;
@@ -196,6 +231,30 @@ const normalizeCodigoMunicipal = (value, padTo = 6) => {
   const onlyDigits = raw.replace(/\D/g, "");
   if (onlyDigits) return onlyDigits.slice(0, 8).padStart(padTo, "0");
   return raw.toUpperCase().slice(0, 32);
+};
+
+const generateNextCodigoMunicipal = async (client) => {
+  const resMaxSix = await client.query(`
+    SELECT COALESCE(MAX(codigo_municipal::bigint), 0) AS max_codigo
+    FROM contribuyentes
+    WHERE codigo_municipal ~ '^[0-9]{1,6}$'
+  `);
+  const maxSix = Number(resMaxSix.rows[0]?.max_codigo || 0);
+  if (Number.isFinite(maxSix) && maxSix > 0 && maxSix < 999999) {
+    return String(maxSix + 1).padStart(6, "0");
+  }
+
+  const resMaxAny = await client.query(`
+    SELECT COALESCE(MAX(codigo_municipal::bigint), 0) AS max_codigo
+    FROM contribuyentes
+    WHERE codigo_municipal ~ '^[0-9]+$'
+  `);
+  const maxAny = Number(resMaxAny.rows[0]?.max_codigo || 0);
+  if (!Number.isFinite(maxAny) || maxAny < 0 || maxAny >= 99999999) {
+    throw new Error("CODIGO_MUNICIPAL_OVERFLOW");
+  }
+  if (maxAny < 999999) return String(maxAny + 1).padStart(6, "0");
+  return String(maxAny + 1);
 };
 
 const estadoConexionToPredio = (estadoConexion) => {
@@ -377,6 +436,35 @@ const issueToken = (user) => jwt.sign(
   { expiresIn: JWT_EXPIRES_IN }
 );
 
+const resolveUserFromToken = async (token) => {
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    const user = await pool.query(
+      "SELECT id_usuario, username, nombre_completo, rol, estado FROM usuarios_sistema WHERE id_usuario = $1",
+      [payload.id_usuario]
+    );
+    if (user.rows.length === 0) {
+      return { ok: false, status: 401, error: "Usuario no válido" };
+    }
+    const dbUser = user.rows[0];
+    if (dbUser.estado !== "ACTIVO") {
+      return { ok: false, status: 403, error: "Usuario no activo" };
+    }
+    return {
+      ok: true,
+      user: {
+        id_usuario: dbUser.id_usuario,
+        username: dbUser.username,
+        nombre: dbUser.nombre_completo,
+        rol: normalizeRole(dbUser.rol),
+        estado: dbUser.estado
+      }
+    };
+  } catch {
+    return { ok: false, status: 401, error: "Token inválido o expirado" };
+  }
+};
+
 const authenticateToken = async (req, res, next) => {
   if (req.user?.id_usuario) return next();
   const authHeader = req.headers.authorization || "";
@@ -394,29 +482,36 @@ const authenticateToken = async (req, res, next) => {
     }
     return res.status(401).json({ error: "No autorizado" });
   }
+  const resolved = await resolveUserFromToken(token);
+  if (!resolved.ok) {
+    return res.status(resolved.status || 401).json({ error: resolved.error || "No autorizado" });
+  }
+  req.user = resolved.user;
+  return next();
+};
+
+const resolveRealtimeUser = async (token) => {
+  if (!token) {
+    if (!AUTH_OPTIONAL_DEV) return { ok: false, status: 401, error: "No autorizado" };
+    return { ok: true, user: getRealtimeDevUser() };
+  }
+  return resolveUserFromToken(token);
+};
+
+const getRealtimeDevUser = () => ({
+  id_usuario: 0,
+  username: "dev",
+  nombre: "Modo Desarrollo",
+  rol: "ADMIN",
+  estado: "ACTIVO"
+});
+
+const tryParseJson = (raw) => {
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    const user = await pool.query(
-      "SELECT id_usuario, username, nombre_completo, rol, estado FROM usuarios_sistema WHERE id_usuario = $1",
-      [payload.id_usuario]
-    );
-    if (user.rows.length === 0) {
-      return res.status(401).json({ error: "Usuario no válido" });
-    }
-    const dbUser = user.rows[0];
-    if (dbUser.estado !== "ACTIVO") {
-      return res.status(403).json({ error: "Usuario no activo" });
-    }
-    req.user = {
-      id_usuario: dbUser.id_usuario,
-      username: dbUser.username,
-      nombre: dbUser.nombre_completo,
-      rol: normalizeRole(dbUser.rol),
-      estado: dbUser.estado
-    };
-    return next();
-  } catch (err) {
-    return res.status(401).json({ error: "Token inválido o expirado" });
+    const text = typeof raw === "string" ? raw : String(raw || "");
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
 };
 
@@ -463,6 +558,7 @@ const ACCESS_RULES = [
   { methods: ["PUT"], pattern: /^\/admin\/usuarios\/\d+$/, minRole: "ADMIN" },
   { methods: ["DELETE"], pattern: /^\/admin\/usuarios\/\d+$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/admin\/backup$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/admin\/campo-remoto\/estado$/, minRole: "ADMIN_SEC" },
 
   { methods: ["POST"], pattern: /^\/importar\/padron$/, minRole: "ADMIN" },
   { methods: ["POST"], pattern: /^\/importar\/historial$/, minRole: "ADMIN" },
@@ -485,7 +581,9 @@ const ACCESS_RULES = [
   { methods: ["DELETE"], pattern: /^\/recibos\/\d+$/, minRole: "ADMIN" },
   { methods: ["POST"], pattern: /^\/actas-corte\/generar$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro$/, minRole: "ADMIN_SEC" },
+  { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro\/pendientes$/, minRole: "CAJERO" },
+  { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro\/resumen-pendientes$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro\/\d+\/cobrar$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro\/\d+\/anular$/, minRole: "ADMIN_SEC" },
   { methods: ["POST"], pattern: /^\/caja\/cierre$/, minRole: "CAJERO" },
@@ -548,6 +646,59 @@ const invalidateContribuyentesCache = () => {
   dashboardCache = { expiresAt: 0, data: null, day: null };
 };
 
+const REALTIME_CHANNELS = new Set(["caja", "deuda"]);
+const isWsOpen = (ws) => ws && ws.readyState === 1;
+
+const realtimeHub = {
+  enabled: REALTIME_WS_ENABLED,
+  connectedClients: new Set(),
+  register(ws, meta = {}) {
+    const entry = {
+      ws,
+      authenticated: false,
+      user: null,
+      meta,
+      createdAt: Date.now(),
+      lastPingAt: Date.now()
+    };
+    this.connectedClients.add(entry);
+    return entry;
+  },
+  unregister(entry) {
+    if (!entry) return;
+    this.connectedClients.delete(entry);
+  },
+  sendToClient(entry, payload) {
+    if (!entry || !isWsOpen(entry.ws)) return false;
+    try {
+      entry.ws.send(JSON.stringify(payload));
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  broadcast(channel, action, entity = {}) {
+    if (!this.enabled) return 0;
+    if (!REALTIME_CHANNELS.has(channel)) return 0;
+    const payload = {
+      type: "event",
+      channel,
+      action,
+      entity,
+      server_ts: new Date().toISOString()
+    };
+    let sent = 0;
+    for (const entry of this.connectedClients) {
+      if (!entry.authenticated) continue;
+      if (this.sendToClient(entry, payload)) sent += 1;
+    }
+    if (sent > 0) {
+      console.log(`[RT] ${channel}/${action} -> ${sent} cliente(s)`);
+    }
+    return sent;
+  }
+};
+
 // --- AUDITORÍA ---
 const registrarAuditoria = async (client, accion, detalle, usuario = "SISTEMA") => {
   const db = client || pool;
@@ -601,12 +752,34 @@ const ensureOrdenesCobroTable = async (client) => {
       id_contribuyente INTEGER NOT NULL REFERENCES contribuyentes(id_contribuyente),
       codigo_municipal VARCHAR(32) NULL,
       total_orden NUMERIC(12, 2) NOT NULL DEFAULT 0,
+      cargo_reimpresion NUMERIC(12, 2) NOT NULL DEFAULT 0,
+      motivo_cargo_reimpresion TEXT NULL,
       recibos_json JSONB NOT NULL DEFAULT '[]'::jsonb,
       observacion TEXT NULL,
       motivo_anulacion TEXT NULL,
       cobrado_en TIMESTAMP NULL,
       anulado_en TIMESTAMP NULL
     )
+  `);
+  await client.query(`
+    ALTER TABLE ordenes_cobro
+    ADD COLUMN IF NOT EXISTS cargo_reimpresion NUMERIC(12, 2) NOT NULL DEFAULT 0
+  `);
+  await client.query(`
+    ALTER TABLE ordenes_cobro
+    ADD COLUMN IF NOT EXISTS motivo_cargo_reimpresion TEXT NULL
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_ordenes_cobro_cargo_reimpresion_nonnegative'
+      ) THEN
+        ALTER TABLE ordenes_cobro
+        ADD CONSTRAINT chk_ordenes_cobro_cargo_reimpresion_nonnegative
+        CHECK (cargo_reimpresion >= 0);
+      END IF;
+    END $$;
   `);
   await client.query(`
     DO $$
@@ -939,6 +1112,48 @@ const ensureDataIntegrityGuards = async (client) => {
       END IF;
     END $$;
   `);
+  await client.query(`
+    ALTER TABLE pagos
+    ADD COLUMN IF NOT EXISTS id_orden_cobro BIGINT NULL
+  `);
+  await client.query(`
+    UPDATE pagos
+    SET usuario_cajero = 'IMPORTACION_HISTORIAL'
+    WHERE id_orden_cobro IS NULL
+      AND COALESCE(NULLIF(TRIM(usuario_cajero), ''), '') = ''
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_pagos_origen_registro'
+      ) THEN
+        ALTER TABLE pagos
+        ADD CONSTRAINT chk_pagos_origen_registro
+        CHECK (
+          id_orden_cobro IS NOT NULL
+          OR COALESCE(NULLIF(TRIM(usuario_cajero), ''), '') <> ''
+        ) NOT VALID;
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_pagos_id_orden_cobro'
+      ) THEN
+        ALTER TABLE pagos
+        ADD CONSTRAINT fk_pagos_id_orden_cobro
+        FOREIGN KEY (id_orden_cobro)
+        REFERENCES ordenes_cobro(id_orden);
+      END IF;
+    END $$;
+  `);
 };
 
 const ensurePerformanceIndexes = async (client) => {
@@ -952,6 +1167,7 @@ const ensurePerformanceIndexes = async (client) => {
   const statements = [
     "CREATE INDEX IF NOT EXISTS idx_pagos_fecha_pago ON pagos (fecha_pago DESC)",
     "CREATE INDEX IF NOT EXISTS idx_pagos_id_recibo ON pagos (id_recibo)",
+    "CREATE INDEX IF NOT EXISTS idx_pagos_id_orden_cobro ON pagos (id_orden_cobro)",
     "CREATE INDEX IF NOT EXISTS idx_recibos_id_predio_anio_mes ON recibos (id_predio, anio, mes)",
     "CREATE INDEX IF NOT EXISTS idx_recibos_anio_mes_id_predio_id_recibo ON recibos (anio, mes, id_predio, id_recibo)",
     "CREATE INDEX IF NOT EXISTS idx_recibos_anio_mes ON recibos (anio, mes)",
@@ -1092,6 +1308,64 @@ app.use((err, req, res, next) => {
   return next(err);
 });
 
+const CAMPO_REMOTE_STATE_FILE = path.join(__dirname, "../ops/runtime/campo_remote_state.json");
+const normalizeCampoAppUrl = (value) => {
+  const raw = String(value || "").trim();
+  if (!/^https?:\/\//i.test(raw)) return "";
+  if (/\/campo-app\/?$/i.test(raw)) {
+    return `${raw.replace(/\/+$/g, "")}/`;
+  }
+  return `${raw.replace(/\/+$/g, "")}/campo-app/`;
+};
+const readCampoRemoteState = () => {
+  if (!fs.existsSync(CAMPO_REMOTE_STATE_FILE)) return null;
+  try {
+    const raw = fs.readFileSync(CAMPO_REMOTE_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+const isProcessRunning = (pidRaw) => {
+  const pid = parsePositiveInt(pidRaw, 0);
+  if (pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+app.get("/admin/campo-remoto/estado", (req, res) => {
+  const state = readCampoRemoteState();
+  if (!state) {
+    return res.json({
+      active: false,
+      campo_url: null,
+      tunnel_running: false,
+      backend_running: null,
+      backend_managed: false
+    });
+  }
+
+  const tunnelRunning = isProcessRunning(state.tunnel_pid);
+  const backendManaged = Boolean(state.backend_managed);
+  const backendRunning = backendManaged ? isProcessRunning(state.backend_pid) : null;
+  const campoUrl = normalizeCampoAppUrl(state.campo_url || state.base_url || "");
+  const active = Boolean(tunnelRunning && campoUrl);
+
+  return res.json({
+    active,
+    campo_url: active ? campoUrl : null,
+    tunnel_running: tunnelRunning,
+    backend_running: backendRunning,
+    backend_managed: backendManaged,
+    started_at: state.started_at || null
+  });
+});
+
 const normalizarValorAuditoria = (value) => {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "string") {
@@ -1183,7 +1457,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
     if (!hasTextFilter && !idCalle) return res.json([]);
 
     const anioActual = getCurrentYear();
-    const mesActual = new Date().getMonth() + 1;
+    const mesActual = getCurrentMonth();
     const limit = Math.min(300, Math.max(10, parsePositiveInt(req.query?.limit, 120)));
     const params = [anioActual, mesActual];
     let idxLike = 0;
@@ -1325,7 +1599,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
 app.get("/campo/offline-snapshot", async (req, res) => {
   try {
     const anioActual = getCurrentYear();
-    const mesActual = new Date().getMonth() + 1;
+    const mesActual = getCurrentMonth();
     const limit = Math.min(10000, Math.max(200, parsePositiveInt(req.query?.limit, 5000)));
 
     const contribuyentes = await pool.query(`
@@ -1424,7 +1698,7 @@ app.post("/campo/solicitudes", async (req, res) => {
       return res.status(400).json({ error: "ID de contribuyente inválido." });
     }
     const anioActual = getCurrentYear();
-    const mesActual = new Date().getMonth() + 1;
+    const mesActual = getCurrentMonth();
 
     const actual = await pool.query(`
       WITH recibos_objetivo AS (
@@ -2028,7 +2302,7 @@ app.get("/contribuyentes", async (req, res) => {
     }
 
     const anioActual = getCurrentYear();
-    const mesActual = new Date().getMonth() + 1;
+    const mesActual = getCurrentMonth();
 
     // Consulta optimizada: agregamos deuda/abono/meses por predio una sola vez
     const query = `
@@ -2043,14 +2317,46 @@ app.get("/contribuyentes", async (req, res) => {
         JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
         GROUP BY p.id_recibo
       ),
+      ordenes_pendientes_detalle AS (
+        SELECT
+          oc.id_orden,
+          (elem->>'id_recibo')::int AS id_recibo,
+          GREATEST(COALESCE((elem->>'monto_autorizado')::numeric, 0), 0) AS monto_autorizado
+        FROM ordenes_cobro oc
+        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(oc.recibos_json, '[]'::jsonb)) elem
+        WHERE oc.estado = 'PENDIENTE'
+          AND (elem->>'id_recibo') ~ '^[0-9]+$'
+      ),
+      ordenes_pendientes_recibo AS (
+        SELECT
+          opd.id_recibo,
+          SUM(opd.monto_autorizado) AS monto_pendiente
+        FROM ordenes_pendientes_detalle opd
+        GROUP BY opd.id_recibo
+      ),
+      ordenes_pendientes_predio AS (
+        SELECT
+          ro.id_predio,
+          COUNT(DISTINCT opd.id_orden) AS ordenes_pendientes
+        FROM recibos_objetivo ro
+        JOIN ordenes_pendientes_detalle opd ON opd.id_recibo = ro.id_recibo
+        GROUP BY ro.id_predio
+      ),
       resumen_predio AS (
         SELECT
           ro.id_predio,
           SUM(GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
           SUM(COALESCE(pp.total_pagado, 0)) AS abono_total,
-          COUNT(*) FILTER (WHERE (ro.total_pagar - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
+          COUNT(*) FILTER (WHERE (ro.total_pagar - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total,
+          SUM(
+            LEAST(
+              GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0),
+              COALESCE(opr.monto_pendiente, 0)
+            )
+          ) AS monto_pendiente_caja
         FROM recibos_objetivo ro
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+        LEFT JOIN ordenes_pendientes_recibo opr ON opr.id_recibo = ro.id_recibo
         GROUP BY ro.id_predio
       )
       SELECT c.id_contribuyente, c.codigo_municipal, c.sec_cod, c.sec_nombre, c.dni_ruc, c.nombre_completo, c.telefono,
@@ -2065,11 +2371,14 @@ app.get("/contribuyentes", async (req, res) => {
              
              COALESCE(rp.deuda_total, 0) as deuda_anio,
              COALESCE(rp.abono_total, 0) as abono_anio,
-             COALESCE(rp.meses_deuda_total, 0) as meses_deuda
+             COALESCE(rp.meses_deuda_total, 0) as meses_deuda,
+             COALESCE(rp.monto_pendiente_caja, 0) as pendiente_caja_monto,
+             COALESCE(opr.ordenes_pendientes, 0) as pendiente_caja_ordenes
       FROM contribuyentes c
       LEFT JOIN predios p ON c.id_contribuyente = p.id_contribuyente
       LEFT JOIN calles ca ON p.id_calle = ca.id_calle
       LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
+      LEFT JOIN ordenes_pendientes_predio opr ON opr.id_predio = p.id_predio
     `;
     const todos = await pool.query(query, [anioActual, mesActual]);
     contribuyentesCache = {
@@ -2096,6 +2405,7 @@ app.get("/contribuyentes/detalle/:id", async (req, res) => {
 
 // CREAR CONTRIBUYENTE (CÓDIGO NUMÉRICO AUTOGENERADO)
 app.post("/contribuyentes", async (req, res) => {
+  const client = await pool.connect();
   try {
     const {
       dni_ruc, nombre_completo, telefono, id_calle, numero_casa, manzana, lote, sec_nombre, estado_conexion
@@ -2107,23 +2417,11 @@ app.post("/contribuyentes", async (req, res) => {
       return res.status(400).json({ error: "Faltan datos obligatorios." });
     }
 
-    let codigoMunicipal = null;
-    for (let intento = 0; intento < 10; intento++) {
-      const candidato = String(Date.now() + intento).slice(-8);
-      const exMunicipal = await pool.query(
-        "SELECT 1 FROM contribuyentes WHERE codigo_municipal = $1 LIMIT 1",
-        [candidato]
-      );
-      if (exMunicipal.rows.length === 0) {
-        codigoMunicipal = candidato;
-        break;
-      }
-    }
-    if (!codigoMunicipal) {
-      return res.status(500).json({ error: "No se pudo generar el código municipal." });
-    }
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [20260228]);
+    const codigoMunicipal = await generateNextCodigoMunicipal(client);
 
-    const nuevo = await pool.query(
+    const nuevo = await client.query(
       `INSERT INTO contribuyentes (
         codigo_municipal, sec_cod, sec_nombre, dni_ruc, nombre_completo, telefono,
         estado_conexion, estado_conexion_fuente, estado_conexion_verificado_sn, estado_conexion_fecha_verificacion
@@ -2132,17 +2430,24 @@ app.post("/contribuyentes", async (req, res) => {
     );
     const id = nuevo.rows[0].id_contribuyente;
 
-    await pool.query(
+    await client.query(
       "INSERT INTO predios (id_contribuyente, id_calle, numero_casa, manzana, lote, id_tarifa, estado_servicio, activo_sn) VALUES ($1, $2, $3, $4, $5, 1, $6, $7)",
       [id, id_calle, numero_casa, manzana, lote, predioEstado.estado_servicio, predioEstado.activo_sn]
     );
 
+    await client.query("COMMIT");
     invalidateContribuyentesCache();
     res.json({ mensaje: "Registrado", codigo: codigoMunicipal });
 
   } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    if (err.message === "CODIGO_MUNICIPAL_OVERFLOW") {
+      return res.status(500).json({ error: "No se pudo generar el código municipal: rango agotado." });
+    }
     if (err.code === '23505') return res.status(400).json({ error: "El código municipal ya existe." });
     res.status(500).json({ error: "Error servidor" });
+  } finally {
+    client.release();
   }
 });
 
@@ -2425,6 +2730,11 @@ app.post("/recibos", async (req, res) => {
       [predio.rows[0].id_predio, anio, mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin, totalPagar]
     );
     invalidateContribuyentesCache();
+    realtimeHub.broadcast("deuda", "recibo_generado", {
+      id_contribuyente: Number(id_contribuyente || 0),
+      id_recibo: Number(nuevoRecibo.rows?.[0]?.id_recibo || 0),
+      origen: "recibos"
+    });
     res.json(nuevoRecibo.rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(400).json({ error: "Ya existe recibo para ese mes." });
@@ -2482,6 +2792,11 @@ app.post("/recibos/generar-masivo", async (req, res) => {
     const resultado = await pool.query(query, params);
     if (resultado.rowCount > 0) {
       invalidateContribuyentesCache();
+      realtimeHub.broadcast("deuda", "recibo_generado", {
+        id_contribuyente: null,
+        total_recibos: Number(resultado.rowCount || 0),
+        origen: "recibos_generar_masivo"
+      });
     }
     res.json({ mensaje: `Recibos generados: ${resultado.rowCount}` });
   } catch (err) {
@@ -2493,7 +2808,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
   try {
     const { id_contribuyente } = req.params;
     const anioActual = getCurrentYear();
-    const mesActual = new Date().getMonth() + 1;
+    const mesActual = getCurrentMonth();
     const pendientes = await pool.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
         r.total_pagar,
@@ -2689,6 +3004,10 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     );
 
     await client.query("COMMIT");
+    realtimeHub.broadcast("caja", "orden_emitida", {
+      id_orden: Number(orden.id_orden || 0),
+      id_contribuyente: Number(idContribuyente || 0)
+    });
     res.json({
       mensaje: "Orden de cobro emitida.",
       orden: {
@@ -2736,6 +3055,7 @@ app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
         oc.id_contribuyente,
         oc.codigo_municipal,
         oc.total_orden,
+        oc.cargo_reimpresion,
         oc.observacion,
         oc.recibos_json,
         oc.id_usuario_emite,
@@ -2758,6 +3078,7 @@ app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
         id_contribuyente: Number(r.id_contribuyente),
         codigo_municipal: r.codigo_municipal || null,
         total_orden: parseMonto(r.total_orden, 0),
+        cargo_reimpresion: parseMonto(r.cargo_reimpresion, 0),
         observacion: r.observacion || null,
         cantidad_recibos: items.length,
         items,
@@ -2775,11 +3096,57 @@ app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
   }
 });
 
+app.get("/caja/ordenes-cobro", async (req, res) => {
+  try {
+    const query = new URLSearchParams(req.query || {}).toString();
+    const destino = query
+      ? `/caja/ordenes-cobro/pendientes?${query}`
+      : "/caja/ordenes-cobro/pendientes";
+    return res.redirect(307, destino);
+  } catch (err) {
+    console.error("Error redireccionando ordenes de cobro:", err.message);
+    return res.status(500).json({ error: "Error listando ordenes pendientes." });
+  }
+});
+
+app.get("/caja/ordenes-cobro/resumen-pendientes", async (req, res) => {
+  try {
+    const data = await pool.query(`
+      SELECT
+        COUNT(*)::int AS total_ordenes,
+        COALESCE(SUM(total_orden), 0) AS total_monto,
+        COUNT(DISTINCT id_contribuyente)::int AS total_contribuyentes
+      FROM ordenes_cobro
+      WHERE estado = 'PENDIENTE'
+    `);
+    const row = data.rows[0] || {};
+    res.json({
+      total_ordenes: Number(row.total_ordenes || 0),
+      total_monto: parseMonto(row.total_monto, 0),
+      total_contribuyentes: Number(row.total_contribuyentes || 0)
+    });
+  } catch (err) {
+    console.error("Error obteniendo resumen de ordenes pendientes:", err.message);
+    res.status(500).json({ error: "Error obteniendo resumen de ordenes pendientes." });
+  }
+});
+
 app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
     if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
+    const cargoReimpresion = roundMonto2(parseMonto(req.body?.cargo_reimpresion, 0));
+    const canAplicarCargoReimpresion = hasMinRole(req.user?.rol, "ADMIN_SEC");
+    const aplicaCargoReimpresion = Math.abs(cargoReimpresion - CARGO_REIMPRESION_MONTO) <= 0.001;
+    if (cargoReimpresion > 0.001 && !canAplicarCargoReimpresion) {
+      return res.status(403).json({ error: "No tiene permisos para cobrar nueva impresion." });
+    }
+    if (cargoReimpresion < 0 || (!aplicaCargoReimpresion && cargoReimpresion > 0.001)) {
+      return res.status(400).json({
+        error: `Cargo de reimpresion invalido. Solo se permite 0 o S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}.`
+      });
+    }
 
     await client.query("BEGIN");
     await ensureOrdenesCobroTable(client);
@@ -2861,8 +3228,8 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       }
 
       await client.query(
-        "INSERT INTO pagos (id_recibo, monto_pagado, usuario_cajero) VALUES ($1, $2, $3)",
-        [item.id_recibo, monto, req.user?.username || req.user?.nombre || null]
+        "INSERT INTO pagos (id_recibo, monto_pagado, usuario_cajero, id_orden_cobro) VALUES ($1, $2, $3, $4)",
+        [item.id_recibo, monto, req.user?.username || req.user?.nombre || null, idOrden]
       );
 
       const totalPagadoNuevo = roundMonto2(recibo.total_pagado + monto);
@@ -2896,22 +3263,39 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       SET
         estado = 'COBRADA',
         id_usuario_cobra = $2,
+        cargo_reimpresion = $3,
+        motivo_cargo_reimpresion = $4,
         cobrado_en = NOW(),
         actualizado_en = NOW()
       WHERE id_orden = $1
-    `, [idOrden, req.user?.id_usuario || null]);
+    `, [
+      idOrden,
+      req.user?.id_usuario || null,
+      aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO : 0,
+      aplicaCargoReimpresion ? `Reimpresion de recibo (sin documento fisico) - S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}` : null
+    ]);
 
     const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
     const ip = getRequestIp(req);
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_COBRADA",
-      `orden=${idOrden}; contribuyente=${orden.id_contribuyente}; total=${totalAplicado.toFixed(2)}; recibos=${pagosAplicados.length}; ip=${ip}`,
+      `orden=${idOrden}; contribuyente=${orden.id_contribuyente}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=${aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO.toFixed(2) : "0.00"}; recibos=${pagosAplicados.length}; ip=${ip}`,
       usuarioAuditoria
     );
 
     await client.query("COMMIT");
     invalidateContribuyentesCache();
+    const totalCobradoFinal = roundMonto2(totalAplicado + (aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO : 0));
+    realtimeHub.broadcast("caja", "orden_cobrada", {
+      id_orden: Number(idOrden || 0),
+      id_contribuyente: Number(orden.id_contribuyente || 0),
+      total_cobrado: Number(totalCobradoFinal || 0)
+    });
+    realtimeHub.broadcast("deuda", "saldo_actualizado", {
+      id_contribuyente: Number(orden.id_contribuyente || 0),
+      id_orden: Number(idOrden || 0)
+    });
     res.json({
       mensaje: "Cobro registrado correctamente.",
       orden: {
@@ -2920,7 +3304,8 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         id_contribuyente: Number(orden.id_contribuyente),
         codigo_municipal: orden.codigo_municipal || null,
         total_orden: parseMonto(orden.total_orden, totalAplicado),
-        total_cobrado: totalAplicado
+        cargo_reimpresion: aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO : 0,
+        total_cobrado: totalCobradoFinal
       },
       pagos: pagosAplicados
     });
@@ -2982,6 +3367,10 @@ app.post("/caja/ordenes-cobro/:id/anular", async (req, res) => {
     );
 
     await client.query("COMMIT");
+    realtimeHub.broadcast("caja", "orden_anulada", {
+      id_orden: Number(idOrden || 0),
+      id_contribuyente: Number(orden.rows?.[0]?.id_contribuyente || 0)
+    });
     res.json({ mensaje: "Orden anulada.", id_orden: idOrden, estado: ESTADOS_ORDEN_COBRO.ANULADA });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
@@ -2992,64 +3381,178 @@ app.post("/caja/ordenes-cobro/:id/anular", async (req, res) => {
   }
 });
 
+const normalizePagoInputs = (body = {}) => {
+  const listFromRows = (rows) => rows
+    .map((raw) => {
+      if (raw === null || raw === undefined) return null;
+      if (typeof raw === "number" || typeof raw === "string") {
+        const idRecibo = parsePositiveInt(raw, 0);
+        if (idRecibo <= 0) return null;
+        return { id_recibo: idRecibo, monto_pagado: null };
+      }
+      const idRecibo = parsePositiveInt(raw.id_recibo ?? raw.idRecibo ?? raw.recibo_id ?? raw.id, 0);
+      if (idRecibo <= 0) return null;
+      const monto = parsePositiveMonto(
+        raw.monto_pagado ?? raw.monto ?? raw.monto_autorizado ?? raw.importe ?? raw.total ?? raw.saldo
+      );
+      return { id_recibo: idRecibo, monto_pagado: monto > 0 ? monto : null };
+    })
+    .filter(Boolean);
+
+  const singleId = parsePositiveInt(body.id_recibo, 0);
+  if (singleId > 0) {
+    const singleMonto = parsePositiveMonto(body.monto_pagado ?? body.monto);
+    return [{ id_recibo: singleId, monto_pagado: singleMonto > 0 ? singleMonto : null }];
+  }
+
+  const arraySources = [body.pagos, body.recibos, body.items, body.detalle];
+  for (const src of arraySources) {
+    if (!Array.isArray(src)) continue;
+    const parsed = listFromRows(src);
+    if (parsed.length > 0) return parsed;
+  }
+
+  if (Array.isArray(body.ids_recibos)) {
+    const montosMap = (body.montos && typeof body.montos === "object") ? body.montos : {};
+    return body.ids_recibos
+      .map((rawId) => parsePositiveInt(rawId, 0))
+      .filter((idRecibo) => idRecibo > 0)
+      .map((idRecibo) => {
+        const monto = parsePositiveMonto(
+          montosMap[idRecibo] ?? montosMap[String(idRecibo)] ?? body.monto_pagado ?? body.monto
+        );
+        return { id_recibo: idRecibo, monto_pagado: monto > 0 ? monto : null };
+      });
+  }
+
+  return [];
+};
+
 app.post("/pagos", async (req, res) => {
   const client = await pool.connect();
   try {
-    if (normalizeRole(req.user?.rol) === "CAJERO") {
+    if (!ALLOW_DIRECT_PAYMENTS) {
       return res.status(403).json({
-        error: "Caja no puede registrar pagos directos. Debe cobrar desde una orden de cobro pendiente."
+        error: "Pago directo deshabilitado. Use ordenes de cobro pendientes desde caja."
       });
     }
-    const { id_recibo, monto_pagado } = req.body;
-    const monto = parseFloat(monto_pagado);
-    if (!id_recibo || !Number.isFinite(monto) || monto <= 0) {
-      return res.status(400).json({ error: "Monto inválido." });
+    if (!hasMinRole(req.user?.rol, "ADMIN")) {
+      return res.status(403).json({ error: "Solo el administrador principal puede registrar pagos directos." });
+    }
+
+    const pagosSolicitados = normalizePagoInputs(req.body);
+    if (pagosSolicitados.length === 0) {
+      return res.status(400).json({ error: "Formato de pago inválido o sin recibos válidos." });
     }
 
     await client.query("BEGIN");
-
-    const recibo = await client.query(
-      "SELECT total_pagar FROM recibos WHERE id_recibo = $1 FOR UPDATE",
-      [id_recibo]
-    );
-    if (recibo.rows.length === 0) {
+    const idsRecibos = [...new Set(pagosSolicitados.map((p) => Number(p.id_recibo)).filter((v) => Number.isInteger(v) && v > 0))];
+    const recibosRows = await client.query(`
+      WITH pagos_prev AS (
+        SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+        FROM pagos
+        WHERE id_recibo = ANY($1::int[])
+        GROUP BY id_recibo
+      )
+      SELECT
+        r.id_recibo,
+        r.total_pagar,
+        COALESCE(pp.total_pagado, 0) AS total_pagado
+      FROM recibos r
+      LEFT JOIN pagos_prev pp ON pp.id_recibo = r.id_recibo
+      WHERE r.id_recibo = ANY($1::int[])
+      FOR UPDATE OF r
+    `, [idsRecibos]);
+    if (recibosRows.rows.length !== idsRecibos.length) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Recibo no encontrado." });
+      return res.status(404).json({ error: "Uno o más recibos no existen." });
     }
 
-    const totalPagar = parseFloat(recibo.rows[0].total_pagar) || 0;
-    const pagosPrev = await client.query(
-      "SELECT COALESCE(SUM(monto_pagado), 0) as total_pagado FROM pagos WHERE id_recibo = $1",
-      [id_recibo]
-    );
-    const totalPagadoPrev = parseFloat(pagosPrev.rows[0].total_pagado) || 0;
-    const totalPagadoNuevo = totalPagadoPrev + monto;
+    const recibosMap = new Map(recibosRows.rows.map((r) => [Number(r.id_recibo), {
+      id_recibo: Number(r.id_recibo),
+      total_pagar: parseMonto(r.total_pagar, 0),
+      total_pagado: parseMonto(r.total_pagado, 0)
+    }]));
 
-    if (totalPagadoNuevo > totalPagar + 0.001) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "El monto excede el total del recibo." });
+    const pagosAplicados = [];
+    for (const pagoReq of pagosSolicitados) {
+      const recibo = recibosMap.get(Number(pagoReq.id_recibo));
+      if (!recibo) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: `Recibo ${pagoReq.id_recibo} no encontrado.` });
+      }
+
+      const saldoPrevio = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado, 0));
+      const montoSolicitado = parsePositiveMonto(pagoReq.monto_pagado);
+      const monto = montoSolicitado > 0 ? montoSolicitado : saldoPrevio;
+      if (monto <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: `Recibo ${recibo.id_recibo} ya no tiene saldo pendiente.` });
+      }
+      if (monto > saldoPrevio + 0.001) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: `El monto excede el saldo del recibo ${recibo.id_recibo}.` });
+      }
+
+      await client.query(
+        "INSERT INTO pagos (id_recibo, monto_pagado, usuario_cajero) VALUES ($1, $2, $3)",
+        [recibo.id_recibo, monto, req.user?.username || req.user?.nombre || null]
+      );
+
+      const totalPagadoNuevo = roundMonto2(recibo.total_pagado + monto);
+      const nuevoEstado = totalPagadoNuevo >= recibo.total_pagar - 0.001 ? "PAGADO" : "PARCIAL";
+      await client.query(
+        "UPDATE recibos SET estado = $1 WHERE id_recibo = $2",
+        [nuevoEstado, recibo.id_recibo]
+      );
+
+      const saldo = roundMonto2(Math.max(recibo.total_pagar - totalPagadoNuevo, 0));
+      pagosAplicados.push({
+        id_recibo: recibo.id_recibo,
+        monto_pagado: monto,
+        estado: nuevoEstado,
+        total_pagado: totalPagadoNuevo,
+        saldo
+      });
+      recibo.total_pagado = totalPagadoNuevo;
     }
-
-    await client.query(
-      "INSERT INTO pagos (id_recibo, monto_pagado) VALUES ($1, $2)",
-      [id_recibo, monto]
-    );
-
-    const nuevoEstado = totalPagadoNuevo >= totalPagar ? "PAGADO" : "PARCIAL";
-    await client.query("UPDATE recibos SET estado = $1 WHERE id_recibo = $2", [nuevoEstado, id_recibo]);
 
     await client.query("COMMIT");
     invalidateContribuyentesCache();
+    const totalAplicado = roundMonto2(pagosAplicados.reduce((acc, p) => acc + p.monto_pagado, 0));
+    realtimeHub.broadcast("deuda", "saldo_actualizado", {
+      id_contribuyente: null,
+      total_aplicado: Number(totalAplicado || 0),
+      recibos: pagosAplicados.map((p) => Number(p.id_recibo || 0))
+    });
+    const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
+    const ip = getRequestIp(req);
+    await registrarAuditoria(
+      null,
+      "PAGO_DIRECTO_MANUAL",
+      `recibos=${pagosAplicados.length}; total=${totalAplicado.toFixed(2)}; ip=${ip}`,
+      usuarioAuditoria
+    );
+
+    if (pagosAplicados.length === 1) {
+      const p = pagosAplicados[0];
+      return res.json({
+        mensaje: "Pago OK",
+        estado: p.estado,
+        total_pagado: p.total_pagado,
+        saldo: p.saldo
+      });
+    }
 
     res.json({
-      mensaje: "Pago OK",
-      estado: nuevoEstado,
-      total_pagado: totalPagadoNuevo,
-      saldo: Math.max(totalPagar - totalPagadoNuevo, 0)
+      mensaje: "Pagos registrados correctamente.",
+      total_aplicado: totalAplicado,
+      pagos: pagosAplicados
     });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
-    res.status(500).send("Error");
+    console.error("Error registrando pago:", err.message);
+    res.status(500).json({ error: "Error al procesar el pago." });
   } finally {
     client.release();
   }
@@ -3142,7 +3645,7 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
     }
 
     const anioActual = getCurrentYear();
-    const mesActual = new Date().getMonth() + 1;
+    const mesActual = getCurrentMonth();
 
     await client.query("BEGIN");
     await ensureActasCorteTable(client);
@@ -3222,7 +3725,7 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
   try {
     const { id_contribuyente } = req.params;
     const anioActual = getCurrentYear();
-    const mesActual = new Date().getMonth() + 1;
+    const mesActual = getCurrentMonth();
     const anioParam = req.query.anio;
     const filtrarAnio = anioParam !== 'all';
     const anio = filtrarAnio ? (Number(anioParam) || getCurrentYear()) : null;
@@ -3294,7 +3797,8 @@ const construirSerieTemporalCaja = async (tipo, desde, hasta) => {
       ROUND(SUM(p.monto_pagado)::numeric, 2) AS total,
       ${orderSql} AS orden
     FROM pagos p
-    WHERE p.fecha_pago >= $1::date
+    WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+      AND p.fecha_pago >= $1::date
       AND p.fecha_pago < $2::date
     GROUP BY 1, 3
     ORDER BY 3
@@ -3323,11 +3827,21 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
       COUNT(*)::int AS cantidad,
       COALESCE(SUM(p.monto_pagado), 0)::numeric AS total
     FROM pagos p
-    WHERE p.fecha_pago >= $1::date
+    WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+      AND p.fecha_pago >= $1::date
       AND p.fecha_pago < $2::date
   `, [desde, hasta]);
   const cantidadMovimientos = Number(resumenPagos.rows[0]?.cantidad || 0);
   const total = parseFloat(resumenPagos.rows[0]?.total || 0) || 0;
+  const resumenReimpresion = await pool.query(`
+    SELECT COALESCE(SUM(oc.cargo_reimpresion), 0)::numeric AS total_reimpresion
+    FROM ordenes_cobro oc
+    WHERE oc.estado = 'COBRADA'
+      AND oc.cobrado_en >= $1::date
+      AND oc.cobrado_en < $2::date
+  `, [desde, hasta]);
+  const totalReimpresion = parseFloat(resumenReimpresion.rows[0]?.total_reimpresion || 0) || 0;
+  const totalGeneral = roundMonto2(total + totalReimpresion);
 
   const topContribuyentes = await pool.query(`
     SELECT
@@ -3338,7 +3852,8 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
     JOIN recibos r ON p.id_recibo = r.id_recibo
     JOIN predios pr ON r.id_predio = pr.id_predio
     JOIN contribuyentes c ON pr.id_contribuyente = c.id_contribuyente
-    WHERE p.fecha_pago >= $1::date
+    WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+      AND p.fecha_pago >= $1::date
       AND p.fecha_pago < $2::date
     GROUP BY c.codigo_municipal, c.nombre_completo
     ORDER BY SUM(p.monto_pagado) DESC
@@ -3351,7 +3866,8 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
       ROUND(SUM(p.monto_pagado)::numeric, 2) AS total
     FROM pagos p
     JOIN recibos r ON p.id_recibo = r.id_recibo
-    WHERE p.fecha_pago >= $1::date
+    WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+      AND p.fecha_pago >= $1::date
       AND p.fecha_pago < $2::date
     GROUP BY r.anio, r.mes
     ORDER BY r.anio ASC, r.mes ASC
@@ -3367,6 +3883,8 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
       hasta_exclusivo: hasta
     },
     total: total.toFixed(2),
+    total_reimpresion: totalReimpresion.toFixed(2),
+    total_general: totalGeneral.toFixed(2),
     cantidad_movimientos: cantidadMovimientos,
     graficos: {
       recaudacion_temporal: serieTemporal,
@@ -3406,34 +3924,61 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   const cantidadMovimientos = Number(resumen.cantidad_movimientos || 0);
 
   const movimientosSql = `
+    WITH movimientos_base AS (
+      SELECT
+        p.id_pago,
+        p.id_orden_cobro,
+        p.fecha_pago,
+        to_char(p.fecha_pago, 'YYYY-MM-DD') AS fecha,
+        to_char(p.fecha_pago, 'HH24:MI:SS') AS hora,
+        p.monto_pagado,
+        c.nombre_completo,
+        c.codigo_municipal,
+        r.mes,
+        r.anio,
+        oc.cargo_reimpresion,
+        CASE
+          WHEN ci.id_codigo IS NOT NULL THEN LPAD(ci.id_codigo::text, 6, '0')
+          ELSE NULL
+        END AS codigo_impresion,
+        CASE
+          WHEN p.id_orden_cobro IS NULL THEN 0
+          ELSE ROW_NUMBER() OVER (PARTITION BY p.id_orden_cobro ORDER BY p.id_pago DESC)
+        END AS orden_rank
+      FROM pagos p
+      JOIN recibos r ON p.id_recibo = r.id_recibo
+      JOIN predios pr ON r.id_predio = pr.id_predio
+      JOIN contribuyentes c ON pr.id_contribuyente = c.id_contribuyente
+      LEFT JOIN ordenes_cobro oc ON oc.id_orden = p.id_orden_cobro
+      LEFT JOIN LATERAL (
+        SELECT id_codigo
+        FROM codigos_impresion ci
+        WHERE ci.recibos_json @> jsonb_build_array(r.id_recibo)
+        ORDER BY ci.id_codigo DESC
+        LIMIT 1
+      ) ci ON TRUE
+      WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+        AND p.fecha_pago >= $1::date
+        AND p.fecha_pago < $2::date
+    )
     SELECT
-      p.id_pago,
-      p.fecha_pago,
-      to_char(p.fecha_pago, 'YYYY-MM-DD') AS fecha,
-      to_char(p.fecha_pago, 'HH24:MI:SS') AS hora,
-      p.monto_pagado,
-      c.nombre_completo,
-      c.codigo_municipal,
-      r.mes,
-      r.anio,
+      id_pago,
+      fecha_pago,
+      fecha,
+      hora,
+      monto_pagado,
+      nombre_completo,
+      codigo_municipal,
+      mes,
+      anio,
+      codigo_impresion,
       CASE
-        WHEN ci.id_codigo IS NOT NULL THEN LPAD(ci.id_codigo::text, 6, '0')
-        ELSE NULL
-      END AS codigo_impresion
-    FROM pagos p
-    JOIN recibos r ON p.id_recibo = r.id_recibo
-    JOIN predios pr ON r.id_predio = pr.id_predio
-    JOIN contribuyentes c ON pr.id_contribuyente = c.id_contribuyente
-    LEFT JOIN LATERAL (
-      SELECT id_codigo
-      FROM codigos_impresion ci
-      WHERE ci.recibos_json @> jsonb_build_array(r.id_recibo)
-      ORDER BY ci.id_codigo DESC
-      LIMIT 1
-    ) ci ON TRUE
-    WHERE p.fecha_pago >= $1::date
-      AND p.fecha_pago < $2::date
-    ORDER BY p.fecha_pago DESC, p.id_pago DESC
+        WHEN id_orden_cobro IS NOT NULL AND orden_rank = 1
+          THEN COALESCE(cargo_reimpresion, 0)
+        ELSE 0
+      END AS cargo_reimpresion
+    FROM movimientos_base
+    ORDER BY fecha_pago DESC, id_pago DESC
     ${includeAllMovimientos ? "" : "LIMIT $3 OFFSET $4"}
   `;
   const movimientosParams = includeAllMovimientos
@@ -3493,7 +4038,9 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
     wsResumen.addRow({ campo: "Rango desde", valor: data.rango?.desde || "" });
     wsResumen.addRow({ campo: "Rango hasta (exclusivo)", valor: data.rango?.hasta_exclusivo || "" });
     wsResumen.addRow({ campo: "Cantidad movimientos", valor: data.cantidad_movimientos || 0 });
-    wsResumen.addRow({ campo: "Total recaudado", valor: parseFloat(data.total || 0) });
+    wsResumen.addRow({ campo: "Total recaudado (pagos)", valor: parseFloat(data.total || 0) });
+    wsResumen.addRow({ campo: "Total reimpresion", valor: parseFloat(data.total_reimpresion || 0) });
+    wsResumen.addRow({ campo: "Total caja", valor: parseFloat(data.total_general || 0) });
 
     const wsMov = workbook.addWorksheet("Movimientos");
     wsMov.columns = [
@@ -3504,7 +4051,8 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
       { header: "CODIGO", key: "codigo_municipal", width: 16 },
       { header: "CONTRIBUYENTE", key: "nombre_completo", width: 36 },
       { header: "PERIODO", key: "periodo", width: 12 },
-      { header: "MONTO", key: "monto_pagado", width: 14 }
+      { header: "MONTO", key: "monto_pagado", width: 14 },
+      { header: "REIMPRESION", key: "cargo_reimpresion", width: 14 }
     ];
     wsMov.getRow(1).font = { bold: true };
     (data.movimientos || []).forEach((m) => {
@@ -3516,7 +4064,8 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
         codigo_municipal: m.codigo_municipal || "",
         nombre_completo: m.nombre_completo || "",
         periodo: `${m.mes || ""}/${m.anio || ""}`,
-        monto_pagado: parseFloat(m.monto_pagado || 0)
+        monto_pagado: parseFloat(m.monto_pagado || 0),
+        cargo_reimpresion: parseFloat(m.cargo_reimpresion || 0)
       });
     });
 
@@ -3841,8 +4390,13 @@ app.get("/dashboard/resumen", async (req, res) => {
       return res.json(dashboardCache.data);
     }
     const anioActual = getCurrentYear();
-    const mesActual = new Date().getMonth() + 1;
-    const recaudacion = await pool.query("SELECT SUM(monto_pagado) as total FROM pagos WHERE DATE(fecha_pago) = $1", [hoy]);
+    const mesActual = getCurrentMonth();
+    const recaudacion = await pool.query(`
+      SELECT COALESCE(SUM(p.monto_pagado), 0) AS total
+      FROM pagos p
+      WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+        AND DATE(p.fecha_pago) = $1
+    `, [hoy]);
     const usuarios = await pool.query("SELECT COUNT(*) as total FROM contribuyentes");
     const morosos = await pool.query(`
       SELECT COUNT(DISTINCT r.id_predio) as total
@@ -3956,7 +4510,7 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
     const idCalleRaw = Number(req.query?.id_calle || 0);
     const usarFiltroCalle = Number.isInteger(idCalleRaw) && idCalleRaw > 0;
     const anioActual = getCurrentYear();
-    const mesActual = new Date().getMonth() + 1;
+    const mesActual = getCurrentMonth();
 
     const params = [anioActual, mesActual];
     const where = [];
@@ -4072,7 +4626,7 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
       "2) Complete CODIGO y los campos *_VERIFICADO si hubo cambio.",
       "3) En ESTADO_CONEXION_VERIFICADO use: CON_CONEXION, SIN_CONEXION o CORTADO.",
       "4) FECHA_VERIFICACION_CAMPO en formato YYYY-MM-DD o DD/MM/YYYY.",
-      "5) Luego importe este archivo desde 'Importar > Verificacion Campo'."
+      "5) Luego sincronice cambios desde la app de campo o por API interna."
     ].forEach((txt) => wsAyuda.addRow({ txt }));
 
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -5326,6 +5880,11 @@ app.post("/importar/verificacion-campo", authenticateToken, requireAdmin, upload
 
     if (actualizados > 0) {
       invalidateContribuyentesCache();
+      realtimeHub.broadcast("deuda", "saldo_actualizado", {
+        id_contribuyente: null,
+        total_actualizados: Number(actualizados || 0),
+        origen: "importar_verificacion_campo"
+      });
       await registrarAuditoria(
         null,
         "IMPORTAR_VERIFICACION_CAMPO",
@@ -5385,8 +5944,14 @@ app.post("/importar/historial", authenticateToken, requireSuperAdmin, upload.sin
       }
     });
 
-    if (Number(resultado?.recibos_insertados || 0) > 0 || Number(resultado?.pagos_insertados || 0) > 0) {
+    if (Number(resultado?.total_recibos_procesados || 0) > 0 || Number(resultado?.total_pagos_registrados || 0) > 0) {
       invalidateContribuyentesCache();
+      realtimeHub.broadcast("deuda", "saldo_actualizado", {
+        id_contribuyente: null,
+        total_recibos_procesados: Number(resultado?.total_recibos_procesados || 0),
+        total_pagos_registrados: Number(resultado?.total_pagos_registrados || 0),
+        origen: "importar_historial"
+      });
     }
 
     return res.json({
@@ -5402,26 +5967,14 @@ app.post("/importar/historial", authenticateToken, requireSuperAdmin, upload.sin
 });
 
 const getFechaLocalPartes = (timeZone = AUTO_DEUDA_TIMEZONE, fecha = new Date()) => {
-  const dtf = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  });
-  const parts = dtf.formatToParts(fecha);
-  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
-  return {
-    anio: Number(map.year),
-    mes: Number(map.month),
-    dia: Number(map.day)
-  };
+  return getFechaPartesZona(fecha, timeZone);
 };
 
 const generarDeudaMensualAutomatica = async () => {
   if (!AUTO_DEUDA_ACTIVA || autoDeudaEnCurso) return;
 
-  const { anio, mes, dia } = getFechaLocalPartes();
-  if (dia !== 1) return;
+  const { anio, mes, dia, hora } = getFechaLocalPartes();
+  if (dia !== 1 || hora !== 0) return;
 
   const periodo = `${anio}-${String(mes).padStart(2, "0")}`;
   if (ultimoPeriodoAutoDeuda === periodo) return;
@@ -5474,6 +6027,15 @@ const generarDeudaMensualAutomatica = async () => {
       "AUTO_DEUDA_MENSUAL",
       `Generacion automatica ${periodo}: ${resultado.rowCount} recibos creados.`
     );
+    if (Number(resultado.rowCount || 0) > 0) {
+      invalidateContribuyentesCache();
+      realtimeHub.broadcast("deuda", "recibo_generado", {
+        id_contribuyente: null,
+        total_recibos: Number(resultado.rowCount || 0),
+        origen: "auto_deuda_mensual",
+        periodo
+      });
+    }
     console.log(`[AUTO_DEUDA] ${periodo}: ${resultado.rowCount} recibos generados.`);
   } catch (err) {
     console.error("[AUTO_DEUDA] Error en generación automática:", err);
@@ -5489,9 +6051,13 @@ const iniciarTareaAutoDeuda = () => {
     return;
   }
 
-  const intervalo = Number.isFinite(AUTO_DEUDA_CHECK_MS) && AUTO_DEUDA_CHECK_MS > 0
+  const intervaloBase = Number.isFinite(AUTO_DEUDA_CHECK_MS) && AUTO_DEUDA_CHECK_MS > 0
     ? AUTO_DEUDA_CHECK_MS
     : 60 * 60 * 1000;
+  const intervalo = Math.min(intervaloBase, 60 * 1000);
+  if (intervaloBase > intervalo) {
+    console.log(`[AUTO_DEUDA] Intervalo ajustado a ${intervalo}ms para ejecución precisa a las 00:00 (${AUTO_DEUDA_TIMEZONE}).`);
+  }
 
   generarDeudaMensualAutomatica().catch((err) => {
     console.error("[AUTO_DEUDA] Error inicial:", err);
@@ -5542,7 +6108,98 @@ const onServerStarted = (label, host, port) => {
   iniciarTareaAutoDeuda();
 };
 
-app.listen(SERVER_PORT, SERVER_HOST, () => {
+const setupRealtimeWs = (server, serverLabel) => {
+  if (!REALTIME_WS_ENABLED) return null;
+
+  const wss = new WebSocketServer({ noServer: true });
+  wss.on("connection", (ws, req) => {
+    const entry = realtimeHub.register(ws, {
+      ip: getRequestIp(req),
+      server: serverLabel
+    });
+    const authTimeout = setTimeout(() => {
+      if (entry.authenticated) return;
+      realtimeHub.sendToClient(entry, { type: "error", code: "AUTH_TIMEOUT", message: "Autenticacion requerida." });
+      try { ws.close(4401, "AUTH_TIMEOUT"); } catch {}
+    }, REALTIME_AUTH_TIMEOUT_MS);
+
+    ws.on("message", async (raw) => {
+      const payload = tryParseJson(typeof raw === "string" ? raw : raw?.toString("utf8"));
+      if (!payload || typeof payload !== "object") {
+        realtimeHub.sendToClient(entry, { type: "error", code: "INVALID_JSON", message: "Mensaje invalido." });
+        return;
+      }
+      if (payload.type === "ping") {
+        entry.lastPingAt = Date.now();
+        realtimeHub.sendToClient(entry, { type: "pong", server_ts: new Date().toISOString() });
+        return;
+      }
+      if (payload.type !== "auth") return;
+
+      const token = String(payload.token || "").trim();
+      const resolved = await resolveRealtimeUser(token);
+      if (!resolved.ok) {
+        realtimeHub.sendToClient(entry, { type: "error", code: "AUTH_FAILED", message: resolved.error || "No autorizado" });
+        try { ws.close(4401, "AUTH_FAILED"); } catch {}
+        return;
+      }
+      clearTimeout(authTimeout);
+      entry.authenticated = true;
+      entry.user = resolved.user;
+      entry.lastPingAt = Date.now();
+      realtimeHub.sendToClient(entry, {
+        type: "auth_ok",
+        user: {
+          id_usuario: Number(resolved.user?.id_usuario || 0),
+          rol: String(resolved.user?.rol || "CONSULTA")
+        },
+        server_ts: new Date().toISOString()
+      });
+      console.log(`[RT] auth ok user=${entry.user?.username || "unknown"} clients=${realtimeHub.connectedClients.size}`);
+    });
+
+    ws.on("close", () => {
+      clearTimeout(authTimeout);
+      realtimeHub.unregister(entry);
+    });
+    ws.on("error", () => {
+      clearTimeout(authTimeout);
+      realtimeHub.unregister(entry);
+    });
+  });
+
+  server.on("upgrade", (req, socket, head) => {
+    try {
+      const parsed = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      if (parsed.pathname !== "/ws") {
+        try { socket.destroy(); } catch {}
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        wss.emit("connection", ws, req);
+      });
+    } catch {
+      try { socket.destroy(); } catch {}
+    }
+  });
+
+  setInterval(() => {
+    const now = Date.now();
+    for (const entry of realtimeHub.connectedClients) {
+      if (!entry.authenticated) continue;
+      if (now - entry.lastPingAt <= REALTIME_PING_TIMEOUT_MS) continue;
+      try { entry.ws.close(4000, "PING_TIMEOUT"); } catch {}
+      realtimeHub.unregister(entry);
+    }
+  }, 10000);
+
+  console.log(`[RT] WebSocket habilitado en ${serverLabel} (/ws)`);
+  return wss;
+};
+
+const httpServer = http.createServer(app);
+setupRealtimeWs(httpServer, "HTTP");
+httpServer.listen(SERVER_PORT, SERVER_HOST, () => {
   onServerStarted("Servidor HTTP", SERVER_HOST, SERVER_PORT);
 });
 
@@ -5558,7 +6215,9 @@ if (HTTPS_ENABLED) {
     if (HTTPS_CA_FILE) {
       httpsOptions.ca = fs.readFileSync(HTTPS_CA_FILE);
     }
-    https.createServer(httpsOptions, app).listen(HTTPS_PORT, SERVER_HOST, () => {
+    const httpsServer = https.createServer(httpsOptions, app);
+    setupRealtimeWs(httpsServer, "HTTPS");
+    httpsServer.listen(HTTPS_PORT, SERVER_HOST, () => {
       onServerStarted("Servidor HTTPS", SERVER_HOST, HTTPS_PORT);
     });
   } catch (err) {
