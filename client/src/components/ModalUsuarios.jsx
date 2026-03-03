@@ -4,7 +4,7 @@ import { FaSave, FaTrashAlt, FaUserShield } from "react-icons/fa";
 
 const ROLE_OPTIONS = [
   { value: "ADMIN", label: "Nivel 1 - Admin principal" },
-  { value: "ADMIN_SEC", label: "Nivel 2 - Admin secundario / caja" },
+  { value: "ADMIN_SEC", label: "Nivel 2 - Ventanilla" },
   { value: "CAJERO", label: "Nivel 3 - Operador de caja" },
   { value: "CONSULTA", label: "Nivel 4 - Consulta" },
   { value: "BRIGADA", label: "Nivel 5 - Brigada de campo" }
@@ -15,6 +15,8 @@ const STATUS_OPTIONS = [
   { value: "PENDIENTE", label: "Pendiente" },
   { value: "BLOQUEADO", label: "Bloqueado" }
 ];
+
+const MIN_PASSWORD_LEN = 8;
 
 const badgeEstado = (estado) => {
   if (estado === "ACTIVO") return <span className="badge bg-success">Activo</span>;
@@ -43,7 +45,8 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
       rows.forEach((u) => {
         draft[u.id_usuario] = {
           rol: u.rol || "CONSULTA",
-          estado: u.estado || "PENDIENTE"
+          estado: u.estado || "PENDIENTE",
+          password: ""
         };
       });
       setEdiciones(draft);
@@ -76,15 +79,27 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
 
     const mismoRol = (cambios.rol || "") === (u.rol || "");
     const mismoEstado = (cambios.estado || "") === (u.estado || "");
-    if (mismoRol && mismoEstado) return;
+    const nuevaPassword = String(cambios.password || "");
+    const quiereCambiarPassword = nuevaPassword.length > 0;
+
+    if (quiereCambiarPassword && nuevaPassword.length < MIN_PASSWORD_LEN) {
+      return alert(`La nueva contraseña debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
+    }
+
+    const payload = {};
+    if (!mismoRol) payload.rol = cambios.rol;
+    if (!mismoEstado) payload.estado = cambios.estado;
+    if (quiereCambiarPassword) payload.password = nuevaPassword;
+
+    if (Object.keys(payload).length === 0) return;
 
     try {
       setGuardandoId(u.id_usuario);
-      await api.put(`/admin/usuarios/${u.id_usuario}`, {
-        rol: cambios.rol,
-        estado: cambios.estado
-      });
+      await api.put(`/admin/usuarios/${u.id_usuario}`, payload);
       await cargarUsuarios();
+      if (quiereCambiarPassword) {
+        alert(`Contraseña actualizada para "${u.username}".`);
+      }
     } catch (error) {
       alert(error?.response?.data?.error || "Error al actualizar usuario");
     } finally {
@@ -103,7 +118,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
       alert("Usuario no encontrado.");
       return;
     }
-    if (!window.confirm(`Se eliminará el usuario "${target.username}". Esta acción no se puede deshacer. ¿Continuar?`)) {
+    if (!window.confirm(`Se eliminara el usuario "${target.username}". Esta accion no se puede deshacer. Continuar?`)) {
       return;
     }
 
@@ -133,7 +148,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
           </div>
           <div className="modal-body bg-light">
             <div className="alert alert-info small mb-3">
-              Usuario actual: <strong>{usuarioActivo?.nombre || "-"}</strong>. Solo el Nivel 1 puede cambiar rol y estado.
+              Usuario actual: <strong>{usuarioActivo?.nombre || "-"}</strong>. Solo el Nivel 1 puede cambiar rol, estado y contraseña.
             </div>
 
             <div className="table-responsive bg-white border rounded">
@@ -146,14 +161,18 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
                     <th>Nuevo rol</th>
                     <th>Estado actual</th>
                     <th>Nuevo estado</th>
+                    <th>Nueva contraseña</th>
                     <th>Accion</th>
                   </tr>
                 </thead>
                 <tbody>
                   {usuarios.map((u) => {
-                    const edit = ediciones[u.id_usuario] || { rol: u.rol, estado: u.estado };
-                    const esPropio = u.id_usuario === usuarioActivo?.id_usuario;
-                    const tieneCambios = edit.rol !== u.rol || edit.estado !== u.estado;
+                    const edit = ediciones[u.id_usuario] || { rol: u.rol, estado: u.estado, password: "" };
+                    const tieneCambios = (
+                      edit.rol !== u.rol ||
+                      edit.estado !== u.estado ||
+                      String(edit.password || "").length > 0
+                    );
                     return (
                       <tr key={u.id_usuario}>
                         <td className="fw-bold">{u.username}</td>
@@ -184,12 +203,23 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
                             ))}
                           </select>
                         </td>
+                        <td style={{ minWidth: "220px" }}>
+                          <input
+                            type="password"
+                            className="form-control form-control-sm"
+                            value={edit.password || ""}
+                            onChange={(e) => actualizarCampo(u.id_usuario, "password", e.target.value)}
+                            placeholder={`Minimo ${MIN_PASSWORD_LEN} caracteres`}
+                            autoComplete="new-password"
+                            disabled={guardandoId === u.id_usuario}
+                          />
+                        </td>
                         <td className="text-center">
                           <button
                             className="btn btn-sm btn-outline-success d-inline-flex align-items-center gap-1"
                             onClick={() => guardarUsuario(u)}
                             disabled={!tieneCambios || guardandoId === u.id_usuario}
-                            title={esPropio ? "No puedes bloquearte ni bajarte de nivel 1" : "Guardar cambios"}
+                            title="Guardar cambios"
                           >
                             <FaSave/> Guardar
                           </button>
@@ -205,7 +235,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
               <div className="border rounded bg-white mt-3 p-3">
                 <div className="fw-bold text-danger mb-2">Eliminar usuario (solo Admin Principal)</div>
                 <div className="small text-muted mb-2">
-                  El usuario eliminado ya no podrá iniciar sesión en el sistema.
+                  El usuario eliminado ya no podra iniciar sesion en el sistema.
                 </div>
                 <div className="d-flex flex-wrap gap-2 align-items-center">
                   <select

@@ -34,7 +34,7 @@ const ROLE_ORDER = {
 
 const ROLE_LABELS = {
   ADMIN: "Nivel 1 - Admin principal",
-  ADMIN_SEC: "Nivel 2 - Admin secundario / caja",
+  ADMIN_SEC: "Nivel 2 - Ventanilla",
   CAJERO: "Nivel 3 - Operador de caja",
   CONSULTA: "Nivel 4 - Consulta",
   BRIGADA: "Nivel 5 - Brigada de campo"

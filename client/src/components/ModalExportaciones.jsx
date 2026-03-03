@@ -113,35 +113,6 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
                 {exportando === "finanzas" ? "Exportando..." : "Exportar Finanzas"}
               </button>
             </div>
-
-            <div className={`border rounded p-3 mt-3 ${bodyCardClass}`}>
-              <div className="fw-bold mb-1 d-flex align-items-center gap-2">
-                <FaFileExcel /> Plantilla Verificacion Campo
-              </div>
-              <div className="small opacity-75 mb-2">
-                Genera una plantilla para imprimir o completar en oficina con datos de verificación domiciliaria.
-              </div>
-              <div className="d-flex gap-2">
-                <button
-                  type="button"
-                  className="btn btn-warning btn-sm"
-                  disabled={exportando !== ""}
-                  onClick={() => descargarExcel("campo_todos", "/exportar/verificacion-campo?modo=todos", "verificacion_campo_todos")}
-                >
-                  <FaFileExcel className="me-2" />
-                  {exportando === "campo_todos" ? "Exportando..." : "Todos"}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-warning btn-sm"
-                  disabled={exportando !== ""}
-                  onClick={() => descargarExcel("campo_morosos", "/exportar/verificacion-campo?modo=morosos", "verificacion_campo_morosos")}
-                >
-                  <FaFileExcel className="me-2" />
-                  {exportando === "campo_morosos" ? "Exportando..." : "Solo Morosos"}
-                </button>
-              </div>
-            </div>
           </div>
 
           <div className={`modal-footer ${darkMode ? "border-secondary" : ""}`}>

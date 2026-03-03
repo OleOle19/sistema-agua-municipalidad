@@ -25,6 +25,7 @@ const toNum = (v) => {
 
 const round2 = (v) => Math.round((toNum(v) + Number.EPSILON) * 100) / 100;
 const CARGO_REIMPRESION = 0.5;
+const isMontoReimpresion = (v) => Math.abs(round2(toNum(v)) - CARGO_REIMPRESION) <= 0.001;
 
 const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, realtimeConnected = false, realtimeTick = 0 }) => {
   const rol = normalizeRole(usuarioSistema?.rol);
@@ -114,15 +115,21 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
 
   useEffect(() => {
     if (!isCaja) return;
-    setAplicarRecargoReimpresion(false);
-  }, [isCaja, ordenId, usuario?.id_contribuyente]);
+    const ordenActual = (Array.isArray(ordenes) ? ordenes : []).find(
+      (o) => Number(o.id_orden) === Number(ordenId)
+    );
+    setAplicarRecargoReimpresion(isMontoReimpresion(ordenActual?.cargo_reimpresion));
+  }, [isCaja, ordenId, usuario?.id_contribuyente, ordenes]);
 
   const ordenSeleccionada = useMemo(
     () => ordenes.find((o) => Number(o.id_orden) === Number(ordenId)) || null,
     [ordenes, ordenId]
   );
   const totalOrdenCaja = round2(toNum(ordenSeleccionada?.total_orden));
-  const recargoReimpresion = canCobrarReimpresion && aplicarRecargoReimpresion ? CARGO_REIMPRESION : 0;
+  const cargoReimpresionOrden = isMontoReimpresion(ordenSeleccionada?.cargo_reimpresion) ? CARGO_REIMPRESION : 0;
+  const recargoReimpresion = isCaja
+    ? (cargoReimpresionOrden > 0 ? cargoReimpresionOrden : (canCobrarReimpresion && aplicarRecargoReimpresion ? CARGO_REIMPRESION : 0))
+    : (canCobrarReimpresion && aplicarRecargoReimpresion ? CARGO_REIMPRESION : 0);
   const totalCobroCaja = round2(totalOrdenCaja + recargoReimpresion);
 
   const toggleRecibo = (id, disabled = false) => {
@@ -189,16 +196,23 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
       .filter((i) => i.monto_autorizado > 0);
 
     if (items.length === 0) return alert("Seleccione al menos un recibo con monto valido.");
-    if (!window.confirm(`Emitir orden por S/. ${totalOrden.toFixed(2)}?`)) return;
+    const totalConCargo = round2(totalOrden + recargoReimpresion);
+    if (!window.confirm(`Emitir orden por S/. ${totalConCargo.toFixed(2)}?`)) return;
 
     setCargando(true);
     try {
       const res = await api.post("/caja/ordenes-cobro", {
         id_contribuyente: usuario.id_contribuyente,
-        items
+        items,
+        cargo_reimpresion: recargoReimpresion
       });
       const id = res?.data?.orden?.id_orden;
-      alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.`);
+      const cargoAplicado = toNum(res?.data?.orden?.cargo_reimpresion);
+      if (cargoAplicado > 0) {
+        alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.\nIncluye reimpresion: S/. ${cargoAplicado.toFixed(2)}`);
+      } else {
+        alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.`);
+      }
       alGuardar?.();
       cerrarModal?.();
     } catch (err) {
@@ -216,7 +230,7 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     setCargando(true);
     try {
       const res = await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`, {
-        cargo_reimpresion: recargoReimpresion
+        cargo_reimpresion: canCobrarReimpresion ? recargoReimpresion : 0
       });
       const cargoAplicado = toNum(res?.data?.orden?.cargo_reimpresion);
       if (cargoAplicado > 0) {
@@ -295,7 +309,12 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                         ))}
                       </tbody>
                     </table>
-                    {canCobrarReimpresion && (
+                    {cargoReimpresionOrden > 0 && (
+                      <div className="alert alert-info py-1 px-2 mt-2 mb-0 small">
+                        Esta orden ya incluye reimpresion: S/. {CARGO_REIMPRESION.toFixed(2)}.
+                      </div>
+                    )}
+                    {canCobrarReimpresion && cargoReimpresionOrden <= 0 && (
                       <div className="form-check mt-2">
                         <input
                           className="form-check-input"
@@ -312,7 +331,7 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                     )}
                     <div className="small fw-bold text-end mt-2">
                       Total a cobrar: S/. {totalCobroCaja.toFixed(2)}
-                      {aplicarRecargoReimpresion ? " (incluye reimpresion)" : ""}
+                      {recargoReimpresion > 0 ? " (incluye reimpresion)" : ""}
                     </div>
                   </div>
                 )}
@@ -362,7 +381,25 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                     );
                   })}
                 </div>
-                <div className="alert alert-info text-center fw-bold">Total orden: S/. {totalOrden.toFixed(2)}</div>
+                {canCobrarReimpresion && (
+                  <div className="form-check mb-2">
+                    <input
+                      className="form-check-input"
+                      type="checkbox"
+                      id="chk-recargo-reimpresion-emitir"
+                      checked={aplicarRecargoReimpresion}
+                      onChange={(e) => setAplicarRecargoReimpresion(Boolean(e.target.checked))}
+                      disabled={cargando}
+                    />
+                    <label className="form-check-label" htmlFor="chk-recargo-reimpresion-emitir">
+                      Incluir cobro por reimpresion: S/. {CARGO_REIMPRESION.toFixed(2)}
+                    </label>
+                  </div>
+                )}
+                <div className="alert alert-info text-center fw-bold">
+                  Total orden: S/. {round2(totalOrden + recargoReimpresion).toFixed(2)}
+                  {recargoReimpresion > 0 ? " (incluye reimpresion)" : ""}
+                </div>
               </>
             )}
           </div>

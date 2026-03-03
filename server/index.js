@@ -395,7 +395,7 @@ const ROLE_LEVELS = {
 
 const ROLE_LABELS = {
   ADMIN: "Nivel 1 - Admin principal",
-  ADMIN_SEC: "Nivel 2 - Admin secundario / caja",
+  ADMIN_SEC: "Nivel 2 - Ventanilla",
   CAJERO: "Nivel 3 - Operador de caja",
   CONSULTA: "Nivel 4 - Consulta",
   BRIGADA: "Nivel 5 - Brigada de campo"
@@ -2840,11 +2840,22 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     const idContribuyente = parsePositiveInt(req.body?.id_contribuyente, 0);
     const observacion = normalizeLimitedText(req.body?.observacion, 500) || null;
     const items = sanitizeOrdenCobroItems(req.body?.items);
+    const cargoReimpresion = roundMonto2(parseMonto(req.body?.cargo_reimpresion, 0));
+    const canAplicarCargoReimpresion = hasMinRole(req.user?.rol, "ADMIN_SEC");
+    const aplicaCargoReimpresion = Math.abs(cargoReimpresion - CARGO_REIMPRESION_MONTO) <= 0.001;
     if (!idContribuyente) {
       return res.status(400).json({ error: "Contribuyente invalido." });
     }
     if (items.length === 0) {
       return res.status(400).json({ error: "Debe incluir al menos un recibo con monto autorizado." });
+    }
+    if (cargoReimpresion > 0.001 && !canAplicarCargoReimpresion) {
+      return res.status(403).json({ error: "No tiene permisos para aplicar cargo por reimpresion." });
+    }
+    if (cargoReimpresion < 0 || (!aplicaCargoReimpresion && cargoReimpresion > 0.001)) {
+      return res.status(400).json({
+        error: `Cargo de reimpresion invalido. Solo se permite 0 o S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}.`
+      });
     }
 
     await client.query("BEGIN");
@@ -2980,17 +2991,21 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
         codigo_municipal,
         total_orden,
         recibos_json,
-        observacion
+        observacion,
+        cargo_reimpresion,
+        motivo_cargo_reimpresion
       )
-      VALUES ('PENDIENTE', $1, $2, $3, $4, $5::jsonb, $6)
-      RETURNING id_orden, creado_en, estado, total_orden, codigo_municipal
+      VALUES ('PENDIENTE', $1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+      RETURNING id_orden, creado_en, estado, total_orden, codigo_municipal, cargo_reimpresion
     `, [
       req.user?.id_usuario || null,
       idContribuyente,
       contrib.rows[0].codigo_municipal || null,
       totalOrden,
       JSON.stringify(detalleOrden),
-      observacion
+      observacion,
+      aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO : 0,
+      aplicaCargoReimpresion ? `Reimpresion de recibo (registrada en ventanilla) - S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}` : null
     ]);
 
     const orden = insertOrden.rows[0];
@@ -2999,7 +3014,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_EMITIDA",
-      `orden=${orden.id_orden}; contribuyente=${idContribuyente}; total=${totalOrden.toFixed(2)}; recibos=${detalleOrden.length}; ip=${ip}`,
+      `orden=${orden.id_orden}; contribuyente=${idContribuyente}; total=${totalOrden.toFixed(2)}; cargo_reimpresion=${aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO.toFixed(2) : "0.00"}; recibos=${detalleOrden.length}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -3015,6 +3030,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
         creado_en: orden.creado_en,
         estado: orden.estado,
         total_orden: parseMonto(orden.total_orden, 0),
+        cargo_reimpresion: parseMonto(orden.cargo_reimpresion, 0),
         id_contribuyente: idContribuyente,
         codigo_municipal: orden.codigo_municipal || null,
         observacion,
@@ -3138,11 +3154,11 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
     if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
     const cargoReimpresion = roundMonto2(parseMonto(req.body?.cargo_reimpresion, 0));
     const canAplicarCargoReimpresion = hasMinRole(req.user?.rol, "ADMIN_SEC");
-    const aplicaCargoReimpresion = Math.abs(cargoReimpresion - CARGO_REIMPRESION_MONTO) <= 0.001;
+    const aplicaCargoSolicitado = Math.abs(cargoReimpresion - CARGO_REIMPRESION_MONTO) <= 0.001;
     if (cargoReimpresion > 0.001 && !canAplicarCargoReimpresion) {
       return res.status(403).json({ error: "No tiene permisos para cobrar nueva impresion." });
     }
-    if (cargoReimpresion < 0 || (!aplicaCargoReimpresion && cargoReimpresion > 0.001)) {
+    if (cargoReimpresion < 0 || (!aplicaCargoSolicitado && cargoReimpresion > 0.001)) {
       return res.status(400).json({
         error: `Cargo de reimpresion invalido. Solo se permite 0 o S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}.`
       });
@@ -3166,6 +3182,9 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: `La orden ya no esta pendiente (estado: ${orden.estado}).` });
     }
+    const cargoRegistrado = roundMonto2(parseMonto(orden.cargo_reimpresion, 0));
+    const aplicaCargoRegistrado = Math.abs(cargoRegistrado - CARGO_REIMPRESION_MONTO) <= 0.001;
+    const aplicaCargoReimpresion = aplicaCargoRegistrado || aplicaCargoSolicitado;
 
     const items = sanitizeOrdenCobroItems(safeJsonArray(orden.recibos_json));
     if (items.length === 0) {
@@ -3272,7 +3291,9 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       idOrden,
       req.user?.id_usuario || null,
       aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO : 0,
-      aplicaCargoReimpresion ? `Reimpresion de recibo (sin documento fisico) - S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}` : null
+      aplicaCargoReimpresion
+        ? (orden.motivo_cargo_reimpresion || `Reimpresion de recibo (sin documento fisico) - S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}`)
+        : null
     ]);
 
     const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
@@ -5253,6 +5274,16 @@ app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req,
       }
       updateParts.push(`estado = $${paramIndex++}`);
       params.push(nuevoEstado);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "password")) {
+      const nuevaPassword = String(req.body.password || "");
+      if (nuevaPassword.length < 8 || nuevaPassword.length > 120) {
+        return res.status(400).json({ error: "Contraseña inválida. Debe tener entre 8 y 120 caracteres." });
+      }
+      const nuevoPasswordHash = await bcrypt.hash(nuevaPassword, 10);
+      updateParts.push(`password = $${paramIndex++}`);
+      params.push(nuevoPasswordHash);
     }
 
     if (updateParts.length === 0) {
