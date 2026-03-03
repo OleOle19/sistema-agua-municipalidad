@@ -32,6 +32,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
 
   const mesLabel = recibo.mes_nombre ?? getMesNombre(recibo.mes);
   const anioLabel = recibo.anio ?? "";
+  const cargoReimpresion = parseFloat(recibo?.cargo_reimpresion || 0) || 0;
   const deudaMesesLabel = contribuyente.deuda_meses_label ? ` (${contribuyente.deuda_meses_label})` : "";
   const deudaAnioLabel = `${anioLabel}${deudaMesesLabel}`.trim();
   const reciboNumero = String(recibo.codigo_impresion || "").trim()
@@ -272,6 +273,11 @@ const Recibo = forwardRef(({ datos }, ref) => {
           <div style={styles.noteText}>
             "El pago de este recibo no cancela deudas anteriores."
           </div>
+          {cargoReimpresion > 0 && (
+            <div style={styles.noteText}>
+              Incluye reimpresion: S/. {formatMonto(cargoReimpresion)}
+            </div>
+          )}
 
           <div style={styles.datesRow}>
             <div style={styles.dateBox}>

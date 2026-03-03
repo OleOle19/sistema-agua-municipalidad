@@ -27,7 +27,7 @@ const round2 = (v) => Math.round((toNum(v) + Number.EPSILON) * 100) / 100;
 const CARGO_REIMPRESION = 0.5;
 const isMontoReimpresion = (v) => Math.abs(round2(toNum(v)) - CARGO_REIMPRESION) <= 0.001;
 
-const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, realtimeConnected = false, realtimeTick = 0 }) => {
+const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, realtimeConnected = false, realtimeTick = 0, onImprimirRecibo }) => {
   const rol = normalizeRole(usuarioSistema?.rol);
   const isCaja = rol === "CAJERO";
   const canEmitir = hasMinRole(rol, "ADMIN_SEC");
@@ -175,6 +175,45 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     return { agua: dAgua, desague: dDes, limpieza: dLimp, admin: dAdm };
   };
 
+  const buildDatosImpresion = (orden, cargoAplicado = 0, codigoImpresion = "") => {
+    const items = Array.isArray(orden?.items) ? orden.items : [];
+    const totalAgua = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_agua), 0));
+    const totalDesague = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_desague), 0));
+    const totalLimpieza = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_limpieza), 0));
+    const totalAdmin = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_admin), 0));
+    const totalBase = round2(items.reduce((acc, it) => acc + toNum(it?.monto_autorizado), 0));
+    const totalFinal = round2(totalBase + toNum(cargoAplicado));
+    const primerItem = items[0] || {};
+    const periodoUnico = items.length === 1;
+
+    return {
+      contribuyente: {
+        codigo_municipal: usuario?.codigo_municipal || "",
+        nombre_completo: usuario?.nombre_completo || "",
+        deuda_anio: toNum(usuario?.deuda_anio ?? usuario?.deuda_total ?? 0),
+        deuda_meses_label: usuario?.deuda_meses_label || ""
+      },
+      predio: {
+        direccion_completa: usuario?.direccion_completa || ""
+      },
+      recibo: {
+        id_recibo: periodoUnico ? (primerItem?.id_recibo || 0) : 0,
+        mes: periodoUnico ? (primerItem?.mes || "") : "",
+        mes_nombre: periodoUnico ? undefined : "Varios",
+        anio: periodoUnico ? (primerItem?.anio || "") : "Varios",
+        total: totalFinal,
+        codigo_impresion: codigoImpresion || "",
+        cargo_reimpresion: toNum(cargoAplicado)
+      },
+      detalles: {
+        agua: totalAgua,
+        desague: totalDesague,
+        limpieza: totalLimpieza,
+        admin: totalAdmin
+      }
+    };
+  };
+
   const emitirOrden = async () => {
     if (!canEmitir) return alert("No tiene permisos para emitir ordenes.");
     const items = recibosPendientes
@@ -233,6 +272,30 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
         cargo_reimpresion: canCobrarReimpresion ? recargoReimpresion : 0
       });
       const cargoAplicado = toNum(res?.data?.orden?.cargo_reimpresion);
+      const pagosAplicados = Array.isArray(res?.data?.pagos) ? res.data.pagos : [];
+      let codigoImpresion = "";
+      try {
+        const idsRecibos = [...new Set(
+          pagosAplicados
+            .map((p) => Number(p?.id_recibo))
+            .filter((id) => Number.isInteger(id) && id > 0)
+        )];
+        if (idsRecibos.length > 0) {
+          const codigoRes = await api.post("/impresiones/generar-codigo", {
+            ids_recibos: idsRecibos,
+            id_contribuyente: usuario?.id_contribuyente,
+            total_monto: round2(toNum(res?.data?.orden?.total_cobrado))
+          });
+          codigoImpresion = String(codigoRes?.data?.codigo_impresion || "");
+        }
+      } catch (errCodigo) {
+        console.warn("No se pudo generar codigo de impresion:", errCodigo?.message || errCodigo);
+      }
+
+      if (typeof onImprimirRecibo === "function") {
+        onImprimirRecibo(buildDatosImpresion(ordenSeleccionada, cargoAplicado, codigoImpresion));
+      }
+
       if (cargoAplicado > 0) {
         alert(`Cobro registrado correctamente.\nIncluye reimpresion: S/. ${cargoAplicado.toFixed(2)}`);
       } else {
