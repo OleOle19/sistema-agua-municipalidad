@@ -39,6 +39,8 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
   const [cargandoOrdenes, setCargandoOrdenes] = useState(false);
   const [avisoOrden, setAvisoOrden] = useState("");
   const [aplicarRecargoReimpresion, setAplicarRecargoReimpresion] = useState(false);
+  const [idReciboImpresion, setIdReciboImpresion] = useState(0);
+  const [datosReimpresionPendiente, setDatosReimpresionPendiente] = useState(null);
   const maxOrdenConocidaRef = useRef(0);
 
   const recibosPendientes = useMemo(
@@ -125,6 +127,11 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     () => ordenes.find((o) => Number(o.id_orden) === Number(ordenId)) || null,
     [ordenes, ordenId]
   );
+  useEffect(() => {
+    const firstId = Number(ordenSeleccionada?.items?.[0]?.id_recibo || 0);
+    setIdReciboImpresion(firstId > 0 ? firstId : 0);
+  }, [ordenSeleccionada?.id_orden]);
+
   const totalOrdenCaja = round2(toNum(ordenSeleccionada?.total_orden));
   const cargoReimpresionOrden = isMontoReimpresion(ordenSeleccionada?.cargo_reimpresion) ? CARGO_REIMPRESION : 0;
   const recargoReimpresion = isCaja
@@ -175,8 +182,11 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     return { agua: dAgua, desague: dDes, limpieza: dLimp, admin: dAdm };
   };
 
-  const buildDatosImpresion = (orden, cargoAplicado = 0, codigoImpresion = "") => {
-    const items = Array.isArray(orden?.items) ? orden.items : [];
+  const buildDatosImpresion = (orden, cargoAplicado = 0, codigoImpresion = "", idReciboObjetivo = 0) => {
+    const allItems = Array.isArray(orden?.items) ? orden.items : [];
+    const targetId = Number(idReciboObjetivo || 0);
+    const selectedItem = allItems.find((it) => Number(it?.id_recibo) === targetId);
+    const items = selectedItem ? [selectedItem] : allItems;
     const totalAgua = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_agua), 0));
     const totalDesague = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_desague), 0));
     const totalLimpieza = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_limpieza), 0));
@@ -273,16 +283,20 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
       });
       const cargoAplicado = toNum(res?.data?.orden?.cargo_reimpresion);
       const pagosAplicados = Array.isArray(res?.data?.pagos) ? res.data.pagos : [];
+      const idsRecibosPagados = [...new Set(
+        pagosAplicados
+          .map((p) => Number(p?.id_recibo))
+          .filter((id) => Number.isInteger(id) && id > 0)
+      )];
+      const idReciboObjetivo = idsRecibosPagados.includes(Number(idReciboImpresion))
+        ? Number(idReciboImpresion)
+        : 0;
+      const idsParaCodigo = idReciboObjetivo > 0 ? [idReciboObjetivo] : idsRecibosPagados;
       let codigoImpresion = "";
       try {
-        const idsRecibos = [...new Set(
-          pagosAplicados
-            .map((p) => Number(p?.id_recibo))
-            .filter((id) => Number.isInteger(id) && id > 0)
-        )];
-        if (idsRecibos.length > 0) {
+        if (idsParaCodigo.length > 0) {
           const codigoRes = await api.post("/impresiones/generar-codigo", {
-            ids_recibos: idsRecibos,
+            ids_recibos: idsParaCodigo,
             id_contribuyente: usuario?.id_contribuyente,
             total_monto: round2(toNum(res?.data?.orden?.total_cobrado))
           });
@@ -292,13 +306,23 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
         console.warn("No se pudo generar codigo de impresion:", errCodigo?.message || errCodigo);
       }
 
-      if (typeof onImprimirRecibo === "function") {
-        onImprimirRecibo(buildDatosImpresion(ordenSeleccionada, cargoAplicado, codigoImpresion));
-      }
-
       if (cargoAplicado > 0) {
         alert(`Cobro registrado correctamente.\nIncluye reimpresion: S/. ${cargoAplicado.toFixed(2)}`);
+        setDatosReimpresionPendiente(
+          buildDatosImpresion(ordenSeleccionada, cargoAplicado, codigoImpresion, idReciboObjetivo)
+        );
+        setAvisoOrden("Cobro registrado. Ahora puede usar el boton IMPRIMIR REIMPRESION.");
+        setOrdenes((prev) => (Array.isArray(prev)
+          ? prev.filter((o) => Number(o?.id_orden) !== Number(ordenSeleccionada?.id_orden))
+          : []
+        ));
+        setOrdenId(0);
+        alGuardar?.();
+        return;
       } else {
+        if (typeof onImprimirRecibo === "function") {
+          onImprimirRecibo(buildDatosImpresion(ordenSeleccionada, cargoAplicado, codigoImpresion));
+        }
         alert("Cobro registrado correctamente.");
       }
       alGuardar?.();
@@ -308,6 +332,16 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     } finally {
       setCargando(false);
     }
+  };
+
+  const imprimirReimpresionPendiente = () => {
+    if (!datosReimpresionPendiente) return;
+    if (typeof onImprimirRecibo !== "function") {
+      alert("No se pudo iniciar impresion.");
+      return;
+    }
+    onImprimirRecibo(datosReimpresionPendiente);
+    cerrarModal?.();
   };
 
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
@@ -345,7 +379,10 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                         type="button"
                         key={o.id_orden}
                         className={`${listClass} text-start ${Number(ordenId) === Number(o.id_orden) ? "border border-primary border-2" : ""}`}
-                        onClick={() => setOrdenId(o.id_orden)}
+                        onClick={() => {
+                          setDatosReimpresionPendiente(null);
+                          setOrdenId(o.id_orden);
+                        }}
                       >
                         <div className="d-flex justify-content-between">
                           <strong>Orden #{o.id_orden}</strong>
@@ -390,6 +427,27 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                         <label className="form-check-label" htmlFor="chk-recargo-reimpresion">
                           Cobrar nueva impresion: S/. {CARGO_REIMPRESION.toFixed(2)}
                         </label>
+                      </div>
+                    )}
+                    {recargoReimpresion > 0 && (ordenSeleccionada.items || []).length > 0 && (
+                      <div className="mt-2">
+                        <div className="small fw-bold mb-1">Mes a reimprimir</div>
+                        <select
+                          className="form-select form-select-sm"
+                          style={{ maxWidth: "260px" }}
+                          value={idReciboImpresion || ""}
+                          onChange={(e) => setIdReciboImpresion(Number(e.target.value || 0))}
+                          disabled={cargando}
+                        >
+                          {(ordenSeleccionada.items || []).map((it) => (
+                            <option key={`imp-${it.id_recibo}`} value={it.id_recibo}>
+                              {it.mes}/{it.anio} - S/. {toNum(it.monto_autorizado).toFixed(2)}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="small text-muted mt-1">
+                          El recibo impreso mostrara el cargo de reimpresion (S/. {CARGO_REIMPRESION.toFixed(2)}).
+                        </div>
                       </div>
                     )}
                     <div className="small fw-bold text-end mt-2">
@@ -469,9 +527,20 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={cerrarModal} disabled={cargando}>Cerrar</button>
             {isCaja ? (
-              <button className="btn btn-primary fw-bold" onClick={cobrarOrden} disabled={cargando || !ordenSeleccionada}>
-                {cargando ? "Procesando..." : "COBRAR ORDEN"}
-              </button>
+              <>
+                {datosReimpresionPendiente && (
+                  <button
+                    className="btn btn-outline-primary fw-bold"
+                    onClick={imprimirReimpresionPendiente}
+                    disabled={cargando}
+                  >
+                    IMPRIMIR REIMPRESION
+                  </button>
+                )}
+                <button className="btn btn-primary fw-bold" onClick={cobrarOrden} disabled={cargando || !ordenSeleccionada}>
+                  {cargando ? "Procesando..." : "COBRAR ORDEN"}
+                </button>
+              </>
             ) : (
               <button className="btn btn-primary fw-bold" onClick={emitirOrden} disabled={cargando}>
                 {cargando ? "Procesando..." : "EMITIR ORDEN"}
