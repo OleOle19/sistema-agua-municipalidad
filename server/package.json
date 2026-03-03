@@ -7,6 +7,8 @@
     "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon index.js",
+    "migrate": "node scripts/run_migrations.js",
+    "migrate:status": "node scripts/run_migrations.js --status",
     "sanear:recibos:report": "node scripts/sanear_recibos_montos.js",
     "sanear:recibos:apply": "node scripts/sanear_recibos_montos.js --apply"
   },

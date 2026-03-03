@@ -1,0 +1,12 @@
+-- Copia este archivo como:
+-- YYYY-MM-DD_NNN_descripcion.sql
+-- Ejemplo:
+-- 2026-03-03_002_agregar_columna_x.sql
+
+BEGIN;
+
+-- Ejemplo idempotente:
+-- ALTER TABLE tabla_ejemplo
+--   ADD COLUMN IF NOT EXISTS campo_nuevo TEXT;
+
+COMMIT;
