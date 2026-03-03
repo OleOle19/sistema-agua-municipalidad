@@ -40,6 +40,7 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
   const [avisoOrden, setAvisoOrden] = useState("");
   const [aplicarRecargoReimpresion, setAplicarRecargoReimpresion] = useState(false);
   const [idReciboImpresion, setIdReciboImpresion] = useState(0);
+  const [reimpresionHashImpresa, setReimpresionHashImpresa] = useState("");
   const maxOrdenConocidaRef = useRef(0);
 
   const recibosPendientes = useMemo(
@@ -215,6 +216,32 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     }
   }, [isCaja, itemsSeleccionadosParaOrden, idReciboImpresion]);
 
+  const reimpresionActualHash = useMemo(() => {
+    if (isCaja || !aplicarRecargoReimpresion) return "";
+    const targetId = Number(idReciboImpresion || 0);
+    const itemsHash = itemsSeleccionadosParaOrden
+      .map((it) => `${Number(it.id_recibo)}:${round2(toNum(it.monto_autorizado)).toFixed(2)}`)
+      .join("|");
+    return `${targetId}::${itemsHash}`;
+  }, [isCaja, aplicarRecargoReimpresion, idReciboImpresion, itemsSeleccionadosParaOrden]);
+
+  useEffect(() => {
+    if (isCaja || !aplicarRecargoReimpresion) {
+      if (reimpresionHashImpresa) setReimpresionHashImpresa("");
+      return;
+    }
+    if (reimpresionHashImpresa && reimpresionHashImpresa !== reimpresionActualHash) {
+      setReimpresionHashImpresa("");
+    }
+  }, [isCaja, aplicarRecargoReimpresion, reimpresionActualHash, reimpresionHashImpresa]);
+
+  const requiereImpresionAntesEmitir = (
+    !isCaja &&
+    aplicarRecargoReimpresion &&
+    itemsSeleccionadosParaOrden.length > 0 &&
+    reimpresionHashImpresa !== reimpresionActualHash
+  );
+
   const buildDatosImpresion = (orden, cargoAplicado = 0, codigoImpresion = "", idReciboObjetivo = 0) => {
     const allItems = Array.isArray(orden?.items) ? orden.items : [];
     const targetId = Number(idReciboObjetivo || 0);
@@ -262,6 +289,9 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     const items = itemsSeleccionadosParaOrden;
 
     if (items.length === 0) return alert("Seleccione al menos un recibo con monto valido.");
+    if (requiereImpresionAntesEmitir) {
+      return alert("Para continuar, primero use el boton IMPRIMIR REIMPRESION.");
+    }
     const totalConCargo = round2(totalOrden + recargoReimpresion);
     if (!window.confirm(`Emitir orden por S/. ${totalConCargo.toFixed(2)}?`)) return;
 
@@ -336,6 +366,7 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
       "",
       targetId
     ));
+    setReimpresionHashImpresa(reimpresionActualHash);
   };
 
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
@@ -506,6 +537,11 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                     <div className="small text-muted mt-1">
                       Este recibo se imprimira con el cargo de reimpresion (S/. {CARGO_REIMPRESION.toFixed(2)}).
                     </div>
+                    <div className={`small mt-1 ${requiereImpresionAntesEmitir ? "text-danger fw-bold" : "text-success fw-bold"}`}>
+                      {requiereImpresionAntesEmitir
+                        ? "Pendiente: debe imprimir reimpresion antes de emitir la orden."
+                        : "OK: reimpresion registrada para esta seleccion."}
+                    </div>
                   </div>
                 )}
                 <div className="alert alert-info text-center fw-bold">
@@ -530,7 +566,7 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                 >
                   IMPRIMIR REIMPRESION
                 </button>
-                <button className="btn btn-primary fw-bold" onClick={emitirOrden} disabled={cargando}>
+                <button className="btn btn-primary fw-bold" onClick={emitirOrden} disabled={cargando || requiereImpresionAntesEmitir}>
                   {cargando ? "Procesando..." : "EMITIR ORDEN"}
                 </button>
               </>
