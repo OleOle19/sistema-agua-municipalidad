@@ -65,14 +65,43 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
 
   useEffect(() => {
     if (isCaja) return;
-    const base = {};
-    recibosPendientes.forEach((r) => {
-      const saldoBase = round2(toNum(r.deuda_mes ?? r.total_pagar));
-      const pendiente = round2(toNum(pendientePorRecibo.get(Number(r.id_recibo))));
-      const saldo = round2(Math.max(saldoBase - pendiente, 0));
-      base[r.id_recibo] = { checked: false, monto: saldo.toFixed(2) };
+    setSeleccion((prev) => {
+      const next = {};
+      recibosPendientes.forEach((r) => {
+        const id = Number(r.id_recibo);
+        if (!Number.isInteger(id) || id <= 0) return;
+
+        const saldoBase = round2(toNum(r.deuda_mes ?? r.total_pagar));
+        const pendiente = round2(toNum(pendientePorRecibo.get(id)));
+        const saldo = round2(Math.max(saldoBase - pendiente, 0));
+        const bloqueadoPorOrden = pendiente > 0.001;
+        const prevRow = prev[id];
+        const hasPrevMonto = typeof prevRow?.monto !== "undefined";
+        const montoPrevioRaw = String(prevRow?.monto ?? "");
+        const montoPrevioNum = round2(toNum(montoPrevioRaw));
+        const montoAjustado = hasPrevMonto
+          ? (montoPrevioRaw === ""
+            ? ""
+            : Math.min(Math.max(montoPrevioNum, 0), saldo).toFixed(2))
+          : saldo.toFixed(2);
+
+        next[id] = {
+          checked: bloqueadoPorOrden || saldo <= 0 ? false : Boolean(prevRow?.checked),
+          monto: montoAjustado
+        };
+      });
+
+      const prevKeys = Object.keys(prev);
+      const nextKeys = Object.keys(next);
+      const sameShape = prevKeys.length === nextKeys.length;
+      const sameValues = sameShape && nextKeys.every((k) => {
+        const a = prev[k];
+        const b = next[k];
+        return Boolean(a?.checked) === Boolean(b?.checked) && String(a?.monto ?? "") === String(b?.monto ?? "");
+      });
+
+      return sameValues ? prev : next;
     });
-    setSeleccion(base);
   }, [isCaja, recibosPendientes, pendientePorRecibo]);
 
   const cargarOrdenes = useCallback(async () => {
@@ -89,7 +118,11 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
       }
       maxOrdenConocidaRef.current = Math.max(maxOrdenConocidaRef.current, maxActual);
       setOrdenes(rows);
-      setOrdenId(rows[0]?.id_orden || 0);
+      setOrdenId((prev) => {
+        const prevId = Number(prev || 0);
+        if (prevId > 0 && rows.some((r) => Number(r?.id_orden) === prevId)) return prevId;
+        return Number(rows[0]?.id_orden || 0);
+      });
     } catch (err) {
       alert(err?.response?.data?.error || "No se pudo cargar ordenes pendientes.");
     } finally {
@@ -251,8 +284,14 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     const totalDesague = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_desague), 0));
     const totalLimpieza = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_limpieza), 0));
     const totalAdmin = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_admin), 0));
-    const totalBase = round2(items.reduce((acc, it) => acc + toNum(it?.monto_autorizado), 0));
-    const totalFinal = round2(totalBase + toNum(cargoAplicado));
+    const cargoFinal = round2(
+      Math.max(
+        toNum(cargoAplicado),
+        (!isCaja && aplicarRecargoReimpresion ? CARGO_REIMPRESION : 0)
+      )
+    );
+    const totalBase = round2(totalAgua + totalDesague + totalLimpieza + totalAdmin);
+    const totalFinal = round2(totalBase + cargoFinal);
     const primerItem = items[0] || {};
     const periodoUnico = items.length === 1;
 
@@ -273,7 +312,7 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
         anio: periodoUnico ? (primerItem?.anio || "") : "Varios",
         total: totalFinal,
         codigo_impresion: codigoImpresion || "",
-        cargo_reimpresion: toNum(cargoAplicado)
+        cargo_reimpresion: cargoFinal
       },
       detalles: {
         agua: totalAgua,

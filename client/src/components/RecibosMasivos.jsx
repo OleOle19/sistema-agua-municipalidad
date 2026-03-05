@@ -28,6 +28,7 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
           subtotal_limpieza: parseAmount(item.subtotal_limpieza),
           subtotal_admin: parseAmount(item.subtotal_admin),
           total_pagar: parseAmount(item.total_pagar),
+          cargo_reimpresion: parseAmount(item.cargo_reimpresion),
           meses: new Set([Number(item.mes)])
         });
         return;
@@ -38,6 +39,7 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
       actual.subtotal_limpieza += parseAmount(item.subtotal_limpieza);
       actual.subtotal_admin += parseAmount(item.subtotal_admin);
       actual.total_pagar += parseAmount(item.total_pagar);
+      actual.cargo_reimpresion += parseAmount(item.cargo_reimpresion);
       actual.meses.add(Number(item.mes));
       // Conservamos el ultimo recibo para la numeracion.
       actual.id_recibo = item.id_recibo;
@@ -58,7 +60,8 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
         subtotal_desague: round2(item.subtotal_desague),
         subtotal_limpieza: round2(item.subtotal_limpieza),
         subtotal_admin: round2(item.subtotal_admin),
-        total_pagar: round2(item.total_pagar)
+        total_pagar: round2(item.total_pagar),
+        cargo_reimpresion: round2(item.cargo_reimpresion)
       };
     });
   }, [listaRecibos]);
@@ -91,6 +94,14 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
 });
 
 const ReciboRender = ({ item }) => {
+  const cargoReimpresion = round2(parseAmount(item.cargo_reimpresion));
+  const totalBase = round2(
+    parseAmount(item.subtotal_agua)
+    + parseAmount(item.subtotal_desague)
+    + parseAmount(item.subtotal_limpieza)
+    + parseAmount(item.subtotal_admin)
+  );
+  const totalConCargo = round2(totalBase + cargoReimpresion);
   const datosEstructurados = {
     contribuyente: {
       nombre_completo: item.nombre_completo,
@@ -107,7 +118,8 @@ const ReciboRender = ({ item }) => {
       mes: item.mes,
       anio: item.anio,
       mes_nombre: item.mes_nombre,
-      total: item.total_pagar
+      total: totalConCargo,
+      cargo_reimpresion: cargoReimpresion
     },
     detalles: {
       agua: item.subtotal_agua,

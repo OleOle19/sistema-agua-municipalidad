@@ -7,6 +7,7 @@ $stateFile = Join-Path $runtimeDir "backend_state.json"
 $backendOutLog = Join-Path $runtimeDir "backend_manual.out.log"
 $backendErrLog = Join-Path $runtimeDir "backend_manual.err.log"
 $backendHealthUrl = "http://127.0.0.1:5000/health"
+$backendPort = 5000
 
 New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
 
@@ -40,6 +41,15 @@ function Test-BackendHealth([string]$Url) {
   }
 }
 
+function Get-ListeningPidsByPort([int]$LocalPort) {
+  try {
+    $items = Get-NetTCPConnection -LocalPort $LocalPort -State Listen -ErrorAction Stop
+    return @($items | Select-Object -ExpandProperty OwningProcess -Unique)
+  } catch {
+    return @()
+  }
+}
+
 function Resolve-CommandPath([string]$Name) {
   $cmd = Get-Command $Name -ErrorAction SilentlyContinue
   if ($null -eq $cmd) { return $null }
@@ -69,6 +79,8 @@ if ([string]::IsNullOrWhiteSpace($npmCmd)) {
   throw "No se encontro npm.cmd en PATH."
 }
 
+$listeningPidsBefore = @(Get-ListeningPidsByPort -LocalPort $backendPort)
+
 Write-Host "Iniciando backend..."
 $backendProc = Start-Process -FilePath $npmCmd `
   -ArgumentList @("--prefix", "server", "start") `
@@ -95,10 +107,24 @@ if (-not $backendReady) {
   throw "Backend no quedo listo. Revisa logs: $backendOutLog / $backendErrLog"
 }
 
+$listeningPidsAfter = @(Get-ListeningPidsByPort -LocalPort $backendPort)
+$newListeningPids = @($listeningPidsAfter | Where-Object { $listeningPidsBefore -notcontains $_ })
+$managedBackendPid = 0
+if ($newListeningPids.Count -gt 0) {
+  $managedBackendPid = [int]$newListeningPids[0]
+} elseif ($listeningPidsAfter.Count -gt 0) {
+  $managedBackendPid = [int]$listeningPidsAfter[0]
+}
+if ($managedBackendPid -le 0) {
+  $managedBackendPid = [int]$backendProc.Id
+}
+
 $statePayload = [pscustomobject]@{
   started_at = (Get-Date).ToString("o")
   repo_root = "$repoRoot"
-  backend_pid = $backendProc.Id
+  backend_pid = $managedBackendPid
+  backend_manager_pid = $backendProc.Id
+  backend_port = $backendPort
   backend_managed = $true
   backend_health_url = $backendHealthUrl
   backend_out_log = $backendOutLog
@@ -107,6 +133,7 @@ $statePayload = [pscustomobject]@{
 $statePayload | ConvertTo-Json -Depth 4 | Set-Content -Path $stateFile -Encoding UTF8
 
 Write-Host "Backend iniciado correctamente."
-Write-Host "PID: $($backendProc.Id)"
+Write-Host "PID backend: $managedBackendPid"
+Write-Host "PID manager: $($backendProc.Id)"
 Write-Host "Health: $backendHealthUrl"
 Write-Host "Logs: $backendOutLog / $backendErrLog"

@@ -25,6 +25,7 @@ ops/runtime/*.json
 **/backup*/
 **/backups/
 *.sql
+!server/sql/migrations/*.sql
 *.dump
 *.bak
 *.backup

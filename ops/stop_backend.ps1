@@ -67,9 +67,9 @@ function Stop-ByPort([int]$LocalPort) {
     return 0
   }
   $stopped = 0
-  foreach ($pid in $pids) {
-    if (Stop-Safe ([int]$pid)) {
-      Write-Host "Backend detenido por puerto $LocalPort (PID $pid)."
+  foreach ($procId in $pids) {
+    if (Stop-Safe ([int]$procId)) {
+      Write-Host "Backend detenido por puerto $LocalPort (PID $procId)."
       $stopped += 1
     }
   }
@@ -105,18 +105,39 @@ try {
 }
 
 $backendPid = [int]($state.backend_pid | ForEach-Object { $_ })
+$backendManagerPid = [int]($state.backend_manager_pid | ForEach-Object { $_ })
+$statePort = [int]($state.backend_port | ForEach-Object { $_ })
+if ($statePort -gt 0 -and $statePort -lt 65536) {
+  $Port = $statePort
+}
+
 $stopped = Stop-Safe $backendPid
+if (-not $stopped -and $backendManagerPid -gt 0 -and $backendManagerPid -ne $backendPid) {
+  $stopped = Stop-Safe $backendManagerPid
+}
 Remove-Item -Path $stateFile -Force -ErrorAction SilentlyContinue
 
 if ($stopped) {
-  Write-Host "Backend detenido (PID $backendPid)."
+  if ($backendManagerPid -gt 0 -and $backendManagerPid -ne $backendPid) {
+    Write-Host "Backend detenido (PID backend $backendPid | PID manager $backendManagerPid)."
+  } else {
+    Write-Host "Backend detenido (PID $backendPid)."
+  }
 } else {
   if ($Force) {
     $killed = Stop-ByPort -LocalPort $Port
     if ($killed -eq 0) {
-      Write-Host "No se encontro proceso activo para el PID registrado ($backendPid)."
+      if ($backendManagerPid -gt 0 -and $backendManagerPid -ne $backendPid) {
+        Write-Host "No se encontro proceso activo para los PID registrados ($backendPid, $backendManagerPid)."
+      } else {
+        Write-Host "No se encontro proceso activo para el PID registrado ($backendPid)."
+      }
     }
   } else {
-    Write-Host "No se encontro proceso activo para el PID registrado ($backendPid)."
+    if ($backendManagerPid -gt 0 -and $backendManagerPid -ne $backendPid) {
+      Write-Host "No se encontro proceso activo para los PID registrados ($backendPid, $backendManagerPid)."
+    } else {
+      Write-Host "No se encontro proceso activo para el PID registrado ($backendPid)."
+    }
   }
 }

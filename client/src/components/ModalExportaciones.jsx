@@ -1,9 +1,11 @@
 import { useState } from "react";
-import { FaDatabase, FaFileExcel, FaMoneyBillWave, FaUsers } from "react-icons/fa";
+import { FaBalanceScale, FaDatabase, FaFileExcel, FaMoneyBillWave, FaUsers } from "react-icons/fa";
 import api from "../api";
+import ModalComparacionesLegacy from "./ModalComparacionesLegacy";
 
 const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
   const [exportando, setExportando] = useState("");
+  const [mostrarComparaciones, setMostrarComparaciones] = useState(false);
 
   const descargarExcel = async (key, endpoint, nombreBase) => {
     try {
@@ -113,6 +115,24 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
                 {exportando === "finanzas" ? "Exportando..." : "Exportar Finanzas"}
               </button>
             </div>
+
+            <div className={`border rounded p-3 mt-3 ${bodyCardClass}`}>
+              <div className="fw-bold mb-1 d-flex align-items-center gap-2">
+                <FaBalanceScale /> Comparacion Base Antigua vs Actual
+              </div>
+              <div className="small opacity-75 mb-2">
+                Sube la base legacy (plantilla fija), compara padron/deuda/recaudacion y guarda historial auditable.
+              </div>
+              <button
+                type="button"
+                className="btn btn-warning btn-sm"
+                disabled={exportando !== ""}
+                onClick={() => setMostrarComparaciones(true)}
+              >
+                <FaBalanceScale className="me-2" />
+                Abrir Comparador
+              </button>
+            </div>
           </div>
 
           <div className={`modal-footer ${darkMode ? "border-secondary" : ""}`}>
@@ -122,6 +142,12 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
           </div>
         </div>
       </div>
+      {mostrarComparaciones && (
+        <ModalComparacionesLegacy
+          cerrarModal={() => setMostrarComparaciones(false)}
+          darkMode={darkMode}
+        />
+      )}
     </div>
   );
 };

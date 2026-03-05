@@ -1,6 +1,7 @@
 ﻿const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
 const express = require("express");
@@ -83,6 +84,40 @@ const parseMonto = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 const MAX_RECHAZOS_IMPORTACION = Number(process.env.MAX_RECHAZOS_IMPORTACION || 500);
+const LEGACY_COMPARACION_MAX_FILE_BYTES = Math.max(
+  1024 * 1024,
+  Number(process.env.LEGACY_COMPARACION_MAX_FILE_BYTES || (100 * 1024 * 1024))
+);
+const LEGACY_COMPARACION_TOLERANCIA = Math.max(
+  0,
+  parseMonto(process.env.LEGACY_COMPARACION_TOLERANCIA, 0.01)
+);
+const LEGACY_COMPARACION_DETAIL_INSERT_CHUNK = 300;
+const LEGACY_COMPARACION_UPLOAD_DIR = path.join(__dirname, ".tmp", "comparaciones_legacy_uploads");
+const ensureLegacyUploadDir = () => {
+  try {
+    fs.mkdirSync(LEGACY_COMPARACION_UPLOAD_DIR, { recursive: true });
+  } catch {}
+};
+const uploadLegacyComparacion = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        ensureLegacyUploadDir();
+        return cb(null, LEGACY_COMPARACION_UPLOAD_DIR);
+      } catch (err) {
+        return cb(err);
+      }
+    },
+    filename: (req, file, cb) => {
+      const extRaw = String(path.extname(file?.originalname || ".xlsx") || ".xlsx");
+      const ext = extRaw.length <= 10 ? extRaw : ".xlsx";
+      const unique = `${Date.now()}_${crypto.randomBytes(6).toString("hex")}${ext || ".xlsx"}`;
+      return cb(null, unique);
+    }
+  }),
+  limits: { fileSize: LEGACY_COMPARACION_MAX_FILE_BYTES }
+});
 const AUTO_DEUDA_TIMEZONE = process.env.AUTO_DEUDA_TIMEZONE || APP_TIMEZONE;
 const AUTO_DEUDA_CHECK_MS = Number(process.env.AUTO_DEUDA_CHECK_MS || (60 * 60 * 1000));
 const AUTO_DEUDA_ACTIVA = process.env.AUTO_DEUDA_ACTIVA !== "0";
@@ -543,7 +578,8 @@ const PROTECTED_API_PREFIXES = [
   "/auditoria",
   "/exportar",
   "/admin",
-  "/importar"
+  "/importar",
+  "/comparaciones"
 ];
 
 const ACCESS_RULES = [
@@ -566,6 +602,12 @@ const ACCESS_RULES = [
 
   { methods: ["GET"], pattern: /^\/exportar\/usuarios-completo$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/exportar\/finanzas-completo$/, minRole: "ADMIN" },
+  { methods: ["POST"], pattern: /^\/comparaciones\/legacy\/run$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/comparaciones\/legacy$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/plantilla$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/\d+\/resumen$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/\d+\/detalle$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/\d+\/exportar$/, minRole: "ADMIN" },
 
   { methods: ["GET"], pattern: /^\/auditoria$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/exportar\/auditoria$/, minRole: "ADMIN_SEC" },
@@ -629,6 +671,7 @@ const authorizeByRole = (req, res, next) => {
 let importacionHistorialEnCurso = false;
 let autoDeudaEnCurso = false;
 let ultimoPeriodoAutoDeuda = null;
+const comparacionesLegacyLocks = new Set();
 const CONTRIBUYENTES_CACHE_TTL_MS = Number(process.env.CONTRIBUYENTES_CACHE_TTL_MS || 20000);
 const REPORTE_CAJA_CACHE_TTL_MS = Number(process.env.REPORTE_CAJA_CACHE_TTL_MS || 15000);
 const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 15000);
@@ -1083,6 +1126,77 @@ const ensureCampoSolicitudesTable = async (client) => {
   `);
 };
 
+const ensureComparacionesLegacyTables = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS comparaciones_legacy_corridas (
+      id_corrida BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      id_usuario INTEGER NULL,
+      archivo_nombre TEXT NOT NULL,
+      archivo_sha256 VARCHAR(64) NOT NULL,
+      fecha_desde DATE NULL,
+      fecha_hasta DATE NULL,
+      duracion_ms INTEGER NULL,
+      estado VARCHAR(20) NOT NULL DEFAULT 'EN_PROCESO',
+      resumen_json JSONB NULL,
+      error_json JSONB NULL
+    )
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_comparaciones_legacy_corridas_estado'
+      ) THEN
+        ALTER TABLE comparaciones_legacy_corridas
+        ADD CONSTRAINT chk_comparaciones_legacy_corridas_estado
+        CHECK (estado IN ('EN_PROCESO', 'COMPLETADA', 'ERROR'));
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_comparaciones_legacy_corridas_creado_en
+    ON comparaciones_legacy_corridas (creado_en DESC)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_comparaciones_legacy_corridas_estado
+    ON comparaciones_legacy_corridas (estado, creado_en DESC)
+  `);
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS comparaciones_legacy_detalle (
+      id_detalle BIGSERIAL PRIMARY KEY,
+      id_corrida BIGINT NOT NULL REFERENCES comparaciones_legacy_corridas(id_corrida) ON DELETE CASCADE,
+      seccion VARCHAR(30) NOT NULL,
+      categoria VARCHAR(40) NOT NULL,
+      clave VARCHAR(120) NULL,
+      codigo_municipal VARCHAR(32) NULL,
+      dni_ruc VARCHAR(32) NULL,
+      campo VARCHAR(80) NULL,
+      valor_antiguo TEXT NULL,
+      valor_nuevo TEXT NULL,
+      delta NUMERIC(14, 2) NULL,
+      payload_json JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_comparaciones_legacy_detalle_corrida
+    ON comparaciones_legacy_detalle (id_corrida)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_comparaciones_legacy_detalle_seccion_categoria
+    ON comparaciones_legacy_detalle (id_corrida, seccion, categoria)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_comparaciones_legacy_detalle_codigo
+    ON comparaciones_legacy_detalle (id_corrida, codigo_municipal)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_comparaciones_legacy_detalle_dni
+    ON comparaciones_legacy_detalle (id_corrida, dni_ruc)
+  `);
+};
+
 const ensureDataIntegrityGuards = async (client) => {
   await client.query(`
     DO $$
@@ -1163,6 +1277,7 @@ const ensurePerformanceIndexes = async (client) => {
   await ensureEstadoConexionContribuyentes(client);
   await ensureEstadoConexionEventosTable(client);
   await ensureCampoSolicitudesTable(client);
+  await ensureComparacionesLegacyTables(client);
   await ensureDataIntegrityGuards(client);
   const statements = [
     "CREATE INDEX IF NOT EXISTS idx_pagos_fecha_pago ON pagos (fecha_pago DESC)",
@@ -5347,6 +5462,1362 @@ app.delete("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (r
     res.json({ mensaje: "Usuario eliminado." });
   } catch (err) {
     res.status(500).json({ error: "Error al eliminar usuario." });
+  }
+});
+
+// ==========================================
+// COMPARACIONES LEGACY VS ACTUAL
+// ==========================================
+const LEGACY_TEMPLATE_SHEETS = {
+  PADRON_ANTIGUO: [
+    "Con_ID", "Con_Cod", "Con_DNI", "Con_Nombre", "Ca_Cod", "Ca_Nombre", "con_direccion",
+    "Con_Nro_MZ_Lote", "Agua_SN", "Desague_SN", "Limpieza_SN", "Tipo_Tarifa", "Activo_SN", "Ultima_Act",
+    "Sec_Cod", "Sec_Nombre"
+  ],
+  PAGOS_ANTIGUO: ["FECHA PAGO", "CODIGO", "DNI / RUC", "MONTO PAGADO"],
+  DEUDAS_ANTIGUO: ["CODIGO", "DNI / RUC", "AÑO", "MES", "DEUDA PENDIENTE"]
+};
+const LEGACY_COMPARACION_UPLOAD_FIELDS = [
+  { name: "archivo_legacy", maxCount: 1 },
+  { name: "archivo_usuarios", maxCount: 1 },
+  { name: "archivo_finanzas", maxCount: 1 }
+];
+const LEGACY_SECCIONES = {
+  PADRON: "PADRON",
+  DEUDA: "DEUDA",
+  RECAUDACION: "RECAUDACION"
+};
+const LEGACY_CATEGORIAS = {
+  CAMBIO: "CAMBIO",
+  SOLO_ANTIGUA: "SOLO_ANTIGUA",
+  SOLO_NUEVA: "SOLO_NUEVA",
+  AMBIGUA: "AMBIGUA",
+  DIARIO: "DIARIO",
+  SEMANAL: "SEMANAL",
+  MENSUAL: "MENSUAL",
+  ANUAL: "ANUAL"
+};
+const LEGACY_PADRON_COMPARE_FIELDS_FULL = [
+  ["NOMBRE_COMPLETO", "nombre_completo"],
+  ["TELEFONO", "telefono"],
+  ["DIRECCION_COMPLETA", "direccion_completa"],
+  ["ESTADO_CONEXION", "estado_conexion"],
+  ["AGUA_SN", "agua_sn"],
+  ["DESAGUE_SN", "desague_sn"],
+  ["LIMPIEZA_SN", "limpieza_sn"],
+  ["TIPO_TARIFA", "tipo_tarifa"],
+  ["SEC_COD", "sec_cod"],
+  ["SEC_NOMBRE", "sec_nombre"]
+];
+const LEGACY_PADRON_COMPARE_FIELDS_EXPORT = [
+  ["NOMBRE_COMPLETO", "nombre_completo"],
+  ["DIRECCION_COMPLETA", "direccion_completa"],
+  ["AGUA_SN", "agua_sn"],
+  ["DESAGUE_SN", "desague_sn"],
+  ["LIMPIEZA_SN", "limpieza_sn"],
+  ["TIPO_TARIFA", "tipo_tarifa"],
+  ["SEC_COD", "sec_cod"],
+  ["SEC_NOMBRE", "sec_nombre"]
+];
+const LEGACY_PADRON_COLUMNS = [
+  { key: "id_contribuyente_legacy", aliases: ["CON_ID"], required: false },
+  { key: "codigo_municipal", aliases: ["CODIGO_MUNICIPAL", "CON_COD", "CODIGO"], required: true },
+  { key: "dni_ruc", aliases: ["DNI_RUC", "CON_DNI", "DNI / RUC", "DNI"], required: false },
+  { key: "nombre_completo", aliases: ["NOMBRE_COMPLETO", "CON_NOMBRE", "NOMBRE"], required: true },
+  { key: "telefono", aliases: ["TELEFONO", "CON_TELEFONO"], required: false },
+  { key: "direccion_completa", aliases: ["DIRECCION_COMPLETA", "CON_DIRECCION", "DIRECCION"], required: true },
+  { key: "estado_conexion", aliases: ["ESTADO_CONEXION"], required: false },
+  { key: "activo_sn", aliases: ["ACTIVO_SN", "ACTIVO"], required: false },
+  { key: "agua_sn", aliases: ["AGUA_SN", "AGUA"], required: false },
+  { key: "desague_sn", aliases: ["DESAGUE_SN", "DESAGUE"], required: false },
+  { key: "limpieza_sn", aliases: ["LIMPIEZA_SN", "LIMPIEZA"], required: false },
+  { key: "tipo_tarifa", aliases: ["TIPO_TARIFA", "TIPO TARIFA"], required: false },
+  { key: "sec_cod", aliases: ["SEC_COD", "SEC COD"], required: false },
+  { key: "sec_nombre", aliases: ["SEC_NOMBRE", "SEC NOMBRE"], required: false }
+];
+const LEGACY_PAGOS_COLUMNS = [
+  { key: "fecha_pago", aliases: ["FECHA_PAGO", "FECHA PAGO"], required: true },
+  { key: "codigo_municipal", aliases: ["CODIGO_MUNICIPAL", "CON_COD", "CODIGO"], required: false },
+  { key: "dni_ruc", aliases: ["DNI_RUC", "CON_DNI", "DNI / RUC", "DNI"], required: false },
+  { key: "monto_pagado", aliases: ["MONTO_PAGADO", "MONTO PAGADO"], required: true }
+];
+const LEGACY_DEUDAS_COLUMNS = [
+  { key: "codigo_municipal", aliases: ["CODIGO_MUNICIPAL", "CON_COD", "CODIGO"], required: false },
+  { key: "dni_ruc", aliases: ["DNI_RUC", "CON_DNI", "DNI / RUC", "DNI"], required: false },
+  { key: "anio", aliases: ["ANIO", "AÑO", "ANO"], required: true },
+  { key: "mes", aliases: ["MES"], required: true },
+  { key: "deuda_total", aliases: ["DEUDA_PENDIENTE", "DEUDA PENDIENTE", "SALDO"], required: true }
+];
+
+const roundLegacy2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+const sha256Buffer = (buffer) => crypto.createHash("sha256").update(buffer || Buffer.alloc(0)).digest("hex");
+const sha256File = async (filePath) => new Promise((resolve, reject) => {
+  const hash = crypto.createHash("sha256");
+  const stream = fs.createReadStream(filePath);
+  stream.on("data", (chunk) => hash.update(chunk));
+  stream.on("error", reject);
+  stream.on("end", () => resolve(hash.digest("hex")));
+});
+const sha256UploadedFile = async (archivo) => {
+  if (!archivo) return sha256Buffer(Buffer.alloc(0));
+  if (archivo.path && fs.existsSync(archivo.path)) return sha256File(archivo.path);
+  return sha256Buffer(archivo.buffer);
+};
+const loadWorkbookFromUploadedFile = async (archivo) => {
+  const wb = new ExcelJS.Workbook();
+  if (!archivo) return wb;
+  if (archivo.path && fs.existsSync(archivo.path)) {
+    await wb.xlsx.readFile(archivo.path);
+    return wb;
+  }
+  await wb.xlsx.load(archivo.buffer || Buffer.alloc(0));
+  return wb;
+};
+const collectLegacyUploadedFiles = (req) => {
+  const list = [];
+  if (req.file) list.push(req.file);
+  const grouped = req.files && typeof req.files === "object" ? Object.values(req.files) : [];
+  grouped.forEach((arr) => {
+    if (!Array.isArray(arr)) return;
+    arr.forEach((f) => list.push(f));
+  });
+  return list;
+};
+const cleanupLegacyUploadedFiles = (files = []) => {
+  files.forEach((f) => {
+    const p = String(f?.path || "").trim();
+    if (!p) return;
+    try {
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch {}
+  });
+};
+const normalizeLegacyText = (value) => String(value || "").trim().replace(/\s+/g, " ").toUpperCase();
+const normalizeLegacyCodigo = (value) => normalizeCodigoMunicipal(value, 6);
+const normalizeLegacyDni = (value) => String(value || "").trim().replace(/[^0-9A-Za-z]/g, "").toUpperCase();
+const normalizeLegacySn = (value, fallback = "N") => normalizeSN(value, fallback);
+
+const parseLegacyDateStrict = (value, sheetName, rowNum, fieldName) => {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    throw new Error(`Formato inválido en ${sheetName} fila ${rowNum}, campo ${fieldName}. Use YYYY-MM-DD.`);
+  }
+  const matchIsoDate = raw.match(/^(\d{4}-\d{2}-\d{2})(?:\s+\d{2}:\d{2}(?::\d{2})?)?$/);
+  const onlyDate = matchIsoDate ? matchIsoDate[1] : null;
+  if (!onlyDate) {
+    throw new Error(`Formato inválido en ${sheetName} fila ${rowNum}, campo ${fieldName}. Use YYYY-MM-DD.`);
+  }
+  const date = new Date(`${onlyDate}T00:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== onlyDate) {
+    throw new Error(`Fecha inválida en ${sheetName} fila ${rowNum}, campo ${fieldName}: ${onlyDate}`);
+  }
+  return onlyDate;
+};
+
+const parseLegacyMontoStrict = (value, sheetName, rowNum, fieldName) => {
+  const raw = String(value || "").trim();
+  if (!raw) return 0;
+  const normalized = raw.replace(/\s+/g, "").replace(",", ".");
+  const parsed = Number.parseFloat(normalized);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Monto inválido en ${sheetName} fila ${rowNum}, campo ${fieldName}: ${raw}`);
+  }
+  return roundLegacy2(parsed);
+};
+
+const parseLegacyIntStrict = (value, sheetName, rowNum, fieldName, min, max) => {
+  const raw = String(value || "").trim();
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`Número inválido en ${sheetName} fila ${rowNum}, campo ${fieldName}: ${raw}`);
+  }
+  return parsed;
+};
+
+const normalizeLegacyHeaderToken = (value) =>
+  normalizeLegacyText(value).replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
+const getWorksheetByNameFlexible = (workbook, sheetNames = []) => {
+  const direct = sheetNames.find((name) => workbook.getWorksheet(name));
+  if (direct) return workbook.getWorksheet(direct);
+  const targets = new Set(sheetNames.map((s) => normalizeLegacyText(s)));
+  const ws = workbook.worksheets.find((w) => targets.has(normalizeLegacyText(w?.name)));
+  if (!ws) throw new Error(`No se encontró la hoja requerida: ${sheetNames.join(" / ")}`);
+  return ws;
+};
+
+const readLegacySheetRowsByColumns = (workbook, sheetNames, columns) => {
+  const ws = getWorksheetByNameFlexible(workbook, sheetNames);
+  const row1 = ws.getRow(1);
+  const maxCols = Math.max(ws.columnCount || 0, row1.cellCount || 0, row1.actualCellCount || 0);
+  const headerMap = new Map();
+  for (let i = 1; i <= maxCols; i += 1) {
+    const raw = String(row1.getCell(i)?.text || row1.getCell(i)?.value || "").trim();
+    const token = normalizeLegacyHeaderToken(raw);
+    if (token && !headerMap.has(token)) headerMap.set(token, i);
+  }
+  const resolved = columns.map((col) => {
+    const aliases = Array.isArray(col.aliases) ? col.aliases : [];
+    let colIdx = 0;
+    for (const alias of aliases) {
+      const aliasToken = normalizeLegacyHeaderToken(alias);
+      const idx = headerMap.get(aliasToken);
+      if (idx) {
+        colIdx = idx;
+        break;
+      }
+    }
+    return { ...col, colIdx };
+  });
+  const missingRequired = resolved
+    .filter((c) => c.required && !c.colIdx)
+    .map((c) => `${c.key} [${(c.aliases || []).join(" | ")}]`);
+  if (missingRequired.length > 0) {
+    throw new Error(
+      `Columnas requeridas no encontradas en hoja ${ws.name}: ${missingRequired.join(", ")}.`
+    );
+  }
+
+  const out = [];
+  for (let rowNum = 2; rowNum <= ws.rowCount; rowNum += 1) {
+    const row = ws.getRow(rowNum);
+    const data = { _linea: rowNum };
+    let hasData = false;
+    resolved.forEach((c) => {
+      const value = c.colIdx
+        ? String(row.getCell(c.colIdx)?.text ?? row.getCell(c.colIdx)?.value ?? "").trim()
+        : "";
+      if (value) hasData = true;
+      data[c.key] = value;
+    });
+    if (hasData) out.push(data);
+  }
+  return out;
+};
+
+const normalizeLegacyEstadoFromFields = (estadoRaw, activoRaw) => {
+  const estadoTxt = String(estadoRaw || "").trim();
+  if (estadoTxt) return normalizeEstadoConexion(estadoTxt);
+  const activoTxt = String(activoRaw || "").trim().toUpperCase();
+  if (["0", "N", "NO", "FALSE"].includes(activoTxt)) return ESTADOS_CONEXION.SIN_CONEXION;
+  if (["1", "S", "SI", "TRUE"].includes(activoTxt)) return ESTADOS_CONEXION.CON_CONEXION;
+  return ESTADOS_CONEXION.CON_CONEXION;
+};
+
+const getLegacyUploadFile = (req, fieldName) => {
+  if (fieldName === "archivo_legacy" && req.file) return req.file;
+  const list = req.files?.[fieldName];
+  if (Array.isArray(list) && list.length > 0) return list[0];
+  return null;
+};
+
+const ensureLegacyUploadFiles = (req, res, next) => {
+  uploadLegacyComparacion.fields(LEGACY_COMPARACION_UPLOAD_FIELDS)(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({
+        error: `El archivo excede el límite permitido (${Math.round(LEGACY_COMPARACION_MAX_FILE_BYTES / (1024 * 1024))}MB).`
+      });
+    }
+    return res.status(400).json({ error: err.message || "No se pudo procesar el archivo." });
+  });
+};
+
+const mapByKeyMulti = (rows, keyGetter) => {
+  const map = new Map();
+  for (const row of rows) {
+    const key = keyGetter(row);
+    if (!key) continue;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(row);
+  }
+  return map;
+};
+
+const addToNumericMap = (map, key, amount) => {
+  if (!key) return;
+  const prev = Number(map.get(key) || 0);
+  map.set(key, roundLegacy2(prev + Number(amount || 0)));
+};
+
+const getWeekStartIso = (isoDate) => {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return isoDate;
+  const day = d.getUTCDay();
+  const diff = (day + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - diff);
+  return d.toISOString().slice(0, 10);
+};
+
+const aggregateDailyByGranularity = (dailyMap, granularity) => {
+  const out = new Map();
+  for (const [isoDate, amount] of dailyMap.entries()) {
+    let bucket = isoDate;
+    if (granularity === "SEMANAL") bucket = getWeekStartIso(isoDate);
+    if (granularity === "MENSUAL") bucket = isoDate.slice(0, 7);
+    if (granularity === "ANUAL") bucket = isoDate.slice(0, 4);
+    addToNumericMap(out, bucket, amount);
+  }
+  return out;
+};
+
+const listUniqueSortedKeys = (mapA, mapB) => {
+  const keys = new Set();
+  for (const key of mapA.keys()) keys.add(key);
+  for (const key of mapB.keys()) keys.add(key);
+  return Array.from(keys).sort((a, b) => String(a).localeCompare(String(b)));
+};
+
+const buildCurrentPadronSnapshot = async (db = pool) => {
+  const result = await db.query(`
+    SELECT
+      c.id_contribuyente,
+      c.codigo_municipal,
+      c.dni_ruc,
+      c.nombre_completo,
+      c.telefono,
+      COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
+      c.sec_cod,
+      c.sec_nombre,
+      COALESCE(p.agua_sn, 'N') AS agua_sn,
+      COALESCE(p.desague_sn, 'N') AS desague_sn,
+      COALESCE(p.limpieza_sn, 'N') AS limpieza_sn,
+      COALESCE(p.tipo_tarifa::text, '') AS tipo_tarifa,
+      ${buildDireccionSql("ca", "p")} AS direccion_completa
+    FROM contribuyentes c
+    LEFT JOIN LATERAL (
+      SELECT p.*
+      FROM predios p
+      WHERE p.id_contribuyente = c.id_contribuyente
+      ORDER BY p.id_predio ASC
+      LIMIT 1
+    ) p ON TRUE
+    LEFT JOIN calles ca ON ca.id_calle = p.id_calle
+    ORDER BY c.id_contribuyente ASC
+  `);
+
+  return result.rows.map((r) => ({
+    id_contribuyente: Number(r.id_contribuyente),
+    codigo_municipal: normalizeLegacyCodigo(r.codigo_municipal),
+    dni_ruc: normalizeLegacyDni(r.dni_ruc),
+    nombre_completo: normalizeLegacyText(r.nombre_completo),
+    telefono: normalizeLegacyText(r.telefono),
+    direccion_completa: normalizeLegacyText(r.direccion_completa),
+    estado_conexion: normalizeEstadoConexion(r.estado_conexion),
+    agua_sn: normalizeLegacySn(r.agua_sn, "N"),
+    desague_sn: normalizeLegacySn(r.desague_sn, "N"),
+    limpieza_sn: normalizeLegacySn(r.limpieza_sn, "N"),
+    tipo_tarifa: normalizeLegacyText(r.tipo_tarifa),
+    sec_cod: normalizeLegacyText(r.sec_cod),
+    sec_nombre: normalizeLegacyText(r.sec_nombre),
+    _raw: {
+      codigo_municipal: String(r.codigo_municipal || "").trim(),
+      dni_ruc: String(r.dni_ruc || "").trim(),
+      nombre_completo: String(r.nombre_completo || "").trim(),
+      telefono: String(r.telefono || "").trim(),
+      direccion_completa: String(r.direccion_completa || "").trim(),
+      estado_conexion: String(r.estado_conexion || "").trim(),
+      agua_sn: String(r.agua_sn || "").trim(),
+      desague_sn: String(r.desague_sn || "").trim(),
+      limpieza_sn: String(r.limpieza_sn || "").trim(),
+      tipo_tarifa: String(r.tipo_tarifa || "").trim(),
+      sec_cod: String(r.sec_cod || "").trim(),
+      sec_nombre: String(r.sec_nombre || "").trim()
+    }
+  }));
+};
+
+const buildCurrentDeudaSnapshot = async (db = pool) => {
+  const anioActual = getCurrentYear();
+  const mesActual = getCurrentMonth();
+  const result = await db.query(`
+    WITH recibos_objetivo AS (
+      SELECT r.id_recibo, r.id_predio, r.total_pagar
+      FROM recibos r
+      WHERE (r.anio, r.mes) <= ($1::int, $2::int)
+    ),
+    pagos_por_recibo AS (
+      SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
+      FROM pagos p
+      JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+      GROUP BY p.id_recibo
+    ),
+    deuda_predio AS (
+      SELECT
+        ro.id_predio,
+        SUM(GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
+      FROM recibos_objetivo ro
+      LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+      GROUP BY ro.id_predio
+    )
+    SELECT
+      c.id_contribuyente,
+      c.codigo_municipal,
+      c.dni_ruc,
+      COALESCE(SUM(dp.deuda_total), 0)::numeric AS deuda_total
+    FROM contribuyentes c
+    LEFT JOIN predios p ON p.id_contribuyente = c.id_contribuyente
+    LEFT JOIN deuda_predio dp ON dp.id_predio = p.id_predio
+    GROUP BY c.id_contribuyente, c.codigo_municipal, c.dni_ruc
+    ORDER BY c.id_contribuyente ASC
+  `, [anioActual, mesActual]);
+
+  return result.rows.map((r) => ({
+    id_contribuyente: Number(r.id_contribuyente),
+    codigo_municipal: normalizeLegacyCodigo(r.codigo_municipal),
+    dni_ruc: normalizeLegacyDni(r.dni_ruc),
+    deuda_total: roundLegacy2(r.deuda_total)
+  }));
+};
+
+const buildCurrentRecaudacionDailySnapshot = async (db, fechaDesde, fechaHasta) => {
+  const result = await db.query(`
+    SELECT
+      to_char(DATE(p.fecha_pago), 'YYYY-MM-DD') AS fecha,
+      ROUND(SUM(p.monto_pagado)::numeric, 2) AS total
+    FROM pagos p
+    WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+      AND DATE(p.fecha_pago) >= $1::date
+      AND DATE(p.fecha_pago) <= $2::date
+    GROUP BY DATE(p.fecha_pago)
+    ORDER BY DATE(p.fecha_pago)
+  `, [fechaDesde, fechaHasta]);
+  const map = new Map();
+  result.rows.forEach((r) => map.set(String(r.fecha), roundLegacy2(r.total)));
+  return map;
+};
+
+const resolveCurrentByCodigoDni = (legacyRow, currentByCodigo, currentByDni, legacyDniCounts) => {
+  const codigo = legacyRow?.codigo_municipal || "";
+  const dni = legacyRow?.dni_ruc || "";
+  if (codigo) {
+    const list = currentByCodigo.get(codigo) || [];
+    if (list.length === 1) return { matched: list[0], reason: "" };
+    if (list.length > 1) return { matched: null, reason: "Codigo duplicado en base actual." };
+  }
+
+  if (dni) {
+    const legacyDniDup = Number(legacyDniCounts.get(dni) || 0) > 1;
+    const list = currentByDni.get(dni) || [];
+    if (legacyDniDup) return { matched: null, reason: "DNI/RUC duplicado en archivo legacy." };
+    if (list.length === 1) return { matched: list[0], reason: "" };
+    if (list.length > 1) return { matched: null, reason: "DNI/RUC ambiguo en base actual." };
+  }
+
+  return { matched: null, reason: "" };
+};
+
+const buildPadronComparison = (
+  legacyPadronRows,
+  currentPadronRows,
+  tolerancia = LEGACY_COMPARACION_TOLERANCIA,
+  options = {}
+) => {
+  const details = [];
+  const summary = {
+    total_legacy: legacyPadronRows.length,
+    total_actual: currentPadronRows.length,
+    coincidencias: 0,
+    cambios_registros: 0,
+    cambios_campos: 0,
+    solo_antigua: 0,
+    solo_nueva: 0,
+    ambigua: 0
+  };
+  const currentByCodigo = mapByKeyMulti(currentPadronRows, (r) => r.codigo_municipal);
+  const currentByDni = mapByKeyMulti(currentPadronRows, (r) => r.dni_ruc);
+  const legacyDniCounts = new Map();
+  legacyPadronRows.forEach((r) => {
+    if (!r.dni_ruc) return;
+    legacyDniCounts.set(r.dni_ruc, Number(legacyDniCounts.get(r.dni_ruc) || 0) + 1);
+  });
+
+  const matchedCurrentIds = new Set();
+  const compareMode = String(options?.compareMode || "FULL").toUpperCase();
+  const compareFields = compareMode === "EXPORT"
+    ? LEGACY_PADRON_COMPARE_FIELDS_EXPORT
+    : LEGACY_PADRON_COMPARE_FIELDS_FULL;
+
+  for (const legacy of legacyPadronRows) {
+    const resolved = resolveCurrentByCodigoDni(legacy, currentByCodigo, currentByDni, legacyDniCounts);
+    const matched = resolved.matched;
+
+    if (!matched) {
+      if (resolved.reason) {
+        summary.ambigua += 1;
+        details.push({
+          seccion: LEGACY_SECCIONES.PADRON,
+          categoria: LEGACY_CATEGORIAS.AMBIGUA,
+          clave: legacy.codigo_municipal || legacy.dni_ruc || `L${legacy._linea}`,
+          codigo_municipal: legacy.codigo_municipal || null,
+          dni_ruc: legacy.dni_ruc || null,
+          campo: "__registro__",
+          valor_antiguo: legacy._raw?.nombre_completo || "",
+          valor_nuevo: "",
+          delta: null,
+          payload_json: { motivo: resolved.reason, linea_legacy: legacy._linea }
+        });
+      } else {
+        summary.solo_antigua += 1;
+        details.push({
+          seccion: LEGACY_SECCIONES.PADRON,
+          categoria: LEGACY_CATEGORIAS.SOLO_ANTIGUA,
+          clave: legacy.codigo_municipal || legacy.dni_ruc || `L${legacy._linea}`,
+          codigo_municipal: legacy.codigo_municipal || null,
+          dni_ruc: legacy.dni_ruc || null,
+          campo: "__registro__",
+          valor_antiguo: legacy._raw?.nombre_completo || "",
+          valor_nuevo: "",
+          delta: null,
+          payload_json: { linea_legacy: legacy._linea }
+        });
+      }
+      continue;
+    }
+
+    matchedCurrentIds.add(matched.id_contribuyente);
+    const rowDiffs = [];
+    compareFields.forEach(([campo, key]) => {
+      const legacyValue = String(legacy[key] || "");
+      const currentValue = String(matched[key] || "");
+      if (legacyValue !== currentValue) {
+        rowDiffs.push({
+          campo,
+          key,
+          oldRaw: legacy._raw?.[key] || "",
+          newRaw: matched._raw?.[key] || ""
+        });
+      }
+    });
+
+    if (rowDiffs.length === 0) {
+      summary.coincidencias += 1;
+      continue;
+    }
+
+    summary.cambios_registros += 1;
+    summary.cambios_campos += rowDiffs.length;
+    rowDiffs.forEach((d) => {
+      details.push({
+        seccion: LEGACY_SECCIONES.PADRON,
+        categoria: LEGACY_CATEGORIAS.CAMBIO,
+        clave: legacy.codigo_municipal || matched.codigo_municipal || legacy.dni_ruc || null,
+        codigo_municipal: legacy.codigo_municipal || matched.codigo_municipal || null,
+        dni_ruc: legacy.dni_ruc || matched.dni_ruc || null,
+        campo: d.campo,
+        valor_antiguo: d.oldRaw,
+        valor_nuevo: d.newRaw,
+        delta: null,
+        payload_json: {
+          linea_legacy: legacy._linea,
+          id_contribuyente: matched.id_contribuyente,
+          tolerancia
+        }
+      });
+    });
+  }
+
+  for (const current of currentPadronRows) {
+    if (matchedCurrentIds.has(current.id_contribuyente)) continue;
+    summary.solo_nueva += 1;
+    details.push({
+      seccion: LEGACY_SECCIONES.PADRON,
+      categoria: LEGACY_CATEGORIAS.SOLO_NUEVA,
+      clave: current.codigo_municipal || current.dni_ruc || `C${current.id_contribuyente}`,
+      codigo_municipal: current.codigo_municipal || null,
+      dni_ruc: current.dni_ruc || null,
+      campo: "__registro__",
+      valor_antiguo: "",
+      valor_nuevo: current._raw?.nombre_completo || "",
+      delta: null,
+      payload_json: { id_contribuyente: current.id_contribuyente }
+    });
+  }
+
+  return { summary, details };
+};
+
+const buildDeudaComparison = (legacyDebtRows, currentDebtRows, currentPadronRows, tolerancia = LEGACY_COMPARACION_TOLERANCIA) => {
+  const details = [];
+  const summary = {
+    total_legacy: 0,
+    total_actual: 0,
+    delta_global: 0,
+    registros_con_delta: 0,
+    solo_antigua: 0,
+    solo_nueva: 0,
+    ambigua: 0
+  };
+
+  const currentByCodigo = mapByKeyMulti(currentPadronRows, (r) => r.codigo_municipal);
+  const currentByDni = mapByKeyMulti(currentPadronRows, (r) => r.dni_ruc);
+  const legacyDniCounts = new Map();
+  legacyDebtRows.forEach((r) => {
+    if (!r.dni_ruc) return;
+    legacyDniCounts.set(r.dni_ruc, Number(legacyDniCounts.get(r.dni_ruc) || 0) + 1);
+  });
+
+  const currentDebtById = new Map();
+  currentDebtRows.forEach((r) => {
+    currentDebtById.set(r.id_contribuyente, roundLegacy2(r.deuda_total));
+    summary.total_actual = roundLegacy2(summary.total_actual + roundLegacy2(r.deuda_total));
+  });
+
+  const legacyByCurrentId = new Map();
+  const legacySolo = new Map();
+  legacyDebtRows.forEach((legacy) => {
+    const monto = roundLegacy2(legacy.deuda_total);
+    summary.total_legacy = roundLegacy2(summary.total_legacy + monto);
+    const resolved = resolveCurrentByCodigoDni(legacy, currentByCodigo, currentByDni, legacyDniCounts);
+    if (resolved.matched) {
+      addToNumericMap(legacyByCurrentId, String(resolved.matched.id_contribuyente), monto);
+      return;
+    }
+    const key = legacy.codigo_municipal || legacy.dni_ruc || `L${legacy._linea}`;
+    addToNumericMap(legacySolo, key, monto);
+    if (resolved.reason) {
+      summary.ambigua += 1;
+      details.push({
+        seccion: LEGACY_SECCIONES.DEUDA,
+        categoria: LEGACY_CATEGORIAS.AMBIGUA,
+        clave: key,
+        codigo_municipal: legacy.codigo_municipal || null,
+        dni_ruc: legacy.dni_ruc || null,
+        campo: "DEUDA_TOTAL",
+        valor_antiguo: monto.toFixed(2),
+        valor_nuevo: "",
+        delta: null,
+        payload_json: { motivo: resolved.reason, linea_legacy: legacy._linea }
+      });
+      legacySolo.delete(key);
+    }
+  });
+
+  const matchedCurrentIds = new Set();
+  for (const [idStr, legacyMonto] of legacyByCurrentId.entries()) {
+    const id = Number(idStr);
+    const currentMonto = roundLegacy2(currentDebtById.get(id) || 0);
+    matchedCurrentIds.add(id);
+    const delta = roundLegacy2(legacyMonto - currentMonto);
+    if (Math.abs(delta) <= tolerancia) continue;
+    summary.registros_con_delta += 1;
+    const currentInfo = currentPadronRows.find((r) => r.id_contribuyente === id);
+    details.push({
+      seccion: LEGACY_SECCIONES.DEUDA,
+      categoria: LEGACY_CATEGORIAS.CAMBIO,
+      clave: currentInfo?.codigo_municipal || currentInfo?.dni_ruc || `ID${id}`,
+      codigo_municipal: currentInfo?.codigo_municipal || null,
+      dni_ruc: currentInfo?.dni_ruc || null,
+      campo: "DEUDA_TOTAL",
+      valor_antiguo: roundLegacy2(legacyMonto).toFixed(2),
+      valor_nuevo: currentMonto.toFixed(2),
+      delta,
+      payload_json: { id_contribuyente: id, tolerancia }
+    });
+  }
+
+  for (const [key, legacyMonto] of legacySolo.entries()) {
+    if (Math.abs(legacyMonto) <= tolerancia) continue;
+    summary.solo_antigua += 1;
+    details.push({
+      seccion: LEGACY_SECCIONES.DEUDA,
+      categoria: LEGACY_CATEGORIAS.SOLO_ANTIGUA,
+      clave: key,
+      codigo_municipal: /^\d+$/.test(String(key)) ? key : null,
+      dni_ruc: null,
+      campo: "DEUDA_TOTAL",
+      valor_antiguo: roundLegacy2(legacyMonto).toFixed(2),
+      valor_nuevo: "",
+      delta: roundLegacy2(legacyMonto),
+      payload_json: {}
+    });
+  }
+
+  for (const current of currentDebtRows) {
+    const currentMonto = roundLegacy2(current.deuda_total);
+    if (matchedCurrentIds.has(current.id_contribuyente)) continue;
+    if (Math.abs(currentMonto) <= tolerancia) continue;
+    summary.solo_nueva += 1;
+    details.push({
+      seccion: LEGACY_SECCIONES.DEUDA,
+      categoria: LEGACY_CATEGORIAS.SOLO_NUEVA,
+      clave: current.codigo_municipal || current.dni_ruc || `ID${current.id_contribuyente}`,
+      codigo_municipal: current.codigo_municipal || null,
+      dni_ruc: current.dni_ruc || null,
+      campo: "DEUDA_TOTAL",
+      valor_antiguo: "",
+      valor_nuevo: currentMonto.toFixed(2),
+      delta: roundLegacy2(0 - currentMonto),
+      payload_json: { id_contribuyente: current.id_contribuyente }
+    });
+  }
+
+  summary.delta_global = roundLegacy2(summary.total_legacy - summary.total_actual);
+  return { summary, details };
+};
+
+const buildRecaudacionComparison = (legacyDailyMap, currentDailyMap, tolerancia = LEGACY_COMPARACION_TOLERANCIA) => {
+  const details = [];
+  const summary = {};
+  const granularidades = ["DIARIO", "SEMANAL", "MENSUAL", "ANUAL"];
+
+  granularidades.forEach((g) => {
+    const legacyAgg = aggregateDailyByGranularity(legacyDailyMap, g);
+    const currentAgg = aggregateDailyByGranularity(currentDailyMap, g);
+    const keys = listUniqueSortedKeys(legacyAgg, currentAgg);
+    let totalLegacy = 0;
+    let totalActual = 0;
+    let totalDelta = 0;
+    let registrosConDelta = 0;
+
+    keys.forEach((bucket) => {
+      const legacyMonto = roundLegacy2(legacyAgg.get(bucket) || 0);
+      const currentMonto = roundLegacy2(currentAgg.get(bucket) || 0);
+      const delta = roundLegacy2(legacyMonto - currentMonto);
+      totalLegacy = roundLegacy2(totalLegacy + legacyMonto);
+      totalActual = roundLegacy2(totalActual + currentMonto);
+      totalDelta = roundLegacy2(totalDelta + delta);
+      if (Math.abs(delta) <= tolerancia) return;
+
+      registrosConDelta += 1;
+      details.push({
+        seccion: LEGACY_SECCIONES.RECAUDACION,
+        categoria: g,
+        clave: bucket,
+        codigo_municipal: null,
+        dni_ruc: null,
+        campo: "MONTO_RECAUDADO",
+        valor_antiguo: legacyMonto.toFixed(2),
+        valor_nuevo: currentMonto.toFixed(2),
+        delta,
+        payload_json: { bucket, granularidad: g, tolerancia }
+      });
+    });
+
+    summary[g.toLowerCase()] = {
+      total_legacy: totalLegacy,
+      total_actual: totalActual,
+      delta: totalDelta,
+      registros_con_delta: registrosConDelta
+    };
+  });
+
+  return { summary, details };
+};
+
+const insertComparacionLegacyDetalles = async (client, idCorrida, details) => {
+  if (!Array.isArray(details) || details.length === 0) return;
+  for (let start = 0; start < details.length; start += LEGACY_COMPARACION_DETAIL_INSERT_CHUNK) {
+    const chunk = details.slice(start, start + LEGACY_COMPARACION_DETAIL_INSERT_CHUNK);
+    const params = [];
+    const valuesSql = chunk.map((d, idx) => {
+      const base = idx * 11;
+      params.push(
+        Number(idCorrida),
+        d.seccion || "",
+        d.categoria || "",
+        d.clave || null,
+        d.codigo_municipal || null,
+        d.dni_ruc || null,
+        d.campo || null,
+        d.valor_antiguo || null,
+        d.valor_nuevo || null,
+        Number.isFinite(Number(d.delta)) ? Number(d.delta) : null,
+        JSON.stringify(d.payload_json || {})
+      );
+      return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}::jsonb)`;
+    }).join(", ");
+
+    await client.query(`
+      INSERT INTO comparaciones_legacy_detalle (
+        id_corrida, seccion, categoria, clave, codigo_municipal, dni_ruc, campo,
+        valor_antiguo, valor_nuevo, delta, payload_json
+      ) VALUES ${valuesSql}
+    `, params);
+  }
+};
+
+const flattenSummaryForExcel = (value, prefix = "", rows = []) => {
+  if (value === null || value === undefined) return rows;
+  if (typeof value !== "object") {
+    rows.push({ clave: prefix, valor: String(value) });
+    return rows;
+  }
+  if (Array.isArray(value)) {
+    rows.push({ clave: prefix, valor: JSON.stringify(value) });
+    return rows;
+  }
+  Object.keys(value).forEach((k) => {
+    const nextPrefix = prefix ? `${prefix}.${k}` : k;
+    flattenSummaryForExcel(value[k], nextPrefix, rows);
+  });
+  return rows;
+};
+
+app.post("/comparaciones/legacy/run", ensureLegacyUploadFiles, async (req, res) => {
+  const userId = Number(req.user?.id_usuario || 0);
+  const userName = req.user?.nombre || req.user?.username || "SISTEMA";
+  const lockKey = `legacy:${userId || "anon"}`;
+  const uploadedFiles = collectLegacyUploadedFiles(req);
+  if (comparacionesLegacyLocks.has(lockKey)) {
+    return res.status(409).json({ error: "Ya existe una comparación legacy en proceso para este usuario." });
+  }
+
+  comparacionesLegacyLocks.add(lockKey);
+  const client = await pool.connect();
+  let idCorrida = null;
+  const startMs = Date.now();
+  try {
+    await ensureComparacionesLegacyTables(client);
+    const archivoLegacy = getLegacyUploadFile(req, "archivo_legacy");
+    const archivoUsuarios = getLegacyUploadFile(req, "archivo_usuarios");
+    const archivoFinanzas = getLegacyUploadFile(req, "archivo_finanzas");
+    if (archivoLegacy && (archivoUsuarios || archivoFinanzas)) {
+      return res.status(400).json({
+        error: "Use un solo modo de carga: archivo_legacy, o archivo_usuarios + archivo_finanzas."
+      });
+    }
+    const modoExportes = !archivoLegacy && archivoUsuarios && archivoFinanzas;
+    if (!archivoLegacy && !modoExportes) {
+      return res.status(400).json({
+        error: "Debe adjuntar archivo_legacy (.xlsx) o ambos archivos: archivo_usuarios + archivo_finanzas."
+      });
+    }
+
+    const validarArchivoXlsx = (archivo, etiqueta) => {
+      if (!archivo) return;
+      const nombre = String(archivo.originalname || "").trim();
+      if (!nombre.toLowerCase().endsWith(".xlsx")) {
+        throw new Error(`Formato no válido en ${etiqueta}. Use archivo .xlsx.`);
+      }
+    };
+    validarArchivoXlsx(archivoLegacy, "archivo_legacy");
+    validarArchivoXlsx(archivoUsuarios, "archivo_usuarios");
+    validarArchivoXlsx(archivoFinanzas, "archivo_finanzas");
+
+    const nombreArchivo = archivoLegacy
+      ? String(archivoLegacy.originalname || "").trim()
+      : `${String(archivoUsuarios?.originalname || "usuarios.xlsx").trim()} + ${String(archivoFinanzas?.originalname || "finanzas.xlsx").trim()}`;
+    const archivoSha = archivoLegacy
+      ? await sha256UploadedFile(archivoLegacy)
+      : crypto.createHash("sha256")
+        .update(Buffer.from(String(archivoUsuarios?.originalname || ""), "utf8"))
+        .update(Buffer.from(await sha256UploadedFile(archivoUsuarios), "utf8"))
+        .update(Buffer.from(String(archivoFinanzas?.originalname || ""), "utf8"))
+        .update(Buffer.from(await sha256UploadedFile(archivoFinanzas), "utf8"))
+        .digest("hex");
+
+    if (!nombreArchivo) {
+      return res.status(400).json({ error: "No se pudo resolver el nombre del archivo." });
+    }
+
+    let fechaDesde = normalizeDateOnly(req.body?.fecha_desde);
+    let fechaHasta = normalizeDateOnly(req.body?.fecha_hasta);
+    if ((req.body?.fecha_desde && !fechaDesde) || (req.body?.fecha_hasta && !fechaHasta)) {
+      return res.status(400).json({ error: "Rango de fechas inválido. Use YYYY-MM-DD." });
+    }
+    if (fechaDesde && fechaHasta && fechaDesde > fechaHasta) {
+      return res.status(400).json({ error: "fecha_desde no puede ser mayor que fecha_hasta." });
+    }
+
+    const corridaInit = await client.query(`
+      INSERT INTO comparaciones_legacy_corridas (
+        id_usuario, archivo_nombre, archivo_sha256, fecha_desde, fecha_hasta, estado
+      ) VALUES ($1, $2, $3, $4, $5, 'EN_PROCESO')
+      RETURNING id_corrida
+    `, [userId || null, nombreArchivo || "legacy.xlsx", archivoSha, fechaDesde || null, fechaHasta || null]);
+    idCorrida = Number(corridaInit.rows[0].id_corrida);
+
+    await registrarAuditoria(
+      null,
+      "COMPARACION_LEGACY_INICIO",
+      `id_corrida=${idCorrida}; archivo=${nombreArchivo}; modo=${modoExportes ? "EXPORTES" : "PLANTILLA"}; usuario_id=${userId || 0}; ip=${getRequestIp(req)}`,
+      userName
+    );
+
+    let rawPadronRows = [];
+    let rawPagosRows = [];
+    let rawDeudasRows = [];
+    if (modoExportes) {
+      const wbUsuarios = await loadWorkbookFromUploadedFile(archivoUsuarios);
+      rawPadronRows = readLegacySheetRowsByColumns(
+        wbUsuarios,
+        ["Hoja1", "PADRON_ANTIGUO"],
+        LEGACY_PADRON_COLUMNS
+      );
+
+      const wbFinanzas = await loadWorkbookFromUploadedFile(archivoFinanzas);
+      rawPagosRows = readLegacySheetRowsByColumns(
+        wbFinanzas,
+        ["Pagos", "PAGOS_ANTIGUO"],
+        LEGACY_PAGOS_COLUMNS
+      );
+      rawDeudasRows = readLegacySheetRowsByColumns(
+        wbFinanzas,
+        ["Deudas", "DEUDAS_ANTIGUO", "Historial"],
+        LEGACY_DEUDAS_COLUMNS
+      );
+    } else {
+      const wbLegacy = await loadWorkbookFromUploadedFile(archivoLegacy);
+      rawPadronRows = readLegacySheetRowsByColumns(
+        wbLegacy,
+        ["PADRON_ANTIGUO"],
+        LEGACY_PADRON_COLUMNS
+      );
+      rawPagosRows = readLegacySheetRowsByColumns(
+        wbLegacy,
+        ["PAGOS_ANTIGUO"],
+        LEGACY_PAGOS_COLUMNS
+      );
+      rawDeudasRows = readLegacySheetRowsByColumns(
+        wbLegacy,
+        ["DEUDAS_ANTIGUO"],
+        LEGACY_DEUDAS_COLUMNS
+      );
+    }
+
+    const legacyPadronRows = rawPadronRows.map((r) => ({
+      _linea: Number(r._linea),
+      codigo_municipal: normalizeLegacyCodigo(r.codigo_municipal),
+      dni_ruc: normalizeLegacyDni(r.dni_ruc),
+      nombre_completo: normalizeLegacyText(r.nombre_completo),
+      telefono: normalizeLegacyText(r.telefono),
+      direccion_completa: normalizeLegacyText(r.direccion_completa),
+      estado_conexion: normalizeLegacyEstadoFromFields(r.estado_conexion, r.activo_sn),
+      agua_sn: normalizeLegacySn(r.agua_sn, "N"),
+      desague_sn: normalizeLegacySn(r.desague_sn, "N"),
+      limpieza_sn: normalizeLegacySn(r.limpieza_sn, "N"),
+      tipo_tarifa: normalizeLegacyText(r.tipo_tarifa),
+      sec_cod: normalizeLegacyText(r.sec_cod),
+      sec_nombre: normalizeLegacyText(r.sec_nombre),
+      _raw: {
+        codigo_municipal: r.codigo_municipal,
+        dni_ruc: r.dni_ruc,
+        nombre_completo: r.nombre_completo,
+        telefono: r.telefono,
+        direccion_completa: r.direccion_completa,
+        estado_conexion: r.estado_conexion || r.activo_sn || "",
+        agua_sn: r.agua_sn,
+        desague_sn: r.desague_sn,
+        limpieza_sn: r.limpieza_sn,
+        tipo_tarifa: r.tipo_tarifa,
+        sec_cod: r.sec_cod,
+        sec_nombre: r.sec_nombre
+      }
+    }));
+
+    const legacyPagosRows = rawPagosRows.map((r) => ({
+      _linea: Number(r._linea),
+      fecha_pago: parseLegacyDateStrict(r.fecha_pago, "PAGOS_ANTIGUO", Number(r._linea), "FECHA_PAGO"),
+      codigo_municipal: normalizeLegacyCodigo(r.codigo_municipal),
+      dni_ruc: normalizeLegacyDni(r.dni_ruc),
+      monto_pagado: parseLegacyMontoStrict(r.monto_pagado, "PAGOS_ANTIGUO", Number(r._linea), "MONTO_PAGADO")
+    }));
+
+    const legacyDeudasRows = rawDeudasRows.map((r) => ({
+      _linea: Number(r._linea),
+      codigo_municipal: normalizeLegacyCodigo(r.codigo_municipal),
+      dni_ruc: normalizeLegacyDni(r.dni_ruc),
+      anio: parseLegacyIntStrict(r.anio, "DEUDAS_ANTIGUO", Number(r._linea), "ANIO", 1900, 2200),
+      mes: parseLegacyIntStrict(r.mes, "DEUDAS_ANTIGUO", Number(r._linea), "MES", 1, 12),
+      deuda_total: parseLegacyMontoStrict(r.deuda_total, "DEUDAS_ANTIGUO", Number(r._linea), "DEUDA_PENDIENTE")
+    }));
+
+    if (!fechaDesde || !fechaHasta) {
+      const fechas = legacyPagosRows.map((r) => r.fecha_pago).filter(Boolean).sort((a, b) => a.localeCompare(b));
+      if (fechas.length > 0) {
+        fechaDesde = fechaDesde || fechas[0];
+        fechaHasta = fechaHasta || fechas[fechas.length - 1];
+      } else {
+        const hoy = toISODate();
+        fechaDesde = fechaDesde || hoy;
+        fechaHasta = fechaHasta || hoy;
+      }
+    }
+
+    const currentPadronRows = await buildCurrentPadronSnapshot(client);
+    const currentDeudaRows = await buildCurrentDeudaSnapshot(client);
+    const currentDailyRecaudacion = await buildCurrentRecaudacionDailySnapshot(client, fechaDesde, fechaHasta);
+
+    const legacyDailyRecaudacion = new Map();
+    legacyPagosRows.forEach((p) => {
+      if (p.fecha_pago < fechaDesde || p.fecha_pago > fechaHasta) return;
+      addToNumericMap(legacyDailyRecaudacion, p.fecha_pago, p.monto_pagado);
+    });
+
+    const hasPadronFullFields = rawPadronRows.some(
+      (r) => String(r.telefono || "").trim() || String(r.estado_conexion || "").trim()
+    );
+    const padronComp = buildPadronComparison(
+      legacyPadronRows,
+      currentPadronRows,
+      LEGACY_COMPARACION_TOLERANCIA,
+      { compareMode: hasPadronFullFields ? "FULL" : "EXPORT" }
+    );
+    const deudaComp = buildDeudaComparison(legacyDeudasRows, currentDeudaRows, currentPadronRows, LEGACY_COMPARACION_TOLERANCIA);
+    const recaudacionComp = buildRecaudacionComparison(legacyDailyRecaudacion, currentDailyRecaudacion, LEGACY_COMPARACION_TOLERANCIA);
+
+    const allDetails = [
+      ...padronComp.details,
+      ...deudaComp.details,
+      ...recaudacionComp.details
+    ];
+
+    const resumen = {
+      meta: {
+        origen: modoExportes ? "EXPORTES_USUARIOS_FINANZAS" : "PLANTILLA_UNICA",
+        fecha_desde: fechaDesde,
+        fecha_hasta: fechaHasta,
+        tolerancia: LEGACY_COMPARACION_TOLERANCIA,
+        total_detalles: allDetails.length,
+        total_padron_legacy: legacyPadronRows.length,
+        total_pagos_legacy: legacyPagosRows.length,
+        total_deudas_legacy: legacyDeudasRows.length
+      },
+      padron: padronComp.summary,
+      deuda: deudaComp.summary,
+      recaudacion: recaudacionComp.summary
+    };
+
+    const duracionMs = Date.now() - startMs;
+    await client.query("BEGIN");
+    await insertComparacionLegacyDetalles(client, idCorrida, allDetails);
+    await client.query(`
+      UPDATE comparaciones_legacy_corridas
+      SET
+        fecha_desde = $2::date,
+        fecha_hasta = $3::date,
+        duracion_ms = $4,
+        estado = 'COMPLETADA',
+        resumen_json = $5::jsonb,
+        error_json = NULL
+      WHERE id_corrida = $1
+    `, [idCorrida, fechaDesde, fechaHasta, duracionMs, JSON.stringify(resumen)]);
+    await registrarAuditoria(
+      client,
+      "COMPARACION_LEGACY_COMPLETADA",
+      `id_corrida=${idCorrida}; duracion_ms=${duracionMs}; detalles=${allDetails.length}; usuario_id=${userId || 0}`,
+      userName
+    );
+    await client.query("COMMIT");
+
+    return res.json({
+      id_corrida: idCorrida,
+      estado: "COMPLETADA",
+      resumen
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    if (idCorrida) {
+      const duracionMs = Date.now() - startMs;
+      try {
+        await client.query(`
+          UPDATE comparaciones_legacy_corridas
+          SET
+            duracion_ms = $2,
+            estado = 'ERROR',
+            error_json = $3::jsonb
+          WHERE id_corrida = $1
+        `, [idCorrida, duracionMs, JSON.stringify({ mensaje: err.message || "Error no controlado" })]);
+      } catch {}
+      await registrarAuditoria(
+        null,
+        "COMPARACION_LEGACY_ERROR",
+        `id_corrida=${idCorrida}; error=${String(err.message || "desconocido")}; usuario_id=${userId || 0}`,
+        userName
+      );
+    }
+    console.error("Error ejecutando comparación legacy:", err);
+    const msg = String(err?.message || "Error ejecutando comparación legacy.");
+    const isValidationError = [
+      "Encabezado inválido",
+      "No se encontró la hoja requerida",
+      "Columnas requeridas no encontradas",
+      "Formato inválido",
+      "Formato no válido",
+      "Monto inválido",
+      "Fecha inválida",
+      "Número inválido"
+    ].some((token) => msg.includes(token));
+    return res.status(isValidationError ? 400 : 500).json({ error: msg });
+  } finally {
+    comparacionesLegacyLocks.delete(lockKey);
+    cleanupLegacyUploadedFiles(uploadedFiles);
+    client.release();
+  }
+});
+
+app.get("/comparaciones/legacy", async (req, res) => {
+  try {
+    const page = Math.max(1, Number(req.query?.page || 1));
+    const pageSize = Math.min(100, Math.max(10, Number(req.query?.page_size || 20)));
+    const offset = (page - 1) * pageSize;
+
+    const totalResult = await pool.query("SELECT COUNT(*)::int AS total FROM comparaciones_legacy_corridas");
+    const total = Number(totalResult.rows[0]?.total || 0);
+    const rows = await pool.query(`
+      SELECT
+        id_corrida,
+        creado_en,
+        id_usuario,
+        archivo_nombre,
+        fecha_desde,
+        fecha_hasta,
+        duracion_ms,
+        estado,
+        resumen_json
+      FROM comparaciones_legacy_corridas
+      ORDER BY id_corrida DESC
+      LIMIT $1 OFFSET $2
+    `, [pageSize, offset]);
+
+    res.json({
+      total,
+      page,
+      page_size: pageSize,
+      total_pages: Math.max(1, Math.ceil(total / pageSize)),
+      data: rows.rows.map((r) => ({
+        ...r,
+        id_corrida: Number(r.id_corrida),
+        id_usuario: r.id_usuario ? Number(r.id_usuario) : null,
+        duracion_ms: r.duracion_ms ? Number(r.duracion_ms) : null
+      }))
+    });
+  } catch (err) {
+    console.error("Error listando comparaciones legacy:", err);
+    res.status(500).json({ error: "Error listando comparaciones legacy." });
+  }
+});
+
+app.get("/comparaciones/legacy/plantilla", async (req, res) => {
+  try {
+    const wb = new ExcelJS.Workbook();
+    Object.entries(LEGACY_TEMPLATE_SHEETS).forEach(([sheetName, headers]) => {
+      const ws = wb.addWorksheet(sheetName);
+      ws.columns = headers.map((h) => ({ header: h, key: h, width: Math.max(16, h.length + 2) }));
+      ws.getRow(1).font = { bold: true };
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+    });
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", "attachment; filename=plantilla_comparacion_legacy.xlsx");
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("Error generando plantilla legacy:", err);
+    res.status(500).json({ error: "Error generando plantilla legacy." });
+  }
+});
+
+app.get("/comparaciones/legacy/:id/resumen", async (req, res) => {
+  try {
+    const idCorrida = Number(req.params?.id);
+    if (!Number.isInteger(idCorrida) || idCorrida <= 0) {
+      return res.status(400).json({ error: "ID de corrida inválido." });
+    }
+    const data = await pool.query(`
+      SELECT
+        id_corrida,
+        creado_en,
+        id_usuario,
+        archivo_nombre,
+        archivo_sha256,
+        fecha_desde,
+        fecha_hasta,
+        duracion_ms,
+        estado,
+        resumen_json,
+        error_json
+      FROM comparaciones_legacy_corridas
+      WHERE id_corrida = $1
+      LIMIT 1
+    `, [idCorrida]);
+    if (data.rows.length === 0) return res.status(404).json({ error: "Corrida no encontrada." });
+    const row = data.rows[0];
+    res.json({
+      ...row,
+      id_corrida: Number(row.id_corrida),
+      id_usuario: row.id_usuario ? Number(row.id_usuario) : null,
+      duracion_ms: row.duracion_ms ? Number(row.duracion_ms) : null
+    });
+  } catch (err) {
+    console.error("Error obteniendo resumen de comparación legacy:", err);
+    res.status(500).json({ error: "Error obteniendo resumen." });
+  }
+});
+
+app.get("/comparaciones/legacy/:id/detalle", async (req, res) => {
+  try {
+    const idCorrida = Number(req.params?.id);
+    if (!Number.isInteger(idCorrida) || idCorrida <= 0) {
+      return res.status(400).json({ error: "ID de corrida inválido." });
+    }
+    const seccionList = String(req.query?.seccion || "")
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
+    const categoriaRaw = String(req.query?.categoria || "").trim().toUpperCase();
+    const q = String(req.query?.q || "").trim();
+    const page = Math.max(1, Number(req.query?.page || 1));
+    const pageSize = Math.min(500, Math.max(25, Number(req.query?.page_size || 200)));
+    const offset = (page - 1) * pageSize;
+
+    const where = ["id_corrida = $1"];
+    const params = [idCorrida];
+    if (seccionList.length === 1) {
+      params.push(seccionList[0]);
+      where.push(`seccion = $${params.length}`);
+    } else if (seccionList.length > 1) {
+      params.push(seccionList);
+      where.push(`seccion = ANY($${params.length}::text[])`);
+    }
+    if (categoriaRaw) {
+      params.push(categoriaRaw);
+      where.push(`categoria = $${params.length}`);
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      const p = `$${params.length}`;
+      where.push(`(
+        COALESCE(clave, '') ILIKE ${p}
+        OR COALESCE(codigo_municipal, '') ILIKE ${p}
+        OR COALESCE(dni_ruc, '') ILIKE ${p}
+        OR COALESCE(campo, '') ILIKE ${p}
+        OR COALESCE(valor_antiguo, '') ILIKE ${p}
+        OR COALESCE(valor_nuevo, '') ILIKE ${p}
+      )`);
+    }
+
+    const totalSql = `SELECT COUNT(*)::int AS total FROM comparaciones_legacy_detalle WHERE ${where.join(" AND ")}`;
+    const totalRes = await pool.query(totalSql, params);
+    const total = Number(totalRes.rows[0]?.total || 0);
+
+    params.push(pageSize);
+    params.push(offset);
+    const rows = await pool.query(`
+      SELECT
+        id_detalle,
+        id_corrida,
+        seccion,
+        categoria,
+        clave,
+        codigo_municipal,
+        dni_ruc,
+        campo,
+        valor_antiguo,
+        valor_nuevo,
+        delta,
+        payload_json
+      FROM comparaciones_legacy_detalle
+      WHERE ${where.join(" AND ")}
+      ORDER BY id_detalle ASC
+      LIMIT $${params.length - 1} OFFSET $${params.length}
+    `, params);
+
+    res.json({
+      total,
+      page,
+      page_size: pageSize,
+      total_pages: Math.max(1, Math.ceil(total / pageSize)),
+      data: rows.rows.map((r) => ({
+        ...r,
+        id_detalle: Number(r.id_detalle),
+        id_corrida: Number(r.id_corrida),
+        delta: r.delta === null ? null : Number(r.delta)
+      }))
+    });
+  } catch (err) {
+    console.error("Error obteniendo detalle de comparación legacy:", err);
+    res.status(500).json({ error: "Error obteniendo detalle." });
+  }
+});
+
+app.get("/comparaciones/legacy/:id/exportar", async (req, res) => {
+  try {
+    const idCorrida = Number(req.params?.id);
+    if (!Number.isInteger(idCorrida) || idCorrida <= 0) {
+      return res.status(400).json({ error: "ID de corrida inválido." });
+    }
+
+    const corrida = await pool.query(`
+      SELECT id_corrida, creado_en, archivo_nombre, fecha_desde, fecha_hasta, duracion_ms, estado, resumen_json, error_json
+      FROM comparaciones_legacy_corridas
+      WHERE id_corrida = $1
+      LIMIT 1
+    `, [idCorrida]);
+    if (corrida.rows.length === 0) return res.status(404).json({ error: "Corrida no encontrada." });
+
+    const detalles = await pool.query(`
+      SELECT
+        seccion, categoria, clave, codigo_municipal, dni_ruc, campo,
+        valor_antiguo, valor_nuevo, delta, payload_json
+      FROM comparaciones_legacy_detalle
+      WHERE id_corrida = $1
+      ORDER BY seccion ASC, categoria ASC, id_detalle ASC
+    `, [idCorrida]);
+
+    const wb = new ExcelJS.Workbook();
+    const wsResumen = wb.addWorksheet("Resumen");
+    wsResumen.columns = [
+      { header: "CLAVE", key: "clave", width: 45 },
+      { header: "VALOR", key: "valor", width: 60 }
+    ];
+    wsResumen.getRow(1).font = { bold: true };
+    const rowCorrida = corrida.rows[0];
+    const baseResumen = {
+      id_corrida: Number(rowCorrida.id_corrida),
+      creado_en: rowCorrida.creado_en,
+      archivo_nombre: rowCorrida.archivo_nombre,
+      fecha_desde: rowCorrida.fecha_desde,
+      fecha_hasta: rowCorrida.fecha_hasta,
+      duracion_ms: rowCorrida.duracion_ms,
+      estado: rowCorrida.estado,
+      resumen_json: rowCorrida.resumen_json || {},
+      error_json: rowCorrida.error_json || {}
+    };
+    flattenSummaryForExcel(baseResumen).forEach((r) => wsResumen.addRow(r));
+
+    const addDetalleSheet = (name, seccion) => {
+      const ws = wb.addWorksheet(name);
+      ws.columns = [
+        { header: "CATEGORIA", key: "categoria", width: 16 },
+        { header: "CLAVE", key: "clave", width: 22 },
+        { header: "CODIGO", key: "codigo_municipal", width: 14 },
+        { header: "DNI_RUC", key: "dni_ruc", width: 18 },
+        { header: "CAMPO", key: "campo", width: 20 },
+        { header: "VALOR_ANTIGUO", key: "valor_antiguo", width: 24 },
+        { header: "VALOR_NUEVO", key: "valor_nuevo", width: 24 },
+        { header: "DELTA", key: "delta", width: 14 },
+        { header: "PAYLOAD_JSON", key: "payload_json", width: 60 }
+      ];
+      ws.getRow(1).font = { bold: true };
+      detalles.rows
+        .filter((r) => r.seccion === seccion)
+        .forEach((r) => {
+          ws.addRow({
+            categoria: r.categoria,
+            clave: r.clave,
+            codigo_municipal: r.codigo_municipal,
+            dni_ruc: r.dni_ruc,
+            campo: r.campo,
+            valor_antiguo: r.valor_antiguo,
+            valor_nuevo: r.valor_nuevo,
+            delta: r.delta === null ? "" : Number(r.delta),
+            payload_json: JSON.stringify(r.payload_json || {})
+          });
+        });
+    };
+
+    addDetalleSheet("Padron", LEGACY_SECCIONES.PADRON);
+    addDetalleSheet("Deuda", LEGACY_SECCIONES.DEUDA);
+    addDetalleSheet("Recaudacion", LEGACY_SECCIONES.RECAUDACION);
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename=comparacion_legacy_${idCorrida}.xlsx`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("Error exportando comparación legacy:", err);
+    res.status(500).json({ error: "Error exportando comparación legacy." });
   }
 });
 

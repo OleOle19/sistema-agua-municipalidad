@@ -12,7 +12,32 @@
   const STORE_QUEUE = "queue";
   const SNAPSHOT_KEY = "snapshot";
   const SNAPSHOT_MAX_AGE_HOURS = 72;
-  const ROLES = { BRIGADA: 1, CAJERO: 2, ADMIN_SEC: 3, ADMIN: 4 };
+  const RECENT_SUBMISSIONS_KEY = "campo_app_recent_submissions";
+  const RECENT_DUPLICATE_WINDOW_HOURS = 36;
+  const SEARCH_PAGE_SIZE = 40;
+  const SEARCH_ONLINE_LIMIT = 300;
+  const SEARCH_LOCAL_LIMIT = 1200;
+  const RETRY_BASE_DELAY_MS = 20 * 1000;
+  const RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
+  const ROLE_LEVEL = { BRIGADA: 1, CAJERO: 2, ADMIN_SEC: 3, ADMIN: 4 };
+  const ROLE_ALIASES = {
+    BRIGADA: "BRIGADA",
+    BRIGADISTA: "BRIGADA",
+    CAMPO: "BRIGADA",
+    NIVEL_5: "BRIGADA",
+    CAJERO: "CAJERO",
+    OPERADOR_CAJA: "CAJERO",
+    OPERADOR: "CAJERO",
+    NIVEL_3: "CAJERO",
+    ADMIN_SEC: "ADMIN_SEC",
+    ADMIN_SECUNDARIO: "ADMIN_SEC",
+    JEFE_CAJA: "ADMIN_SEC",
+    NIVEL_2: "ADMIN_SEC",
+    ADMIN: "ADMIN",
+    SUPERADMIN: "ADMIN",
+    ADMIN_PRINCIPAL: "ADMIN",
+    NIVEL_1: "ADMIN"
+  };
 
   const el = {
     apiConfigCard: document.getElementById("apiConfigCard"),
@@ -29,12 +54,14 @@
     syncQueueBtn: document.getElementById("syncQueueBtn"),
     refreshQueueBtn: document.getElementById("refreshQueueBtn"),
     offlineInfo: document.getElementById("offlineInfo"),
+    healthPanel: document.getElementById("healthPanel"),
     queueList: document.getElementById("queueList"),
     searchInput: document.getElementById("searchInput"),
     streetFilter: document.getElementById("streetFilter"),
     searchResults: document.getElementById("searchResults"),
     solicitudForm: document.getElementById("solicitudForm"),
     selectedInfo: document.getElementById("selectedInfo"),
+    duplicateWarning: document.getElementById("duplicateWarning"),
     nombreVerificado: document.getElementById("nombreVerificado"),
     dniVerificado: document.getElementById("dniVerificado"),
     direccionVerificada: document.getElementById("direccionVerificada"),
@@ -56,13 +83,20 @@
     online: navigator.onLine,
     calles: [],
     contribuyentes: [],
+    searchRows: [],
     filtered: [],
+    searchVisibleCount: SEARCH_PAGE_SIZE,
+    searchTruncated: false,
     selectedId: 0,
     queueCount: 0,
     queueItems: [],
     queueActionKey: "",
     syncing: false,
     snapshot: null,
+    recentSubmissions: [],
+    lastQueueSyncAt: null,
+    lastQueueSyncOkAt: null,
+    lastQueueSyncError: "",
     warnedNoSnapshotOffline: false,
     warnedSnapshotExpired: false
   };
@@ -70,10 +104,18 @@
   let dbPromise = null;
   let searchTimer = null;
   let statusTimer = null;
+  let queueAutoSyncTimer = null;
 
   function parseJson(v) { try { return v ? JSON.parse(v) : null; } catch { return null; } }
   function normalizeBase(v) { try { return new URL(String(v || "").trim() || window.location.origin).origin; } catch { return window.location.origin; } }
-  function hasMinRole(role, minRole) { return (ROLES[String(role || "").toUpperCase()] || 0) >= (ROLES[minRole] || 0); }
+  function normalizeRole(role) {
+    const raw = String(role || "").trim().toUpperCase();
+    return ROLE_ALIASES[raw] || "";
+  }
+  function hasMinRole(role, minRole) {
+    const current = normalizeRole(role);
+    return (ROLE_LEVEL[current] || 0) >= (ROLE_LEVEL[minRole] || 0);
+  }
   function fmtMoney(v) { const n = Number(v || 0); return Number.isFinite(n) ? n.toFixed(2) : "0.00"; }
   function norm(v) { return String(v || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim(); }
   function normalizeSN(value, fallback) {
@@ -84,6 +126,136 @@
   }
   function toDateMs(value) { const ms = Date.parse(String(value || "")); return Number.isFinite(ms) ? ms : 0; }
   function fmtDateTime(value) { const ms = toDateMs(value); return ms ? new Date(ms).toLocaleString("es-PE") : "sin fecha"; }
+  function fmtAgo(value) {
+    const ms = toDateMs(value);
+    if (!ms) return "sin fecha";
+    const diff = Date.now() - ms;
+    if (diff < 0) return "en unos segundos";
+    const min = Math.floor(diff / 60000);
+    if (min < 1) return "hace segundos";
+    if (min < 60) return "hace " + min + " min";
+    const h = Math.floor(min / 60);
+    if (h < 24) return "hace " + h + " h";
+    const d = Math.floor(h / 24);
+    return "hace " + d + " d";
+  }
+  function fmtFuture(value) {
+    const ms = toDateMs(value);
+    if (!ms) return "sin programar";
+    const diff = ms - Date.now();
+    if (diff <= 0) return "ahora";
+    const min = Math.ceil(diff / 60000);
+    if (min < 60) return "en " + min + " min";
+    const h = Math.ceil(min / 60);
+    if (h < 24) return "en " + h + " h";
+    const d = Math.ceil(h / 24);
+    return "en " + d + " d";
+  }
+  function calcRetryDelayMs(retryCount) {
+    const exp = Math.max(0, Number(retryCount || 0));
+    return Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * Math.pow(2, exp));
+  }
+  function queueItemRetryCount(item) {
+    return Math.max(0, Number(item && item.retry_count || 0));
+  }
+  function queueItemReady(item, nowMs) {
+    if (Number(item && item.blocked || 0) === 1) return false;
+    const nextMs = toDateMs(item && item.next_retry_at);
+    if (!nextMs) return true;
+    return nextMs <= (nowMs || Date.now());
+  }
+  function queueRetryHint(item) {
+    if (Number(item && item.blocked || 0) === 1) return "No reintentar automatico";
+    if (queueItemReady(item)) return "Listo para envio";
+    return "Proximo: " + fmtFuture(item && item.next_retry_at);
+  }
+  function normalizeQueueItem(item) {
+    if (!item || typeof item !== "object") return item;
+    const retryCount = queueItemRetryCount(item);
+    const hasNext = toDateMs(item.next_retry_at) > 0;
+    return Object.assign({}, item, {
+      retry_count: retryCount,
+      next_retry_at: hasNext ? item.next_retry_at : (item.created_at || new Date().toISOString()),
+      last_attempt_at: item.last_attempt_at || null
+    });
+  }
+  function pruneRecentSubmissions(list) {
+    const now = Date.now();
+    const maxAgeMs = RECENT_DUPLICATE_WINDOW_HOURS * 60 * 60 * 1000;
+    const rows = Array.isArray(list) ? list : [];
+    return rows
+      .filter((r) => Number(r && r.id_contribuyente) > 0)
+      .filter((r) => {
+        const age = now - toDateMs(r.created_at);
+        return age >= 0 && age <= maxAgeMs;
+      })
+      .slice(-400);
+  }
+  function saveRecentSubmissions() {
+    try {
+      localStorage.setItem(RECENT_SUBMISSIONS_KEY, JSON.stringify(state.recentSubmissions));
+    } catch {}
+  }
+  function rememberRecentSubmission(idContribuyente, source, detail) {
+    const id = Number(idContribuyente || 0);
+    if (!id) return;
+    const userId = Number(state.user && state.user.id_usuario || 0);
+    const next = state.recentSubmissions.concat([{
+      user_id: userId > 0 ? userId : null,
+      id_contribuyente: id,
+      source: String(source || "campo"),
+      detail: String(detail || ""),
+      created_at: new Date().toISOString()
+    }]);
+    state.recentSubmissions = pruneRecentSubmissions(next);
+    saveRecentSubmissions();
+  }
+  function duplicateSummary(idContribuyente) {
+    const id = Number(idContribuyente || 0);
+    if (!id) return { has: false, total: 0, queued: 0, recent: 0, latestAt: null };
+    const maxAgeMs = RECENT_DUPLICATE_WINDOW_HOURS * 60 * 60 * 1000;
+    const now = Date.now();
+    const currentUserId = Number(state.user && state.user.id_usuario || 0);
+    const queued = state.queueItems.filter((item) => {
+      if (Number(item && item.payload && item.payload.id_contribuyente) !== id) return false;
+      const age = now - toDateMs(item && item.created_at);
+      return age >= 0 && age <= maxAgeMs;
+    });
+    const recent = state.recentSubmissions.filter((r) => {
+      if (Number(r && r.id_contribuyente) !== id) return false;
+      if (!currentUserId) return true;
+      const rowUserId = Number(r && r.user_id || 0);
+      return !rowUserId || rowUserId === currentUserId;
+    });
+    const allTimes = queued.map((x) => x.created_at).concat(recent.map((x) => x.created_at)).map(toDateMs).filter((x) => x > 0);
+    const latestAt = allTimes.length ? new Date(Math.max.apply(null, allTimes)).toISOString() : null;
+    const total = queued.length + recent.length;
+    return { has: total > 0, total: total, queued: queued.length, recent: recent.length, latestAt: latestAt };
+  }
+  function updateDuplicateWarning(idContribuyente) {
+    if (!el.duplicateWarning) return;
+    const info = duplicateSummary(idContribuyente);
+    if (!info.has) {
+      el.duplicateWarning.textContent = "";
+      el.duplicateWarning.classList.add("hidden");
+      return;
+    }
+    const latestTxt = info.latestAt ? fmtAgo(info.latestAt) : "sin fecha";
+    el.duplicateWarning.textContent =
+      "Atencion: ya existe actividad reciente para este contribuyente (cola: " + info.queued +
+      ", enviados: " + info.recent + ", ultimo: " + latestTxt + ").";
+    el.duplicateWarning.classList.remove("hidden");
+  }
+  function updateVisibleResults() {
+    const visible = Math.max(0, Number(state.searchVisibleCount || 0));
+    state.filtered = state.searchRows.slice(0, visible);
+  }
+  function showMoreResults() {
+    const next = Math.min(state.searchRows.length, Number(state.searchVisibleCount || 0) + SEARCH_PAGE_SIZE);
+    state.searchVisibleCount = next;
+    updateVisibleResults();
+    renderResults();
+  }
   function snapshotAgeHours() {
     if (!state.snapshot || !state.snapshot.synced_at) return null;
     const syncedMs = toDateMs(state.snapshot.synced_at);
@@ -96,6 +268,44 @@
   }
   function requiresFreshSnapshotForOfflineWork() {
     return !state.online && !isSnapshotFresh();
+  }
+  function mountFormInsideResult(resultItem) {
+    if (!resultItem || !el.solicitudForm) return;
+    const parent = resultItem.parentElement;
+    if (!parent) return;
+    const slot = document.createElement("div");
+    slot.className = "result-form-slot";
+    slot.appendChild(el.solicitudForm);
+    parent.insertBefore(slot, resultItem.nextSibling);
+  }
+  function parkFormHidden() {
+    if (!el.solicitudForm || !el.appSection) return;
+    if (el.solicitudForm.parentElement !== el.appSection) el.appSection.appendChild(el.solicitudForm);
+    el.solicitudForm.classList.remove("open");
+    el.solicitudForm.classList.add("hidden");
+  }
+  function healthStats() {
+    const now = Date.now();
+    const blocked = state.queueItems.filter((x) => Number(x && x.blocked || 0) === 1).length;
+    const waiting = state.queueItems.filter((x) => Number(x && x.blocked || 0) !== 1 && !queueItemReady(x, now)).length;
+    const ready = Math.max(0, state.queueItems.length - blocked - waiting);
+    const nextRetryAt = state.queueItems
+      .filter((x) => Number(x && x.blocked || 0) !== 1 && !queueItemReady(x, now))
+      .map((x) => x.next_retry_at)
+      .map(toDateMs)
+      .filter((x) => x > 0)
+      .sort((a, b) => a - b)[0] || 0;
+    return {
+      blocked: blocked,
+      waiting: waiting,
+      ready: ready,
+      nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : null
+    };
+  }
+  function renderHealthPanel() {
+    if (!el.healthPanel) return;
+    el.healthPanel.innerHTML = "";
+    el.healthPanel.classList.add("hidden");
   }
 
   function setStatus(msg, type, timeout) {
@@ -113,13 +323,21 @@
     if (logged) el.userInfo.textContent = (state.user.nombre || "Sin nombre") + " | " + (state.user.rol || "SIN_ROL");
     if (!logged) {
       state.selectedId = 0;
+      state.searchRows = [];
+      state.searchVisibleCount = SEARCH_PAGE_SIZE;
+      state.searchTruncated = false;
       state.queueItems = [];
+      state.queueCount = 0;
       el.selectedInfo.textContent = "";
-      el.solicitudForm.classList.remove("open");
-      el.solicitudForm.classList.add("hidden");
+      if (el.duplicateWarning) {
+        el.duplicateWarning.textContent = "";
+        el.duplicateWarning.classList.add("hidden");
+      }
+      parkFormHidden();
       el.searchResults.innerHTML = "";
       if (el.queueList) el.queueList.innerHTML = '<p class="muted">Inicia sesion para ver pendientes.</p>';
     }
+    renderHealthPanel();
     updateOperationalLock();
   }
 
@@ -145,6 +363,7 @@
     }
     if (snapshotState !== "VENCIDO") state.warnedSnapshotExpired = false;
     if (state.snapshot || state.online) state.warnedNoSnapshotOffline = false;
+    renderHealthPanel();
     updateOperationalLock();
   }
 
@@ -154,11 +373,17 @@
     if (el.streetFilter) el.streetFilter.disabled = blocked;
     if (el.submitSolicitudBtn) el.submitSolicitudBtn.disabled = blocked;
     if (blocked) {
+      state.searchRows = [];
       state.filtered = [];
+      state.searchVisibleCount = SEARCH_PAGE_SIZE;
+      state.searchTruncated = false;
       state.selectedId = 0;
       el.searchResults.innerHTML = '<div class="muted">Operacion bloqueada offline: sincroniza snapshot reciente antes de trabajar en campo.</div>';
-      el.solicitudForm.classList.remove("open");
-      el.solicitudForm.classList.add("hidden");
+      if (el.duplicateWarning) {
+        el.duplicateWarning.textContent = "";
+        el.duplicateWarning.classList.add("hidden");
+      }
+      parkFormHidden();
     }
   }
 
@@ -216,7 +441,30 @@
   async function idbPut(store, value) { const db = await openDb(); return new Promise((resolve, reject) => { const tx = db.transaction(store, "readwrite"); tx.objectStore(store).put(value); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); }); }
   async function idbDel(store, key) { const db = await openDb(); return new Promise((resolve, reject) => { const tx = db.transaction(store, "readwrite"); tx.objectStore(store).delete(key); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); }); }
   async function idbAll(store) { const db = await openDb(); return new Promise((resolve, reject) => { const tx = db.transaction(store, "readonly"); const r = tx.objectStore(store).getAll(); r.onsuccess = () => resolve(Array.isArray(r.result) ? r.result : []); r.onerror = () => reject(r.error); }); }
-  async function queueByUser(userId) { if (!userId) return []; const db = await openDb(); return new Promise((resolve, reject) => { const tx = db.transaction(STORE_QUEUE, "readonly"); const i = tx.objectStore(STORE_QUEUE).index("by_user"); const r = i.getAll(IDBKeyRange.only(Number(userId))); r.onsuccess = () => resolve(Array.isArray(r.result) ? r.result.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))) : []); r.onerror = () => reject(r.error); }); }
+  async function queueByUser(userId) {
+    if (!userId) return [];
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_QUEUE, "readonly");
+      const i = tx.objectStore(STORE_QUEUE).index("by_user");
+      const r = i.getAll(IDBKeyRange.only(Number(userId)));
+      r.onsuccess = () => {
+        if (!Array.isArray(r.result)) {
+          resolve([]);
+          return;
+        }
+        const normalized = r.result.map((x) => normalizeQueueItem(x));
+        const rows = normalized.sort((a, b) => {
+          const aMs = toDateMs(a && a.created_at);
+          const bMs = toDateMs(b && b.created_at);
+          if (aMs !== bMs) return aMs - bMs;
+          return String((a && a.idempotency_key) || "").localeCompare(String((b && b.idempotency_key) || ""));
+        });
+        resolve(rows);
+      };
+      r.onerror = () => reject(r.error);
+    });
+  }
 
   async function replaceSnapshot(calles, contribuyentes, meta) {
     const db = await openDb();
@@ -246,11 +494,13 @@
   }
 
   function queueStatusClass(item) {
-    return Number(item && item.blocked || 0) === 1 ? "blocked" : "pending";
+    if (Number(item && item.blocked || 0) === 1) return "blocked";
+    return queueItemReady(item) ? "pending" : "waiting";
   }
 
   function queueStatusLabel(item) {
-    return Number(item && item.blocked || 0) === 1 ? "BLOQUEADO" : "PENDIENTE";
+    if (Number(item && item.blocked || 0) === 1) return "BLOQUEADO";
+    return queueItemReady(item) ? "PENDIENTE" : "EN_ESPERA";
   }
 
   async function retryQueueItem(key) {
@@ -265,19 +515,36 @@
     renderQueue();
     try {
       if (!state.online) {
-        await idbPut(STORE_QUEUE, Object.assign({}, item, { blocked: 0, last_error: "sin_conexion" }));
+        const retryCount = queueItemRetryCount(item) + 1;
+        const nextRetryAt = new Date(Date.now() + calcRetryDelayMs(retryCount)).toISOString();
+        await idbPut(STORE_QUEUE, Object.assign({}, item, {
+          blocked: 0,
+          retry_count: retryCount,
+          next_retry_at: nextRetryAt,
+          last_attempt_at: new Date().toISOString(),
+          last_error: "sin_conexion"
+        }));
         setStatus("Sin internet. Pendiente marcado para reintento automatico.", "warning", 4500);
       } else {
         await sendSolicitud(item.payload);
         await idbDel(STORE_QUEUE, idempotencyKey);
+        rememberRecentSubmission(item && item.payload && item.payload.id_contribuyente, "sync", "reintento_manual");
+        state.lastQueueSyncOkAt = new Date().toISOString();
+        state.lastQueueSyncError = "";
         setStatus("Pendiente enviado correctamente.", "success", 3000);
       }
     } catch (err) {
       const hardError = !(err.status === 401 || err.status === 403 || err.isNetworkError || err.status >= 500);
+      const retryCount = queueItemRetryCount(item) + 1;
+      const nextRetryAt = new Date(Date.now() + calcRetryDelayMs(retryCount)).toISOString();
       await idbPut(STORE_QUEUE, Object.assign({}, item, {
         blocked: hardError ? 1 : 0,
+        retry_count: hardError ? queueItemRetryCount(item) : retryCount,
+        next_retry_at: hardError ? (item.next_retry_at || new Date().toISOString()) : nextRetryAt,
+        last_attempt_at: new Date().toISOString(),
         last_error: err.message || "reintento_fallido"
       }));
+      state.lastQueueSyncError = err.message || "reintento_fallido";
       setStatus(err.message || "No se pudo reintentar este pendiente.", "warning", 5000);
     } finally {
       state.queueActionKey = "";
@@ -318,7 +585,10 @@
       meta1.textContent = "Creado: " + fmtDateTime(item.created_at);
       const meta2 = document.createElement("div");
       meta2.className = "meta";
-      meta2.textContent = "Error: " + (item.last_error || "sin error");
+      meta2.textContent = "Error: " + (item.last_error || "sin error") + " | Intentos: " + queueItemRetryCount(item);
+      const meta3 = document.createElement("div");
+      meta3.className = "meta";
+      meta3.textContent = queueRetryHint(item);
       const actions = document.createElement("div");
       actions.className = "queue-actions";
       const retryBtn = document.createElement("button");
@@ -343,6 +613,7 @@
       row.appendChild(status);
       row.appendChild(meta1);
       row.appendChild(meta2);
+      row.appendChild(meta3);
       row.appendChild(actions);
       fragment.appendChild(row);
     }
@@ -356,19 +627,35 @@
       d.className = "muted";
       d.textContent = "Sin resultados. Escribe al menos 2 letras o elige una calle.";
       el.searchResults.appendChild(d);
+      if (el.duplicateWarning) {
+        el.duplicateWarning.textContent = "";
+        el.duplicateWarning.classList.add("hidden");
+      }
+      parkFormHidden();
       return;
     }
     const frag = document.createDocumentFragment();
+    let mountedForm = false;
+    let selectedItem = null;
+    let selectedContribuyenteId = 0;
     state.filtered.forEach((c) => {
       const id = Number(c.id_contribuyente || 0);
+      const isSelected = id === state.selectedId;
       const item = document.createElement("article");
-      item.className = "result-item" + (id === state.selectedId ? " is-selected" : "");
+      item.className = "result-item" + (isSelected ? " is-selected" : "");
       const t = document.createElement("strong"); t.textContent = (c.codigo_municipal || "SIN-CODIGO") + " - " + (c.nombre_completo || "Sin nombre");
       const d = document.createElement("div"); d.className = "meta"; d.textContent = c.direccion_completa || c.nombre_calle || "Sin direccion";
       const m = document.createElement("div"); m.className = "meta"; m.textContent = "Meses deuda: " + Number(c.meses_deuda || 0) + " | Total: S/ " + fmtMoney(c.deuda_total);
       const b = document.createElement("button");
-      b.type = "button"; b.textContent = id === state.selectedId ? "Seleccionado" : "Seleccionar";
+      b.type = "button"; b.textContent = isSelected ? "Seleccionado" : "Seleccionar";
       b.addEventListener("click", () => {
+        if (state.selectedId === id) {
+          state.selectedId = 0;
+          resetForm();
+          closeForm();
+          renderResults();
+          return;
+        }
         const aguaSn = normalizeSN(c.agua_sn, "S");
         const desagueSn = normalizeSN(c.desague_sn, "S");
         state.selectedId = id;
@@ -381,26 +668,67 @@
         el.aguaSn.value = aguaSn;
         el.desagueSn.value = desagueSn;
         el.inspector.value = String((state.user && state.user.nombre) || "");
-        el.solicitudForm.classList.remove("hidden");
-        requestAnimationFrame(() => el.solicitudForm.classList.add("open"));
+        updateDuplicateWarning(id);
         renderResults();
       });
-      item.appendChild(t); item.appendChild(d); item.appendChild(m); item.appendChild(b); frag.appendChild(item);
+      item.appendChild(t);
+      item.appendChild(d);
+      item.appendChild(m);
+      item.appendChild(b);
+      if (isSelected) {
+        selectedItem = item;
+        selectedContribuyenteId = id;
+      }
+      frag.appendChild(item);
     });
     el.searchResults.appendChild(frag);
+    if (selectedItem) {
+      mountFormInsideResult(selectedItem);
+      el.solicitudForm.classList.remove("hidden");
+      requestAnimationFrame(() => el.solicitudForm.classList.add("open"));
+      updateDuplicateWarning(selectedContribuyenteId);
+      mountedForm = true;
+    }
+    if (!mountedForm) {
+      if (el.duplicateWarning) {
+        el.duplicateWarning.textContent = "";
+        el.duplicateWarning.classList.add("hidden");
+      }
+      parkFormHidden();
+    }
+    const shown = state.filtered.length;
+    const total = state.searchRows.length;
+    if (total > shown || state.searchTruncated) {
+      const footer = document.createElement("div");
+      footer.className = "results-footer";
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const truncMsg = state.searchTruncated ? " Se alcanzo el limite de busqueda; refine para ver mas." : "";
+      meta.textContent = "Mostrando " + shown + " de " + total + "." + truncMsg;
+      footer.appendChild(meta);
+      if (total > shown) {
+        const moreBtn = document.createElement("button");
+        moreBtn.type = "button";
+        moreBtn.className = "secondary";
+        moreBtn.textContent = "Mostrar mas";
+        moreBtn.addEventListener("click", () => showMoreResults());
+        footer.appendChild(moreBtn);
+      }
+      el.searchResults.appendChild(footer);
+    }
   }
 
   function closeForm() {
     if (state.selectedId) return;
-    el.solicitudForm.classList.remove("open");
-    setTimeout(() => { if (!state.selectedId) el.solicitudForm.classList.add("hidden"); }, 260);
+    parkFormHidden();
   }
 
   function localSearch(qRaw, idCalleRaw) {
     const q = norm(qRaw);
     const idCalle = Number(idCalleRaw || 0);
-    if (!idCalle && q.length < 2) return [];
+    if (!idCalle && q.length < 2) return { rows: [], truncated: false };
     const rows = [];
+    let truncated = false;
     for (const c of state.contribuyentes) {
       if (idCalle && Number(c.id_calle || 0) !== idCalle) continue;
       if (q.length >= 2) {
@@ -408,14 +736,20 @@
         if (!hit) continue;
       }
       rows.push(c);
-      if (rows.length >= 300) break;
+      if (rows.length >= SEARCH_LOCAL_LIMIT) {
+        truncated = true;
+        break;
+      }
     }
-    return rows;
+    return { rows: rows, truncated: truncated };
   }
 
   async function search() {
     if (requiresFreshSnapshotForOfflineWork()) {
+      state.searchRows = [];
       state.filtered = [];
+      state.searchVisibleCount = SEARCH_PAGE_SIZE;
+      state.searchTruncated = false;
       renderResults();
       closeForm();
       setStatus("Operacion bloqueada offline: sincroniza snapshot reciente antes de trabajar.", "warning", 5000);
@@ -424,21 +758,46 @@
     const q = String(el.searchInput.value || "").trim();
     const idCalle = Number(el.streetFilter.value || 0);
     if (!idCalle && q.length < 2) {
-      state.filtered = []; state.selectedId = 0; renderResults(); closeForm(); return;
+      state.searchRows = [];
+      state.filtered = [];
+      state.searchVisibleCount = SEARCH_PAGE_SIZE;
+      state.searchTruncated = false;
+      state.selectedId = 0;
+      renderResults();
+      closeForm();
+      return;
     }
+    let rows = [];
+    let truncated = false;
     if (state.online && state.token) {
       try {
-        const p = new URLSearchParams(); if (q.length >= 2) p.set("q", q); if (idCalle) p.set("id_calle", String(idCalle)); p.set("limit", "250");
-        const rows = await api("/campo/contribuyentes/buscar?" + p.toString(), { headers: authHeaders() });
-        state.filtered = Array.isArray(rows) ? rows : [];
+        const p = new URLSearchParams();
+        if (q.length >= 2) p.set("q", q);
+        if (idCalle) p.set("id_calle", String(idCalle));
+        p.set("limit", String(SEARCH_ONLINE_LIMIT));
+        const remoteRows = await api("/campo/contribuyentes/buscar?" + p.toString(), { headers: authHeaders() });
+        rows = Array.isArray(remoteRows) ? remoteRows : [];
+        truncated = rows.length >= SEARCH_ONLINE_LIMIT;
       } catch (err) {
         if (err.status === 401 || err.status === 403) setStatus("Sesion expirada. Ingresa nuevamente.", "warning", 5000);
-        state.filtered = localSearch(q, idCalle);
+        const local = localSearch(q, idCalle);
+        rows = local.rows;
+        truncated = local.truncated;
       }
     } else {
-      state.filtered = localSearch(q, idCalle);
+      const local = localSearch(q, idCalle);
+      rows = local.rows;
+      truncated = local.truncated;
     }
-    if (!state.filtered.some((x) => Number(x.id_contribuyente) === Number(state.selectedId))) { state.selectedId = 0; closeForm(); }
+    state.searchRows = rows;
+    state.searchTruncated = truncated;
+    state.searchVisibleCount = Math.min(SEARCH_PAGE_SIZE, state.searchRows.length);
+    const selectedIndex = state.searchRows.findIndex((x) => Number(x.id_contribuyente) === Number(state.selectedId));
+    if (selectedIndex >= 0 && (selectedIndex + 1) > state.searchVisibleCount) {
+      state.searchVisibleCount = selectedIndex + 1;
+    }
+    updateVisibleResults();
+    if (selectedIndex < 0) { state.selectedId = 0; closeForm(); }
     renderResults();
   }
 
@@ -451,7 +810,9 @@
     const rows = await queueByUser(state.user && state.user.id_usuario);
     state.queueCount = rows.length;
     state.queueItems = rows;
+    if (state.selectedId) updateDuplicateWarning(state.selectedId);
     updateInfo();
+    renderHealthPanel();
     renderQueue();
   }
 
@@ -477,7 +838,10 @@
 
   function selectedContrib() {
     const id = Number(state.selectedId || 0);
-    return state.filtered.find((x) => Number(x.id_contribuyente) === id) || state.contribuyentes.find((x) => Number(x.id_contribuyente) === id) || null;
+    return state.filtered.find((x) => Number(x.id_contribuyente) === id)
+      || state.searchRows.find((x) => Number(x.id_contribuyente) === id)
+      || state.contribuyentes.find((x) => Number(x.id_contribuyente) === id)
+      || null;
   }
 
   function makeIdempotency(idContribuyente) {
@@ -488,11 +852,15 @@
   }
 
   async function enqueue(payload, contrib, blocked, reason) {
+    const nowIso = new Date().toISOString();
     await idbPut(STORE_QUEUE, {
       idempotency_key: payload.idempotency_key,
       user_id: Number(state.user && state.user.id_usuario) || 0,
-      created_at: new Date().toISOString(),
+      created_at: nowIso,
       blocked: blocked ? 1 : 0,
+      retry_count: 0,
+      next_retry_at: nowIso,
+      last_attempt_at: null,
       last_error: reason || null,
       contribuyente_ref: { id_contribuyente: Number(contrib.id_contribuyente || 0), codigo_municipal: contrib.codigo_municipal || null, nombre_completo: contrib.nombre_completo || null },
       payload: payload
@@ -512,6 +880,10 @@
     el.visitadoSn.value = "N"; el.cortadoSn.value = "N"; el.fechaCorte.value = ""; el.motivoObs.value = "";
     el.aguaSn.value = "S"; el.desagueSn.value = "S";
     el.nombreVerificado.value = ""; el.dniVerificado.value = ""; el.direccionVerificada.value = ""; el.inspector.value = String((state.user && state.user.nombre) || "");
+    if (el.duplicateWarning) {
+      el.duplicateWarning.textContent = "";
+      el.duplicateWarning.classList.add("hidden");
+    }
   }
 
   async function submitSolicitud(ev) {
@@ -523,6 +895,15 @@
     }
     const c = selectedContrib();
     if (!c) { setStatus("Selecciona un contribuyente.", "warning"); return; }
+    const dup = duplicateSummary(c.id_contribuyente);
+    if (dup.has) {
+      const latestTxt = dup.latestAt ? fmtAgo(dup.latestAt) : "sin fecha";
+      const confirmMsg =
+        "Ya existe actividad reciente para este contribuyente (cola: " + dup.queued +
+        ", enviados: " + dup.recent + ", ultimo: " + latestTxt + ").\n\n" +
+        "Deseas registrar otra solicitud?";
+      if (!window.confirm(confirmMsg)) return;
+    }
 
     const key = makeIdempotency(c.id_contribuyente);
     const obs = String(el.motivoObs.value || "").trim();
@@ -547,6 +928,7 @@
     try {
       if (state.online) {
         const data = await sendSolicitud(payload);
+        rememberRecentSubmission(c.id_contribuyente, "online", "enviado");
         setStatus((data && data.mensaje) || "Solicitud enviada.", "success");
       } else {
         await enqueue(payload, c, false, "offline");
@@ -576,10 +958,16 @@
     if (state.syncing) return;
     if (!state.online) { if (manual) setStatus("Sin internet.", "warning"); return; }
     if (!state.token) { if (manual) setStatus("Debes iniciar sesion.", "warning"); return; }
-    state.syncing = true; el.syncQueueBtn.disabled = true;
+    state.syncing = true;
+    state.lastQueueSyncAt = new Date().toISOString();
+    state.lastQueueSyncError = "";
+    el.syncQueueBtn.disabled = true;
+    renderHealthPanel();
     try {
       const allRows = await queueByUser(state.user && state.user.id_usuario);
-      const rows = allRows.filter((x) => Number(x.blocked || 0) !== 1);
+      const activeRows = allRows.filter((x) => Number(x.blocked || 0) !== 1);
+      const nowMs = Date.now();
+      const rows = manual ? activeRows : activeRows.filter((x) => queueItemReady(x, nowMs));
       if (!rows.length) {
         await refreshQueueCount();
         if (manual) {
@@ -589,21 +977,48 @@
         return;
       }
       let sent = 0;
+      let stoppedReason = "";
       for (const item of rows) {
         try {
           await sendSolicitud(item.payload);
           await idbDel(STORE_QUEUE, item.idempotency_key);
+          rememberRecentSubmission(item && item.payload && item.payload.id_contribuyente, "sync", "auto");
           sent += 1;
         } catch (err) {
-          if (err.status === 401 || err.status === 403 || err.isNetworkError || err.status >= 500) break;
-          await idbPut(STORE_QUEUE, Object.assign({}, item, { blocked: 1, last_error: err.message || "error_no_reintentar" }));
+          if (err.status === 401 || err.status === 403 || err.isNetworkError || err.status >= 500) {
+            const retryCount = queueItemRetryCount(item) + 1;
+            const nextRetryAt = new Date(Date.now() + calcRetryDelayMs(retryCount)).toISOString();
+            await idbPut(STORE_QUEUE, Object.assign({}, item, {
+              blocked: 0,
+              retry_count: retryCount,
+              next_retry_at: nextRetryAt,
+              last_attempt_at: new Date().toISOString(),
+              last_error: err.message || "reintento_diferido"
+            }));
+            stoppedReason = err.message || "conexion interrumpida";
+            break;
+          }
+          await idbPut(STORE_QUEUE, Object.assign({}, item, {
+            blocked: 1,
+            last_attempt_at: new Date().toISOString(),
+            last_error: err.message || "error_no_reintentar"
+          }));
         }
       }
       await refreshQueueCount();
-      if (sent > 0) setStatus("Pendientes enviados: " + sent + ".", "success");
-      else if (manual) setStatus("No se pudo enviar pendientes en este intento.", "warning", 5000);
+      if (sent > 0) {
+        state.lastQueueSyncOkAt = new Date().toISOString();
+        setStatus("Pendientes enviados: " + sent + ".", "success");
+      }
+      if (stoppedReason) state.lastQueueSyncError = stoppedReason;
+      else if (sent === 0 && manual) setStatus("No se pudo enviar pendientes en este intento.", "warning", 5000);
+    } catch (err) {
+      state.lastQueueSyncError = err.message || "error_sync_queue";
+      if (manual) setStatus(state.lastQueueSyncError, "error", 5000);
     } finally {
-      state.syncing = false; el.syncQueueBtn.disabled = false;
+      state.syncing = false;
+      el.syncQueueBtn.disabled = false;
+      renderHealthPanel();
     }
   }
 
@@ -617,9 +1032,16 @@
     try {
       const data = await api("/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: { username: username, password: password } });
       if (!hasMinRole(data && data.rol, "BRIGADA")) { setStatus("El usuario no tiene permisos para campo.", "error", 5000); return; }
-      state.token = String(data.token || "");
-      state.user = { id_usuario: Number(data.id_usuario || 0), nombre: String(data.nombre || "").trim(), rol: String(data.rol || "").trim().toUpperCase() };
+      const token = String((data && data.token) || "").trim();
+      const idUsuario = Number(data && data.id_usuario);
+      if (!token || !Number.isFinite(idUsuario) || idUsuario <= 0) {
+        setStatus("Respuesta de login incompleta. Contacta al administrador.", "error", 5000);
+        return;
+      }
+      state.token = token;
+      state.user = { id_usuario: idUsuario, nombre: String(data.nombre || "").trim(), rol: normalizeRole(data.rol) || String(data.rol || "").trim().toUpperCase() };
       state.queueActionKey = "";
+      state.lastQueueSyncError = "";
       localStorage.setItem(TOKEN_KEY, state.token);
       localStorage.setItem(USER_KEY, JSON.stringify(state.user));
       el.password.value = "";
@@ -639,6 +1061,9 @@
   async function logout() {
     state.token = ""; state.user = null;
     state.queueActionKey = "";
+    state.lastQueueSyncAt = null;
+    state.lastQueueSyncOkAt = null;
+    state.lastQueueSyncError = "";
     localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY);
     await refreshQueueCount();
     renderAuth();
@@ -657,6 +1082,11 @@
     el.solicitudForm.addEventListener("submit", (e) => submitSolicitud(e).catch((err) => console.error(err)));
     window.addEventListener("online", () => { state.online = true; updateInfo(); syncQueue(false).catch((err) => console.error(err)); });
     window.addEventListener("offline", () => { state.online = false; updateInfo(); });
+    if (!queueAutoSyncTimer) {
+      queueAutoSyncTimer = setInterval(() => {
+        if (state.online && state.token) syncQueue(false).catch((err) => console.error(err));
+      }, 30000);
+    }
   }
 
   function registerSw() {
@@ -667,10 +1097,13 @@
   async function init() {
     if (!el.loginForm) return;
     el.apiBaseUrl.value = state.apiBase;
+    state.recentSubmissions = pruneRecentSubmissions(parseJson(localStorage.getItem(RECENT_SUBMISSIONS_KEY)) || []);
+    saveRecentSubmissions();
     el.apiConfigCard.classList.toggle("hidden", state.apiBase === window.location.origin);
     bind();
     registerSw();
     resetForm();
+    parkFormHidden();
     await loadLocalData();
     await refreshQueueCount();
     renderAuth();

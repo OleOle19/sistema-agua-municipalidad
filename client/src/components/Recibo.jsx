@@ -33,6 +33,16 @@ const Recibo = forwardRef(({ datos }, ref) => {
   const mesLabel = recibo.mes_nombre ?? getMesNombre(recibo.mes);
   const anioLabel = recibo.anio ?? "";
   const cargoReimpresion = parseFloat(recibo?.cargo_reimpresion || 0) || 0;
+  const totalDetalle = (
+    (parseFloat(detalles?.agua || 0) || 0)
+    + (parseFloat(detalles?.desague || 0) || 0)
+    + (parseFloat(detalles?.limpieza || 0) || 0)
+    + (parseFloat(detalles?.admin || 0) || 0)
+  );
+  const totalCalculado = totalDetalle + cargoReimpresion;
+  const totalRecibo = Number.isFinite(totalCalculado)
+    ? totalCalculado
+    : (parseFloat(recibo?.total || 0) || 0);
   const deudaMesesLabel = contribuyente.deuda_meses_label ? ` (${contribuyente.deuda_meses_label})` : "";
   const deudaAnioLabel = `${anioLabel}${deudaMesesLabel}`.trim();
   const reciboNumero = String(recibo.codigo_impresion || "").trim()
@@ -264,9 +274,15 @@ const Recibo = forwardRef(({ datos }, ref) => {
               <span style={{ flex: 1 }} />
               <span style={styles.itemAmount}>{formatMonto(detalles.admin)}</span>
             </div>
+            {cargoReimpresion > 0 && (
+              <div style={styles.itemRow}>
+                <span style={{ flex: 1 }} />
+                <span style={styles.itemAmount}>{formatMonto(cargoReimpresion)}</span>
+              </div>
+            )}
             <div style={styles.itemRow}>
               <span style={{ flex: 1 }} />
-              <span style={styles.totalAmount}>{formatMonto(recibo.total)}</span>
+              <span style={styles.totalAmount}>{formatMonto(totalRecibo)}</span>
             </div>
           </div>
 
@@ -354,7 +370,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
 
           <div style={styles.cajaTotal}>
             <span style={styles.cajaTotalLabelSpacer} />
-            <span style={styles.cajaTotalAmount}>{formatMonto(recibo.total)}</span>
+            <span style={styles.cajaTotalAmount}>{formatMonto(totalRecibo)}</span>
           </div>
         </div>
       </div>
