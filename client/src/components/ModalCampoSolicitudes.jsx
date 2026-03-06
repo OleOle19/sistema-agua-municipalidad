@@ -22,6 +22,28 @@ const normalizeSN = (value, fallback = "S") => {
   if (normalized === "N" || normalized === "NO") return "N";
   return normalizeText(fallback) === "N" ? "N" : "S";
 };
+const seguimientoMotivoLabel = (value) => {
+  const raw = normalizeText(value);
+  if (!raw) return "";
+  if (raw === "NO_VISITADO") return "No visitado";
+  if (raw === "OBSERVACION") return "Con observacion";
+  if (raw === "NO_VISITADO|OBSERVACION" || raw === "NO_VISITADO_Y_OBSERVACION") return "No visitado + observacion";
+  return raw;
+};
+const parseMontosList = (value) => {
+  if (Array.isArray(value)) {
+    return value
+      .map((x) => Number.parseFloat(x))
+      .filter((n) => Number.isFinite(n));
+  }
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+  return raw
+    .replace(/^\{|\}$/g, "")
+    .split(",")
+    .map((x) => Number.parseFloat(String(x || "").trim()))
+    .filter((n) => Number.isFinite(n));
+};
 const isDifferent = (nuevo, actual) => normalizeText(nuevo) !== normalizeText(actual);
 
 const formatDateTime = (value) => {
@@ -46,8 +68,32 @@ const estadoBadgeClass = (estado) => {
   return "bg-warning text-dark";
 };
 
+const getSeguimientoTipo = (visitadoSN, hasObservacion) => {
+  if (visitadoSN === "N" && hasObservacion) return "NO_VISITADO_Y_OBSERVACION";
+  if (visitadoSN === "N") return "NO_VISITADO";
+  if (hasObservacion) return "OBSERVACION";
+  return "";
+};
+
+const getSeguimientoTone = (tipo, darkMode) => {
+  if (!tipo) return null;
+  const palette = darkMode
+    ? {
+      NO_VISITADO: { bg: "#4a2a1b", fg: "#ffe4d6", accent: "#fb923c", line: "#fdba74" },
+      OBSERVACION: { bg: "#123245", fg: "#d9f0ff", accent: "#38bdf8", line: "#7dd3fc" },
+      NO_VISITADO_Y_OBSERVACION: { bg: "#4a3a16", fg: "#fff0c2", accent: "#f59e0b", line: "#fcd34d" }
+    }
+    : {
+      NO_VISITADO: { bg: "#ffe3d1", fg: "#1f2937", accent: "#c2410c", line: "#9a3412" },
+      OBSERVACION: { bg: "#dff4ff", fg: "#0f172a", accent: "#0369a1", line: "#075985" },
+      NO_VISITADO_Y_OBSERVACION: { bg: "#fff0c9", fg: "#1f2937", accent: "#b45309", line: "#92400e" }
+    };
+  return palette[tipo] || null;
+};
+
 const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl }) => {
   const [filtroEstado, setFiltroEstado] = useState("PENDIENTE");
+  const [filtroBrigadista, setFiltroBrigadista] = useState("TODOS");
   const [solicitudes, setSolicitudes] = useState([]);
   const [cargando, setCargando] = useState(false);
   const [procesandoId, setProcesandoId] = useState(null);
@@ -58,8 +104,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
     try {
       setCargando(true);
       setError("");
-      const params = { limit: 300 };
-      if (filtroEstado !== "TODOS") params.estado = filtroEstado;
+      const params = { limit: 2000, estado: filtroEstado };
       const res = await api.get("/campo/solicitudes", { params });
       setSolicitudes(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
@@ -116,6 +161,19 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
     const aguaNuevo = normalizeSN(metadata.servicio_agua_nuevo, aguaActual);
     const desagueNuevo = normalizeSN(metadata.servicio_desague_nuevo, desagueActual);
     const limpiezaNuevo = normalizeSN(metadata.servicio_limpieza_nuevo, limpiezaActual);
+    const visitadoSN = normalizeSN(metadata.visitado_sn, "N");
+    const hasObservacion = Boolean(String(s?.observacion_campo || metadata?.motivo_obs || "").trim());
+    const seguimientoPendiente = (
+      normalizeSN(metadata.seguimiento_pendiente_sn, "N") === "S" ||
+      visitadoSN === "N" ||
+      hasObservacion
+    );
+    const seguimientoMotivo = seguimientoMotivoLabel(
+      metadata.seguimiento_motivo
+      || (visitadoSN === "N" && hasObservacion ? "NO_VISITADO|OBSERVACION" : (visitadoSN === "N" ? "NO_VISITADO" : (hasObservacion ? "OBSERVACION" : "")))
+    );
+    const montosAbono = parseMontosList(metadata.montos_mensuales_24m);
+    const montosAbonoTxt = montosAbono.length > 0 ? montosAbono.map((n) => n.toFixed(2)).join(", ") : "-";
     if (s?.nombre_verificado && isDifferent(s.nombre_verificado, s.nombre_actual_db)) {
       changes.push(renderChangeLine("Nombre", s.nombre_verificado, s.nombre_actual_db));
     }
@@ -145,9 +203,57 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
       solicitud: s,
       changes,
       metadata,
-      servicios: { aguaNuevo, desagueNuevo, limpiezaNuevo }
+      servicios: { aguaNuevo, desagueNuevo, limpiezaNuevo },
+      seguimientoPendiente,
+      seguimientoMotivo,
+      visitadoSN,
+      hasObservacion,
+      montosAbonoTxt
     };
   }), [solicitudes]);
+
+  const groupedRows = useMemo(() => {
+    const groups = new Map();
+    rows.forEach((row) => {
+      const raw = String(row?.solicitud?.nombre_solicitante || "").trim();
+      const label = raw || "Sin brigadista";
+      const key = normalizeText(label);
+      if (!groups.has(key)) {
+        groups.set(key, { key, label, items: [] });
+      }
+      groups.get(key).items.push(row);
+    });
+    return Array.from(groups.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, "es", { sensitivity: "base" })
+    );
+  }, [rows]);
+
+  const brigadistaOptions = useMemo(() => {
+    const seen = new Map();
+    groupedRows.forEach((g) => {
+      if (!seen.has(g.key)) seen.set(g.key, g.label);
+    });
+    const list = Array.from(seen.entries())
+      .map(([key, label]) => ({ key, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, "es", { sensitivity: "base" }));
+    return [{ key: "TODOS", label: "Todos los brigadistas" }, ...list];
+  }, [groupedRows]);
+
+  useEffect(() => {
+    if (filtroBrigadista === "TODOS") return;
+    const exists = brigadistaOptions.some((op) => op.key === filtroBrigadista);
+    if (!exists) setFiltroBrigadista("TODOS");
+  }, [brigadistaOptions, filtroBrigadista]);
+
+  const groupedRowsFiltered = useMemo(() => {
+    if (filtroBrigadista === "TODOS") return groupedRows;
+    return groupedRows.filter((g) => g.key === filtroBrigadista);
+  }, [groupedRows, filtroBrigadista]);
+
+  const totalVisibleSolicitudes = useMemo(
+    () => groupedRowsFiltered.reduce((acc, g) => acc + g.items.length, 0),
+    [groupedRowsFiltered]
+  );
 
   const modalContentClass = `modal-content ${darkMode ? "text-white" : ""}`;
   const modalContentStyle = darkMode ? { backgroundColor: "#2b3035", border: "1px solid #495057" } : {};
@@ -180,6 +286,16 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                   <option key={op.value} value={op.value}>{op.label}</option>
                 ))}
               </select>
+              <select
+                className={inputClass}
+                style={{ maxWidth: "240px" }}
+                value={filtroBrigadista}
+                onChange={(e) => setFiltroBrigadista(e.target.value)}
+              >
+                {brigadistaOptions.map((op) => (
+                  <option key={op.key} value={op.key}>{op.label}</option>
+                ))}
+              </select>
               <button type="button" className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" onClick={cargarSolicitudes} disabled={cargando}>
                 <FaSyncAlt /> Recargar
               </button>
@@ -187,7 +303,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                 <FaMobileAlt /> Abrir App Campo
               </a>
               <div className="ms-auto small opacity-75">
-                Total: <strong>{solicitudes.length}</strong>
+                Mostrando: <strong>{totalVisibleSolicitudes}</strong> de <strong>{solicitudes.length}</strong> | Brigadas: <strong>{groupedRowsFiltered.length}</strong>
               </div>
             </div>
 
@@ -211,73 +327,114 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                     <tr><td colSpan="6" className="text-center py-3">Cargando solicitudes...</td></tr>
                   ) : rows.length === 0 ? (
                     <tr><td colSpan="6" className="text-center py-3">No hay solicitudes para este filtro.</td></tr>
-                  ) : rows.map(({ solicitud: s, changes, metadata, servicios }) => {
-                    const pending = s.estado_solicitud === "PENDIENTE";
-                    const disabled = procesandoId === s.id_solicitud;
-                    return (
-                      <tr key={s.id_solicitud}>
-                        <td className="small align-top">
-                          <div>{formatDateTime(s.creado_en)}</div>
-                          <div className="opacity-75">Rev: {formatDateTime(s.revisado_en)}</div>
-                        </td>
-                        <td className="align-top">
-                          <div className="fw-bold">{s.codigo_municipal || "-"}</div>
-                          <div>{s.nombre_actual_db || "-"}</div>
-                          <div className="small opacity-75">Solicita: {s.nombre_solicitante || "Usuario"}</div>
-                        </td>
-                        <td className="small align-top">
-                          <div>
-                            Estado: <strong>{s.estado_conexion_actual}</strong> {"->"} <strong>{s.estado_conexion_nuevo}</strong>
-                          </div>
-                          <div className="mt-1">
-                            Visitado: <strong>{metadata.visitado_sn || "N"}</strong> | Cortado: <strong>{metadata.cortado_sn || "N"}</strong>
-                          </div>
-                          <div className="mt-1">
-                            Servicios: Agua <strong>{servicios.aguaNuevo}</strong> | Desague <strong>{servicios.desagueNuevo}</strong> | Limpieza <strong>{servicios.limpiezaNuevo}</strong>
-                          </div>
-                          <div className="mt-1">
-                            Fecha corte: <strong>{metadata.fecha_corte || "-"}</strong> | Inspector: <strong>{metadata.inspector || "-"}</strong>
-                          </div>
-                          <div className="mt-1">
-                            Meses deuda: <strong>{metadata.meses_deuda ?? "-"}</strong> | Deuda: <strong>S/. {Number(metadata.deuda_total || 0).toFixed(2)}</strong>
-                          </div>
-                          <div className="mt-1 opacity-75">{s.observacion_campo || "Sin observacion."}</div>
-                          {s.motivo_revision && <div className="mt-1 text-info">Revision: {s.motivo_revision}</div>}
-                        </td>
-                        <td className="align-top">
-                          {changes.length > 0 ? changes : <span className="small opacity-75">Sin cambios de ficha.</span>}
-                        </td>
-                        <td className="align-top">
-                          <span className={`badge ${estadoBadgeClass(s.estado_solicitud)}`}>
-                            {ESTADO_LABELS[s.estado_solicitud] || s.estado_solicitud}
-                          </span>
-                        </td>
-                        <td className="align-top">
-                          {pending ? (
-                            <div className="d-flex gap-2">
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-outline-success d-flex align-items-center gap-1"
-                                disabled={disabled}
-                                onClick={() => procesarSolicitud(s, "aprobar")}
-                              >
-                                <FaCheck /> Aprobar
-                              </button>
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-outline-danger d-flex align-items-center gap-1"
-                                disabled={disabled}
-                                onClick={() => procesarSolicitud(s, "rechazar")}
-                              >
-                                <FaTimes /> Rechazar
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="small opacity-75">Procesada</span>
-                          )}
+                  ) : groupedRowsFiltered.length === 0 ? (
+                    <tr><td colSpan="6" className="text-center py-3">No hay solicitudes para este brigadista.</td></tr>
+                  ) : groupedRowsFiltered.flatMap((group) => {
+                    const groupHeader = (
+                      <tr key={`group-${group.key}`} className={darkMode ? "table-secondary" : "table-light"}>
+                        <td colSpan="6" className="small fw-semibold">
+                          Brigadista: {group.label} <span className="opacity-75 ms-2">({group.items.length} solicitudes)</span>
                         </td>
                       </tr>
                     );
+                    const groupItems = group.items.map(({ solicitud: s, changes, metadata, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt }) => {
+                      const pending = s.estado_solicitud === "PENDIENTE";
+                      const disabled = procesandoId === s.id_solicitud;
+                      const seguimientoTipo = getSeguimientoTipo(visitadoSN, hasObservacion);
+                      const tone = seguimientoPendiente ? getSeguimientoTone(seguimientoTipo, darkMode) : null;
+                      const rowStyle = tone ? { backgroundColor: tone.bg, color: tone.fg } : undefined;
+                      const firstCellStyle = tone ? { borderLeft: `6px solid ${tone.accent}` } : undefined;
+                      const badgeStyle = tone ? { backgroundColor: tone.accent, color: "#fff" } : undefined;
+                      const seguimientoLineStyle = seguimientoPendiente && tone
+                        ? { color: tone.line, fontWeight: 700 }
+                        : { opacity: 0.75 };
+                      return (
+                        <tr key={s.id_solicitud} style={rowStyle}>
+                          <td className="small align-top" style={firstCellStyle}>
+                            <div>{formatDateTime(s.creado_en)}</div>
+                            <div className="opacity-75">Rev: {formatDateTime(s.revisado_en)}</div>
+                          </td>
+                          <td className="align-top">
+                            <div className="fw-bold">{s.codigo_municipal || "-"}</div>
+                            <div>{s.nombre_actual_db || "-"}</div>
+                            <div className="small opacity-75">Solicita: {s.nombre_solicitante || "Usuario"}</div>
+                          </td>
+                          <td className="small align-top">
+                            <div>
+                              Estado: <strong>{s.estado_conexion_actual}</strong> {"->"} <strong>{s.estado_conexion_nuevo}</strong>
+                            </div>
+                            <div className="mt-1">
+                              Visitado: <strong>{metadata.visitado_sn || "N"}</strong> | Cortado: <strong>{metadata.cortado_sn || "N"}</strong>
+                            </div>
+                            <div className="mt-1">
+                              Servicios: Agua <strong>{servicios.aguaNuevo}</strong> | Desague <strong>{servicios.desagueNuevo}</strong> | Limpieza <strong>{servicios.limpiezaNuevo}</strong>
+                            </div>
+                            <div className="mt-1">
+                              Fecha corte: <strong>{metadata.fecha_corte || "-"}</strong> | Inspector: <strong>{metadata.inspector || "-"}</strong>
+                            </div>
+                            <div className="mt-1">
+                              Meses deuda: <strong>{metadata.meses_deuda ?? "-"}</strong> | Deuda: <strong>S/. {Number(metadata.deuda_total || 0).toFixed(2)}</strong>
+                            </div>
+                            <div className="mt-1">
+                              Mensual sistema: <strong>S/. {Number(metadata.cargo_mensual_ultimo || 0).toFixed(2)}</strong> | Montos referencia 24m: <strong>{montosAbonoTxt}</strong>
+                            </div>
+                            <div className="mt-1">
+                              Ultima emision recibo: <strong>{metadata.ultima_emision_periodo || "-"}</strong>
+                            </div>
+                            <div className="mt-1" style={seguimientoLineStyle}>
+                              {seguimientoPendiente && (
+                                <span className="badge me-2" style={badgeStyle}>
+                                  {seguimientoTipo === "NO_VISITADO_Y_OBSERVACION"
+                                    ? "No visitado + obs"
+                                    : (visitadoSN === "N" ? "No visitado" : "Con observacion")}
+                                </span>
+                              )}
+                              Pendiente proxima visita: <strong>{seguimientoPendiente ? "SI" : "NO"}</strong>{seguimientoMotivo ? ` (${seguimientoMotivo})` : ""}
+                            </div>
+                            {visitadoSN === "S" && hasObservacion && (
+                              <div className="mt-1 small" style={tone ? { color: tone.line } : {}}>
+                                Observacion registrada en visita efectiva (queda para seguimiento).
+                              </div>
+                            )}
+                            <div className="mt-1 opacity-75">{s.observacion_campo || "Sin observacion."}</div>
+                            {s.motivo_revision && <div className="mt-1 text-info">Revision: {s.motivo_revision}</div>}
+                          </td>
+                          <td className="align-top">
+                            {changes.length > 0 ? changes : <span className="small opacity-75">Sin cambios de ficha.</span>}
+                          </td>
+                          <td className="align-top">
+                            <span className={`badge ${estadoBadgeClass(s.estado_solicitud)}`}>
+                              {ESTADO_LABELS[s.estado_solicitud] || s.estado_solicitud}
+                            </span>
+                          </td>
+                          <td className="align-top">
+                            {pending ? (
+                              <div className="d-flex gap-2">
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline-success d-flex align-items-center gap-1"
+                                  disabled={disabled}
+                                  onClick={() => procesarSolicitud(s, "aprobar")}
+                                >
+                                  <FaCheck /> Aprobar
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline-danger d-flex align-items-center gap-1"
+                                  disabled={disabled}
+                                  onClick={() => procesarSolicitud(s, "rechazar")}
+                                >
+                                  <FaTimes /> Rechazar
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="small opacity-75">Procesada</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    });
+                    return [groupHeader, ...groupItems];
                   })}
                 </tbody>
               </table>

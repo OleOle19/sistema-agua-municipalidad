@@ -1564,6 +1564,21 @@ app.use((req, res, next) => {
 // ==========================================
 // APP DE CAMPO (solicitudes de cambio con aprobación)
 // ==========================================
+const normalizeNumericArray = (value) => {
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => Number.parseFloat(v))
+      .filter((n) => Number.isFinite(n));
+  }
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+  return raw
+    .replace(/^\{|\}$/g, "")
+    .split(",")
+    .map((v) => Number.parseFloat(String(v || "").trim()))
+    .filter((n) => Number.isFinite(n));
+};
+
 app.get("/campo/contribuyentes/buscar", async (req, res) => {
   try {
     const q = normalizeLimitedText(req.query?.q, 120);
@@ -1635,7 +1650,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
 
     const rows = await pool.query(`
       WITH recibos_objetivo AS (
-        SELECT r.id_recibo, r.id_predio, r.total_pagar
+        SELECT r.id_recibo, r.id_predio, r.total_pagar, r.anio, r.mes
         FROM recibos r
         WHERE (r.anio, r.mes) <= ($1::int, $2::int)
       ),
@@ -1654,6 +1669,42 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
         GROUP BY ro.id_predio
       ),
+      resumen_mensual_contrib AS (
+        SELECT
+          p.id_contribuyente,
+          ro.anio,
+          ro.mes,
+          SUM(ro.total_pagar)::numeric AS cargo_mes,
+          SUM(COALESCE(pp.total_pagado, 0))::numeric AS abono_mes
+        FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+        WHERE ((ro.anio * 12) + ro.mes) >= (($1::int * 12) + $2::int - 24)
+        GROUP BY p.id_contribuyente, ro.anio, ro.mes
+      ),
+      resumen_mensual_stats AS (
+        SELECT
+          id_contribuyente,
+          ROUND(AVG(cargo_mes)::numeric, 2) AS cargo_mensual_promedio,
+          ROUND((ARRAY_AGG(cargo_mes ORDER BY anio DESC, mes DESC))[1]::numeric, 2) AS cargo_mensual_ultimo,
+          COALESCE(
+            ARRAY_AGG(
+              DISTINCT ROUND((CASE WHEN abono_mes > 0 THEN abono_mes ELSE cargo_mes END)::numeric, 2)
+              ORDER BY ROUND((CASE WHEN abono_mes > 0 THEN abono_mes ELSE cargo_mes END)::numeric, 2)
+            ) FILTER (WHERE (CASE WHEN abono_mes > 0 THEN abono_mes ELSE cargo_mes END) > 0),
+            ARRAY[]::numeric[]
+          ) AS montos_mensuales_24m
+        FROM resumen_mensual_contrib
+        GROUP BY id_contribuyente
+      ),
+      ultima_emision_contrib AS (
+        SELECT
+          p.id_contribuyente,
+          MAX((r.anio * 100) + r.mes) AS periodo_num
+        FROM recibos r
+        JOIN predios p ON p.id_predio = r.id_predio
+        GROUP BY p.id_contribuyente
+      ),
       base AS (
         SELECT
           c.id_contribuyente,
@@ -1670,7 +1721,24 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
           COALESCE(TRIM(ca.nombre), '') AS nombre_calle,
           ${buildDireccionSql("ca", "p")} AS direccion_completa,
           COALESCE(rp.meses_deuda_total, 0) AS meses_deuda,
-          COALESCE(rp.deuda_total, 0) AS deuda_total
+          COALESCE(rp.deuda_total, 0) AS deuda_total,
+          COALESCE(rms.cargo_mensual_ultimo, 0) AS cargo_mensual_ultimo,
+          COALESCE(rms.montos_mensuales_24m, ARRAY[]::numeric[]) AS montos_mensuales_24m,
+          CASE
+            WHEN ue.periodo_num IS NULL THEN NULL
+            ELSE CONCAT((ue.periodo_num / 100)::int::text, '-', LPAD((ue.periodo_num % 100)::int::text, 2, '0'))
+          END AS ultima_emision_periodo,
+          CASE
+            WHEN COALESCE(seg.visitado_sn, 'S') = 'N' OR COALESCE(seg.observacion_campo, '') <> '' THEN 'S'
+            ELSE 'N'
+          END AS seguimiento_pendiente_sn,
+          CASE
+            WHEN COALESCE(seg.visitado_sn, 'S') = 'N' AND COALESCE(seg.observacion_campo, '') <> '' THEN 'NO_VISITADO_Y_OBSERVACION'
+            WHEN COALESCE(seg.visitado_sn, 'S') = 'N' THEN 'NO_VISITADO'
+            WHEN COALESCE(seg.observacion_campo, '') <> '' THEN 'OBSERVACION'
+            ELSE ''
+          END AS seguimiento_motivo,
+          seg.seguimiento_desde
         FROM contribuyentes c
         LEFT JOIN LATERAL (
           SELECT id_predio, id_calle, numero_casa, referencia_direccion, agua_sn, desague_sn, limpieza_sn
@@ -1681,6 +1749,19 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
         ) p ON TRUE
         LEFT JOIN calles ca ON ca.id_calle = p.id_calle
         LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
+        LEFT JOIN resumen_mensual_stats rms ON rms.id_contribuyente = c.id_contribuyente
+        LEFT JOIN ultima_emision_contrib ue ON ue.id_contribuyente = c.id_contribuyente
+        LEFT JOIN LATERAL (
+          SELECT
+            COALESCE(NULLIF(UPPER(TRIM(COALESCE(s.metadata->>'visitado_sn', 'N'))), ''), 'N') AS visitado_sn,
+            COALESCE(NULLIF(TRIM(s.observacion_campo), ''), '') AS observacion_campo,
+            s.creado_en AS seguimiento_desde
+          FROM campo_solicitudes s
+          WHERE s.id_contribuyente = c.id_contribuyente
+            AND s.estado_solicitud <> 'RECHAZADO'
+          ORDER BY s.creado_en DESC
+          LIMIT 1
+        ) seg ON TRUE
       )
       SELECT
         b.id_contribuyente,
@@ -1697,7 +1778,13 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
         b.nombre_calle,
         b.direccion_completa,
         b.meses_deuda,
-        b.deuda_total
+        b.deuda_total,
+        b.cargo_mensual_ultimo,
+        b.montos_mensuales_24m,
+        b.ultima_emision_periodo,
+        b.seguimiento_pendiente_sn,
+        b.seguimiento_motivo,
+        b.seguimiento_desde
       FROM base b
       ${whereSql}
       ORDER BY ${orderSql}
@@ -1719,7 +1806,7 @@ app.get("/campo/offline-snapshot", async (req, res) => {
 
     const contribuyentes = await pool.query(`
       WITH recibos_objetivo AS (
-        SELECT r.id_recibo, r.id_predio, r.total_pagar
+        SELECT r.id_recibo, r.id_predio, r.total_pagar, r.anio, r.mes
         FROM recibos r
         WHERE (r.anio, r.mes) <= ($1::int, $2::int)
       ),
@@ -1738,6 +1825,42 @@ app.get("/campo/offline-snapshot", async (req, res) => {
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
         GROUP BY ro.id_predio
       ),
+      resumen_mensual_contrib AS (
+        SELECT
+          p.id_contribuyente,
+          ro.anio,
+          ro.mes,
+          SUM(ro.total_pagar)::numeric AS cargo_mes,
+          SUM(COALESCE(pp.total_pagado, 0))::numeric AS abono_mes
+        FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+        WHERE ((ro.anio * 12) + ro.mes) >= (($1::int * 12) + $2::int - 24)
+        GROUP BY p.id_contribuyente, ro.anio, ro.mes
+      ),
+      resumen_mensual_stats AS (
+        SELECT
+          id_contribuyente,
+          ROUND(AVG(cargo_mes)::numeric, 2) AS cargo_mensual_promedio,
+          ROUND((ARRAY_AGG(cargo_mes ORDER BY anio DESC, mes DESC))[1]::numeric, 2) AS cargo_mensual_ultimo,
+          COALESCE(
+            ARRAY_AGG(
+              DISTINCT ROUND((CASE WHEN abono_mes > 0 THEN abono_mes ELSE cargo_mes END)::numeric, 2)
+              ORDER BY ROUND((CASE WHEN abono_mes > 0 THEN abono_mes ELSE cargo_mes END)::numeric, 2)
+            ) FILTER (WHERE (CASE WHEN abono_mes > 0 THEN abono_mes ELSE cargo_mes END) > 0),
+            ARRAY[]::numeric[]
+          ) AS montos_mensuales_24m
+        FROM resumen_mensual_contrib
+        GROUP BY id_contribuyente
+      ),
+      ultima_emision_contrib AS (
+        SELECT
+          p.id_contribuyente,
+          MAX((r.anio * 100) + r.mes) AS periodo_num
+        FROM recibos r
+        JOIN predios p ON p.id_predio = r.id_predio
+        GROUP BY p.id_contribuyente
+      ),
       base AS (
         SELECT
           c.id_contribuyente,
@@ -1754,7 +1877,24 @@ app.get("/campo/offline-snapshot", async (req, res) => {
           COALESCE(TRIM(ca.nombre), '') AS nombre_calle,
           ${buildDireccionSql("ca", "p")} AS direccion_completa,
           COALESCE(rp.meses_deuda_total, 0) AS meses_deuda,
-          COALESCE(rp.deuda_total, 0) AS deuda_total
+          COALESCE(rp.deuda_total, 0) AS deuda_total,
+          COALESCE(rms.cargo_mensual_ultimo, 0) AS cargo_mensual_ultimo,
+          COALESCE(rms.montos_mensuales_24m, ARRAY[]::numeric[]) AS montos_mensuales_24m,
+          CASE
+            WHEN ue.periodo_num IS NULL THEN NULL
+            ELSE CONCAT((ue.periodo_num / 100)::int::text, '-', LPAD((ue.periodo_num % 100)::int::text, 2, '0'))
+          END AS ultima_emision_periodo,
+          CASE
+            WHEN COALESCE(seg.visitado_sn, 'S') = 'N' OR COALESCE(seg.observacion_campo, '') <> '' THEN 'S'
+            ELSE 'N'
+          END AS seguimiento_pendiente_sn,
+          CASE
+            WHEN COALESCE(seg.visitado_sn, 'S') = 'N' AND COALESCE(seg.observacion_campo, '') <> '' THEN 'NO_VISITADO_Y_OBSERVACION'
+            WHEN COALESCE(seg.visitado_sn, 'S') = 'N' THEN 'NO_VISITADO'
+            WHEN COALESCE(seg.observacion_campo, '') <> '' THEN 'OBSERVACION'
+            ELSE ''
+          END AS seguimiento_motivo,
+          seg.seguimiento_desde
         FROM contribuyentes c
         LEFT JOIN LATERAL (
           SELECT id_predio, id_calle, numero_casa, referencia_direccion, agua_sn, desague_sn, limpieza_sn
@@ -1765,6 +1905,19 @@ app.get("/campo/offline-snapshot", async (req, res) => {
         ) p ON TRUE
         LEFT JOIN calles ca ON ca.id_calle = p.id_calle
         LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
+        LEFT JOIN resumen_mensual_stats rms ON rms.id_contribuyente = c.id_contribuyente
+        LEFT JOIN ultima_emision_contrib ue ON ue.id_contribuyente = c.id_contribuyente
+        LEFT JOIN LATERAL (
+          SELECT
+            COALESCE(NULLIF(UPPER(TRIM(COALESCE(s.metadata->>'visitado_sn', 'N'))), ''), 'N') AS visitado_sn,
+            COALESCE(NULLIF(TRIM(s.observacion_campo), ''), '') AS observacion_campo,
+            s.creado_en AS seguimiento_desde
+          FROM campo_solicitudes s
+          WHERE s.id_contribuyente = c.id_contribuyente
+            AND s.estado_solicitud <> 'RECHAZADO'
+          ORDER BY s.creado_en DESC
+          LIMIT 1
+        ) seg ON TRUE
       )
       SELECT
         b.id_contribuyente,
@@ -1781,7 +1934,13 @@ app.get("/campo/offline-snapshot", async (req, res) => {
         b.nombre_calle,
         b.direccion_completa,
         b.meses_deuda,
-        b.deuda_total
+        b.deuda_total,
+        b.cargo_mensual_ultimo,
+        b.montos_mensuales_24m,
+        b.ultima_emision_periodo,
+        b.seguimiento_pendiente_sn,
+        b.seguimiento_motivo,
+        b.seguimiento_desde
       FROM base b
       ORDER BY b.nombre_calle ASC NULLS LAST, b.nombre_completo ASC
       LIMIT $3
@@ -1817,7 +1976,7 @@ app.post("/campo/solicitudes", async (req, res) => {
 
     const actual = await pool.query(`
       WITH recibos_objetivo AS (
-        SELECT r.id_recibo, r.id_predio, r.total_pagar
+        SELECT r.id_recibo, r.id_predio, r.total_pagar, r.anio, r.mes
         FROM recibos r
         WHERE (r.anio, r.mes) <= ($1::int, $2::int)
       ),
@@ -1835,6 +1994,42 @@ app.post("/campo/solicitudes", async (req, res) => {
         FROM recibos_objetivo ro
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
         GROUP BY ro.id_predio
+      ),
+      resumen_mensual_contrib AS (
+        SELECT
+          p.id_contribuyente,
+          ro.anio,
+          ro.mes,
+          SUM(ro.total_pagar)::numeric AS cargo_mes,
+          SUM(COALESCE(pp.total_pagado, 0))::numeric AS abono_mes
+        FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+        WHERE ((ro.anio * 12) + ro.mes) >= (($1::int * 12) + $2::int - 24)
+        GROUP BY p.id_contribuyente, ro.anio, ro.mes
+      ),
+      resumen_mensual_stats AS (
+        SELECT
+          id_contribuyente,
+          ROUND(AVG(cargo_mes)::numeric, 2) AS cargo_mensual_promedio,
+          ROUND((ARRAY_AGG(cargo_mes ORDER BY anio DESC, mes DESC))[1]::numeric, 2) AS cargo_mensual_ultimo,
+          COALESCE(
+            ARRAY_AGG(
+              DISTINCT ROUND((CASE WHEN abono_mes > 0 THEN abono_mes ELSE cargo_mes END)::numeric, 2)
+              ORDER BY ROUND((CASE WHEN abono_mes > 0 THEN abono_mes ELSE cargo_mes END)::numeric, 2)
+            ) FILTER (WHERE (CASE WHEN abono_mes > 0 THEN abono_mes ELSE cargo_mes END) > 0),
+            ARRAY[]::numeric[]
+          ) AS montos_mensuales_24m
+        FROM resumen_mensual_contrib
+        GROUP BY id_contribuyente
+      ),
+      ultima_emision_contrib AS (
+        SELECT
+          p.id_contribuyente,
+          MAX((r.anio * 100) + r.mes) AS periodo_num
+        FROM recibos r
+        JOIN predios p ON p.id_predio = r.id_predio
+        GROUP BY p.id_contribuyente
       )
       SELECT
         c.id_contribuyente,
@@ -1849,7 +2044,13 @@ app.post("/campo/solicitudes", async (req, res) => {
         p.referencia_direccion,
         ${buildDireccionSql("ca", "p")} AS direccion_completa,
         COALESCE(rp.meses_deuda_total, 0) AS meses_deuda,
-        COALESCE(rp.deuda_total, 0) AS deuda_total
+        COALESCE(rp.deuda_total, 0) AS deuda_total,
+        COALESCE(rms.cargo_mensual_ultimo, 0) AS cargo_mensual_ultimo,
+        COALESCE(rms.montos_mensuales_24m, ARRAY[]::numeric[]) AS montos_mensuales_24m,
+        CASE
+          WHEN ue.periodo_num IS NULL THEN NULL
+          ELSE CONCAT((ue.periodo_num / 100)::int::text, '-', LPAD((ue.periodo_num % 100)::int::text, 2, '0'))
+        END AS ultima_emision_periodo
       FROM contribuyentes c
       LEFT JOIN LATERAL (
         SELECT id_predio, id_calle, numero_casa, referencia_direccion, agua_sn, desague_sn, limpieza_sn
@@ -1860,6 +2061,8 @@ app.post("/campo/solicitudes", async (req, res) => {
       ) p ON TRUE
       LEFT JOIN calles ca ON ca.id_calle = p.id_calle
       LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
+      LEFT JOIN resumen_mensual_stats rms ON rms.id_contribuyente = c.id_contribuyente
+      LEFT JOIN ultima_emision_contrib ue ON ue.id_contribuyente = c.id_contribuyente
       WHERE c.id_contribuyente = $3
       LIMIT 1
     `, [anioActual, mesActual, idContribuyente]);
@@ -1883,6 +2086,11 @@ app.post("/campo/solicitudes", async (req, res) => {
     const telefonoVerificado = normalizeLimitedText(req.body?.telefono_verificado, 40) || null;
     const direccionVerificada = normalizeLimitedText(req.body?.direccion_verificada, 250) || null;
     const observacionCampo = normalizeLimitedText(req.body?.observacion_campo || motivoObs, 1200) || null;
+    const seguimientoPendienteSN = (visitadoSN === "N" || Boolean(observacionCampo)) ? "S" : "N";
+    const seguimientoMotivos = [];
+    if (visitadoSN === "N") seguimientoMotivos.push("NO_VISITADO");
+    if (observacionCampo) seguimientoMotivos.push("OBSERVACION");
+    const seguimientoMotivo = seguimientoMotivos.join("|");
     const aguaActual = normalizeSN(row.agua_sn, "S");
     const desagueActual = normalizeSN(row.desague_sn, "S");
     const limpiezaActual = normalizeSN(row.limpieza_sn, "S");
@@ -1932,6 +2140,11 @@ app.post("/campo/solicitudes", async (req, res) => {
       inspector: inspector || normalizeLimitedText(req.user?.nombre || req.user?.username || "", 120),
       meses_deuda: Number(row.meses_deuda || 0),
       deuda_total: Number(parseFloat(row.deuda_total || 0) || 0),
+      cargo_mensual_ultimo: Number(parseFloat(row.cargo_mensual_ultimo || 0) || 0),
+      montos_mensuales_24m: normalizeNumericArray(row.montos_mensuales_24m),
+      ultima_emision_periodo: String(row.ultima_emision_periodo || "").trim() || null,
+      seguimiento_pendiente_sn: seguimientoPendienteSN,
+      seguimiento_motivo: seguimientoMotivo,
       estado_actual: estadoActual,
       estado_nuevo: estadoNuevo,
       servicio_agua_actual: aguaActual,
@@ -1952,6 +2165,7 @@ app.post("/campo/solicitudes", async (req, res) => {
     const hayCambio = (
       estadoNuevo !== estadoActual ||
       visitadoSN === "S" ||
+      visitadoSN === "N" ||
       cortadoSN === "S" ||
       Boolean(fechaCorteFinal) ||
       Boolean(inspector) ||
@@ -2053,8 +2267,10 @@ app.post("/campo/solicitudes", async (req, res) => {
 app.get("/campo/solicitudes", async (req, res) => {
   try {
     const estadoRaw = String(req.query?.estado || ESTADOS_SOLICITUD_CAMPO.PENDIENTE).trim().toUpperCase();
-    const estadoFiltro = Object.prototype.hasOwnProperty.call(ESTADOS_SOLICITUD_CAMPO, estadoRaw) ? estadoRaw : null;
-    const limit = Math.min(500, Math.max(10, parsePositiveInt(req.query?.limit, 200)));
+    const estadoFiltro = (
+      estadoRaw !== "TODOS" && Object.prototype.hasOwnProperty.call(ESTADOS_SOLICITUD_CAMPO, estadoRaw)
+    ) ? estadoRaw : null;
+    const limit = Math.min(5000, Math.max(10, parsePositiveInt(req.query?.limit, 1000)));
 
     const where = [];
     const params = [];
@@ -2148,34 +2364,42 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       return res.status(400).json({ error: "La solicitud ya fue procesada." });
     }
 
-    const contribuyenteData = await client.query(`
+    const contribuyenteBaseData = await client.query(`
       SELECT
         c.id_contribuyente,
         c.codigo_municipal,
         c.nombre_completo,
         c.dni_ruc,
         c.telefono,
-        COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
-        COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
-        COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
-        COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn
+        COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
       FROM contribuyentes c
-      LEFT JOIN LATERAL (
-        SELECT agua_sn, desague_sn, limpieza_sn
-        FROM predios
-        WHERE id_contribuyente = c.id_contribuyente
-        ORDER BY id_predio ASC
-        LIMIT 1
-      ) p ON TRUE
       WHERE c.id_contribuyente = $1
-      FOR UPDATE
+      FOR UPDATE OF c
     `, [solicitud.id_contribuyente]);
-    if (contribuyenteData.rows.length === 0) {
+    if (contribuyenteBaseData.rows.length === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Contribuyente no encontrado para aplicar solicitud." });
     }
 
-    const actual = contribuyenteData.rows[0];
+    const predioData = await client.query(`
+      SELECT
+        id_predio,
+        COALESCE(NULLIF(UPPER(TRIM(agua_sn)), ''), 'S') AS agua_sn,
+        COALESCE(NULLIF(UPPER(TRIM(desague_sn)), ''), 'S') AS desague_sn,
+        COALESCE(NULLIF(UPPER(TRIM(limpieza_sn)), ''), 'S') AS limpieza_sn
+      FROM predios
+      WHERE id_contribuyente = $1
+      ORDER BY id_predio ASC
+      LIMIT 1
+      FOR UPDATE
+    `, [solicitud.id_contribuyente]);
+
+    const actual = {
+      ...contribuyenteBaseData.rows[0],
+      agua_sn: predioData.rows[0]?.agua_sn || "S",
+      desague_sn: predioData.rows[0]?.desague_sn || "S",
+      limpieza_sn: predioData.rows[0]?.limpieza_sn || "S"
+    };
     const estadoActual = normalizeEstadoConexion(actual.estado_conexion);
     const estadoDestino = normalizeEstadoConexion(solicitud.estado_conexion_nuevo || estadoActual);
     const metadataSolicitud = solicitud.metadata && typeof solicitud.metadata === "object" ? solicitud.metadata : {};
@@ -5498,26 +5722,22 @@ const LEGACY_CATEGORIAS = {
   ANUAL: "ANUAL"
 };
 const LEGACY_PADRON_COMPARE_FIELDS_FULL = [
-  ["NOMBRE_COMPLETO", "nombre_completo"],
-  ["TELEFONO", "telefono"],
-  ["DIRECCION_COMPLETA", "direccion_completa"],
-  ["ESTADO_CONEXION", "estado_conexion"],
-  ["AGUA_SN", "agua_sn"],
-  ["DESAGUE_SN", "desague_sn"],
-  ["LIMPIEZA_SN", "limpieza_sn"],
-  ["TIPO_TARIFA", "tipo_tarifa"],
-  ["SEC_COD", "sec_cod"],
-  ["SEC_NOMBRE", "sec_nombre"]
+  ["Con_DNI", "dni_ruc"],
+  ["Con_Nombre", "nombre_completo"],
+  ["con_direccion", "direccion_completa"],
+  ["Activo_SN", "estado_conexion"],
+  ["Agua_SN", "agua_sn"],
+  ["Desague_SN", "desague_sn"],
+  ["Limpieza_SN", "limpieza_sn"]
 ];
 const LEGACY_PADRON_COMPARE_FIELDS_EXPORT = [
-  ["NOMBRE_COMPLETO", "nombre_completo"],
-  ["DIRECCION_COMPLETA", "direccion_completa"],
-  ["AGUA_SN", "agua_sn"],
-  ["DESAGUE_SN", "desague_sn"],
-  ["LIMPIEZA_SN", "limpieza_sn"],
-  ["TIPO_TARIFA", "tipo_tarifa"],
-  ["SEC_COD", "sec_cod"],
-  ["SEC_NOMBRE", "sec_nombre"]
+  ["Con_DNI", "dni_ruc"],
+  ["Con_Nombre", "nombre_completo"],
+  ["con_direccion", "direccion_completa"],
+  ["Activo_SN", "estado_conexion"],
+  ["Agua_SN", "agua_sn"],
+  ["Desague_SN", "desague_sn"],
+  ["Limpieza_SN", "limpieza_sn"]
 ];
 const LEGACY_PADRON_COLUMNS = [
   { key: "id_contribuyente_legacy", aliases: ["CON_ID"], required: false },
@@ -5947,7 +6167,7 @@ const buildPadronComparison = (
         summary.ambigua += 1;
         details.push({
           seccion: LEGACY_SECCIONES.PADRON,
-          categoria: LEGACY_CATEGORIAS.AMBIGUA,
+          categoria: LEGACY_CATEGORIAS.CAMBIO,
           clave: legacy.codigo_municipal || legacy.dni_ruc || `L${legacy._linea}`,
           codigo_municipal: legacy.codigo_municipal || null,
           dni_ruc: legacy.dni_ruc || null,
@@ -5965,11 +6185,11 @@ const buildPadronComparison = (
           clave: legacy.codigo_municipal || legacy.dni_ruc || `L${legacy._linea}`,
           codigo_municipal: legacy.codigo_municipal || null,
           dni_ruc: legacy.dni_ruc || null,
-          campo: "__registro__",
+          campo: "MOTIVO",
           valor_antiguo: legacy._raw?.nombre_completo || "",
-          valor_nuevo: "",
+          valor_nuevo: "ELIMINADO",
           delta: null,
-          payload_json: { linea_legacy: legacy._linea }
+          payload_json: { linea_legacy: legacy._linea, motivo: "ELIMINADO" }
         });
       }
       continue;
@@ -6079,7 +6299,7 @@ const buildDeudaComparison = (legacyDebtRows, currentDebtRows, currentPadronRows
       summary.ambigua += 1;
       details.push({
         seccion: LEGACY_SECCIONES.DEUDA,
-        categoria: LEGACY_CATEGORIAS.AMBIGUA,
+        categoria: LEGACY_CATEGORIAS.CAMBIO,
         clave: key,
         codigo_municipal: legacy.codigo_municipal || null,
         dni_ruc: legacy.dni_ruc || null,
@@ -6182,11 +6402,11 @@ const buildRecaudacionComparison = (legacyDailyMap, currentDailyMap, tolerancia 
       registrosConDelta += 1;
       details.push({
         seccion: LEGACY_SECCIONES.RECAUDACION,
-        categoria: g,
+        categoria: LEGACY_CATEGORIAS.CAMBIO,
         clave: bucket,
         codigo_municipal: null,
         dni_ruc: null,
-        campo: "MONTO_RECAUDADO",
+        campo: `MONTO_RECAUDADO_${g}`,
         valor_antiguo: legacyMonto.toFixed(2),
         valor_nuevo: currentMonto.toFixed(2),
         delta,
@@ -6709,7 +6929,17 @@ app.get("/comparaciones/legacy/:id/detalle", async (req, res) => {
         payload_json
       FROM comparaciones_legacy_detalle
       WHERE ${where.join(" AND ")}
-      ORDER BY id_detalle ASC
+      ORDER BY
+        COALESCE(NULLIF(codigo_municipal, ''), NULLIF(clave, ''), NULLIF(dni_ruc, ''), 'ZZZZZZ') ASC,
+        COALESCE(NULLIF(dni_ruc, ''), '') ASC,
+        CASE categoria
+          WHEN 'CAMBIO' THEN 1
+          WHEN 'SOLO_ANTIGUA' THEN 2
+          WHEN 'SOLO_NUEVA' THEN 3
+          ELSE 9
+        END ASC,
+        campo ASC,
+        id_detalle ASC
       LIMIT $${params.length - 1} OFFSET $${params.length}
     `, params);
 

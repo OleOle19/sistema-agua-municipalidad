@@ -10,6 +10,29 @@ const badgeClassByCategoria = (categoria = "") => {
   if (raw === "AMBIGUA") return "text-bg-secondary";
   return "text-bg-info";
 };
+const labelCategoria = (categoria = "") => {
+  const raw = String(categoria || "").trim().toUpperCase();
+  if (raw === "CAMBIO") return "Cambio";
+  if (raw === "SOLO_ANTIGUA") return "Solo antigua";
+  if (raw === "SOLO_NUEVA") return "Solo nueva";
+  if (raw === "AMBIGUA") return "Cambio";
+  return raw || "-";
+};
+const categoriaSortRank = (categoria = "") => {
+  const raw = String(categoria || "").trim().toUpperCase();
+  if (raw === "CAMBIO") return 1;
+  if (raw === "SOLO_ANTIGUA") return 2;
+  if (raw === "SOLO_NUEVA") return 3;
+  return 9;
+};
+const resolveDetalleId = (d) => String(d?.codigo_municipal || d?.clave || d?.dni_ruc || "-").trim() || "-";
+const labelTipoDetalle = (d) => {
+  const motivo = String(d?.payload_json?.motivo || "").trim().toUpperCase();
+  if ((d?.categoria === "SOLO_ANTIGUA" && motivo === "ELIMINADO") || String(d?.valor_nuevo || "").trim().toUpperCase() === "ELIMINADO") {
+    return "Eliminado";
+  }
+  return labelCategoria(d?.categoria);
+};
 
 const formatNum = (value) => {
   const n = Number(value || 0);
@@ -36,6 +59,11 @@ const DETALLE_FINANZAS_SUB = {
   DEUDAS: "DEUDAS",
   HISTORIAL: "HISTORIAL"
 };
+const DETALLE_CATEGORIAS = [
+  { value: "CAMBIO", label: "Cambio" },
+  { value: "SOLO_ANTIGUA", label: "Solo antigua" },
+  { value: "SOLO_NUEVA", label: "Solo nueva" }
+];
 const getSeccionParamByVista = (vista, subVista) => {
   if (vista === DETALLE_VISTA.USUARIOS) return "PADRON";
   if (subVista === DETALLE_FINANZAS_SUB.PAGOS) return "RECAUDACION";
@@ -214,14 +242,8 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
   }, [detalleSeccion, detalleCategoria, detalleVista, detalleVistaFinanzas]);
 
   const categoriaOptions = useMemo(() => {
-    if (detalleVista === DETALLE_VISTA.USUARIOS) {
-      return ["CAMBIO", "SOLO_ANTIGUA", "SOLO_NUEVA", "AMBIGUA"];
-    }
-    if (detalleVistaFinanzas === DETALLE_FINANZAS_SUB.PAGOS) {
-      return ["DIARIO", "SEMANAL", "MENSUAL", "ANUAL"];
-    }
-    return ["CAMBIO", "SOLO_ANTIGUA", "SOLO_NUEVA", "AMBIGUA"];
-  }, [detalleVista, detalleVistaFinanzas]);
+    return DETALLE_CATEGORIAS;
+  }, []);
 
   const etiquetaVistaDetalle = useMemo(() => {
     if (detalleVista === DETALLE_VISTA.USUARIOS) return "Usuarios > Padron";
@@ -241,7 +263,6 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
             <div className="small">Cambios registros: <strong>{Number(padron?.cambios_registros || 0)}</strong></div>
             <div className="small">Solo antigua: <strong>{Number(padron?.solo_antigua || 0)}</strong></div>
             <div className="small">Solo nueva: <strong>{Number(padron?.solo_nueva || 0)}</strong></div>
-            <div className="small">Ambigua: <strong>{Number(padron?.ambigua || 0)}</strong></div>
           </div>
         </div>
         <div className="col-md-7">
@@ -277,6 +298,20 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
       </div>
     );
   }, [corridaSeleccionada, cardClass, padron, deuda, recaudacion, meta, darkMode]);
+
+  const detalleOrdenado = useMemo(() => {
+    return [...detalle].sort((a, b) => {
+      const idA = resolveDetalleId(a);
+      const idB = resolveDetalleId(b);
+      const idCmp = idA.localeCompare(idB);
+      if (idCmp !== 0) return idCmp;
+      const rankCmp = categoriaSortRank(a?.categoria) - categoriaSortRank(b?.categoria);
+      if (rankCmp !== 0) return rankCmp;
+      const campoCmp = String(a?.campo || "").localeCompare(String(b?.campo || ""));
+      if (campoCmp !== 0) return campoCmp;
+      return Number(a?.id_detalle || 0) - Number(b?.id_detalle || 0);
+    });
+  }, [detalle]);
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
@@ -502,7 +537,7 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
                           <select className={selectClass} value={detalleCategoria} onChange={(e) => setDetalleCategoria(e.target.value)}>
                             <option value="">Todas</option>
                             {categoriaOptions.map((cat) => (
-                              <option key={cat} value={cat}>{cat}</option>
+                              <option key={cat.value} value={cat.value}>{cat.label}</option>
                             ))}
                           </select>
                         </div>
@@ -519,33 +554,27 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
                         <table className={tableClass}>
                           <thead>
                             <tr>
-                              <th>Seccion</th>
-                              <th>Categoria</th>
-                              <th>Clave</th>
-                              <th>Codigo</th>
+                              <th>Tipo</th>
+                              <th>ID</th>
                               <th>DNI</th>
-                              <th>Campo</th>
+                              <th>Columna Excel</th>
                               <th>Antiguo</th>
                               <th>Nuevo</th>
-                              <th>Delta</th>
                             </tr>
                           </thead>
                           <tbody>
                             {cargandoDetalle ? (
-                              <tr><td colSpan="9">Cargando detalle...</td></tr>
-                            ) : detalle.length === 0 ? (
-                              <tr><td colSpan="9">Sin resultados.</td></tr>
-                            ) : detalle.map((d) => (
+                              <tr><td colSpan="6">Cargando detalle...</td></tr>
+                            ) : detalleOrdenado.length === 0 ? (
+                              <tr><td colSpan="6">Sin resultados.</td></tr>
+                            ) : detalleOrdenado.map((d) => (
                               <tr key={d.id_detalle}>
-                                <td>{d.seccion}</td>
-                                <td><span className={`badge ${badgeClassByCategoria(d.categoria)}`}>{d.categoria}</span></td>
-                                <td>{d.clave || "-"}</td>
-                                <td>{d.codigo_municipal || "-"}</td>
+                                <td><span className={`badge ${badgeClassByCategoria(d.categoria)}`}>{labelTipoDetalle(d)}</span></td>
+                                <td>{resolveDetalleId(d)}</td>
                                 <td>{d.dni_ruc || "-"}</td>
                                 <td>{d.campo || "-"}</td>
                                 <td>{d.valor_antiguo || "-"}</td>
                                 <td>{d.valor_nuevo || "-"}</td>
-                                <td>{d.delta === null ? "-" : formatNum(d.delta)}</td>
                               </tr>
                             ))}
                           </tbody>

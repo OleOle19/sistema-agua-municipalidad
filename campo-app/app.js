@@ -67,6 +67,7 @@
     direccionVerificada: document.getElementById("direccionVerificada"),
     aguaSn: document.getElementById("aguaSn"),
     desagueSn: document.getElementById("desagueSn"),
+    limpiezaSn: document.getElementById("limpiezaSn"),
     visitadoSn: document.getElementById("visitadoSn"),
     cortadoSn: document.getElementById("cortadoSn"),
     fechaCorte: document.getElementById("fechaCorte"),
@@ -123,6 +124,28 @@
     if (normalized === "S" || normalized === "SI") return "S";
     if (normalized === "N" || normalized === "NO") return "N";
     return String(fallback || "S").trim().toUpperCase() === "N" ? "N" : "S";
+  }
+  function seguimientoMotivoLabel(value) {
+    const raw = String(value || "").trim().toUpperCase();
+    if (!raw) return "";
+    if (raw === "NO_VISITADO") return "No visitado";
+    if (raw === "OBSERVACION") return "Con observacion";
+    if (raw === "NO_VISITADO_Y_OBSERVACION") return "No visitado + observacion";
+    return raw;
+  }
+  function parseMontosList(value) {
+    if (Array.isArray(value)) {
+      return value
+        .map((x) => Number.parseFloat(x))
+        .filter((n) => Number.isFinite(n));
+    }
+    const raw = String(value || "").trim();
+    if (!raw) return [];
+    return raw
+      .replace(/^\{|\}$/g, "")
+      .split(",")
+      .map((x) => Number.parseFloat(String(x || "").trim()))
+      .filter((n) => Number.isFinite(n));
   }
   function toDateMs(value) { const ms = Date.parse(String(value || "")); return Number.isFinite(ms) ? ms : 0; }
   function fmtDateTime(value) { const ms = toDateMs(value); return ms ? new Date(ms).toLocaleString("es-PE") : "sin fecha"; }
@@ -646,6 +669,22 @@
       const t = document.createElement("strong"); t.textContent = (c.codigo_municipal || "SIN-CODIGO") + " - " + (c.nombre_completo || "Sin nombre");
       const d = document.createElement("div"); d.className = "meta"; d.textContent = c.direccion_completa || c.nombre_calle || "Sin direccion";
       const m = document.createElement("div"); m.className = "meta"; m.textContent = "Meses deuda: " + Number(c.meses_deuda || 0) + " | Total: S/ " + fmtMoney(c.deuda_total);
+      const cargoRef = Number(c.cargo_mensual_ultimo || 0);
+      const montosMensuales = parseMontosList(c.montos_mensuales_24m);
+      const montosTxt = montosMensuales.length ? montosMensuales.map((n) => fmtMoney(n)).join(", ") : "-";
+      const pagoRef = document.createElement("div");
+      pagoRef.className = "meta";
+      pagoRef.textContent = "Mensual sistema: S/ " + fmtMoney(cargoRef) + " | Montos referencia 24m: " + montosTxt;
+      const emisionRef = document.createElement("div");
+      emisionRef.className = "meta";
+      emisionRef.textContent = "Ultima emision recibo: " + (String(c.ultima_emision_periodo || "").trim() || "Sin registros");
+      const seguimientoPendiente = String(c.seguimiento_pendiente_sn || "N").trim().toUpperCase() === "S";
+      const seguimientoMotivo = seguimientoMotivoLabel(c.seguimiento_motivo);
+      const seg = document.createElement("div");
+      seg.className = "meta";
+      seg.textContent = seguimientoPendiente
+        ? ("Pendiente proxima visita: SI" + (seguimientoMotivo ? " (" + seguimientoMotivo + ")" : ""))
+        : "Pendiente proxima visita: NO";
       const b = document.createElement("button");
       b.type = "button"; b.textContent = isSelected ? "Seleccionado" : "Seleccionar";
       b.addEventListener("click", () => {
@@ -658,15 +697,17 @@
         }
         const aguaSn = normalizeSN(c.agua_sn, "S");
         const desagueSn = normalizeSN(c.desague_sn, "S");
+        const limpiezaSn = normalizeSN(c.limpieza_sn, "S");
         state.selectedId = id;
         el.selectedInfo.textContent =
           "Seleccionado: " + (c.codigo_municipal || "SIN-CODIGO") + " - " + (c.nombre_completo || "Sin nombre") +
-          " | Servicios: Agua " + aguaSn + " | Desague " + desagueSn + " | Limpieza SI (fijo)";
+          " | Servicios: Agua " + aguaSn + " | Desague " + desagueSn + " | Limpieza " + limpiezaSn;
         el.nombreVerificado.value = c.nombre_completo || "";
         el.dniVerificado.value = c.dni_ruc || "";
         el.direccionVerificada.value = c.direccion_completa || "";
         el.aguaSn.value = aguaSn;
         el.desagueSn.value = desagueSn;
+        if (el.limpiezaSn) el.limpiezaSn.value = limpiezaSn;
         el.inspector.value = String((state.user && state.user.nombre) || "");
         updateDuplicateWarning(id);
         renderResults();
@@ -674,6 +715,9 @@
       item.appendChild(t);
       item.appendChild(d);
       item.appendChild(m);
+      item.appendChild(pagoRef);
+      item.appendChild(emisionRef);
+      item.appendChild(seg);
       item.appendChild(b);
       if (isSelected) {
         selectedItem = item;
@@ -879,6 +923,7 @@
   function resetForm() {
     el.visitadoSn.value = "N"; el.cortadoSn.value = "N"; el.fechaCorte.value = ""; el.motivoObs.value = "";
     el.aguaSn.value = "S"; el.desagueSn.value = "S";
+    if (el.limpiezaSn) el.limpiezaSn.value = "S";
     el.nombreVerificado.value = ""; el.dniVerificado.value = ""; el.direccionVerificada.value = ""; el.inspector.value = String((state.user && state.user.nombre) || "");
     if (el.duplicateWarning) {
       el.duplicateWarning.textContent = "";
@@ -911,6 +956,7 @@
       id_contribuyente: Number(c.id_contribuyente),
       agua_sn: normalizeSN(el.aguaSn.value, "S"),
       desague_sn: normalizeSN(el.desagueSn.value, "S"),
+      limpieza_sn: normalizeSN(el.limpiezaSn && el.limpiezaSn.value, "S"),
       visitado_sn: String(el.visitadoSn.value || "N").toUpperCase() === "S" ? "S" : "N",
       cortado_sn: String(el.cortadoSn.value || "N").toUpperCase() === "S" ? "S" : "N",
       fecha_corte: String(el.fechaCorte.value || "").trim() || null,

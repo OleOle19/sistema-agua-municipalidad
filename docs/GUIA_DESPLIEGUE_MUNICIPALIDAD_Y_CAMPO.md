@@ -29,7 +29,7 @@ Esta guia deja un flujo simple para operacion municipal:
 
 ```powershell
 cd C:\Sistemas
-git clone <URL_DEL_REPO> sistema-agua-municipal
+git clone <URL_DEL_REPO> sistema-agua-municipal (https://github.com/OleOle19/sistema-agua-municipalidad)
 cd sistema-agua-municipal
 ```
 
