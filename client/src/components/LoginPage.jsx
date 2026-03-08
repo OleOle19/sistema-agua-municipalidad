@@ -2,7 +2,15 @@ import { useState } from "react";
 import api from "../api";
 import { FaUserShield, FaKey, FaUserPlus } from "react-icons/fa";
 
-const LoginPage = ({ onLoginSuccess }) => {
+const LoginPage = ({
+  onLoginSuccess,
+  apiClient = api,
+  tokenStorageKey = "token",
+  titulo = "Sistema Agua Potable",
+  subtitulo = "Municipalidad Distrital de Pueblo Nuevo",
+  loginPath = "/auth/login",
+  registerPath = "/auth/registro"
+}) => {
   const [modo, setModo] = useState("LOGIN"); // 'LOGIN' o 'REGISTRO'
   const [form, setForm] = useState({ username: "", password: "", nombre_completo: "" });
   const [error, setError] = useState("");
@@ -16,17 +24,17 @@ const LoginPage = ({ onLoginSuccess }) => {
 
     try {
       if (modo === "LOGIN") {
-        const res = await api.post("/auth/login", {
+        const res = await apiClient.post(loginPath, {
           username: form.username,
           password: form.password
         });
         if (res.data?.token) {
-          localStorage.setItem("token", res.data.token);
+          localStorage.setItem(tokenStorageKey, res.data.token);
         }
         // Si el login es exitoso, pasamos los datos del usuario al componente Padre (App)
         onLoginSuccess(res.data);
       } else {
-        const res = await api.post("/auth/registro", form);
+        const res = await apiClient.post(registerPath, form);
         setMensaje(res.data.mensaje);
         setModo("LOGIN"); // Volver al login para que espere
         setForm({ username: "", password: "", nombre_completo: "" });
@@ -43,8 +51,8 @@ const LoginPage = ({ onLoginSuccess }) => {
           <div className="bg-primary text-white rounded-circle d-inline-flex p-3 mb-2">
             <FaUserShield size={40} />
           </div>
-          <h3 className="fw-bold text-primary">Sistema Agua Potable</h3>
-          <p className="text-muted small">Municipalidad Distrital de Pueblo Nuevo</p>
+          <h3 className="fw-bold text-primary">{titulo}</h3>
+          <p className="text-muted small">{subtitulo}</p>
         </div>
 
         {error && <div className="alert alert-danger text-center small">{error}</div>}

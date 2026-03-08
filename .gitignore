@@ -13,6 +13,7 @@ yarn-error.log*
 pnpm-debug.log*
 ops/runtime/*.log
 ops/runtime/*.json
+ops/runtime/historial_patch_*.txt
 !ops/runtime/.gitkeep
 
 # Build outputs
@@ -30,6 +31,8 @@ ops/runtime/*.json
 *.bak
 *.backup
 server/CATORCE.txt
+server/datos_historial_pagos_*.txt
+server/.tmp/
 
 # OS
 .DS_Store

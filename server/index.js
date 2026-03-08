@@ -8,6 +8,7 @@ const express = require("express");
 const app = express();
 const cors = require("cors");
 const pool = require("./db");
+const luzRouter = require("./luz/router");
 const { importarDeudas } = require("./importar_deudas");
 const ExcelJS = require('exceljs');
 const xml2js = require('xml2js');
@@ -460,20 +461,26 @@ const isKnownRoleValue = (role) => {
 const roleLevel = (role) => ROLE_LEVELS[normalizeRole(role)] || 0;
 const hasMinRole = (currentRole, requiredRole) => roleLevel(currentRole) >= roleLevel(requiredRole);
 
-const issueToken = (user) => jwt.sign(
+const issueToken = (user, sistema = "AGUA") => jwt.sign(
   {
     id_usuario: user.id_usuario,
     username: user.username,
     rol: normalizeRole(user.rol),
-    nombre: user.nombre_completo
+    nombre: user.nombre_completo,
+    sistema: String(sistema || "AGUA").toUpperCase()
   },
   JWT_SECRET,
   { expiresIn: JWT_EXPIRES_IN }
 );
 
-const resolveUserFromToken = async (token) => {
+const resolveUserFromToken = async (token, expectedSystem = "AGUA") => {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
+    const tokenSystem = String(payload?.sistema || "AGUA").trim().toUpperCase();
+    const expected = String(expectedSystem || "AGUA").trim().toUpperCase();
+    if (tokenSystem !== expected) {
+      return { ok: false, status: 403, error: "Token no corresponde a este sistema." };
+    }
     const user = await pool.query(
       "SELECT id_usuario, username, nombre_completo, rol, estado FROM usuarios_sistema WHERE id_usuario = $1",
       [payload.id_usuario]
@@ -492,7 +499,8 @@ const resolveUserFromToken = async (token) => {
         username: dbUser.username,
         nombre: dbUser.nombre_completo,
         rol: normalizeRole(dbUser.rol),
-        estado: dbUser.estado
+        estado: dbUser.estado,
+        sistema: expected
       }
     };
   } catch {
@@ -511,13 +519,14 @@ const authenticateToken = async (req, res, next) => {
         username: "dev",
         nombre: "Modo Desarrollo",
         rol: "ADMIN",
-        estado: "ACTIVO"
+        estado: "ACTIVO",
+        sistema: "AGUA"
       };
       return next();
     }
     return res.status(401).json({ error: "No autorizado" });
   }
-  const resolved = await resolveUserFromToken(token);
+  const resolved = await resolveUserFromToken(token, "AGUA");
   if (!resolved.ok) {
     return res.status(resolved.status || 401).json({ error: resolved.error || "No autorizado" });
   }
@@ -530,7 +539,7 @@ const resolveRealtimeUser = async (token) => {
     if (!AUTH_OPTIONAL_DEV) return { ok: false, status: 401, error: "No autorizado" };
     return { ok: true, user: getRealtimeDevUser() };
   }
-  return resolveUserFromToken(token);
+  return resolveUserFromToken(token, "AGUA");
 };
 
 const getRealtimeDevUser = () => ({
@@ -538,7 +547,8 @@ const getRealtimeDevUser = () => ({
   username: "dev",
   nombre: "Modo Desarrollo",
   rol: "ADMIN",
-  estado: "ACTIVO"
+  estado: "ACTIVO",
+  sistema: "AGUA"
 });
 
 const tryParseJson = (raw) => {
@@ -1410,6 +1420,9 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
 });
 
+// Modulo luz (BD y autenticación separadas)
+app.use("/luz", luzRouter);
+
 app.use((req, res, next) => {
   if ((req.method || "").toUpperCase() === "OPTIONS") return next();
   if (!isProtectedApiPath(req.path)) return next();
@@ -1545,7 +1558,7 @@ app.use((req, res, next) => {
     "/caja/reporte/excel"
   ].some((p) => req.path.startsWith(p));
   const shouldAuditMethod = ["POST", "PUT", "PATCH", "DELETE"].includes(method) || (method === "GET" && shouldAuditGet);
-  const excluded = req.path.startsWith("/auditoria");
+  const excluded = req.path.startsWith("/auditoria") || req.path.startsWith("/luz");
   if (!shouldAuditMethod || excluded) return next();
 
   res.on("finish", () => {
@@ -1700,9 +1713,19 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
       ultima_emision_contrib AS (
         SELECT
           p.id_contribuyente,
-          MAX((r.anio * 100) + r.mes) AS periodo_num
-        FROM recibos r
-        JOIN predios p ON p.id_predio = r.id_predio
+          MAX((ro.anio * 100) + ro.mes) AS periodo_num
+        FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
+        GROUP BY p.id_contribuyente
+      ),
+      ultimo_mes_pagado_contrib AS (
+        SELECT
+          p.id_contribuyente,
+          MAX((ro.anio * 100) + ro.mes) AS periodo_num
+        FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+        WHERE COALESCE(pp.total_pagado, 0) >= COALESCE(ro.total_pagar, 0)
         GROUP BY p.id_contribuyente
       ),
       base AS (
@@ -1729,6 +1752,10 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
             ELSE CONCAT((ue.periodo_num / 100)::int::text, '-', LPAD((ue.periodo_num % 100)::int::text, 2, '0'))
           END AS ultima_emision_periodo,
           CASE
+            WHEN ump.periodo_num IS NULL THEN NULL
+            ELSE CONCAT((ump.periodo_num / 100)::int::text, '-', LPAD((ump.periodo_num % 100)::int::text, 2, '0'))
+          END AS ultimo_mes_pagado_periodo,
+          CASE
             WHEN COALESCE(seg.visitado_sn, 'S') = 'N' OR COALESCE(seg.observacion_campo, '') <> '' THEN 'S'
             ELSE 'N'
           END AS seguimiento_pendiente_sn,
@@ -1751,6 +1778,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
         LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
         LEFT JOIN resumen_mensual_stats rms ON rms.id_contribuyente = c.id_contribuyente
         LEFT JOIN ultima_emision_contrib ue ON ue.id_contribuyente = c.id_contribuyente
+        LEFT JOIN ultimo_mes_pagado_contrib ump ON ump.id_contribuyente = c.id_contribuyente
         LEFT JOIN LATERAL (
           SELECT
             COALESCE(NULLIF(UPPER(TRIM(COALESCE(s.metadata->>'visitado_sn', 'N'))), ''), 'N') AS visitado_sn,
@@ -1782,6 +1810,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
         b.cargo_mensual_ultimo,
         b.montos_mensuales_24m,
         b.ultima_emision_periodo,
+        b.ultimo_mes_pagado_periodo,
         b.seguimiento_pendiente_sn,
         b.seguimiento_motivo,
         b.seguimiento_desde
@@ -1856,9 +1885,19 @@ app.get("/campo/offline-snapshot", async (req, res) => {
       ultima_emision_contrib AS (
         SELECT
           p.id_contribuyente,
-          MAX((r.anio * 100) + r.mes) AS periodo_num
-        FROM recibos r
-        JOIN predios p ON p.id_predio = r.id_predio
+          MAX((ro.anio * 100) + ro.mes) AS periodo_num
+        FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
+        GROUP BY p.id_contribuyente
+      ),
+      ultimo_mes_pagado_contrib AS (
+        SELECT
+          p.id_contribuyente,
+          MAX((ro.anio * 100) + ro.mes) AS periodo_num
+        FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+        WHERE COALESCE(pp.total_pagado, 0) >= COALESCE(ro.total_pagar, 0)
         GROUP BY p.id_contribuyente
       ),
       base AS (
@@ -1885,6 +1924,10 @@ app.get("/campo/offline-snapshot", async (req, res) => {
             ELSE CONCAT((ue.periodo_num / 100)::int::text, '-', LPAD((ue.periodo_num % 100)::int::text, 2, '0'))
           END AS ultima_emision_periodo,
           CASE
+            WHEN ump.periodo_num IS NULL THEN NULL
+            ELSE CONCAT((ump.periodo_num / 100)::int::text, '-', LPAD((ump.periodo_num % 100)::int::text, 2, '0'))
+          END AS ultimo_mes_pagado_periodo,
+          CASE
             WHEN COALESCE(seg.visitado_sn, 'S') = 'N' OR COALESCE(seg.observacion_campo, '') <> '' THEN 'S'
             ELSE 'N'
           END AS seguimiento_pendiente_sn,
@@ -1907,6 +1950,7 @@ app.get("/campo/offline-snapshot", async (req, res) => {
         LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
         LEFT JOIN resumen_mensual_stats rms ON rms.id_contribuyente = c.id_contribuyente
         LEFT JOIN ultima_emision_contrib ue ON ue.id_contribuyente = c.id_contribuyente
+        LEFT JOIN ultimo_mes_pagado_contrib ump ON ump.id_contribuyente = c.id_contribuyente
         LEFT JOIN LATERAL (
           SELECT
             COALESCE(NULLIF(UPPER(TRIM(COALESCE(s.metadata->>'visitado_sn', 'N'))), ''), 'N') AS visitado_sn,
@@ -1938,6 +1982,7 @@ app.get("/campo/offline-snapshot", async (req, res) => {
         b.cargo_mensual_ultimo,
         b.montos_mensuales_24m,
         b.ultima_emision_periodo,
+        b.ultimo_mes_pagado_periodo,
         b.seguimiento_pendiente_sn,
         b.seguimiento_motivo,
         b.seguimiento_desde
@@ -2026,9 +2071,19 @@ app.post("/campo/solicitudes", async (req, res) => {
       ultima_emision_contrib AS (
         SELECT
           p.id_contribuyente,
-          MAX((r.anio * 100) + r.mes) AS periodo_num
-        FROM recibos r
-        JOIN predios p ON p.id_predio = r.id_predio
+          MAX((ro.anio * 100) + ro.mes) AS periodo_num
+        FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
+        GROUP BY p.id_contribuyente
+      ),
+      ultimo_mes_pagado_contrib AS (
+        SELECT
+          p.id_contribuyente,
+          MAX((ro.anio * 100) + ro.mes) AS periodo_num
+        FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+        WHERE COALESCE(pp.total_pagado, 0) >= COALESCE(ro.total_pagar, 0)
         GROUP BY p.id_contribuyente
       )
       SELECT
@@ -2050,7 +2105,11 @@ app.post("/campo/solicitudes", async (req, res) => {
         CASE
           WHEN ue.periodo_num IS NULL THEN NULL
           ELSE CONCAT((ue.periodo_num / 100)::int::text, '-', LPAD((ue.periodo_num % 100)::int::text, 2, '0'))
-        END AS ultima_emision_periodo
+        END AS ultima_emision_periodo,
+        CASE
+          WHEN ump.periodo_num IS NULL THEN NULL
+          ELSE CONCAT((ump.periodo_num / 100)::int::text, '-', LPAD((ump.periodo_num % 100)::int::text, 2, '0'))
+        END AS ultimo_mes_pagado_periodo
       FROM contribuyentes c
       LEFT JOIN LATERAL (
         SELECT id_predio, id_calle, numero_casa, referencia_direccion, agua_sn, desague_sn, limpieza_sn
@@ -2063,6 +2122,7 @@ app.post("/campo/solicitudes", async (req, res) => {
       LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
       LEFT JOIN resumen_mensual_stats rms ON rms.id_contribuyente = c.id_contribuyente
       LEFT JOIN ultima_emision_contrib ue ON ue.id_contribuyente = c.id_contribuyente
+      LEFT JOIN ultimo_mes_pagado_contrib ump ON ump.id_contribuyente = c.id_contribuyente
       WHERE c.id_contribuyente = $3
       LIMIT 1
     `, [anioActual, mesActual, idContribuyente]);
@@ -2143,6 +2203,7 @@ app.post("/campo/solicitudes", async (req, res) => {
       cargo_mensual_ultimo: Number(parseFloat(row.cargo_mensual_ultimo || 0) || 0),
       montos_mensuales_24m: normalizeNumericArray(row.montos_mensuales_24m),
       ultima_emision_periodo: String(row.ultima_emision_periodo || "").trim() || null,
+      ultimo_mes_pagado_periodo: String(row.ultimo_mes_pagado_periodo || "").trim() || null,
       seguimiento_pendiente_sn: seguimientoPendienteSN,
       seguimiento_motivo: seguimientoMotivo,
       estado_actual: estadoActual,
@@ -7660,13 +7721,13 @@ app.post("/importar/historial", authenticateToken, requireSuperAdmin, upload.sin
     }
 
     importacionHistorialEnCurso = true;
-    const contenido = req.file.buffer?.toString("utf8") || "";
-    if (!contenido.trim()) {
+    const buffer = req.file.buffer;
+    if (!buffer || buffer.length === 0) {
       return res.status(400).json({ error: "El archivo está vacío." });
     }
 
     const resultado = await importarDeudas({
-      inputText: contenido,
+      inputStream: Readable.from([buffer]),
       commitPerBatch: true,
       maxRechazos: MAX_RECHAZOS_IMPORTACION,
       logger: {

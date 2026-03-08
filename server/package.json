@@ -9,6 +9,10 @@
     "dev": "nodemon --exec \"node --max-old-space-size=4096\" index.js",
     "migrate": "node scripts/run_migrations.js",
     "migrate:status": "node scripts/run_migrations.js --status",
+    "migrate:luz": "node scripts/run_luz_migrations.js",
+    "migrate:luz:status": "node scripts/run_luz_migrations.js --status",
+    "luz:ensure-db": "node scripts/ensure_luz_db.js",
+    "luz:bootstrap-admin": "node scripts/bootstrap_luz_admin.js",
     "sanear:recibos:report": "node scripts/sanear_recibos_montos.js",
     "sanear:recibos:apply": "node scripts/sanear_recibos_montos.js --apply"
   },

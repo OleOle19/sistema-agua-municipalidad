@@ -678,6 +678,9 @@
       const emisionRef = document.createElement("div");
       emisionRef.className = "meta";
       emisionRef.textContent = "Ultima emision recibo: " + (String(c.ultima_emision_periodo || "").trim() || "Sin registros");
+      const ultimoPagoRef = document.createElement("div");
+      ultimoPagoRef.className = "meta";
+      ultimoPagoRef.textContent = "Ultimo mes pagado: " + (String(c.ultimo_mes_pagado_periodo || "").trim() || "Sin pagos");
       const seguimientoPendiente = String(c.seguimiento_pendiente_sn || "N").trim().toUpperCase() === "S";
       const seguimientoMotivo = seguimientoMotivoLabel(c.seguimiento_motivo);
       const seg = document.createElement("div");
@@ -717,6 +720,7 @@
       item.appendChild(m);
       item.appendChild(pagoRef);
       item.appendChild(emisionRef);
+      item.appendChild(ultimoPagoRef);
       item.appendChild(seg);
       item.appendChild(b);
       if (isSelected) {

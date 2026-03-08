@@ -381,6 +381,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                             <div className="mt-1">
                               Ultima emision recibo: <strong>{metadata.ultima_emision_periodo || "-"}</strong>
                             </div>
+                            <div className="mt-1">
+                              Ultimo mes pagado: <strong>{metadata.ultimo_mes_pagado_periodo || "-"}</strong>
+                            </div>
                             <div className="mt-1" style={seguimientoLineStyle}>
                               {seguimientoPendiente && (
                                 <span className="badge me-2" style={badgeStyle}>

@@ -40,10 +40,26 @@ const getLogger = (logger) => ({
   }
 });
 
-const resolveInput = ({ inputFile, inputStream, inputText }) => {
-  if (inputStream) return inputStream;
-  if (typeof inputText === 'string') return Readable.from(inputText);
-  return fs.createReadStream(inputFile);
+const iterateLines = async function* ({ inputFile, inputStream, inputText }) {
+  if (typeof inputText === 'string') {
+    const lines = inputText.split(/\r?\n/);
+    for (const line of lines) yield line;
+    return;
+  }
+
+  if (inputStream) {
+    const rl = readline.createInterface({ input: inputStream, crlfDelay: Infinity });
+    try {
+      for await (const line of rl) yield line;
+    } finally {
+      try { rl.close(); } catch {}
+    }
+    return;
+  }
+
+  const fileText = fs.readFileSync(inputFile, 'utf8');
+  const lines = fileText.split(/\r?\n/);
+  for (const line of lines) yield line;
 };
 
 const keyPeriodo = (idPredio, anio, mes) => `${idPredio}|${anio}|${mes}`;
@@ -114,12 +130,11 @@ async function importarDeudas(options = {}) {
   const fechaActual = getFechaPartesZona(new Date(), IMPORT_TIMEZONE);
 
   const client = await pool.connect();
-  const input = resolveInput({
+  const lineIterator = iterateLines({
     inputFile,
     inputStream: options.inputStream,
     inputText: options.inputText
   });
-  const rl = readline.createInterface({ input, crlfDelay: Infinity });
 
   ioLogger.log('INICIANDO MIGRACION DE HISTORIAL (2007-2026)...');
   ioLogger.log(`Modo transaccional: ${commitPerBatch ? 'por lote (recomendado para menor bloqueo)' : 'transaccion unica (todo-o-nada)'}`);
@@ -267,7 +282,7 @@ async function importarDeudas(options = {}) {
       await client.query('BEGIN');
     }
 
-    for await (const lineRaw of rl) {
+    for await (const lineRaw of lineIterator) {
       lineasLeidas += 1;
       const lineaActual = lineasLeidas;
       const line = typeof lineRaw === 'string' ? lineRaw : String(lineRaw || '');
@@ -438,7 +453,6 @@ async function importarDeudas(options = {}) {
     ioLogger.error('\nERROR EN IMPORTACION DE HISTORIAL:', err);
     throw err;
   } finally {
-    try { rl.close(); } catch {}
     client.release();
   }
 }
