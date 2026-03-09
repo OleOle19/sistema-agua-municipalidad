@@ -249,6 +249,10 @@ const ESTADOS_SOLICITUD_CAMPO = {
   APROBADO: "APROBADO",
   RECHAZADO: "RECHAZADO"
 };
+const TIPOS_SOLICITUD_CAMPO = {
+  ACTUALIZACION: "ACTUALIZACION",
+  ALTA_DIRECCION_ALTERNA: "ALTA_DIRECCION_ALTERNA"
+};
 const ESTADOS_ORDEN_COBRO = {
   PENDIENTE: "PENDIENTE",
   COBRADA: "COBRADA",
@@ -310,6 +314,14 @@ const normalizeFuenteEstadoConexion = (value) => {
   const raw = String(value || "").trim().toUpperCase();
   if (Object.prototype.hasOwnProperty.call(FUENTES_ESTADO_CONEXION, raw)) return raw;
   return FUENTES_ESTADO_CONEXION.INFERIDO;
+};
+
+const normalizeTipoSolicitudCampo = (value, fallback = TIPOS_SOLICITUD_CAMPO.ACTUALIZACION) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (Object.prototype.hasOwnProperty.call(TIPOS_SOLICITUD_CAMPO, raw)) return raw;
+  return Object.prototype.hasOwnProperty.call(TIPOS_SOLICITUD_CAMPO, fallback)
+    ? fallback
+    : TIPOS_SOLICITUD_CAMPO.ACTUALIZACION;
 };
 
 const normalizeSN = (value, fallback = "N") => {
@@ -1191,6 +1203,13 @@ const ensureEstadoConexionEventosTable = async (client) => {
   `);
 };
 
+const ensurePrediosDireccionAlterna = async (client) => {
+  await client.query(`
+    ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS direccion_alterna TEXT NULL
+  `);
+};
+
 const ensureCampoSolicitudesTable = async (client) => {
   await client.query(`
     CREATE TABLE IF NOT EXISTS campo_solicitudes (
@@ -1203,6 +1222,7 @@ const ensureCampoSolicitudesTable = async (client) => {
       id_usuario_solicita INTEGER NULL,
       nombre_solicitante VARCHAR(160) NULL,
       fuente VARCHAR(40) NOT NULL DEFAULT 'APP_CAMPO',
+      tipo_solicitud VARCHAR(40) NOT NULL DEFAULT 'ACTUALIZACION',
       estado_conexion_actual VARCHAR(20) NOT NULL,
       estado_conexion_nuevo VARCHAR(20) NOT NULL,
       nombre_verificado VARCHAR(200) NULL,
@@ -1222,6 +1242,24 @@ const ensureCampoSolicitudesTable = async (client) => {
     ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(80)
   `);
   await client.query(`
+    ALTER TABLE campo_solicitudes
+    ADD COLUMN IF NOT EXISTS tipo_solicitud VARCHAR(40)
+  `);
+  await client.query(`
+    UPDATE campo_solicitudes
+    SET tipo_solicitud = 'ACTUALIZACION'
+    WHERE tipo_solicitud IS NULL
+       OR TRIM(tipo_solicitud) = ''
+  `);
+  await client.query(`
+    ALTER TABLE campo_solicitudes
+    ALTER COLUMN tipo_solicitud SET DEFAULT 'ACTUALIZACION'
+  `);
+  await client.query(`
+    ALTER TABLE campo_solicitudes
+    ALTER COLUMN tipo_solicitud SET NOT NULL
+  `);
+  await client.query(`
     DO $$
     BEGIN
       IF NOT EXISTS (
@@ -1230,6 +1268,18 @@ const ensureCampoSolicitudesTable = async (client) => {
         ALTER TABLE campo_solicitudes
         ADD CONSTRAINT chk_campo_solicitudes_estado
         CHECK (estado_solicitud IN ('PENDIENTE', 'APROBADO', 'RECHAZADO'));
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_campo_solicitudes_tipo'
+      ) THEN
+        ALTER TABLE campo_solicitudes
+        ADD CONSTRAINT chk_campo_solicitudes_tipo
+        CHECK (tipo_solicitud IN ('ACTUALIZACION', 'ALTA_DIRECCION_ALTERNA'));
       END IF;
     END $$;
   `);
@@ -1421,6 +1471,7 @@ const ensurePerformanceIndexes = async (client) => {
   await ensureCajaCierresTable(client);
   await ensureEstadoConexionContribuyentes(client);
   await ensureEstadoConexionEventosTable(client);
+  await ensurePrediosDireccionAlterna(client);
   await ensureCampoSolicitudesTable(client);
   await ensureComparacionesLegacyTables(client);
   await ensureDataIntegrityGuards(client);
@@ -1761,6 +1812,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
         OR b.nombre_completo ILIKE $${idxLike}
         OR b.dni_ruc ILIKE $${idxLike}
         OR b.direccion_completa ILIKE $${idxLike}
+        OR b.direccion_alterna ILIKE $${idxLike}
         OR b.nombre_calle ILIKE $${idxLike}
       )`);
     }
@@ -1786,7 +1838,8 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
               WHEN b.nombre_completo ILIKE $${idxStarts} THEN 1
               WHEN b.dni_ruc ILIKE $${idxStarts} THEN 2
               WHEN b.direccion_completa ILIKE $${idxStarts} THEN 3
-              ELSE 4
+              WHEN b.direccion_alterna ILIKE $${idxStarts} THEN 4
+              ELSE 5
             END,
             b.nombre_completo ASC
           `
@@ -1876,6 +1929,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
           COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
           COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
           COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+          COALESCE(NULLIF(TRIM(p.direccion_alterna), ''), '') AS direccion_alterna,
           COALESCE(TRIM(ca.nombre), '') AS nombre_calle,
           ${buildDireccionSql("ca", "p")} AS direccion_completa,
           COALESCE(rp.meses_deuda_total, 0) AS meses_deuda,
@@ -1903,7 +1957,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
           seg.seguimiento_desde
         FROM contribuyentes c
         LEFT JOIN LATERAL (
-          SELECT id_predio, id_calle, numero_casa, referencia_direccion, agua_sn, desague_sn, limpieza_sn
+          SELECT id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
           FROM predios
           WHERE id_contribuyente = c.id_contribuyente
           ORDER BY id_predio ASC
@@ -1940,6 +1994,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
         b.limpieza_sn,
         b.nombre_calle,
         b.direccion_completa,
+        b.direccion_alterna,
         b.meses_deuda,
         b.deuda_total,
         b.cargo_mensual_ultimo,
@@ -2048,6 +2103,7 @@ app.get("/campo/offline-snapshot", async (req, res) => {
           COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
           COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
           COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+          COALESCE(NULLIF(TRIM(p.direccion_alterna), ''), '') AS direccion_alterna,
           COALESCE(TRIM(ca.nombre), '') AS nombre_calle,
           ${buildDireccionSql("ca", "p")} AS direccion_completa,
           COALESCE(rp.meses_deuda_total, 0) AS meses_deuda,
@@ -2075,7 +2131,7 @@ app.get("/campo/offline-snapshot", async (req, res) => {
           seg.seguimiento_desde
         FROM contribuyentes c
         LEFT JOIN LATERAL (
-          SELECT id_predio, id_calle, numero_casa, referencia_direccion, agua_sn, desague_sn, limpieza_sn
+          SELECT id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
           FROM predios
           WHERE id_contribuyente = c.id_contribuyente
           ORDER BY id_predio ASC
@@ -2112,6 +2168,7 @@ app.get("/campo/offline-snapshot", async (req, res) => {
         b.limpieza_sn,
         b.nombre_calle,
         b.direccion_completa,
+        b.direccion_alterna,
         b.meses_deuda,
         b.deuda_total,
         b.cargo_mensual_ultimo,
@@ -2232,6 +2289,7 @@ app.post("/campo/solicitudes", async (req, res) => {
         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
         p.referencia_direccion,
+        p.direccion_alterna,
         ${buildDireccionSql("ca", "p")} AS direccion_completa,
         COALESCE(rp.meses_deuda_total, 0) AS meses_deuda,
         COALESCE(rp.deuda_total, 0) AS deuda_total,
@@ -2247,7 +2305,7 @@ app.post("/campo/solicitudes", async (req, res) => {
         END AS ultimo_mes_pagado_periodo
       FROM contribuyentes c
       LEFT JOIN LATERAL (
-        SELECT id_predio, id_calle, numero_casa, referencia_direccion, agua_sn, desague_sn, limpieza_sn
+        SELECT id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
         FROM predios
         WHERE id_contribuyente = c.id_contribuyente
         ORDER BY id_predio ASC
@@ -2267,6 +2325,10 @@ app.post("/campo/solicitudes", async (req, res) => {
     }
 
     const row = actual.rows[0];
+    const tipoSolicitud = normalizeTipoSolicitudCampo(
+      req.body?.tipo_solicitud || req.body?.metadata?.tipo_solicitud,
+      TIPOS_SOLICITUD_CAMPO.ACTUALIZACION
+    );
     const estadoActual = normalizeEstadoConexion(row.estado_conexion);
     const visitadoSN = normalizeSN(req.body?.visitado_sn, "N");
     const cortadoSN = normalizeSN(req.body?.cortado_sn, "N");
@@ -2341,6 +2403,7 @@ app.post("/campo/solicitudes", async (req, res) => {
       ultimo_mes_pagado_periodo: String(row.ultimo_mes_pagado_periodo || "").trim() || null,
       seguimiento_pendiente_sn: seguimientoPendienteSN,
       seguimiento_motivo: seguimientoMotivo,
+      tipo_solicitud: tipoSolicitud,
       estado_actual: estadoActual,
       estado_nuevo: estadoNuevo,
       servicio_agua_actual: aguaActual,
@@ -2357,6 +2420,25 @@ app.post("/campo/solicitudes", async (req, res) => {
     const dniActual = normalizeLimitedText(row.dni_ruc, 30);
     const telefonoActual = normalizeLimitedText(row.telefono, 40);
     const direccionActual = normalizeLimitedText(row.direccion_completa || row.referencia_direccion, 250);
+    const direccionAlternaActual = normalizeLimitedText(row.direccion_alterna, 250);
+
+    if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA) {
+      if (!direccionVerificada) {
+        return res.status(400).json({
+          error: "Debe indicar la nueva direccion para registrar direccion alterna."
+        });
+      }
+      if (equalsText(direccionVerificada, direccionActual)) {
+        return res.status(400).json({
+          error: "La direccion alterna no puede ser igual a la direccion principal."
+        });
+      }
+      if (direccionAlternaActual && equalsText(direccionVerificada, direccionAlternaActual)) {
+        return res.status(400).json({
+          error: "La direccion alterna ya se encuentra registrada."
+        });
+      }
+    }
 
     const hayCambio = (
       estadoNuevo !== estadoActual ||
@@ -2372,7 +2454,9 @@ app.post("/campo/solicitudes", async (req, res) => {
       (nombreVerificado && !equalsText(nombreVerificado, nombreActual)) ||
       (dniVerificado && !equalsText(dniVerificado, dniActual)) ||
       (telefonoVerificado && !equalsText(telefonoVerificado, telefonoActual)) ||
-      (direccionVerificada && !equalsText(direccionVerificada, direccionActual))
+      (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA
+        ? (direccionVerificada && !equalsText(direccionVerificada, direccionAlternaActual))
+        : (direccionVerificada && !equalsText(direccionVerificada, direccionActual)))
     );
     if (!hayCambio && !observacionCampo) {
       return res.status(400).json({
@@ -2388,6 +2472,7 @@ app.post("/campo/solicitudes", async (req, res) => {
         id_usuario_solicita,
         nombre_solicitante,
         fuente,
+        tipo_solicitud,
         estado_conexion_actual,
         estado_conexion_nuevo,
         nombre_verificado,
@@ -2399,7 +2484,7 @@ app.post("/campo/solicitudes", async (req, res) => {
         metadata
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8,
-        $9, $10, $11, $12, $13, $14, $15
+        $9, $10, $11, $12, $13, $14, $15, $16
       )
       RETURNING id_solicitud, creado_en
     `, [
@@ -2409,6 +2494,7 @@ app.post("/campo/solicitudes", async (req, res) => {
       req.user?.id_usuario || null,
       normalizeLimitedText(req.user?.nombre || req.user?.username || "", 160) || null,
       FUENTE_SOLICITUD_CAMPO,
+      tipoSolicitud,
       estadoActual,
       estadoNuevo,
       nombreVerificado,
@@ -2423,7 +2509,7 @@ app.post("/campo/solicitudes", async (req, res) => {
     await registrarAuditoria(
       null,
       "CAMPO_SOLICITUD_CREAR",
-      `ID ${created.rows[0].id_solicitud} | Contribuyente ${row.codigo_municipal || idContribuyente} ${row.nombre_completo || ""}`,
+      `ID ${created.rows[0].id_solicitud} | Tipo ${tipoSolicitud} | Contribuyente ${row.codigo_municipal || idContribuyente} ${row.nombre_completo || ""}`,
       req.user?.nombre || req.user?.username || "SISTEMA"
     );
 
@@ -2487,6 +2573,7 @@ app.get("/campo/solicitudes", async (req, res) => {
         s.id_usuario_solicita,
         s.nombre_solicitante,
         s.fuente,
+        s.tipo_solicitud,
         s.estado_conexion_actual,
         s.estado_conexion_nuevo,
         s.nombre_verificado,
@@ -2505,11 +2592,12 @@ app.get("/campo/solicitudes", async (req, res) => {
         COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_actual_db,
         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_actual_db,
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_actual_db,
+        COALESCE(NULLIF(TRIM(p.direccion_alterna), ''), '') AS direccion_alterna_actual_db,
         ${buildDireccionSql("ca", "p")} AS direccion_actual_db
       FROM campo_solicitudes s
       LEFT JOIN contribuyentes c ON c.id_contribuyente = s.id_contribuyente
       LEFT JOIN LATERAL (
-        SELECT id_predio, id_calle, numero_casa, referencia_direccion, agua_sn, desague_sn, limpieza_sn
+        SELECT id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
         FROM predios
         WHERE id_contribuyente = c.id_contribuyente
         ORDER BY id_predio ASC
@@ -2582,7 +2670,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         id_predio,
         COALESCE(NULLIF(UPPER(TRIM(agua_sn)), ''), 'S') AS agua_sn,
         COALESCE(NULLIF(UPPER(TRIM(desague_sn)), ''), 'S') AS desague_sn,
-        COALESCE(NULLIF(UPPER(TRIM(limpieza_sn)), ''), 'S') AS limpieza_sn
+        COALESCE(NULLIF(UPPER(TRIM(limpieza_sn)), ''), 'S') AS limpieza_sn,
+        COALESCE(NULLIF(TRIM(direccion_alterna), ''), '') AS direccion_alterna
       FROM predios
       WHERE id_contribuyente = $1
       ORDER BY id_predio ASC
@@ -2594,11 +2683,16 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       ...contribuyenteBaseData.rows[0],
       agua_sn: predioData.rows[0]?.agua_sn || "S",
       desague_sn: predioData.rows[0]?.desague_sn || "S",
-      limpieza_sn: predioData.rows[0]?.limpieza_sn || "S"
+      limpieza_sn: predioData.rows[0]?.limpieza_sn || "S",
+      direccion_alterna: predioData.rows[0]?.direccion_alterna || ""
     };
     const estadoActual = normalizeEstadoConexion(actual.estado_conexion);
     const estadoDestino = normalizeEstadoConexion(solicitud.estado_conexion_nuevo || estadoActual);
     const metadataSolicitud = solicitud.metadata && typeof solicitud.metadata === "object" ? solicitud.metadata : {};
+    const tipoSolicitud = normalizeTipoSolicitudCampo(
+      solicitud.tipo_solicitud || metadataSolicitud.tipo_solicitud,
+      TIPOS_SOLICITUD_CAMPO.ACTUALIZACION
+    );
     const aguaDestino = normalizeSN(metadataSolicitud.servicio_agua_nuevo, normalizeSN(actual.agua_sn, "S"));
     const desagueDestino = normalizeSN(metadataSolicitud.servicio_desague_nuevo, normalizeSN(actual.desague_sn, "S"));
     const limpiezaDestino = normalizeSN(metadataSolicitud.servicio_limpieza_nuevo, normalizeSN(actual.limpieza_sn, "S"));
@@ -2631,25 +2725,48 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       ]
     );
 
-    await client.query(
-      `UPDATE predios
-       SET activo_sn = $1,
-           estado_servicio = $2,
-           referencia_direccion = COALESCE(NULLIF($3, ''), referencia_direccion),
-           agua_sn = $4,
-           desague_sn = $5,
-           limpieza_sn = $6
-       WHERE id_contribuyente = $7`,
-      [
-        predioEstado.activo_sn,
-        predioEstado.estado_servicio,
-        normalizeLimitedText(solicitud.direccion_verificada, 250),
-        aguaDestino,
-        desagueDestino,
-        limpiezaDestino,
-        actual.id_contribuyente
-      ]
-    );
+    const direccionNueva = normalizeLimitedText(solicitud.direccion_verificada, 250);
+    if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA) {
+      await client.query(
+        `UPDATE predios
+         SET activo_sn = $1,
+             estado_servicio = $2,
+             direccion_alterna = COALESCE(NULLIF($3, ''), direccion_alterna),
+             agua_sn = $4,
+             desague_sn = $5,
+             limpieza_sn = $6
+         WHERE id_contribuyente = $7`,
+        [
+          predioEstado.activo_sn,
+          predioEstado.estado_servicio,
+          direccionNueva,
+          aguaDestino,
+          desagueDestino,
+          limpiezaDestino,
+          actual.id_contribuyente
+        ]
+      );
+    } else {
+      await client.query(
+        `UPDATE predios
+         SET activo_sn = $1,
+             estado_servicio = $2,
+             referencia_direccion = COALESCE(NULLIF($3, ''), referencia_direccion),
+             agua_sn = $4,
+             desague_sn = $5,
+             limpieza_sn = $6
+         WHERE id_contribuyente = $7`,
+        [
+          predioEstado.activo_sn,
+          predioEstado.estado_servicio,
+          direccionNueva,
+          aguaDestino,
+          desagueDestino,
+          limpiezaDestino,
+          actual.id_contribuyente
+        ]
+      );
+    }
 
     if (estadoActual !== estadoDestino) {
       await client.query(
@@ -2685,7 +2802,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     await registrarAuditoria(
       client,
       "CAMPO_SOLICITUD_APROBADA",
-      `Solicitud ${idSolicitud} aplicada a contribuyente ${actual.codigo_municipal || actual.id_contribuyente}. Estado: ${estadoActual} -> ${estadoDestino}`,
+      `Solicitud ${idSolicitud} (${tipoSolicitud}) aplicada a contribuyente ${actual.codigo_municipal || actual.id_contribuyente}. Estado: ${estadoActual} -> ${estadoDestino}`,
       req.user?.nombre || req.user?.username || "SISTEMA"
     );
 
@@ -2696,6 +2813,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       mensaje: "Solicitud aprobada y aplicada.",
       id_solicitud: idSolicitud,
       id_contribuyente: actual.id_contribuyente,
+      tipo_solicitud: tipoSolicitud,
       estado_anterior: estadoActual,
       estado_nuevo: estadoDestino
     });

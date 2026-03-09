@@ -102,6 +102,15 @@
           <div id="duplicateWarning" class="duplicate-warning hidden"></div>
 
           <div class="row">
+            <label for="tipoSolicitud">Tipo de solicitud</label>
+            <select id="tipoSolicitud" required>
+              <option value="ACTUALIZACION">Actualizar ficha actual</option>
+              <option value="ALTA_DIRECCION_ALTERNA">Agregar direccion adicional</option>
+            </select>
+            <div id="tipoSolicitudHint" class="muted">Actualiza datos del registro principal del contribuyente.</div>
+          </div>
+
+          <div class="row">
             <label for="nombreVerificado">Nombre verificado</label>
             <input id="nombreVerificado" type="text" maxlength="200" />
           </div>

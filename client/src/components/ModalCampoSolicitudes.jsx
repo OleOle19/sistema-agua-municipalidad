@@ -14,6 +14,10 @@ const FILTRO_OPTIONS = [
   { value: "RECHAZADO", label: "Rechazadas" },
   { value: "TODOS", label: "Todas" }
 ];
+const TIPO_SOLICITUD_LABELS = {
+  ACTUALIZACION: "Actualizacion ficha",
+  ALTA_DIRECCION_ALTERNA: "Alta direccion alterna"
+};
 
 const normalizeText = (value) => String(value || "").trim().toUpperCase();
 const normalizeSN = (value, fallback = "S") => {
@@ -155,6 +159,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
   const rows = useMemo(() => solicitudes.map((s) => {
     const changes = [];
     const metadata = s?.metadata && typeof s.metadata === "object" ? s.metadata : {};
+    const tipoSolicitud = normalizeText(s?.tipo_solicitud || metadata?.tipo_solicitud || "ACTUALIZACION");
     const aguaActual = normalizeSN(s?.agua_actual_db, metadata.servicio_agua_actual || "S");
     const desagueActual = normalizeSN(s?.desague_actual_db, metadata.servicio_desague_actual || "S");
     const limpiezaActual = normalizeSN(s?.limpieza_actual_db, metadata.servicio_limpieza_actual || "S");
@@ -183,8 +188,17 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
     if (s?.telefono_verificado && isDifferent(s.telefono_verificado, s.telefono_actual_db)) {
       changes.push(renderChangeLine("Telefono", s.telefono_verificado, s.telefono_actual_db));
     }
-    if (s?.direccion_verificada && isDifferent(s.direccion_verificada, s.direccion_actual_db)) {
-      changes.push(renderChangeLine("Direccion", s.direccion_verificada, s.direccion_actual_db));
+    if (s?.direccion_verificada) {
+      const direccionBase = tipoSolicitud === "ALTA_DIRECCION_ALTERNA"
+        ? s?.direccion_alterna_actual_db
+        : s?.direccion_actual_db;
+      if (isDifferent(s.direccion_verificada, direccionBase)) {
+        changes.push(renderChangeLine(
+          tipoSolicitud === "ALTA_DIRECCION_ALTERNA" ? "Direccion adicional" : "Direccion",
+          s.direccion_verificada,
+          direccionBase
+        ));
+      }
     }
     if (normalizeText(s.estado_conexion_nuevo) !== normalizeText(s.estado_actual_db)) {
       changes.push(renderChangeLine("Estado conexion", s.estado_conexion_nuevo, s.estado_actual_db));
@@ -203,6 +217,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
       solicitud: s,
       changes,
       metadata,
+      tipoSolicitud,
       servicios: { aguaNuevo, desagueNuevo, limpiezaNuevo },
       seguimientoPendiente,
       seguimientoMotivo,
@@ -337,7 +352,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                         </td>
                       </tr>
                     );
-                    const groupItems = group.items.map(({ solicitud: s, changes, metadata, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt }) => {
+                    const groupItems = group.items.map(({ solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt }) => {
                       const pending = s.estado_solicitud === "PENDIENTE";
                       const disabled = procesandoId === s.id_solicitud;
                       const seguimientoTipo = getSeguimientoTipo(visitadoSN, hasObservacion);
@@ -361,6 +376,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                           </td>
                           <td className="small align-top">
                             <div>
+                              Tipo: <strong>{TIPO_SOLICITUD_LABELS[tipoSolicitud] || tipoSolicitud || "Actualizacion ficha"}</strong>
+                            </div>
+                            <div className="mt-1">
                               Estado: <strong>{s.estado_conexion_actual}</strong> {"->"} <strong>{s.estado_conexion_nuevo}</strong>
                             </div>
                             <div className="mt-1">

@@ -19,6 +19,10 @@
   const SEARCH_LOCAL_LIMIT = 1200;
   const RETRY_BASE_DELAY_MS = 20 * 1000;
   const RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
+  const TIPOS_SOLICITUD = {
+    ACTUALIZACION: "ACTUALIZACION",
+    ALTA_DIRECCION_ALTERNA: "ALTA_DIRECCION_ALTERNA"
+  };
   const ROLE_LEVEL = { BRIGADA: 1, CAJERO: 2, ADMIN_SEC: 3, ADMIN: 4 };
   const ROLE_ALIASES = {
     BRIGADA: "BRIGADA",
@@ -62,6 +66,8 @@
     solicitudForm: document.getElementById("solicitudForm"),
     selectedInfo: document.getElementById("selectedInfo"),
     duplicateWarning: document.getElementById("duplicateWarning"),
+    tipoSolicitud: document.getElementById("tipoSolicitud"),
+    tipoSolicitudHint: document.getElementById("tipoSolicitudHint"),
     nombreVerificado: document.getElementById("nombreVerificado"),
     dniVerificado: document.getElementById("dniVerificado"),
     direccionVerificada: document.getElementById("direccionVerificada"),
@@ -124,6 +130,23 @@
     if (normalized === "S" || normalized === "SI") return "S";
     if (normalized === "N" || normalized === "NO") return "N";
     return String(fallback || "S").trim().toUpperCase() === "N" ? "N" : "S";
+  }
+  function normalizeTipoSolicitud(value, fallback) {
+    const normalized = String(value || "").trim().toUpperCase();
+    if (normalized === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA) return TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA;
+    if (normalized === TIPOS_SOLICITUD.ACTUALIZACION) return TIPOS_SOLICITUD.ACTUALIZACION;
+    return fallback === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA
+      ? TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA
+      : TIPOS_SOLICITUD.ACTUALIZACION;
+  }
+  function isAltaDireccionMode() {
+    return normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION) === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA;
+  }
+  function renderTipoSolicitudHint() {
+    if (!el.tipoSolicitudHint) return;
+    el.tipoSolicitudHint.textContent = isAltaDireccionMode()
+      ? "Registra una direccion secundaria del mismo contribuyente (no reemplaza la direccion principal)."
+      : "Actualiza datos del registro principal del contribuyente.";
   }
   function seguimientoMotivoLabel(value) {
     const raw = String(value || "").trim().toUpperCase();
@@ -668,6 +691,10 @@
       item.className = "result-item" + (isSelected ? " is-selected" : "");
       const t = document.createElement("strong"); t.textContent = (c.codigo_municipal || "SIN-CODIGO") + " - " + (c.nombre_completo || "Sin nombre");
       const d = document.createElement("div"); d.className = "meta"; d.textContent = c.direccion_completa || c.nombre_calle || "Sin direccion";
+      const direccionAlterna = String(c.direccion_alterna || "").trim();
+      const dAlt = document.createElement("div");
+      dAlt.className = "meta";
+      dAlt.textContent = direccionAlterna ? ("Dir. alterna: " + direccionAlterna) : "";
       const m = document.createElement("div"); m.className = "meta"; m.textContent = "Meses deuda: " + Number(c.meses_deuda || 0) + " | Total: S/ " + fmtMoney(c.deuda_total);
       const cargoRef = Number(c.cargo_mensual_ultimo || 0);
       const montosMensuales = parseMontosList(c.montos_mensuales_24m);
@@ -704,10 +731,13 @@
         state.selectedId = id;
         el.selectedInfo.textContent =
           "Seleccionado: " + (c.codigo_municipal || "SIN-CODIGO") + " - " + (c.nombre_completo || "Sin nombre") +
-          " | Servicios: Agua " + aguaSn + " | Desague " + desagueSn + " | Limpieza " + limpiezaSn;
+          " | Servicios: Agua " + aguaSn + " | Desague " + desagueSn + " | Limpieza " + limpiezaSn +
+          (direccionAlterna ? (" | Dir. alterna: " + direccionAlterna) : "");
+        if (el.tipoSolicitud) el.tipoSolicitud.value = TIPOS_SOLICITUD.ACTUALIZACION;
+        renderTipoSolicitudHint();
         el.nombreVerificado.value = c.nombre_completo || "";
         el.dniVerificado.value = c.dni_ruc || "";
-        el.direccionVerificada.value = c.direccion_completa || "";
+        syncDireccionFieldForTipo({ forceClear: false });
         el.aguaSn.value = aguaSn;
         el.desagueSn.value = desagueSn;
         if (el.limpiezaSn) el.limpiezaSn.value = limpiezaSn;
@@ -717,6 +747,7 @@
       });
       item.appendChild(t);
       item.appendChild(d);
+      if (direccionAlterna) item.appendChild(dAlt);
       item.appendChild(m);
       item.appendChild(pagoRef);
       item.appendChild(emisionRef);
@@ -780,7 +811,7 @@
     for (const c of state.contribuyentes) {
       if (idCalle && Number(c.id_calle || 0) !== idCalle) continue;
       if (q.length >= 2) {
-        const hit = [c.nombre_completo, c.dni_ruc, c.codigo_municipal, c.direccion_completa, c.nombre_calle].some((x) => norm(x).includes(q));
+        const hit = [c.nombre_completo, c.dni_ruc, c.codigo_municipal, c.direccion_completa, c.direccion_alterna, c.nombre_calle].some((x) => norm(x).includes(q));
         if (!hit) continue;
       }
       rows.push(c);
@@ -892,6 +923,22 @@
       || null;
   }
 
+  function syncDireccionFieldForTipo(options) {
+    const cfg = options || {};
+    const c = selectedContrib();
+    if (!c || !el.direccionVerificada) return;
+    const alta = isAltaDireccionMode();
+    if (alta) {
+      if (cfg.forceClear) {
+        el.direccionVerificada.value = "";
+      } else {
+        el.direccionVerificada.value = c.direccion_alterna || "";
+      }
+      return;
+    }
+    el.direccionVerificada.value = c.direccion_completa || "";
+  }
+
   function makeIdempotency(idContribuyente) {
     const uid = Number(state.user && state.user.id_usuario) || 0;
     const hasRandomUuid = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function";
@@ -928,6 +975,8 @@
     el.visitadoSn.value = "N"; el.cortadoSn.value = "N"; el.fechaCorte.value = ""; el.motivoObs.value = "";
     el.aguaSn.value = "S"; el.desagueSn.value = "S";
     if (el.limpiezaSn) el.limpiezaSn.value = "S";
+    if (el.tipoSolicitud) el.tipoSolicitud.value = TIPOS_SOLICITUD.ACTUALIZACION;
+    renderTipoSolicitudHint();
     el.nombreVerificado.value = ""; el.dniVerificado.value = ""; el.direccionVerificada.value = ""; el.inspector.value = String((state.user && state.user.nombre) || "");
     if (el.duplicateWarning) {
       el.duplicateWarning.textContent = "";
@@ -956,8 +1005,15 @@
 
     const key = makeIdempotency(c.id_contribuyente);
     const obs = String(el.motivoObs.value || "").trim();
+    const tipoSolicitud = normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION);
+    const direccionVerificada = String(el.direccionVerificada.value || "").trim();
+    if (tipoSolicitud === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA && !direccionVerificada) {
+      setStatus("Para direccion adicional debes registrar una direccion nueva.", "warning", 5000);
+      return;
+    }
     const payload = {
       id_contribuyente: Number(c.id_contribuyente),
+      tipo_solicitud: tipoSolicitud,
       agua_sn: normalizeSN(el.aguaSn.value, "S"),
       desague_sn: normalizeSN(el.desagueSn.value, "S"),
       limpieza_sn: normalizeSN(el.limpiezaSn && el.limpiezaSn.value, "S"),
@@ -969,9 +1025,14 @@
       observacion_campo: obs || null,
       nombre_verificado: String(el.nombreVerificado.value || "").trim() || null,
       dni_verificado: String(el.dniVerificado.value || "").trim() || null,
-      direccion_verificada: String(el.direccionVerificada.value || "").trim() || null,
+      direccion_verificada: direccionVerificada || null,
       idempotency_key: key,
-      metadata: { app: "campo-app-pwa", idempotency_key: key, created_offline_at: new Date().toISOString() }
+      metadata: {
+        app: "campo-app-pwa",
+        idempotency_key: key,
+        tipo_solicitud: tipoSolicitud,
+        created_offline_at: new Date().toISOString()
+      }
     };
 
     el.submitSolicitudBtn.disabled = true;
@@ -1129,6 +1190,12 @@
     if (el.refreshQueueBtn) el.refreshQueueBtn.addEventListener("click", () => refreshQueueCount().catch((err) => console.error(err)));
     el.searchInput.addEventListener("input", queueSearch);
     el.streetFilter.addEventListener("change", queueSearch);
+    if (el.tipoSolicitud) {
+      el.tipoSolicitud.addEventListener("change", () => {
+        renderTipoSolicitudHint();
+        syncDireccionFieldForTipo({ forceClear: isAltaDireccionMode() });
+      });
+    }
     el.solicitudForm.addEventListener("submit", (e) => submitSolicitud(e).catch((err) => console.error(err)));
     window.addEventListener("online", () => { state.online = true; updateInfo(); syncQueue(false).catch((err) => console.error(err)); });
     window.addEventListener("offline", () => { state.online = false; updateInfo(); });
