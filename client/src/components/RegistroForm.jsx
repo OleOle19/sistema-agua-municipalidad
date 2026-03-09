@@ -31,23 +31,34 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
     try {
       const res = await api.get("/calles");
       setCalles(res.data);
-    } catch (error) {
+    } catch {
       console.error("Error cargando calles");
     }
   };
 
-  const cargarSectores = async () => {
-    try {
-      const res = await api.get("/sectores");
-      setSectores(Array.isArray(res.data) ? res.data : []);
-    } catch (error) {
-      console.error("Error cargando sectores");
-    }
-  };
-
   useEffect(() => {
-    cargarCalles();
-    cargarSectores();
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const [callesRes, sectoresRes] = await Promise.all([
+          api.get("/calles"),
+          api.get("/sectores")
+        ]);
+        if (!cancelled) {
+          setCalles(callesRes.data);
+          setSectores(Array.isArray(sectoresRes.data) ? sectoresRes.data : []);
+        }
+      } catch {
+        if (!cancelled) {
+          setCalles([]);
+          setSectores([]);
+        }
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });

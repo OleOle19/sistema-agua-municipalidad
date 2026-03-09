@@ -42,7 +42,7 @@ const ModalActaCorteSelector = ({
       try {
         const res = await api.get("/calles");
         setCalles(Array.isArray(res.data) ? res.data : []);
-      } catch (err) {
+      } catch {
         setCalles([]);
       }
     };

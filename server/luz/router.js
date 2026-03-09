@@ -1,4 +1,7 @@
-const express = require("express");
+Ôªøconst express = require("express");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const ExcelJS = require("exceljs");
@@ -7,11 +10,99 @@ const { Readable } = require("stream");
 const pool = require("./db");
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const LUZ_IMPORT_MAX_FILE_BYTES = Math.max(
+  1024 * 1024,
+  Number(process.env.LUZ_IMPORT_MAX_FILE_BYTES || process.env.IMPORT_MAX_FILE_BYTES || (25 * 1024 * 1024))
+);
+const LUZ_IMPORT_UPLOAD_DIR = path.join(__dirname, ".tmp", "imports");
+const ensureLuzImportUploadDir = () => {
+  try {
+    fs.mkdirSync(LUZ_IMPORT_UPLOAD_DIR, { recursive: true });
+  } catch {}
+};
+const uploadImport = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        ensureLuzImportUploadDir();
+        return cb(null, LUZ_IMPORT_UPLOAD_DIR);
+      } catch (err) {
+        return cb(err);
+      }
+    },
+    filename: (req, file, cb) => {
+      const extRaw = String(path.extname(file?.originalname || ".tmp") || ".tmp").toLowerCase();
+      const ext = extRaw.length > 10 ? ".tmp" : extRaw;
+      return cb(null, `${Date.now()}_${crypto.randomBytes(6).toString("hex")}${ext || ".tmp"}`);
+    }
+  }),
+  limits: { fileSize: LUZ_IMPORT_MAX_FILE_BYTES }
+});
+const uploadImportSingle = (fieldName) => (req, res, next) => {
+  uploadImport.single(fieldName)(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        error: `El archivo excede el l√≠mite permitido (${Math.round(LUZ_IMPORT_MAX_FILE_BYTES / (1024 * 1024))}MB).`
+      });
+    }
+    return res.status(400).json({ error: err.message || "No se pudo procesar el archivo." });
+  });
+};
+const cleanupUploadedTempFile = (file) => {
+  const filePath = String(file?.path || "").trim();
+  if (!filePath) return;
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch {}
+};
+const loadWorkbookFromUploadedFile = async (file) => {
+  const workbook = new ExcelJS.Workbook();
+  const filePath = String(file?.path || "").trim();
+  if (filePath && fs.existsSync(filePath)) {
+    try {
+      await workbook.xlsx.readFile(filePath);
+      return workbook;
+    } catch {
+      await workbook.csv.readFile(filePath);
+      return workbook;
+    }
+  }
+  const buffer = Buffer.isBuffer(file?.buffer) ? file.buffer : Buffer.alloc(0);
+  try {
+    await workbook.xlsx.load(buffer);
+  } catch {
+    const stream = Readable.from([buffer]);
+    await workbook.csv.read(stream);
+  }
+  return workbook;
+};
+const validateUploadFileType = (file, { allowedExts = [], allowedMimeTypes = [] } = {}) => {
+  const name = String(file?.originalname || "").trim().toLowerCase();
+  const ext = String(path.extname(name) || "").toLowerCase();
+  const mime = String(file?.mimetype || "").trim().toLowerCase();
+  if (!name || !ext) return "Archivo inv√°lido.";
+  if (!allowedExts.includes(ext)) {
+    return `Formato no v√°lido. Extensiones permitidas: ${allowedExts.join(", ")}.`;
+  }
+  if (!mime || !allowedMimeTypes.includes(mime)) {
+    return `Tipo MIME no permitido: ${mime || "desconocido"}.`;
+  }
+  return "";
+};
 
-const JWT_SECRET = process.env.JWT_SECRET || "cambia_esto_en_produccion";
+const NODE_ENV = String(process.env.NODE_ENV || "development").trim().toLowerCase();
+const SECURITY_STRICT_STARTUP = Object.prototype.hasOwnProperty.call(process.env, "SECURITY_STRICT_STARTUP")
+  ? process.env.SECURITY_STRICT_STARTUP === "1"
+  : NODE_ENV === "production";
+const JWT_SECRET_DEFAULT = "cambia_esto_en_produccion";
+const JWT_SECRET = process.env.JWT_SECRET || JWT_SECRET_DEFAULT;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
+const jwtWeakSecret = !JWT_SECRET || JWT_SECRET === JWT_SECRET_DEFAULT || String(JWT_SECRET).trim().length < 32;
+if (SECURITY_STRICT_STARTUP && jwtWeakSecret) {
+  throw new Error("[LUZ][SECURITY] JWT_SECRET inseguro. Configure una clave >= 32 caracteres.");
+}
 
 const LUZ_TARIFA_KWH_DEFAULT = Number.parseFloat(process.env.LUZ_TARIFA_KWH_DEFAULT || "1") || 1;
 const LUZ_CARGO_FIJO_DEFAULT = Number.parseFloat(process.env.LUZ_CARGO_FIJO_DEFAULT || "6.5") || 6.5;
@@ -61,6 +152,70 @@ const normalizeText = (value, maxLen = 220) => {
   const txt = String(value || "").trim();
   if (!txt) return "";
   return txt.length > maxLen ? txt.slice(0, maxLen) : txt;
+};
+const normalizeLoginUsername = (value) => String(value || "").trim().toLowerCase().slice(0, 120);
+const getRequestIp = (req) => {
+  const fromHeader = String(req.headers["x-forwarded-for"] || "")
+    .split(",")
+    .map((v) => v.trim())
+    .find(Boolean);
+  return (fromHeader || req.ip || req.socket?.remoteAddress || "unknown").slice(0, 120);
+};
+const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || (10 * 60 * 1000));
+const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = Number(process.env.LOGIN_RATE_LIMIT_MAX_ATTEMPTS || 25);
+const LOGIN_LOCK_THRESHOLD = Number(process.env.LOGIN_LOCK_THRESHOLD || 5);
+const LOGIN_LOCK_DURATION_MS = Number(process.env.LOGIN_LOCK_DURATION_MS || (15 * 60 * 1000));
+const loginIpRateMap = new Map();
+const loginUserFailMap = new Map();
+const cleanupLoginSecurityMaps = (nowMs = Date.now()) => {
+  for (const [key, value] of loginIpRateMap.entries()) {
+    if (!value || nowMs >= Number(value.resetAt || 0)) {
+      loginIpRateMap.delete(key);
+    }
+  }
+  for (const [key, value] of loginUserFailMap.entries()) {
+    if (!value) {
+      loginUserFailMap.delete(key);
+      continue;
+    }
+    const lockUntil = Number(value.lockUntil || 0);
+    const updatedAt = Number(value.updatedAt || 0);
+    if (lockUntil && nowMs < lockUntil) continue;
+    if (!lockUntil && nowMs - updatedAt < LOGIN_RATE_LIMIT_WINDOW_MS) continue;
+    loginUserFailMap.delete(key);
+  }
+};
+const getIpRateInfo = (ipKey, nowMs = Date.now()) => {
+  const current = loginIpRateMap.get(ipKey);
+  if (!current || nowMs >= Number(current.resetAt || 0)) {
+    const next = { count: 0, resetAt: nowMs + LOGIN_RATE_LIMIT_WINDOW_MS };
+    loginIpRateMap.set(ipKey, next);
+    return next;
+  }
+  return current;
+};
+const getUserFailInfo = (usernameKey) => {
+  if (!loginUserFailMap.has(usernameKey)) {
+    loginUserFailMap.set(usernameKey, { count: 0, lockUntil: 0, updatedAt: Date.now() });
+  }
+  return loginUserFailMap.get(usernameKey);
+};
+const registerLoginFailure = (usernameKey) => {
+  if (!usernameKey) return;
+  const nowMs = Date.now();
+  const info = getUserFailInfo(usernameKey);
+  if (Number(info.lockUntil || 0) && nowMs < Number(info.lockUntil || 0)) return;
+  info.count = Number(info.count || 0) + 1;
+  info.updatedAt = nowMs;
+  if (info.count >= LOGIN_LOCK_THRESHOLD) {
+    info.lockUntil = nowMs + LOGIN_LOCK_DURATION_MS;
+    info.count = 0;
+  }
+  loginUserFailMap.set(usernameKey, info);
+};
+const clearLoginFailure = (usernameKey) => {
+  if (!usernameKey) return;
+  loginUserFailMap.delete(usernameKey);
 };
 
 const normalizeEstadoSuministro = (value) => {
@@ -123,7 +278,7 @@ const resolverUsuarioLuz = async (token) => {
       "SELECT id_usuario, username, nombre_completo, rol, estado FROM usuarios_sistema WHERE id_usuario = $1",
       [payload.id_usuario]
     );
-    if (!user.rows[0]) return { ok: false, status: 401, error: "Usuario no v·lido" };
+    if (!user.rows[0]) return { ok: false, status: 401, error: "Usuario no v√°lido" };
     const row = user.rows[0];
     if (String(row.estado || "").toUpperCase() !== "ACTIVO") {
       return { ok: false, status: 403, error: "Cuenta no activa." };
@@ -140,7 +295,7 @@ const resolverUsuarioLuz = async (token) => {
       }
     };
   } catch {
-    return { ok: false, status: 401, error: "Token inv·lido o expirado" };
+    return { ok: false, status: 401, error: "Token inv√°lido o expirado" };
   }
 };
 
@@ -379,7 +534,7 @@ router.use(async (req, res, next) => {
     return next();
   } catch (err) {
     console.error("[LUZ] Error inicializando defaults:", err.message);
-    return res.status(500).json({ error: "Error inicializando configuraciÛn de luz." });
+    return res.status(500).json({ error: "Error inicializando configuraci√≥n de luz." });
   }
 });
 
@@ -392,7 +547,7 @@ router.post("/auth/registro", async (req, res) => {
     const password = String(req.body?.password || "");
     const nombre = normalizeText(req.body?.nombre_completo, 180);
     if (!username || !password || !nombre) {
-      return res.status(400).json({ error: "Username, contraseÒa y nombre son obligatorios." });
+      return res.status(400).json({ error: "Username, contrase√±a y nombre son obligatorios." });
     }
 
     const ex = await pool.query("SELECT 1 FROM usuarios_sistema WHERE username = $1 LIMIT 1", [username]);
@@ -404,7 +559,7 @@ router.post("/auth/registro", async (req, res) => {
       [username, hash, nombre]
     );
     await registrarAuditoria(null, username, "AUTH_REGISTRO", "Registro de usuario en sistema de luz (estado=PENDIENTE)");
-    return res.json({ mensaje: "Solicitud enviada. Espera activaciÛn del administrador." });
+    return res.json({ mensaje: "Solicitud enviada. Espera activaci√≥n del administrador." });
   } catch (err) {
     console.error("[LUZ] Error registro:", err.message);
     return res.status(500).json({ error: "Error al registrar usuario." });
@@ -413,14 +568,50 @@ router.post("/auth/registro", async (req, res) => {
 
 router.post("/auth/login", async (req, res) => {
   try {
+    cleanupLoginSecurityMaps();
     const username = normalizeText(req.body?.username, 120);
     const password = String(req.body?.password || "");
     if (!username || !password) {
-      return res.status(400).json({ error: "Usuario y contraseÒa son obligatorios." });
+      return res.status(400).json({ error: "Usuario y contrase√±a son obligatorios." });
+    }
+    const usernameKey = normalizeLoginUsername(username);
+    const ipKey = getRequestIp(req);
+    const nowMs = Date.now();
+
+    const ipRate = getIpRateInfo(ipKey, nowMs);
+    ipRate.count = Number(ipRate.count || 0) + 1;
+    loginIpRateMap.set(ipKey, ipRate);
+    if (ipRate.count > LOGIN_RATE_LIMIT_MAX_ATTEMPTS) {
+      const retryAfterSec = Math.max(1, Math.ceil((Number(ipRate.resetAt || nowMs) - nowMs) / 1000));
+      res.set("Retry-After", String(retryAfterSec));
+      return res.status(429).json({
+        error: "Demasiados intentos de inicio de sesion. Espere antes de reintentar.",
+        retry_after_sec: retryAfterSec
+      });
+    }
+
+    const userFail = getUserFailInfo(usernameKey);
+    const lockUntil = Number(userFail.lockUntil || 0);
+    if (lockUntil && nowMs < lockUntil) {
+      const retryAfterSec = Math.max(1, Math.ceil((lockUntil - nowMs) / 1000));
+      res.set("Retry-After", String(retryAfterSec));
+      return res.status(429).json({
+        error: "Usuario bloqueado temporalmente por intentos fallidos.",
+        retry_after_sec: retryAfterSec
+      });
+    }
+    if (lockUntil && nowMs >= lockUntil) {
+      userFail.lockUntil = 0;
+      userFail.count = 0;
+      userFail.updatedAt = nowMs;
+      loginUserFailMap.set(usernameKey, userFail);
     }
 
     const result = await pool.query("SELECT * FROM usuarios_sistema WHERE username = $1", [username]);
-    if (!result.rows[0]) return res.status(400).json({ error: "Credenciales invalidas." });
+    if (!result.rows[0]) {
+      registerLoginFailure(usernameKey);
+      return res.status(400).json({ error: "Credenciales invalidas." });
+    }
 
     const user = result.rows[0];
     let ok = false;
@@ -433,12 +624,17 @@ router.post("/auth/login", async (req, res) => {
         await pool.query("UPDATE usuarios_sistema SET password = $1 WHERE id_usuario = $2", [nextHash, user.id_usuario]);
       }
     }
-    if (!ok) return res.status(400).json({ error: "Credenciales invalidas." });
+    if (!ok) {
+      registerLoginFailure(usernameKey);
+      return res.status(400).json({ error: "Credenciales invalidas." });
+    }
 
     if (String(user.estado || "").toUpperCase() !== "ACTIVO") {
+      registerLoginFailure(usernameKey);
       return res.status(403).json({ error: "Cuenta no activa." });
     }
 
+    clearLoginFailure(usernameKey);
     const token = issueLuzToken(user);
     return res.json({
       token,
@@ -611,7 +807,7 @@ router.put("/suministros/:id", authenticateLuzToken, requireRole("ADMIN_SEC"), a
   const client = await pool.connect();
   try {
     const idSuministro = parsePositiveInt(req.params?.id, 0);
-    if (!idSuministro) return res.status(400).json({ error: "ID inv·lido." });
+    if (!idSuministro) return res.status(400).json({ error: "ID inv√°lido." });
 
     const nroMedidor = normalizeText(req.body?.nro_medidor, 80);
     const nombreUsuario = normalizeText(req.body?.nombre_usuario, 220);
@@ -674,7 +870,7 @@ router.delete("/suministros/:id", authenticateLuzToken, requireRole("ADMIN"), as
   const client = await pool.connect();
   try {
     const idSuministro = parsePositiveInt(req.params?.id, 0);
-    if (!idSuministro) return res.status(400).json({ error: "ID inv·lido." });
+    if (!idSuministro) return res.status(400).json({ error: "ID inv√°lido." });
 
     await client.query("BEGIN");
 
@@ -723,7 +919,7 @@ router.put("/config/tarifas", authenticateLuzToken, requireRole("ADMIN_SEC"), as
     const tarifaKwh = round2(parseMonto(req.body?.tarifa_kwh, -1));
     const cargoFijo = round2(parseMonto(req.body?.cargo_fijo, -1));
     if (tarifaKwh < 0 || cargoFijo < 0) {
-      return res.status(400).json({ error: "Tarifas inv·lidas." });
+      return res.status(400).json({ error: "Tarifas inv√°lidas." });
     }
 
     await client.query("BEGIN");
@@ -751,8 +947,8 @@ router.get("/config/fechas", authenticateLuzToken, requireRole("CONSULTA"), asyn
     const cfg = await getConfigFechas(pool);
     return res.json(cfg);
   } catch (err) {
-    console.error("[LUZ] Error obteniendo configuraciÛn de fechas:", err.message);
-    return res.status(500).json({ error: "Error obteniendo configuraciÛn de fechas." });
+    console.error("[LUZ] Error obteniendo configuraci√≥n de fechas:", err.message);
+    return res.status(500).json({ error: "Error obteniendo configuraci√≥n de fechas." });
   }
 });
 
@@ -776,11 +972,11 @@ router.put("/config/fechas", authenticateLuzToken, requireRole("ADMIN_SEC"), asy
     await registrarAuditoria(client, req.user?.username, "CONFIG_FECHAS", `dias_vencimiento=${diasVenc}; dias_corte=${diasCorte}`);
     await client.query("COMMIT");
 
-    return res.json({ mensaje: "ConfiguraciÛn de fechas actualizada.", dias_vencimiento: diasVenc, dias_corte: diasCorte });
+    return res.json({ mensaje: "Configuraci√≥n de fechas actualizada.", dias_vencimiento: diasVenc, dias_corte: diasCorte });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
-    console.error("[LUZ] Error actualizando configuraciÛn de fechas:", err.message);
-    return res.status(500).json({ error: "Error actualizando configuraciÛn de fechas." });
+    console.error("[LUZ] Error actualizando configuraci√≥n de fechas:", err.message);
+    return res.status(500).json({ error: "Error actualizando configuraci√≥n de fechas." });
   } finally {
     client.release();
   }
@@ -896,7 +1092,7 @@ router.post("/recibos", authenticateLuzToken, requireRole("ADMIN_SEC"), async (r
     if (err.code === "23505") {
       return res.status(409).json({ error: "Ya existe recibo para ese suministro y periodo." });
     }
-    if (err.message === "DATOS_RECIBO_INVALIDOS") return res.status(400).json({ error: "Datos de recibo inv·lidos." });
+    if (err.message === "DATOS_RECIBO_INVALIDOS") return res.status(400).json({ error: "Datos de recibo inv√°lidos." });
     if (err.message === "SUMINISTRO_NO_ENCONTRADO") return res.status(404).json({ error: "Suministro no encontrado." });
     if (err.message === "SUMINISTRO_INACTIVO") return res.status(400).json({ error: "Suministro inactivo. No se puede generar deuda." });
     if (err.message === "LECTURA_ACTUAL_REQUERIDA") return res.status(400).json({ error: "Lectura actual es obligatoria." });
@@ -911,7 +1107,7 @@ router.post("/recibos", authenticateLuzToken, requireRole("ADMIN_SEC"), async (r
 router.get("/recibos/historial/:id_suministro", authenticateLuzToken, requireRole("CONSULTA"), async (req, res) => {
   try {
     const idSuministro = parsePositiveInt(req.params?.id_suministro, 0);
-    if (!idSuministro) return res.status(400).json({ error: "ID suministro inv·lido." });
+    if (!idSuministro) return res.status(400).json({ error: "ID suministro inv√°lido." });
 
     const anioParam = String(req.query?.anio || "all").toLowerCase();
     const filtrarAnio = anioParam !== "all";
@@ -969,7 +1165,7 @@ router.get("/recibos/historial/:id_suministro", authenticateLuzToken, requireRol
 router.get("/recibos/pendientes/:id_suministro", authenticateLuzToken, requireRole("CONSULTA"), async (req, res) => {
   try {
     const idSuministro = parsePositiveInt(req.params?.id_suministro, 0);
-    if (!idSuministro) return res.status(400).json({ error: "ID suministro inv·lido." });
+    if (!idSuministro) return res.status(400).json({ error: "ID suministro inv√°lido." });
 
     const data = await pool.query(
       `WITH pagos_agg AS (
@@ -1009,7 +1205,7 @@ router.post("/caja/ordenes-cobro", authenticateLuzToken, requireRole("ADMIN_SEC"
   try {
     const idSuministro = parsePositiveInt(req.body?.id_suministro, 0);
     const observacion = normalizeText(req.body?.observacion, 500) || null;
-    if (!idSuministro) return res.status(400).json({ error: "Suministro inv·lido." });
+    if (!idSuministro) return res.status(400).json({ error: "Suministro inv√°lido." });
 
     let items = parseOrderItems(req.body?.items || []);
 
@@ -1114,7 +1310,7 @@ router.post("/caja/ordenes-cobro", authenticateLuzToken, requireRole("ADMIN_SEC"
 
     if (recibosRows.rows.length !== idsRecibos.length) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Uno o m·s recibos no pertenecen al suministro." });
+      return res.status(400).json({ error: "Uno o m√°s recibos no pertenecen al suministro." });
     }
 
     const mapRecibos = new Map(recibosRows.rows.map((r) => [Number(r.id_recibo), r]));
@@ -1123,7 +1319,7 @@ router.post("/caja/ordenes-cobro", authenticateLuzToken, requireRole("ADMIN_SEC"
       const row = mapRecibos.get(Number(item.id_recibo));
       if (!row) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ error: `Recibo inv·lido: ${item.id_recibo}` });
+        return res.status(400).json({ error: `Recibo inv√°lido: ${item.id_recibo}` });
       }
       const saldo = round2(Math.max(parseMonto(row.total_pagar, 0) - parseMonto(row.total_pagado, 0), 0));
       if (saldo <= 0) {
@@ -1133,7 +1329,7 @@ router.post("/caja/ordenes-cobro", authenticateLuzToken, requireRole("ADMIN_SEC"
       const monto = round2(item.monto_autorizado > 0 ? item.monto_autorizado : saldo);
       if (monto <= 0 || monto > saldo + 0.001) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ error: `Monto autorizado inv·lido para recibo ${item.id_recibo}.` });
+        return res.status(400).json({ error: `Monto autorizado inv√°lido para recibo ${item.id_recibo}.` });
       }
       detalle.push({
         id_recibo: Number(item.id_recibo),
@@ -1150,7 +1346,7 @@ router.post("/caja/ordenes-cobro", authenticateLuzToken, requireRole("ADMIN_SEC"
     const totalOrden = round2(detalle.reduce((acc, it) => acc + round2(it.monto_autorizado), 0));
     if (totalOrden <= 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Total de orden inv·lido." });
+      return res.status(400).json({ error: "Total de orden inv√°lido." });
     }
 
     const insert = await client.query(
@@ -1242,14 +1438,14 @@ router.get("/caja/ordenes-cobro/pendientes", authenticateLuzToken, requireRole("
     })));
   } catch (err) {
     console.error("[LUZ] Error listando ordenes pendientes:", err.message);
-    return res.status(500).json({ error: "Error listando Ûrdenes pendientes." });
+    return res.status(500).json({ error: "Error listando √≥rdenes pendientes." });
   }
 });
 router.post("/caja/ordenes-cobro/:id/cobrar", authenticateLuzToken, requireRole("CAJERO"), async (req, res) => {
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params?.id, 0);
-    if (!idOrden) return res.status(400).json({ error: "ID orden inv·lido." });
+    if (!idOrden) return res.status(400).json({ error: "ID orden inv√°lido." });
 
     await client.query("BEGIN");
 
@@ -1270,7 +1466,7 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateLuzToken, requireRole(
     const items = parseOrderItems(safeJsonArray(orden.recibos_json));
     if (items.length === 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Orden sin recibos v·lidos." });
+      return res.status(400).json({ error: "Orden sin recibos v√°lidos." });
     }
 
     const idsRecibos = items.map((i) => Number(i.id_recibo));
@@ -1292,7 +1488,7 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateLuzToken, requireRole(
 
     if (recibosRows.rows.length !== idsRecibos.length) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Uno o m·s recibos no existen." });
+      return res.status(400).json({ error: "Uno o m√°s recibos no existen." });
     }
 
     const mapRecibos = new Map(recibosRows.rows.map((r) => [Number(r.id_recibo), r]));
@@ -1304,7 +1500,7 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateLuzToken, requireRole(
       const row = mapRecibos.get(Number(item.id_recibo));
       if (!row) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ error: `Recibo inv·lido ${item.id_recibo}.` });
+        return res.status(400).json({ error: `Recibo inv√°lido ${item.id_recibo}.` });
       }
       const saldo = round2(Math.max(parseMonto(row.total_pagar, 0) - parseMonto(row.total_pagado, 0), 0));
       if (saldo <= 0) {
@@ -1314,7 +1510,7 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateLuzToken, requireRole(
       const monto = round2(item.monto_autorizado > 0 ? item.monto_autorizado : saldo);
       if (monto <= 0 || monto > saldo + 0.001) {
         await client.query("ROLLBACK");
-        return res.status(409).json({ error: `Monto autorizado inv·lido para recibo ${item.id_recibo}.` });
+        return res.status(409).json({ error: `Monto autorizado inv√°lido para recibo ${item.id_recibo}.` });
       }
 
       await client.query(
@@ -1375,8 +1571,8 @@ router.post("/caja/ordenes-cobro/:id/anular", authenticateLuzToken, requireRole(
   try {
     const idOrden = parsePositiveInt(req.params?.id, 0);
     const motivo = normalizeText(req.body?.motivo, 500);
-    if (!idOrden) return res.status(400).json({ error: "ID orden inv·lido." });
-    if (!motivo || motivo.length < 5) return res.status(400).json({ error: "Motivo obligatorio (mÌnimo 5 caracteres)." });
+    if (!idOrden) return res.status(400).json({ error: "ID orden inv√°lido." });
+    if (!motivo || motivo.length < 5) return res.status(400).json({ error: "Motivo obligatorio (m√≠nimo 5 caracteres)." });
 
     await client.query("BEGIN");
 
@@ -1494,7 +1690,7 @@ router.get("/caja/reporte", authenticateLuzToken, requireRole("CAJERO"), async (
     return res.status(500).json({ error: "Error generando reporte de caja." });
   }
 });
-router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), upload.single("archivo"), async (req, res) => {
+router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), uploadImportSingle("archivo"), async (req, res) => {
   const client = await pool.connect();
   const rechazos = [];
   const resumen = {
@@ -1519,16 +1715,20 @@ router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), uplo
 
   try {
     if (!req.file) return res.status(400).json({ error: "Debe adjuntar archivo." });
+    const typeError = validateUploadFileType(req.file, {
+      allowedExts: [".xlsx", ".xls", ".csv"],
+      allowedMimeTypes: [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+        "text/csv",
+        "application/csv",
+        "text/plain",
+        "application/octet-stream"
+      ]
+    });
+    if (typeError) return res.status(400).json({ error: typeError });
 
-    const wb = new ExcelJS.Workbook();
-    try {
-      await wb.xlsx.load(req.file.buffer);
-    } catch {
-      const stream = new Readable();
-      stream.push(req.file.buffer);
-      stream.push(null);
-      await wb.csv.read(stream);
-    }
+    const wb = await loadWorkbookFromUploadedFile(req.file);
 
     if (!wb.worksheets || wb.worksheets.length === 0) {
       return res.status(400).json({ error: "No se encontraron hojas para importar." });
@@ -1566,7 +1766,7 @@ router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), uplo
         pushRechazo("datos_invalidos", {
           zona: zonaSheet,
           linea: null,
-          motivo: `No se encontrÛ cabecera con columnas de medidor y nombre en hoja ${ws.name}.`
+          motivo: `No se encontr√≥ cabecera con columnas de medidor y nombre en hoja ${ws.name}.`
         });
         continue;
       }
@@ -1594,7 +1794,7 @@ router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), uplo
             linea: r,
             nro_medidor: medidor || null,
             nombre: nombre || null,
-            motivo: "Medidor o nombre vacÌo."
+            motivo: "Medidor o nombre vac√≠o."
           });
           continue;
         }
@@ -1661,13 +1861,14 @@ router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), uplo
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
     console.error("[LUZ] Error importando padron:", err.message);
-    return res.status(500).json({ error: `Error importando padrÛn: ${err.message}` });
+    return res.status(500).json({ error: `Error importando padr√≥n: ${err.message}` });
   } finally {
+    cleanupUploadedTempFile(req.file);
     client.release();
   }
 });
 
-router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN_SEC"), upload.single("archivo"), async (req, res) => {
+router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN_SEC"), uploadImportSingle("archivo"), async (req, res) => {
   const client = await pool.connect();
   const rechazos = [];
   const resumen = {
@@ -1694,19 +1895,23 @@ router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN_SEC")
 
   try {
     if (!req.file) return res.status(400).json({ error: "Debe adjuntar archivo." });
+    const typeError = validateUploadFileType(req.file, {
+      allowedExts: [".xlsx", ".xls", ".csv"],
+      allowedMimeTypes: [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+        "text/csv",
+        "application/csv",
+        "text/plain",
+        "application/octet-stream"
+      ]
+    });
+    if (typeError) return res.status(400).json({ error: typeError });
 
-    const wb = new ExcelJS.Workbook();
-    try {
-      await wb.xlsx.load(req.file.buffer);
-    } catch {
-      const stream = new Readable();
-      stream.push(req.file.buffer);
-      stream.push(null);
-      await wb.csv.read(stream);
-    }
+    const wb = await loadWorkbookFromUploadedFile(req.file);
 
     const ws = wb.getWorksheet(1);
-    if (!ws) return res.status(400).json({ error: "No se encontrÛ hoja para importar lecturas." });
+    if (!ws) return res.status(400).json({ error: "No se encontr√≥ hoja para importar lecturas." });
 
     const headers = new Map();
     ws.getRow(1).eachCell((cell, col) => {
@@ -1723,7 +1928,7 @@ router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN_SEC")
 
     if (!colZona || !colMedidor || !colAnio || !colMes || !colLecturaActual) {
       return res.status(400).json({
-        error: "Plantilla inv·lida. Columnas requeridas: zona, nro_medidor, anio, mes, lectura_actual."
+        error: "Plantilla inv√°lida. Columnas requeridas: zona, nro_medidor, anio, mes, lectura_actual."
       });
     }
 
@@ -1752,7 +1957,7 @@ router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN_SEC")
           nro_medidor: nroMedidor,
           anio,
           mes,
-          motivo: "Datos incompletos o inv·lidos."
+          motivo: "Datos incompletos o inv√°lidos."
         });
         continue;
       }
@@ -1765,7 +1970,7 @@ router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN_SEC")
           nro_medidor: nroMedidor,
           anio,
           mes,
-          motivo: "Lectura actual no numÈrica."
+          motivo: "Lectura actual no num√©rica."
         });
         continue;
       }
@@ -1862,8 +2067,10 @@ router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN_SEC")
     console.error("[LUZ] Error importando lecturas:", err.message);
     return res.status(500).json({ error: `Error importando lecturas: ${err.message}` });
   } finally {
+    cleanupUploadedTempFile(req.file);
     client.release();
   }
 });
 
 module.exports = router;
+

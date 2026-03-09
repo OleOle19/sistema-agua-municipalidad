@@ -60,7 +60,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
           lote: u.lote || ""
         });
         setCargando(false);
-      } catch (error) {
+      } catch {
         cerrarModal();
       }
     };

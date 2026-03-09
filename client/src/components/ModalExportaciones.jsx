@@ -26,7 +26,7 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-    } catch (error) {
+    } catch {
       alert("No se pudo exportar el archivo.");
     } finally {
       setExportando("");

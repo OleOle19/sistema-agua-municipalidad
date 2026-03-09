@@ -40,7 +40,7 @@ class RealtimeManager {
 
   emitEvent(payload) {
     for (const cb of this.eventListeners) {
-      try { cb(payload); } catch {}
+      try { cb(payload); } catch { /* ignore listener errors */ }
     }
   }
 
@@ -48,7 +48,7 @@ class RealtimeManager {
     if (this.status === next) return;
     this.status = next;
     for (const cb of this.statusListeners) {
-      try { cb(next); } catch {}
+      try { cb(next); } catch { /* ignore listener errors */ }
     }
   }
 
@@ -166,7 +166,7 @@ class RealtimeManager {
     this.manualClose = manual;
     this.clearTimers();
     if (this.socket) {
-      try { this.socket.close(); } catch {}
+      try { this.socket.close(); } catch { /* ignore close errors */ }
     }
     this.socket = null;
     this.authenticated = false;

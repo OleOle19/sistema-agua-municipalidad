@@ -10,7 +10,7 @@ const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
       try {
         const res = await api.get(`/recibos/pendientes/${usuario.id_contribuyente}`);
         setDeudas(res.data);
-      } catch (error) { alert("Error cargando deudas"); }
+      } catch { alert("Error cargando deudas"); }
     };
     cargarDeudas();
   }, [usuario]);
@@ -20,7 +20,7 @@ const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
     try {
       await api.delete(`/recibos/${id_recibo}`);
       alert("Deuda eliminada."); alGuardar(); cerrarModal();
-    } catch (error) { alert("Error al eliminar"); }
+    } catch { alert("Error al eliminar"); }
   };
 
   const nombreMes = (n) => ["","Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"][n];

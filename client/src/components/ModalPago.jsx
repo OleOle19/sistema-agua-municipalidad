@@ -164,7 +164,7 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     if (!isCaja) return;
     const firstId = Number(ordenSeleccionada?.items?.[0]?.id_recibo || 0);
     setIdReciboImpresion(firstId > 0 ? firstId : 0);
-  }, [isCaja, ordenSeleccionada?.id_orden]);
+  }, [isCaja, ordenSeleccionada?.id_orden, ordenSeleccionada?.items]);
 
   const totalOrdenCaja = round2(toNum(ordenSeleccionada?.total_orden));
   const cargoReimpresionOrden = isMontoReimpresion(ordenSeleccionada?.cargo_reimpresion) ? CARGO_REIMPRESION : 0;

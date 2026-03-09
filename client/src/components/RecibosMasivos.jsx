@@ -12,9 +12,8 @@ const getMesCorto = (mes) => {
 };
 
 const RecibosMasivos = forwardRef(({ datos }, ref) => {
-  const listaRecibos = datos || [];
-
   const listaConsolidada = React.useMemo(() => {
+    const listaRecibos = Array.isArray(datos) ? datos : [];
     const grupos = new Map();
 
     listaRecibos.forEach((item) => {
@@ -64,7 +63,7 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
         cargo_reimpresion: round2(item.cargo_reimpresion)
       };
     });
-  }, [listaRecibos]);
+  }, [datos]);
 
   // One receipt per physical A5 sheet.
   const hojaStyle = {

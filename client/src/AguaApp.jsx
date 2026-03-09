@@ -111,7 +111,6 @@ const Sidebar = memo(({
   usuarioActivo, onLogout, 
   darkMode, setDarkMode, descargarPadron,
   setMostrarImportar,
-  setMostrarModalMasivo,
   setMostrarModalExportaciones,
   setMostrarModalCampo,
   permisos,
@@ -795,7 +794,7 @@ const actaPageStyle = `
               deuda_total: parseFloat(data.deuda_total ?? base.deuda_anio ?? 0) || 0
             }
           });
-        } catch (errItem) {
+        } catch {
           errores.push(base?.codigo_municipal || String(idContribuyente));
         }
       }
@@ -910,7 +909,7 @@ const actaPageStyle = `
       } else {
         historialCacheRef.current.set(cacheKey, { rows, years: [] });
       }
-    } catch (error) {
+    } catch {
       console.error("Error historial");
     }
   };
@@ -1202,7 +1201,7 @@ const actaPageStyle = `
       return;
     }
     if(!window.confirm(`PELIGRO: Eliminar a ${usuarioSeleccionado.nombre_completo}?`)) return;
-    try { await api.delete(`/contribuyentes/${usuarioSeleccionado.id_contribuyente}`); alert("Usuario eliminado."); setUsuarioSeleccionado(null); recargarTodo(); } catch (error) { alert("Error al eliminar."); }
+    try { await api.delete(`/contribuyentes/${usuarioSeleccionado.id_contribuyente}`); alert("Usuario eliminado."); setUsuarioSeleccionado(null); recargarTodo(); } catch { alert("Error al eliminar."); }
   };
 
   const descargarPadron = async () => {
@@ -1255,26 +1254,6 @@ const actaPageStyle = `
   const clearScrollSelect = useCallback(() => {
     setScrollSelect({ active: false, anchorId: null, mode: "replace", baseIds: [] });
   }, []);
-
-  const handleFilaClick = (e, usuario) => {
-    const id = usuario.id_contribuyente;
-    if (e.ctrlKey || e.metaKey) {
-        const newSelected = new Set(selectedIds);
-        if (newSelected.has(id)) {
-            newSelected.delete(id);
-        } else {
-            newSelected.add(id);
-        }
-        setSelectedIds(newSelected);
-        setUsuarioSeleccionado(usuario); 
-        startScrollSelect(id, "add", newSelected);
-    } else {
-        const only = new Set([id]);
-        setSelectedIds(only);
-        setUsuarioSeleccionado(usuario);
-        startScrollSelect(id, "replace", only);
-    }
-  };
 
   const handleBackgroundClick = () => {
     if (suppressClearRef.current) {
@@ -1524,7 +1503,7 @@ const actaPageStyle = `
       window.removeEventListener("mouseup", handleUp);
       window.removeEventListener("blur", handleUp);
     };
-  }, [isDragging]);
+  }, [isDragging, clearScrollSelect]);
   const handleSort = (columna) => { setOrden(prev => ({ columna, direccion: prev.columna === columna && prev.direccion === 'asc' ? 'desc' : 'asc' })); };
   
   const getRowClass = (c) => { 
@@ -1585,7 +1564,7 @@ const actaPageStyle = `
         titulo="Sistema Agua Potable"
         subtitulo="Municipalidad Distrital de Pueblo Nuevo"
         onLoginSuccess={(datos) => {
-          const { token, ...user } = datos || {};
+          const { ...user } = datos || {};
           const baseUser = user?.id_usuario ? user : datos;
           setUsuarioSistema(baseUser ? { ...baseUser, rol: normalizeRole(baseUser.rol) } : baseUser);
         }}
@@ -1625,7 +1604,6 @@ const actaPageStyle = `
         usuarioActivo={usuarioSistema} onLogout={handleLogout}
         darkMode={darkMode} setDarkMode={setDarkMode}
         descargarPadron={descargarPadron}
-        setMostrarModalMasivo={setMostrarModalMasivo}
         setMostrarImportar={setMostrarImportar}
         setMostrarModalExportaciones={setMostrarModalExportaciones}
         setMostrarModalCampo={setMostrarModalCampo}

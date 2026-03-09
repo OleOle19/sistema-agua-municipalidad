@@ -125,7 +125,7 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
       return /^\d{4}$/.test(anioRef) ? `${anioRef}-01-01` : `${yyyy}-01-01`;
     }
     return fechaDia;
-  }, [tipo, fechaDia, mesRef, anioRef]);
+  }, [tipo, fechaDia, mesRef, anioRef, mm, yyyy]);
   const filtroKey = useMemo(() => `${tipo}|${fechaConsulta}`, [tipo, fechaConsulta]);
   const lastFiltroKeyRef = useRef("");
 
@@ -188,7 +188,7 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-    } catch (error) {
+    } catch {
       alert("No se pudo exportar el reporte en Excel.");
     } finally {
       setExportandoExcel(false);
@@ -296,11 +296,13 @@ const ModalCierre = ({ cerrarModal, darkMode }) => {
   const totalReimpresion = formatMoney(reporte.total_reimpresion);
   const totalGeneral = formatMoney(reporte.total_general || ((Number(reporte.total || 0) || 0) + (Number(reporte.total_reimpresion || 0) || 0)));
   const chartTemporal = reporte?.graficos?.recaudacion_temporal || [];
-  const chartTop = reporte?.graficos?.top_contribuyentes || [];
   const chartPeriodo = reporte?.graficos?.recaudacion_por_periodo || [];
   const chartTopData = useMemo(
-    () => chartTop.map((r) => ({ label: `${r.codigo_municipal} - ${r.nombre_completo}`, total: r.total })),
-    [chartTop]
+    () => (reporte?.graficos?.top_contribuyentes || []).map((r) => ({
+      label: `${r.codigo_municipal} - ${r.nombre_completo}`,
+      total: r.total
+    })),
+    [reporte?.graficos?.top_contribuyentes]
   );
   const alertasResumen = alertasRiesgo?.resumen || {};
   const alertasDetalle = alertasRiesgo?.alertas || {};

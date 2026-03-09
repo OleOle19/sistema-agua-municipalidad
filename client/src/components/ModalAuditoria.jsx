@@ -177,7 +177,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
       try {
         const res = await api.get("/auditoria");
         setLogs(res.data);
-      } catch (error) {
+      } catch {
         console.error("Error cargando auditoria");
       } finally {
         setCargando(false);
@@ -209,7 +209,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-    } catch (error) {
+    } catch {
       alert("No se pudo exportar la auditoria.");
     } finally {
       setExportando(false);

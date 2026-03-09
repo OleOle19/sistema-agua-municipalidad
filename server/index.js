@@ -1,6 +1,7 @@
 ﻿const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
@@ -13,7 +14,6 @@ const { importarDeudas } = require("./importar_deudas");
 const ExcelJS = require('exceljs');
 const xml2js = require('xml2js');
 const multer = require('multer');
-const upload = multer({ storage: multer.memoryStorage() }); 
 require("dotenv").config();
 const { Readable } = require('stream');
 const bcrypt = require("bcryptjs");
@@ -85,6 +85,106 @@ const parseMonto = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 const MAX_RECHAZOS_IMPORTACION = Number(process.env.MAX_RECHAZOS_IMPORTACION || 500);
+const IMPORT_MAX_FILE_BYTES = Math.max(
+  1024 * 1024,
+  Number(process.env.IMPORT_MAX_FILE_BYTES || (25 * 1024 * 1024))
+);
+const IMPORT_UPLOAD_DIR = path.join(__dirname, ".tmp", "imports");
+const ensureImportUploadDir = () => {
+  try {
+    fs.mkdirSync(IMPORT_UPLOAD_DIR, { recursive: true });
+  } catch {}
+};
+const uploadImport = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        ensureImportUploadDir();
+        return cb(null, IMPORT_UPLOAD_DIR);
+      } catch (err) {
+        return cb(err);
+      }
+    },
+    filename: (req, file, cb) => {
+      const extRaw = String(path.extname(file?.originalname || ".tmp") || ".tmp").toLowerCase();
+      const ext = extRaw.length > 10 ? ".tmp" : extRaw;
+      return cb(null, `${Date.now()}_${crypto.randomBytes(6).toString("hex")}${ext || ".tmp"}`);
+    }
+  }),
+  limits: { fileSize: IMPORT_MAX_FILE_BYTES }
+});
+const uploadImportSingle = (fieldName) => (req, res, next) => {
+  uploadImport.single(fieldName)(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        error: `El archivo excede el límite permitido (${Math.round(IMPORT_MAX_FILE_BYTES / (1024 * 1024))}MB).`
+      });
+    }
+    return res.status(400).json({ error: err.message || "No se pudo procesar el archivo." });
+  });
+};
+const cleanupUploadedTempFile = (file) => {
+  const filePath = String(file?.path || "").trim();
+  if (!filePath) return;
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch {}
+};
+const readTextFromUploadedFile = (file) => {
+  const filePath = String(file?.path || "").trim();
+  if (filePath && fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath, "utf8");
+  }
+  if (Buffer.isBuffer(file?.buffer)) {
+    return file.buffer.toString("utf8");
+  }
+  return "";
+};
+const createReadStreamFromUploadedFile = (file) => {
+  const filePath = String(file?.path || "").trim();
+  if (filePath && fs.existsSync(filePath)) {
+    return fs.createReadStream(filePath, { encoding: "utf8" });
+  }
+  if (Buffer.isBuffer(file?.buffer)) {
+    return Readable.from([file.buffer.toString("utf8")]);
+  }
+  return null;
+};
+const loadWorkbookFromImportFile = async (file) => {
+  const workbook = new ExcelJS.Workbook();
+  const filePath = String(file?.path || "").trim();
+  if (filePath && fs.existsSync(filePath)) {
+    try {
+      await workbook.xlsx.readFile(filePath);
+      return workbook;
+    } catch {
+      await workbook.csv.readFile(filePath);
+      return workbook;
+    }
+  }
+  const buffer = Buffer.isBuffer(file?.buffer) ? file.buffer : Buffer.alloc(0);
+  try {
+    await workbook.xlsx.load(buffer);
+  } catch {
+    const stream = Readable.from([buffer]);
+    await workbook.csv.read(stream);
+  }
+  return workbook;
+};
+const validateUploadFileType = (file, { allowedExts = [], allowedMimeTypes = [] } = {}) => {
+  const name = String(file?.originalname || "").trim().toLowerCase();
+  const ext = String(path.extname(name) || "").toLowerCase();
+  const mime = String(file?.mimetype || "").trim().toLowerCase();
+  if (!name || !ext) return "Archivo inválido.";
+  if (!allowedExts.includes(ext)) {
+    return `Formato no válido. Extensiones permitidas: ${allowedExts.join(", ")}.`;
+  }
+  if (!mime || !allowedMimeTypes.includes(mime)) {
+    return `Tipo MIME no permitido: ${mime || "desconocido"}.`;
+  }
+  return "";
+};
 const LEGACY_COMPARACION_MAX_FILE_BYTES = Math.max(
   1024 * 1024,
   Number(process.env.LEGACY_COMPARACION_MAX_FILE_BYTES || (100 * 1024 * 1024))
@@ -221,21 +321,42 @@ const normalizeSN = (value, fallback = "N") => {
 
 const normalizeDateOnly = (value) => {
   if (!value) return null;
+  const formatDateOnly = (yyyy, mm, dd) =>
+    `${String(yyyy).padStart(4, "0")}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+  const isValidDateParts = (yyyy, mm, dd) => {
+    if (!Number.isInteger(yyyy) || !Number.isInteger(mm) || !Number.isInteger(dd)) return false;
+    if (yyyy < 1900 || yyyy > 9999 || mm < 1 || mm > 12 || dd < 1 || dd > 31) return false;
+    const probe = new Date(Date.UTC(yyyy, mm - 1, dd));
+    return probe.getUTCFullYear() === yyyy && (probe.getUTCMonth() + 1) === mm && probe.getUTCDate() === dd;
+  };
+
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value.toISOString().slice(0, 10);
+    const yyyy = value.getFullYear();
+    const mm = value.getMonth() + 1;
+    const dd = value.getDate();
+    return isValidDateParts(yyyy, mm, dd) ? formatDateOnly(yyyy, mm, dd) : null;
   }
+
   const text = String(value).trim();
   if (!text) return null;
-  const asDate = new Date(text);
-  if (!Number.isNaN(asDate.getTime())) return asDate.toISOString().slice(0, 10);
-  const m = text.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
-  if (!m) return null;
-  const dd = Number(m[1]);
-  const mm = Number(m[2]);
-  let yyyy = Number(m[3]);
-  if (yyyy < 100) yyyy += 2000;
-  if (dd < 1 || dd > 31 || mm < 1 || mm > 12) return null;
-  return `${String(yyyy).padStart(4, "0")}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+
+  const isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const yyyy = Number(isoMatch[1]);
+    const mm = Number(isoMatch[2]);
+    const dd = Number(isoMatch[3]);
+    return isValidDateParts(yyyy, mm, dd) ? formatDateOnly(yyyy, mm, dd) : null;
+  }
+
+  const dmyMatch = text.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (dmyMatch) {
+    const dd = Number(dmyMatch[1]);
+    const mm = Number(dmyMatch[2]);
+    const yyyy = Number(dmyMatch[3]);
+    return isValidDateParts(yyyy, mm, dd) ? formatDateOnly(yyyy, mm, dd) : null;
+  }
+
+  return null;
 };
 
 const normalizeLimitedText = (value, maxLen = 250) => {
@@ -415,9 +536,23 @@ const buildDireccionSql = (calleAlias = "ca", predioAlias = "p") => `
 `;
 
 // --- CONFIGURACIÓN JWT (SEGURIDAD) ---
-const JWT_SECRET = process.env.JWT_SECRET || "cambia_esto_en_produccion";
+const NODE_ENV = String(process.env.NODE_ENV || "development").trim().toLowerCase();
+const SECURITY_STRICT_STARTUP = Object.prototype.hasOwnProperty.call(process.env, "SECURITY_STRICT_STARTUP")
+  ? process.env.SECURITY_STRICT_STARTUP === "1"
+  : NODE_ENV === "production";
+const JWT_SECRET_DEFAULT = "cambia_esto_en_produccion";
+const JWT_SECRET = process.env.JWT_SECRET || JWT_SECRET_DEFAULT;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
 const AUTH_OPTIONAL_DEV = process.env.AUTH_OPTIONAL_DEV === "1";
+const serverHostForSecurity = String(process.env.SERVER_HOST || "").trim().toLowerCase();
+const explicitLocalHost = ["127.0.0.1", "localhost", "::1"].includes(serverHostForSecurity);
+const jwtWeakSecret = !JWT_SECRET || JWT_SECRET === JWT_SECRET_DEFAULT || String(JWT_SECRET).trim().length < 32;
+if (SECURITY_STRICT_STARTUP && jwtWeakSecret) {
+  throw new Error("[SECURITY] JWT_SECRET inseguro. Configure una clave >= 32 caracteres.");
+}
+if (AUTH_OPTIONAL_DEV && !explicitLocalHost) {
+  throw new Error("[SECURITY] AUTH_OPTIONAL_DEV=1 solo permitido con SERVER_HOST local explícito (localhost/127.0.0.1/::1).");
+}
 
 const isBcryptHash = (value) => typeof value === "string" && value.startsWith("$2");
 
@@ -5996,7 +6131,7 @@ const ensureLegacyUploadFiles = (req, res, next) => {
   uploadLegacyComparacion.fields(LEGACY_COMPARACION_UPLOAD_FIELDS)(req, res, (err) => {
     if (!err) return next();
     if (err.code === "LIMIT_FILE_SIZE") {
-      return res.status(400).json({
+      return res.status(413).json({
         error: `El archivo excede el límite permitido (${Math.round(LEGACY_COMPARACION_MAX_FILE_BYTES / (1024 * 1024))}MB).`
       });
     }
@@ -7116,33 +7251,80 @@ app.get("/comparaciones/legacy/:id/exportar", async (req, res) => {
 // BACKUP
 // ==========================================
 app.get("/admin/backup", authenticateToken, requireSuperAdmin, (req, res) => {
-  const DB_USER = process.env.DB_USER || "postgres";
-  const DB_HOST = process.env.DB_HOST || "localhost";
-  const DB_NAME = process.env.DB_NAME || "db_agua_pueblonuevo";
-  const DB_PORT = process.env.DB_PORT || "5432";
-  const DB_PASSWORD = process.env.DB_PASSWORD || "123456";
+  const DB_USER = String(process.env.DB_USER || "").trim();
+  const DB_HOST = String(process.env.DB_HOST || "").trim();
+  const DB_NAME = String(process.env.DB_NAME || "").trim();
+  const DB_PORT = String(process.env.DB_PORT || "").trim();
+  const DB_PASSWORD = String(process.env.DB_PASSWORD || "");
+  const PG_DUMP_PATH = String(process.env.PG_DUMP_PATH || "").trim();
+  if (!DB_USER || !DB_HOST || !DB_NAME || !DB_PORT || !DB_PASSWORD) {
+    return res.status(500).json({ error: "Configuración de base de datos incompleta para backup." });
+  }
+  if (!PG_DUMP_PATH) {
+    return res.status(500).json({ error: "PG_DUMP_PATH no configurado." });
+  }
 
   const fecha = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const filename = `backup_agua_${fecha}.sql`;
-
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.setHeader('Content-Type', 'application/sql');
-
-  const PG_DUMP_PATH = 'C:/Program Files/PostgreSQL/16/bin/pg_dump.exe'; // AJUSTA ESTA RUTA A TU VERSIÓN
+  const dumpTemp = path.join(
+    os.tmpdir(),
+    `tmp_${filename}_${crypto.randomBytes(4).toString("hex")}.sql`
+  );
+  const cleanupTemp = () => {
+    try {
+      if (fs.existsSync(dumpTemp)) fs.unlinkSync(dumpTemp);
+    } catch {}
+  };
 
   const dump = spawn(PG_DUMP_PATH, [
     '-U', DB_USER,
     '-h', DB_HOST,
     '-p', DB_PORT,
     '-F', 'p',
+    '-f', dumpTemp,
     DB_NAME
   ], {
     env: { ...process.env, PGPASSWORD: DB_PASSWORD }
   });
-
-  dump.stdout.pipe(res);
-  dump.stderr.on('data', (data) => console.error(`pg_dump: ${data}`));
-  dump.on('error', (err) => res.status(500).send("Error pg_dump no encontrado."));
+  let stderrChunk = "";
+  dump.stderr.on('data', (data) => {
+    stderrChunk += String(data || "");
+  });
+  dump.on('error', () => {
+    cleanupTemp();
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "No se pudo ejecutar pg_dump." });
+    }
+  });
+  dump.on("close", (code) => {
+    if (code !== 0) {
+      console.error(`[BACKUP] pg_dump terminó con código ${code}.`, stderrChunk.trim());
+      cleanupTemp();
+      if (!res.headersSent) {
+        return res.status(500).json({ error: "Error generando backup." });
+      }
+      return;
+    }
+    if (!fs.existsSync(dumpTemp)) {
+      if (!res.headersSent) {
+        return res.status(500).json({ error: "No se pudo generar archivo de backup." });
+      }
+      return;
+    }
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'application/sql');
+    const reader = fs.createReadStream(dumpTemp);
+    reader.on("error", () => {
+      cleanupTemp();
+      if (!res.headersSent) {
+        return res.status(500).json({ error: "No se pudo enviar backup." });
+      }
+      try { res.end(); } catch {}
+    });
+    reader.on("close", cleanupTemp);
+    res.on("close", cleanupTemp);
+    reader.pipe(res);
+  });
 });
 
 // ==========================================
@@ -7220,7 +7402,7 @@ app.post("/recibos/masivos", async (req, res) => {
 // ==========================================
 // IMPORTACIÓN MAESTRA (XML, EXCEL, CSV)
 // ==========================================
-app.post("/importar/padron", authenticateToken, requireSuperAdmin, upload.single('archivo'), async (req, res) => {
+app.post("/importar/padron", authenticateToken, requireSuperAdmin, uploadImportSingle("archivo"), async (req, res) => {
   const client = await pool.connect();
   const rechazos = [];
   const resumenRechazos = {
@@ -7249,6 +7431,20 @@ app.post("/importar/padron", authenticateToken, requireSuperAdmin, upload.single
 
   try {
     if (!req.file) return res.status(400).json({ error: "Sin archivo" });
+    const typeError = validateUploadFileType(req.file, {
+      allowedExts: [".xml", ".xlsx", ".xls", ".csv"],
+      allowedMimeTypes: [
+        "application/xml",
+        "text/xml",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+        "text/csv",
+        "application/csv",
+        "text/plain",
+        "application/octet-stream"
+      ]
+    });
+    if (typeError) return res.status(400).json({ error: typeError });
 
     let datos = [];
     const nombreArchivo = (req.file.originalname || "").toLowerCase();
@@ -7256,7 +7452,8 @@ app.post("/importar/padron", authenticateToken, requireSuperAdmin, upload.single
     if (nombreArchivo.endsWith('.xml')) {
         console.log("Procesando XML...");
         const parser = new xml2js.Parser({ explicitArray: false });
-        const resultado = await parser.parseStringPromise(req.file.buffer.toString());
+        const xmlText = readTextFromUploadedFile(req.file);
+        const resultado = await parser.parseStringPromise(xmlText);
         
         // Ajuste dinámico de raíz
         const rootKey = Object.keys(resultado)[0];
@@ -7291,11 +7488,11 @@ app.post("/importar/padron", authenticateToken, requireSuperAdmin, upload.single
         }));
 
     } else {
-        const workbook = new ExcelJS.Workbook();
-        try { await workbook.xlsx.load(req.file.buffer); } catch (e) { 
-            const stream = new Readable(); stream.push(req.file.buffer); stream.push(null); await workbook.csv.read(stream); 
-        }
+        const workbook = await loadWorkbookFromImportFile(req.file);
         const worksheet = workbook.getWorksheet(1);
+        if (!worksheet) {
+          return res.status(400).json({ error: "No se encontró hoja para importar." });
+        }
         worksheet.eachRow((row, rowNum) => {
             if (rowNum === 1) return;
             datos.push({
@@ -7484,10 +7681,13 @@ app.post("/importar/padron", authenticateToken, requireSuperAdmin, upload.single
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Error import: " + err.message });
-  } finally { client.release(); }
+  } finally {
+    cleanupUploadedTempFile(req.file);
+    client.release();
+  }
 });
 
-app.post("/importar/verificacion-campo", authenticateToken, requireAdmin, upload.single('archivo'), async (req, res) => {
+app.post("/importar/verificacion-campo", authenticateToken, requireAdmin, uploadImportSingle("archivo"), async (req, res) => {
   const client = await pool.connect();
   const rechazos = [];
   const resumenRechazos = {
@@ -7513,21 +7713,20 @@ app.post("/importar/verificacion-campo", authenticateToken, requireAdmin, upload
 
   try {
     if (!req.file) return res.status(400).json({ error: "Debe adjuntar archivo de verificación." });
-    const nombreArchivo = String(req.file.originalname || "").toLowerCase();
-    const permitido = nombreArchivo.endsWith(".xlsx") || nombreArchivo.endsWith(".xls") || nombreArchivo.endsWith(".csv");
-    if (!permitido) {
-      return res.status(400).json({ error: "Formato no válido. Use .xlsx, .xls o .csv." });
-    }
+    const typeError = validateUploadFileType(req.file, {
+      allowedExts: [".xlsx", ".xls", ".csv"],
+      allowedMimeTypes: [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
+        "text/csv",
+        "application/csv",
+        "text/plain",
+        "application/octet-stream"
+      ]
+    });
+    if (typeError) return res.status(400).json({ error: typeError });
 
-    const workbook = new ExcelJS.Workbook();
-    try {
-      await workbook.xlsx.load(req.file.buffer);
-    } catch {
-      const stream = new Readable();
-      stream.push(req.file.buffer);
-      stream.push(null);
-      await workbook.csv.read(stream);
-    }
+    const workbook = await loadWorkbookFromImportFile(req.file);
     const worksheet = workbook.getWorksheet(1);
     if (!worksheet) return res.status(400).json({ error: "No se encontró hoja para importar." });
 
@@ -7701,11 +7900,12 @@ app.post("/importar/verificacion-campo", authenticateToken, requireAdmin, upload
     console.error("Error importando verificación campo:", err);
     return res.status(500).json({ error: `Error importando verificación de campo: ${err.message}` });
   } finally {
+    cleanupUploadedTempFile(req.file);
     client.release();
   }
 });
 
-app.post("/importar/historial", authenticateToken, requireSuperAdmin, upload.single('archivo'), async (req, res) => {
+app.post("/importar/historial", authenticateToken, requireSuperAdmin, uploadImportSingle("archivo"), async (req, res) => {
   if (importacionHistorialEnCurso) {
     return res.status(409).json({ error: "Ya hay una importación de historial en curso." });
   }
@@ -7714,6 +7914,16 @@ app.post("/importar/historial", authenticateToken, requireSuperAdmin, upload.sin
     if (!req.file) {
       return res.status(400).json({ error: "Debe adjuntar un archivo .txt o .csv." });
     }
+    const typeError = validateUploadFileType(req.file, {
+      allowedExts: [".txt", ".csv"],
+      allowedMimeTypes: [
+        "text/plain",
+        "text/csv",
+        "application/csv",
+        "application/octet-stream"
+      ]
+    });
+    if (typeError) return res.status(400).json({ error: typeError });
 
     const nombre = (req.file.originalname || "").toLowerCase();
     if (!nombre.endsWith(".txt") && !nombre.endsWith(".csv")) {
@@ -7721,13 +7931,13 @@ app.post("/importar/historial", authenticateToken, requireSuperAdmin, upload.sin
     }
 
     importacionHistorialEnCurso = true;
-    const buffer = req.file.buffer;
-    if (!buffer || buffer.length === 0) {
+    const inputStream = createReadStreamFromUploadedFile(req.file);
+    if (!inputStream) {
       return res.status(400).json({ error: "El archivo está vacío." });
     }
 
     const resultado = await importarDeudas({
-      inputStream: Readable.from([buffer]),
+      inputStream,
       commitPerBatch: true,
       maxRechazos: MAX_RECHAZOS_IMPORTACION,
       logger: {
@@ -7756,6 +7966,7 @@ app.post("/importar/historial", authenticateToken, requireSuperAdmin, upload.sin
     return res.status(500).json({ error: `Error importando historial: ${err.message}` });
   } finally {
     importacionHistorialEnCurso = false;
+    cleanupUploadedTempFile(req.file);
   }
 });
 
@@ -7873,6 +8084,21 @@ if (fs.existsSync(campoAppDir)) {
     res.sendFile(path.join(campoAppDir, "index.html"));
   });
 }
+
+const isApiLikePath = (pathname = "") => {
+  const p = String(pathname || "");
+  return p === "/health"
+    || p === "/login"
+    || p.startsWith("/auth/")
+    || p === "/luz"
+    || p.startsWith("/luz/")
+    || isProtectedApiPath(p);
+};
+
+app.use((req, res, next) => {
+  if (!isApiLikePath(req.path)) return next();
+  return res.status(404).json({ error: "Ruta API no encontrada." });
+});
 
 app.use(express.static(path.join(__dirname, '../client/dist')));
 app.get(/.*/, (req, res) => {

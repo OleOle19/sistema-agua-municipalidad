@@ -106,12 +106,6 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
   const tableClass = `table table-sm ${darkMode ? "table-dark table-hover" : "table-striped"}`;
   const cardClass = `border rounded p-2 ${darkMode ? "border-secondary" : ""}`;
 
-  const resumen = corridaSeleccionada?.resumen_json || {};
-  const meta = resumen?.meta || {};
-  const padron = resumen?.padron || {};
-  const deuda = resumen?.deuda || {};
-  const recaudacion = resumen?.recaudacion || {};
-
   const totalPagesHistorial = Math.max(1, Math.ceil(Number(historialTotal || 0) / 20));
   const totalPagesDetalle = Math.max(1, Math.ceil(Number(detalleTotal || 0) / 200));
 
@@ -254,6 +248,11 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
 
   const resumenCards = useMemo(() => {
     if (!corridaSeleccionada) return null;
+    const resumenActual = corridaSeleccionada?.resumen_json || {};
+    const meta = resumenActual?.meta || {};
+    const padron = resumenActual?.padron || {};
+    const deuda = resumenActual?.deuda || {};
+    const recaudacion = resumenActual?.recaudacion || {};
     return (
       <div className="row g-2 mb-3">
         <div className="col-md-5">
@@ -297,7 +296,7 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
         </div>
       </div>
     );
-  }, [corridaSeleccionada, cardClass, padron, deuda, recaudacion, meta, darkMode]);
+  }, [corridaSeleccionada, cardClass, darkMode]);
 
   const detalleOrdenado = useMemo(() => {
     return [...detalle].sort((a, b) => {

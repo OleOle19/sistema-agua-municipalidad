@@ -11,10 +11,24 @@ const ModalCalles = ({ cerrarModal, darkMode, canDeleteCalles = false }) => {
     try {
       const res = await api.get("/calles");
       setCalles(res.data);
-    } catch (error) { console.error("Error al cargar calles"); }
+    } catch { console.error("Error al cargar calles"); }
   };
 
-  useEffect(() => { cargarCalles(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const res = await api.get("/calles");
+        if (!cancelled) setCalles(res.data);
+      } catch {
+        if (!cancelled) setCalles([]);
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const agregarCalle = async () => {
     if (!nuevaCalle.nombre.trim()) return alert("Escriba un nombre");
@@ -22,7 +36,7 @@ const ModalCalles = ({ cerrarModal, darkMode, canDeleteCalles = false }) => {
       await api.post("/calles", nuevaCalle);
       setNuevaCalle({ nombre: "", zona_barrio: "" });
       cargarCalles();
-    } catch (error) { alert("Error al agregar"); }
+    } catch { alert("Error al agregar"); }
   };
 
   const eliminarCalle = async (id) => {
@@ -40,7 +54,7 @@ const ModalCalles = ({ cerrarModal, darkMode, canDeleteCalles = false }) => {
       await api.put(`/calles/${calleEditando.id_calle}`, calleEditando);
       setCalleEditando(null);
       cargarCalles();
-    } catch (error) { alert("Error al actualizar"); }
+    } catch { alert("Error al actualizar"); }
   };
 
   // Estilos Dark Mode
