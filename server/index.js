@@ -78,6 +78,12 @@ const toISODate = (date = new Date()) => {
 };
 const getCurrentYear = () => getFechaPartesZona(new Date(), APP_TIMEZONE).anio;
 const getCurrentMonth = () => getFechaPartesZona(new Date(), APP_TIMEZONE).mes;
+const getNextPeriod = (date = new Date()) => {
+  const { anio: anioActual, mes: mesActual } = getFechaPartesZona(date, APP_TIMEZONE);
+  const anio = mesActual === 12 ? (anioActual + 1) : anioActual;
+  const mes = mesActual === 12 ? 1 : (mesActual + 1);
+  return { anio, mes, periodoNum: (anio * 100) + mes };
+};
 const parseMonto = (value, fallback = 0) => {
   if (value === undefined || value === null || value === "") return fallback;
   const normalized = typeof value === "string" ? value.replace(",", ".") : value;
@@ -251,7 +257,8 @@ const ESTADOS_SOLICITUD_CAMPO = {
 };
 const TIPOS_SOLICITUD_CAMPO = {
   ACTUALIZACION: "ACTUALIZACION",
-  ALTA_DIRECCION_ALTERNA: "ALTA_DIRECCION_ALTERNA"
+  ALTA_DIRECCION_ALTERNA: "ALTA_DIRECCION_ALTERNA",
+  ALTA_PREDIO: "ALTA_PREDIO"
 };
 const ESTADOS_ORDEN_COBRO = {
   PENDIENTE: "PENDIENTE",
@@ -394,6 +401,82 @@ const clampArray = (rows, max = 200) => {
   return rows.slice(0, Math.max(1, Math.min(1000, max)));
 };
 
+const recalcularRecibosFuturosPorServicios = async (
+  client,
+  idContribuyente,
+  {
+    desdePeriodoNum = getNextPeriod().periodoNum,
+    montosBase = AUTO_DEUDA_BASE
+  } = {}
+) => {
+  const id = parsePositiveInt(idContribuyente, 0);
+  if (!id) return { actualizados: 0 };
+
+  const montoAgua = roundMonto2(parseMonto(montosBase?.agua, AUTO_DEUDA_BASE.agua));
+  const montoDesague = roundMonto2(parseMonto(montosBase?.desague, AUTO_DEUDA_BASE.desague));
+  const montoLimpieza = roundMonto2(parseMonto(montosBase?.limpieza, AUTO_DEUDA_BASE.limpieza));
+  const montoAdmin = roundMonto2(parseMonto(montosBase?.admin, AUTO_DEUDA_BASE.admin));
+  const periodo = Number.isFinite(Number(desdePeriodoNum))
+    ? Number(desdePeriodoNum)
+    : getNextPeriod().periodoNum;
+
+  const resultado = await client.query(`
+    WITH objetivo AS (
+      SELECT
+        r.id_recibo,
+        CASE
+          WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.agua_sn, 'S')) = 'S'
+            THEN CASE WHEN COALESCE(r.subtotal_agua, 0) > 0 THEN COALESCE(r.subtotal_agua, 0) ELSE $2::numeric END
+          ELSE 0::numeric
+        END AS nuevo_agua,
+        CASE
+          WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.desague_sn, 'S')) = 'S'
+            THEN CASE WHEN COALESCE(r.subtotal_desague, 0) > 0 THEN COALESCE(r.subtotal_desague, 0) ELSE $3::numeric END
+          ELSE 0::numeric
+        END AS nuevo_desague,
+        CASE
+          WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S'
+            THEN CASE WHEN COALESCE(r.subtotal_limpieza, 0) > 0 THEN COALESCE(r.subtotal_limpieza, 0) ELSE $4::numeric END
+          ELSE 0::numeric
+        END AS nuevo_limpieza,
+        CASE
+          WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S'
+            THEN CASE WHEN COALESCE(r.subtotal_admin, 0) > 0 THEN COALESCE(r.subtotal_admin, 0) ELSE $5::numeric END
+          ELSE 0::numeric
+        END AS nuevo_admin
+      FROM recibos r
+      INNER JOIN predios p ON p.id_predio = r.id_predio
+      WHERE p.id_contribuyente = $1
+        AND r.estado = 'PENDIENTE'
+        AND ((r.anio::int * 100) + r.mes::int) >= $6::int
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pagos pg
+          WHERE pg.id_recibo = r.id_recibo
+        )
+    )
+    UPDATE recibos r
+    SET
+      subtotal_agua = o.nuevo_agua,
+      subtotal_desague = o.nuevo_desague,
+      subtotal_limpieza = o.nuevo_limpieza,
+      subtotal_admin = o.nuevo_admin,
+      total_pagar = o.nuevo_agua + o.nuevo_desague + o.nuevo_limpieza + o.nuevo_admin
+    FROM objetivo o
+    WHERE r.id_recibo = o.id_recibo
+      AND (
+        COALESCE(r.subtotal_agua, 0) <> o.nuevo_agua OR
+        COALESCE(r.subtotal_desague, 0) <> o.nuevo_desague OR
+        COALESCE(r.subtotal_limpieza, 0) <> o.nuevo_limpieza OR
+        COALESCE(r.subtotal_admin, 0) <> o.nuevo_admin OR
+        COALESCE(r.total_pagar, 0) <> (o.nuevo_agua + o.nuevo_desague + o.nuevo_limpieza + o.nuevo_admin)
+      )
+    RETURNING r.id_recibo
+  `, [id, montoAgua, montoDesague, montoLimpieza, montoAdmin, periodo]);
+
+  return { actualizados: Number(resultado.rowCount || 0) };
+};
+
 const normalizeCodigoMunicipal = (value, padTo = 6) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -424,6 +507,28 @@ const generateNextCodigoMunicipal = async (client) => {
   }
   if (maxAny < 999999) return String(maxAny + 1).padStart(6, "0");
   return String(maxAny + 1);
+};
+
+const resolveCalleIdByNombre = async (client, calleNombreRaw, fallbackIdCalle = null) => {
+  const fallback = parsePositiveInt(fallbackIdCalle, 0) || null;
+  const nombreNormalizado = normalizarNombreCalle(calleNombreRaw || "");
+  if (!nombreNormalizado) return fallback;
+
+  const existente = await client.query(
+    `SELECT id_calle
+     FROM calles
+     WHERE UPPER(TRIM(nombre)) = $1
+     ORDER BY id_calle ASC
+     LIMIT 1`,
+    [nombreNormalizado]
+  );
+  if (existente.rows.length > 0) return Number(existente.rows[0].id_calle);
+
+  const creado = await client.query(
+    "INSERT INTO calles (nombre) VALUES ($1) RETURNING id_calle",
+    [nombreNormalizado]
+  );
+  return Number(creado.rows[0].id_calle);
 };
 
 const estadoConexionToPredio = (estadoConexion) => {
@@ -1208,6 +1313,59 @@ const ensurePrediosDireccionAlterna = async (client) => {
     ALTER TABLE predios
     ADD COLUMN IF NOT EXISTS direccion_alterna TEXT NULL
   `);
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS predios_direcciones_alternas (
+      id_direccion_alterna BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      actualizado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      id_contribuyente INTEGER NOT NULL REFERENCES contribuyentes(id_contribuyente),
+      id_predio_base INTEGER NULL REFERENCES predios(id_predio),
+      id_calle INTEGER NULL REFERENCES calles(id_calle),
+      numero_casa TEXT NULL,
+      direccion_texto TEXT NOT NULL,
+      servicio_agua_sn CHAR(1) NOT NULL DEFAULT 'S',
+      servicio_desague_sn CHAR(1) NOT NULL DEFAULT 'S',
+      servicio_limpieza_sn CHAR(1) NOT NULL DEFAULT 'S',
+      estado_conexion VARCHAR(20) NOT NULL DEFAULT 'CON_CONEXION',
+      fuente VARCHAR(40) NOT NULL DEFAULT 'APP_CAMPO',
+      id_solicitud BIGINT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      activo_sn CHAR(1) NOT NULL DEFAULT 'S'
+    )
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_predios_dir_alt_activo_sn'
+      ) THEN
+        ALTER TABLE predios_direcciones_alternas
+        ADD CONSTRAINT chk_predios_dir_alt_activo_sn
+        CHECK (activo_sn IN ('S', 'N'));
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_predios_dir_alt_estado_conexion'
+      ) THEN
+        ALTER TABLE predios_direcciones_alternas
+        ADD CONSTRAINT chk_predios_dir_alt_estado_conexion
+        CHECK (estado_conexion IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO'));
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_predios_dir_alt_contribuyente
+    ON predios_direcciones_alternas (id_contribuyente, creado_en DESC)
+  `);
+  await client.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_predios_dir_alt_contrib_direccion_activa
+    ON predios_direcciones_alternas (id_contribuyente, UPPER(TRIM(direccion_texto)))
+    WHERE activo_sn = 'S'
+  `);
 };
 
 const ensureCampoSolicitudesTable = async (client) => {
@@ -1246,6 +1404,10 @@ const ensureCampoSolicitudesTable = async (client) => {
     ADD COLUMN IF NOT EXISTS tipo_solicitud VARCHAR(40)
   `);
   await client.query(`
+    ALTER TABLE campo_solicitudes
+    ALTER COLUMN id_contribuyente DROP NOT NULL
+  `);
+  await client.query(`
     UPDATE campo_solicitudes
     SET tipo_solicitud = 'ACTUALIZACION'
     WHERE tipo_solicitud IS NULL
@@ -1272,16 +1434,13 @@ const ensureCampoSolicitudesTable = async (client) => {
     END $$;
   `);
   await client.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'chk_campo_solicitudes_tipo'
-      ) THEN
-        ALTER TABLE campo_solicitudes
-        ADD CONSTRAINT chk_campo_solicitudes_tipo
-        CHECK (tipo_solicitud IN ('ACTUALIZACION', 'ALTA_DIRECCION_ALTERNA'));
-      END IF;
-    END $$;
+    ALTER TABLE campo_solicitudes
+    DROP CONSTRAINT IF EXISTS chk_campo_solicitudes_tipo
+  `);
+  await client.query(`
+    ALTER TABLE campo_solicitudes
+    ADD CONSTRAINT chk_campo_solicitudes_tipo
+    CHECK (tipo_solicitud IN ('ACTUALIZACION', 'ALTA_DIRECCION_ALTERNA', 'ALTA_PREDIO'))
   `);
   await client.query(`
     DO $$
@@ -2204,6 +2363,126 @@ app.get("/campo/offline-snapshot", async (req, res) => {
 app.post("/campo/solicitudes", async (req, res) => {
   let idempotencyKey = null;
   try {
+    const tipoSolicitud = normalizeTipoSolicitudCampo(
+      req.body?.tipo_solicitud || req.body?.metadata?.tipo_solicitud,
+      TIPOS_SOLICITUD_CAMPO.ACTUALIZACION
+    );
+    const idempotencyInput = normalizeLimitedText(
+      req.body?.idempotency_key || req.body?.metadata?.idempotency_key || req.get("Idempotency-Key"),
+      80
+    );
+    idempotencyKey = idempotencyInput
+      ? idempotencyInput.replace(/[^a-zA-Z0-9:_-]/g, "").slice(0, 80)
+      : null;
+    if (idempotencyInput && !idempotencyKey) {
+      return res.status(400).json({ error: "idempotency_key invalido." });
+    }
+    if (idempotencyKey) {
+      const duplicated = await pool.query(
+        `SELECT id_solicitud, creado_en
+         FROM campo_solicitudes
+         WHERE id_usuario_solicita = $1
+           AND idempotency_key = $2
+         LIMIT 1`,
+        [req.user?.id_usuario ?? null, idempotencyKey]
+      );
+      if (duplicated.rows.length > 0) {
+        return res.status(200).json({
+          mensaje: "Solicitud de campo ya registrada.",
+          id_solicitud: Number(duplicated.rows[0].id_solicitud),
+          creado_en: duplicated.rows[0].creado_en,
+          duplicate: true
+        });
+      }
+    }
+
+    if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO) {
+      const direccionVerificada = normalizeLimitedText(req.body?.direccion_verificada, 250) || null;
+      const nombreVerificado = normalizeLimitedText(req.body?.nombre_verificado, 200) || null;
+      const dniVerificado = normalizeLimitedText(req.body?.dni_verificado, 30) || null;
+      const telefonoVerificado = normalizeLimitedText(req.body?.telefono_verificado, 40) || null;
+      const motivoObs = normalizeLimitedText(req.body?.motivo_obs, 1200) || null;
+      const observacionCampo = normalizeLimitedText(req.body?.observacion_campo || motivoObs, 1200) || null;
+      const inspector = normalizeLimitedText(req.body?.inspector, 120) || null;
+      const referenciaDireccion = normalizeLimitedText(req.body?.referencia_direccion, 250)
+        || normalizeLimitedText(req.body?.metadata?.referencia_direccion, 250)
+        || null;
+
+      if (!direccionVerificada) {
+        return res.status(400).json({ error: "Debe indicar la direccion del predio nuevo." });
+      }
+
+      const metadataInput = req.body?.metadata && typeof req.body.metadata === "object" && !Array.isArray(req.body.metadata)
+        ? req.body.metadata
+        : {};
+      const metadata = {
+        ...metadataInput,
+        formato: "ALTA_PREDIO",
+        tipo_solicitud: tipoSolicitud,
+        inspector: inspector || normalizeLimitedText(req.user?.nombre || req.user?.username || "", 120),
+        referencia_direccion: referenciaDireccion || null,
+        idempotency_key: idempotencyKey
+      };
+
+      const estadoActual = ESTADOS_CONEXION.SIN_CONEXION;
+      const estadoNuevo = ESTADOS_CONEXION.SIN_CONEXION;
+
+      const created = await pool.query(`
+        INSERT INTO campo_solicitudes (
+          id_contribuyente,
+          codigo_municipal,
+          estado_solicitud,
+          id_usuario_solicita,
+          nombre_solicitante,
+          fuente,
+          tipo_solicitud,
+          estado_conexion_actual,
+          estado_conexion_nuevo,
+          nombre_verificado,
+          dni_verificado,
+          telefono_verificado,
+          direccion_verificada,
+          observacion_campo,
+          idempotency_key,
+          metadata
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8,
+          $9, $10, $11, $12, $13, $14, $15, $16
+        )
+        RETURNING id_solicitud, creado_en
+      `, [
+        null,
+        null,
+        ESTADOS_SOLICITUD_CAMPO.PENDIENTE,
+        req.user?.id_usuario || null,
+        normalizeLimitedText(req.user?.nombre || req.user?.username || "", 160) || null,
+        FUENTE_SOLICITUD_CAMPO,
+        tipoSolicitud,
+        estadoActual,
+        estadoNuevo,
+        nombreVerificado,
+        dniVerificado,
+        telefonoVerificado,
+        direccionVerificada,
+        observacionCampo,
+        idempotencyKey,
+        metadata
+      ]);
+
+      await registrarAuditoria(
+        null,
+        "CAMPO_SOLICITUD_CREAR",
+        `ID ${created.rows[0].id_solicitud} | Tipo ${tipoSolicitud} | Predio nuevo ${direccionVerificada}`,
+        req.user?.nombre || req.user?.username || "SISTEMA"
+      );
+
+      return res.status(201).json({
+        mensaje: "Solicitud de predio nuevo registrada.",
+        id_solicitud: Number(created.rows[0].id_solicitud),
+        creado_en: created.rows[0].creado_en
+      });
+    }
+
     const idContribuyente = parsePositiveInt(req.body?.id_contribuyente, 0);
     if (!idContribuyente) {
       return res.status(400).json({ error: "ID de contribuyente inválido." });
@@ -2325,10 +2604,6 @@ app.post("/campo/solicitudes", async (req, res) => {
     }
 
     const row = actual.rows[0];
-    const tipoSolicitud = normalizeTipoSolicitudCampo(
-      req.body?.tipo_solicitud || req.body?.metadata?.tipo_solicitud,
-      TIPOS_SOLICITUD_CAMPO.ACTUALIZACION
-    );
     const estadoActual = normalizeEstadoConexion(row.estado_conexion);
     const visitadoSN = normalizeSN(req.body?.visitado_sn, "N");
     const cortadoSN = normalizeSN(req.body?.cortado_sn, "N");
@@ -2354,36 +2629,6 @@ app.post("/campo/solicitudes", async (req, res) => {
     const aguaNuevo = normalizeSN(req.body?.agua_sn, aguaActual);
     const desagueNuevo = normalizeSN(req.body?.desague_sn, desagueActual);
     const limpiezaNuevo = normalizeSN(req.body?.limpieza_sn, limpiezaActual);
-    const idempotencyInput = normalizeLimitedText(
-      req.body?.idempotency_key || req.body?.metadata?.idempotency_key || req.get("Idempotency-Key"),
-      80
-    );
-    idempotencyKey = idempotencyInput
-      ? idempotencyInput.replace(/[^a-zA-Z0-9:_-]/g, "").slice(0, 80)
-      : null;
-    if (idempotencyInput && !idempotencyKey) {
-      return res.status(400).json({ error: "idempotency_key invalido." });
-    }
-
-    if (idempotencyKey) {
-      const duplicated = await pool.query(
-        `SELECT id_solicitud, creado_en
-         FROM campo_solicitudes
-         WHERE id_usuario_solicita = $1
-           AND idempotency_key = $2
-         LIMIT 1`,
-        [req.user?.id_usuario ?? null, idempotencyKey]
-      );
-      if (duplicated.rows.length > 0) {
-        return res.status(200).json({
-          mensaje: "Solicitud de campo ya registrada.",
-          id_solicitud: Number(duplicated.rows[0].id_solicitud),
-          creado_en: duplicated.rows[0].creado_en,
-          duplicate: true
-        });
-      }
-    }
-
     const metadataInput = req.body?.metadata && typeof req.body.metadata === "object" && !Array.isArray(req.body.metadata)
       ? req.body.metadata
       : {};
@@ -2630,6 +2875,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
 
     await client.query("BEGIN");
     await ensureEstadoConexionEventosTable(client);
+    await ensurePrediosDireccionAlterna(client);
 
     const solicitudData = await client.query(`
       SELECT *
@@ -2646,6 +2892,39 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     if (solicitud.estado_solicitud !== ESTADOS_SOLICITUD_CAMPO.PENDIENTE) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "La solicitud ya fue procesada." });
+    }
+
+    const metadataSolicitud = solicitud.metadata && typeof solicitud.metadata === "object" ? solicitud.metadata : {};
+    const tipoSolicitud = normalizeTipoSolicitudCampo(
+      solicitud.tipo_solicitud || metadataSolicitud.tipo_solicitud,
+      TIPOS_SOLICITUD_CAMPO.ACTUALIZACION
+    );
+
+    if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO) {
+      await client.query(`
+        UPDATE campo_solicitudes
+        SET estado_solicitud = $1,
+            motivo_revision = $2,
+            id_usuario_revision = $3,
+            revisado_en = NOW(),
+            actualizado_en = NOW()
+        WHERE id_solicitud = $4
+      `, [
+        ESTADOS_SOLICITUD_CAMPO.APROBADO,
+        motivoRevision,
+        req.user?.id_usuario || null,
+        idSolicitud
+      ]);
+
+      await registrarAuditoria(
+        null,
+        "CAMPO_SOLICITUD_APROBAR",
+        `Solicitud ${idSolicitud} aprobada (ALTA_PREDIO).`,
+        req.user?.nombre || req.user?.username || "SISTEMA"
+      );
+
+      await client.query("COMMIT");
+      return res.json({ mensaje: "Solicitud aprobada. Pendiente de registro manual de predio.", id_solicitud: idSolicitud });
     }
 
     const contribuyenteBaseData = await client.query(`
@@ -2668,6 +2947,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     const predioData = await client.query(`
       SELECT
         id_predio,
+        id_calle,
         COALESCE(NULLIF(UPPER(TRIM(agua_sn)), ''), 'S') AS agua_sn,
         COALESCE(NULLIF(UPPER(TRIM(desague_sn)), ''), 'S') AS desague_sn,
         COALESCE(NULLIF(UPPER(TRIM(limpieza_sn)), ''), 'S') AS limpieza_sn,
@@ -2678,9 +2958,15 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       LIMIT 1
       FOR UPDATE
     `, [solicitud.id_contribuyente]);
+    if (predioData.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Predio no encontrado para aplicar solicitud." });
+    }
 
     const actual = {
       ...contribuyenteBaseData.rows[0],
+      id_predio: predioData.rows[0]?.id_predio || null,
+      id_calle: predioData.rows[0]?.id_calle || null,
       agua_sn: predioData.rows[0]?.agua_sn || "S",
       desague_sn: predioData.rows[0]?.desague_sn || "S",
       limpieza_sn: predioData.rows[0]?.limpieza_sn || "S",
@@ -2688,14 +2974,12 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     };
     const estadoActual = normalizeEstadoConexion(actual.estado_conexion);
     const estadoDestino = normalizeEstadoConexion(solicitud.estado_conexion_nuevo || estadoActual);
-    const metadataSolicitud = solicitud.metadata && typeof solicitud.metadata === "object" ? solicitud.metadata : {};
-    const tipoSolicitud = normalizeTipoSolicitudCampo(
-      solicitud.tipo_solicitud || metadataSolicitud.tipo_solicitud,
-      TIPOS_SOLICITUD_CAMPO.ACTUALIZACION
-    );
-    const aguaDestino = normalizeSN(metadataSolicitud.servicio_agua_nuevo, normalizeSN(actual.agua_sn, "S"));
-    const desagueDestino = normalizeSN(metadataSolicitud.servicio_desague_nuevo, normalizeSN(actual.desague_sn, "S"));
-    const limpiezaDestino = normalizeSN(metadataSolicitud.servicio_limpieza_nuevo, normalizeSN(actual.limpieza_sn, "S"));
+    const aguaActual = normalizeSN(actual.agua_sn, "S");
+    const desagueActual = normalizeSN(actual.desague_sn, "S");
+    const limpiezaActual = normalizeSN(actual.limpieza_sn, "S");
+    const aguaDestino = normalizeSN(metadataSolicitud.servicio_agua_nuevo, aguaActual);
+    const desagueDestino = normalizeSN(metadataSolicitud.servicio_desague_nuevo, desagueActual);
+    const limpiezaDestino = normalizeSN(metadataSolicitud.servicio_limpieza_nuevo, limpiezaActual);
     const predioEstado = estadoConexionToPredio(estadoDestino);
     const motivoCampo = [solicitud.observacion_campo || "", motivoRevision || ""]
       .filter(Boolean)
@@ -2726,7 +3010,59 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     );
 
     const direccionNueva = normalizeLimitedText(solicitud.direccion_verificada, 250);
+    const idPredioBase = parsePositiveInt(actual.id_predio, 0);
+    const idCalleBase = parsePositiveInt(actual.id_calle, 0) || null;
+    let idDireccionAlterna = null;
     if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA) {
+      if (direccionNueva) {
+        const partesDireccion = extraerCalleYNumero(direccionNueva);
+        const idCalleAlterna = await resolveCalleIdByNombre(client, partesDireccion?.calle, idCalleBase);
+        const payloadDireccion = {
+          tipo_solicitud: tipoSolicitud,
+          id_solicitud: idSolicitud,
+          estado_nuevo: estadoDestino
+        };
+        try {
+          const nuevaDireccion = await client.query(
+            `INSERT INTO predios_direcciones_alternas (
+              id_contribuyente, id_predio_base, id_calle, numero_casa,
+              direccion_texto, servicio_agua_sn, servicio_desague_sn,
+              servicio_limpieza_sn, estado_conexion, fuente, id_solicitud, metadata
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'APP_CAMPO', $10, $11::jsonb)
+            RETURNING id_direccion_alterna`,
+            [
+              actual.id_contribuyente,
+              idPredioBase || null,
+              idCalleAlterna,
+              normalizeLimitedText(partesDireccion?.numero, 30) || null,
+              direccionNueva,
+              aguaDestino,
+              desagueDestino,
+              limpiezaDestino,
+              estadoDestino,
+              idSolicitud,
+              JSON.stringify(payloadDireccion)
+            ]
+          );
+          idDireccionAlterna = Number(nuevaDireccion.rows?.[0]?.id_direccion_alterna || 0) || null;
+        } catch (errInsertDireccion) {
+          if (errInsertDireccion?.code === "23505") {
+            const existente = await client.query(
+              `SELECT id_direccion_alterna
+               FROM predios_direcciones_alternas
+               WHERE id_contribuyente = $1
+                 AND UPPER(TRIM(direccion_texto)) = UPPER(TRIM($2))
+                 AND activo_sn = 'S'
+               ORDER BY id_direccion_alterna ASC
+               LIMIT 1`,
+              [actual.id_contribuyente, direccionNueva]
+            );
+            idDireccionAlterna = Number(existente.rows?.[0]?.id_direccion_alterna || 0) || null;
+          } else {
+            throw errInsertDireccion;
+          }
+        }
+      }
       await client.query(
         `UPDATE predios
          SET activo_sn = $1,
@@ -2735,7 +3071,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
              agua_sn = $4,
              desague_sn = $5,
              limpieza_sn = $6
-         WHERE id_contribuyente = $7`,
+         WHERE id_predio = $7`,
         [
           predioEstado.activo_sn,
           predioEstado.estado_servicio,
@@ -2743,7 +3079,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
           aguaDestino,
           desagueDestino,
           limpiezaDestino,
-          actual.id_contribuyente
+          idPredioBase
         ]
       );
     } else {
@@ -2755,7 +3091,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
              agua_sn = $4,
              desague_sn = $5,
              limpieza_sn = $6
-         WHERE id_contribuyente = $7`,
+         WHERE id_predio = $7`,
         [
           predioEstado.activo_sn,
           predioEstado.estado_servicio,
@@ -2763,7 +3099,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
           aguaDestino,
           desagueDestino,
           limpiezaDestino,
-          actual.id_contribuyente
+          idPredioBase
         ]
       );
     }
@@ -2783,26 +3119,41 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       );
     }
 
+    const serviciosCambiaron =
+      aguaActual !== aguaDestino ||
+      desagueActual !== desagueDestino ||
+      limpiezaActual !== limpiezaDestino;
+    let recibosRecalculados = 0;
+    if (serviciosCambiaron || estadoActual !== estadoDestino) {
+      const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente);
+      recibosRecalculados = Number(recalc?.actualizados || 0);
+    }
+
     await client.query(
       `UPDATE campo_solicitudes
        SET estado_solicitud = $1,
            motivo_revision = $2,
            id_usuario_revision = $3,
            revisado_en = NOW(),
-           actualizado_en = NOW()
+           actualizado_en = NOW(),
+           metadata = CASE
+             WHEN $5::bigint IS NULL THEN metadata
+             ELSE COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('id_direccion_alterna', $5::bigint)
+           END
        WHERE id_solicitud = $4`,
       [
         ESTADOS_SOLICITUD_CAMPO.APROBADO,
         motivoRevision,
         req.user?.id_usuario || null,
-        idSolicitud
+        idSolicitud,
+        idDireccionAlterna
       ]
     );
 
     await registrarAuditoria(
       client,
       "CAMPO_SOLICITUD_APROBADA",
-      `Solicitud ${idSolicitud} (${tipoSolicitud}) aplicada a contribuyente ${actual.codigo_municipal || actual.id_contribuyente}. Estado: ${estadoActual} -> ${estadoDestino}`,
+      `Solicitud ${idSolicitud} (${tipoSolicitud}) aplicada a contribuyente ${actual.codigo_municipal || actual.id_contribuyente}. Estado: ${estadoActual} -> ${estadoDestino}. Recibos futuros recalculados: ${recibosRecalculados}.`,
       req.user?.nombre || req.user?.username || "SISTEMA"
     );
 
@@ -2815,7 +3166,9 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       id_contribuyente: actual.id_contribuyente,
       tipo_solicitud: tipoSolicitud,
       estado_anterior: estadoActual,
-      estado_nuevo: estadoDestino
+      estado_nuevo: estadoDestino,
+      recibos_recalculados: recibosRecalculados,
+      id_direccion_alterna: idDireccionAlterna
     });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
@@ -3351,6 +3704,10 @@ app.post("/recibos", async (req, res) => {
       SELECT
         p.id_predio,
         p.id_tarifa,
+        COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+        COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+        COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+        COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
         COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
       FROM predios p
       JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
@@ -3365,10 +3722,14 @@ app.post("/recibos", async (req, res) => {
     // Aquí podrías consultar la tabla 'tarifas' si la usas, por defecto usamos valores fijos o del body
     // Para simplificar uso valores fijos pero puedes ajustarlos
     const base = { agua: 7.5, desague: 3.5, limpieza: 3.5, admin: 0.5 };
-    const subtotalAgua = parseMonto(montos?.agua, base.agua);
-    const subtotalDesague = parseMonto(montos?.desague, base.desague);
-    const subtotalLimpieza = parseMonto(montos?.limpieza, base.limpieza);
-    const subtotalAdmin = parseMonto(montos?.admin, base.admin);
+    const activoSN = normalizeSN(predio.rows[0].activo_sn, "S");
+    const aguaHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].agua_sn, "S") === "S";
+    const desagueHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].desague_sn, "S") === "S";
+    const limpiezaHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].limpieza_sn, "S") === "S";
+    const subtotalAgua = aguaHabilitado ? parseMonto(montos?.agua, base.agua) : 0;
+    const subtotalDesague = desagueHabilitado ? parseMonto(montos?.desague, base.desague) : 0;
+    const subtotalLimpieza = limpiezaHabilitado ? parseMonto(montos?.limpieza, base.limpieza) : 0;
+    const subtotalAdmin = activoSN === "S" ? parseMonto(montos?.admin, base.admin) : 0;
     if ([subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin].some(v => v < 0)) {
       return res.status(400).json({ error: "Montos inválidos." });
     }
@@ -3422,11 +3783,25 @@ app.post("/recibos/generar-masivo", async (req, res) => {
 
     let query = `
       INSERT INTO recibos (id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, total_pagar, estado)
-      SELECT p.id_predio, $1, $2, $3, $4, $5, $6, $7, 'PENDIENTE'
+      SELECT
+        p.id_predio,
+        $1,
+        $2,
+        CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN $3 ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN $4 ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN $5 ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN $6 ELSE 0 END,
+        (
+          CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN $3 ELSE 0 END +
+          CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN $4 ELSE 0 END +
+          CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN $5 ELSE 0 END +
+          CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN $6 ELSE 0 END
+        ),
+        'PENDIENTE'
       FROM predios p
       JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
     `;
-    const params = [anio, mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin, totalPagar];
+    const params = [anio, mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin];
     const whereParts = [
       "UPPER(COALESCE(p.activo_sn, 'S')) = 'S'",
       "COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'"

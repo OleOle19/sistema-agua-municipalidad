@@ -5,6 +5,7 @@
     <base href="/campo-app/" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0b5ed7" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="App Campo" />
@@ -85,7 +86,11 @@
         <div class="filters">
           <div class="row">
             <label for="searchInput">Buscar contribuyente (nombre, DNI, codigo o direccion)</label>
-            <input id="searchInput" type="search" placeholder="Escribe nombre, DNI o direccion..." />
+            <div class="search-field">
+              <input id="searchInput" type="search" placeholder="Escribe nombre, DNI o direccion..." />
+              <button id="clearSearchBtn" class="secondary" type="button">Limpiar</button>
+            </div>
+            <div class="search-hint">Tip: escribe al menos 2 letras o filtra por calle.</div>
           </div>
           <div class="row">
             <label for="streetFilter">Filtrar por calle</label>
@@ -93,6 +98,9 @@
               <option value="">Todas las calles</option>
             </select>
           </div>
+        </div>
+        <div class="search-actions">
+          <button id="newPredioBtn" class="warning" type="button">Registrar predio no encontrado</button>
         </div>
 
         <div id="searchResults" class="results"></div>
@@ -106,6 +114,7 @@
             <select id="tipoSolicitud" required>
               <option value="ACTUALIZACION">Actualizar ficha actual</option>
               <option value="ALTA_DIRECCION_ALTERNA">Agregar direccion adicional</option>
+              <option value="ALTA_PREDIO">Registrar predio no encontrado</option>
             </select>
             <div id="tipoSolicitudHint" class="muted">Actualiza datos del registro principal del contribuyente.</div>
           </div>

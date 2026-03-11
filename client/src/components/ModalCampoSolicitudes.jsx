@@ -16,7 +16,8 @@ const FILTRO_OPTIONS = [
 ];
 const TIPO_SOLICITUD_LABELS = {
   ACTUALIZACION: "Actualizacion ficha",
-  ALTA_DIRECCION_ALTERNA: "Alta direccion alterna"
+  ALTA_DIRECCION_ALTERNA: "Alta direccion alterna",
+  ALTA_PREDIO: "Alta predio nuevo"
 };
 
 const normalizeText = (value) => String(value || "").trim().toUpperCase();
@@ -63,6 +64,12 @@ const renderChangeLine = (label, nuevo, actual) => (
     <span className="text-success">{nuevo || "-"}</span>{" "}
     <span className="opacity-75">antes:</span>{" "}
     <span className="opacity-75">{actual || "-"}</span>
+  </div>
+);
+const renderInfoLine = (label, value) => (
+  <div className="small" key={label}>
+    <span className="fw-semibold">{label}:</span>{" "}
+    <span className="text-success">{value || "-"}</span>
   </div>
 );
 
@@ -160,6 +167,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
     const changes = [];
     const metadata = s?.metadata && typeof s.metadata === "object" ? s.metadata : {};
     const tipoSolicitud = normalizeText(s?.tipo_solicitud || metadata?.tipo_solicitud || "ACTUALIZACION");
+    const isAltaPredio = tipoSolicitud === "ALTA_PREDIO";
     const aguaActual = normalizeSN(s?.agua_actual_db, metadata.servicio_agua_actual || "S");
     const desagueActual = normalizeSN(s?.desague_actual_db, metadata.servicio_desague_actual || "S");
     const limpiezaActual = normalizeSN(s?.limpieza_actual_db, metadata.servicio_limpieza_actual || "S");
@@ -168,49 +176,57 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
     const limpiezaNuevo = normalizeSN(metadata.servicio_limpieza_nuevo, limpiezaActual);
     const visitadoSN = normalizeSN(metadata.visitado_sn, "N");
     const hasObservacion = Boolean(String(s?.observacion_campo || metadata?.motivo_obs || "").trim());
-    const seguimientoPendiente = (
+    const seguimientoPendiente = isAltaPredio ? false : (
       normalizeSN(metadata.seguimiento_pendiente_sn, "N") === "S" ||
       visitadoSN === "N" ||
       hasObservacion
     );
-    const seguimientoMotivo = seguimientoMotivoLabel(
+    const seguimientoMotivo = isAltaPredio ? "" : seguimientoMotivoLabel(
       metadata.seguimiento_motivo
       || (visitadoSN === "N" && hasObservacion ? "NO_VISITADO|OBSERVACION" : (visitadoSN === "N" ? "NO_VISITADO" : (hasObservacion ? "OBSERVACION" : "")))
     );
     const montosAbono = parseMontosList(metadata.montos_mensuales_24m);
     const montosAbonoTxt = montosAbono.length > 0 ? montosAbono.map((n) => n.toFixed(2)).join(", ") : "-";
-    if (s?.nombre_verificado && isDifferent(s.nombre_verificado, s.nombre_actual_db)) {
-      changes.push(renderChangeLine("Nombre", s.nombre_verificado, s.nombre_actual_db));
-    }
-    if (s?.dni_verificado && isDifferent(s.dni_verificado, s.dni_actual_db)) {
-      changes.push(renderChangeLine("DNI/RUC", s.dni_verificado, s.dni_actual_db));
-    }
-    if (s?.telefono_verificado && isDifferent(s.telefono_verificado, s.telefono_actual_db)) {
-      changes.push(renderChangeLine("Telefono", s.telefono_verificado, s.telefono_actual_db));
-    }
-    if (s?.direccion_verificada) {
-      const direccionBase = tipoSolicitud === "ALTA_DIRECCION_ALTERNA"
-        ? s?.direccion_alterna_actual_db
-        : s?.direccion_actual_db;
-      if (isDifferent(s.direccion_verificada, direccionBase)) {
-        changes.push(renderChangeLine(
-          tipoSolicitud === "ALTA_DIRECCION_ALTERNA" ? "Direccion adicional" : "Direccion",
-          s.direccion_verificada,
-          direccionBase
-        ));
+    if (isAltaPredio) {
+      if (s?.direccion_verificada) changes.push(renderInfoLine("Direccion", s.direccion_verificada));
+      if (metadata?.referencia_direccion) changes.push(renderInfoLine("Referencia", metadata.referencia_direccion));
+      if (s?.nombre_verificado) changes.push(renderInfoLine("Nombre", s.nombre_verificado));
+      if (s?.dni_verificado) changes.push(renderInfoLine("DNI/RUC", s.dni_verificado));
+      if (s?.telefono_verificado) changes.push(renderInfoLine("Telefono", s.telefono_verificado));
+    } else {
+      if (s?.nombre_verificado && isDifferent(s.nombre_verificado, s.nombre_actual_db)) {
+        changes.push(renderChangeLine("Nombre", s.nombre_verificado, s.nombre_actual_db));
       }
-    }
-    if (normalizeText(s.estado_conexion_nuevo) !== normalizeText(s.estado_actual_db)) {
-      changes.push(renderChangeLine("Estado conexion", s.estado_conexion_nuevo, s.estado_actual_db));
-    }
-    if (isDifferent(aguaNuevo, aguaActual)) {
-      changes.push(renderChangeLine("Servicio agua", aguaNuevo, aguaActual));
-    }
-    if (isDifferent(desagueNuevo, desagueActual)) {
-      changes.push(renderChangeLine("Servicio desague", desagueNuevo, desagueActual));
-    }
-    if (isDifferent(limpiezaNuevo, limpiezaActual)) {
-      changes.push(renderChangeLine("Servicio limpieza", limpiezaNuevo, limpiezaActual));
+      if (s?.dni_verificado && isDifferent(s.dni_verificado, s.dni_actual_db)) {
+        changes.push(renderChangeLine("DNI/RUC", s.dni_verificado, s.dni_actual_db));
+      }
+      if (s?.telefono_verificado && isDifferent(s.telefono_verificado, s.telefono_actual_db)) {
+        changes.push(renderChangeLine("Telefono", s.telefono_verificado, s.telefono_actual_db));
+      }
+      if (s?.direccion_verificada) {
+        const direccionBase = tipoSolicitud === "ALTA_DIRECCION_ALTERNA"
+          ? s?.direccion_alterna_actual_db
+          : s?.direccion_actual_db;
+        if (isDifferent(s.direccion_verificada, direccionBase)) {
+          changes.push(renderChangeLine(
+            tipoSolicitud === "ALTA_DIRECCION_ALTERNA" ? "Direccion adicional" : "Direccion",
+            s.direccion_verificada,
+            direccionBase
+          ));
+        }
+      }
+      if (normalizeText(s.estado_conexion_nuevo) !== normalizeText(s.estado_actual_db)) {
+        changes.push(renderChangeLine("Estado conexion", s.estado_conexion_nuevo, s.estado_actual_db));
+      }
+      if (isDifferent(aguaNuevo, aguaActual)) {
+        changes.push(renderChangeLine("Servicio agua", aguaNuevo, aguaActual));
+      }
+      if (isDifferent(desagueNuevo, desagueActual)) {
+        changes.push(renderChangeLine("Servicio desague", desagueNuevo, desagueActual));
+      }
+      if (isDifferent(limpiezaNuevo, limpiezaActual)) {
+        changes.push(renderChangeLine("Servicio limpieza", limpiezaNuevo, limpiezaActual));
+      }
     }
 
     return {
@@ -355,6 +371,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                     const groupItems = group.items.map(({ solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt }) => {
                       const pending = s.estado_solicitud === "PENDIENTE";
                       const disabled = procesandoId === s.id_solicitud;
+                      const isAltaPredio = tipoSolicitud === "ALTA_PREDIO";
                       const seguimientoTipo = getSeguimientoTipo(visitadoSN, hasObservacion);
                       const tone = seguimientoPendiente ? getSeguimientoTone(seguimientoTipo, darkMode) : null;
                       const rowStyle = tone ? { backgroundColor: tone.bg, color: tone.fg } : undefined;
@@ -370,52 +387,73 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                             <div className="opacity-75">Rev: {formatDateTime(s.revisado_en)}</div>
                           </td>
                           <td className="align-top">
-                            <div className="fw-bold">{s.codigo_municipal || "-"}</div>
-                            <div>{s.nombre_actual_db || "-"}</div>
+                            <div className="fw-bold">{s.codigo_municipal || (isAltaPredio ? "PREDIO-NUEVO" : "-")}</div>
+                            <div>{s.nombre_actual_db || (isAltaPredio ? (s.nombre_verificado || "Sin nombre") : "-")}</div>
+                            {isAltaPredio && (
+                              <div className="small opacity-75">Direccion: {s.direccion_verificada || metadata.referencia_direccion || "-"}</div>
+                            )}
                             <div className="small opacity-75">Solicita: {s.nombre_solicitante || "Usuario"}</div>
                           </td>
                           <td className="small align-top">
                             <div>
                               Tipo: <strong>{TIPO_SOLICITUD_LABELS[tipoSolicitud] || tipoSolicitud || "Actualizacion ficha"}</strong>
                             </div>
-                            <div className="mt-1">
-                              Estado: <strong>{s.estado_conexion_actual}</strong> {"->"} <strong>{s.estado_conexion_nuevo}</strong>
-                            </div>
-                            <div className="mt-1">
-                              Visitado: <strong>{metadata.visitado_sn || "N"}</strong> | Cortado: <strong>{metadata.cortado_sn || "N"}</strong>
-                            </div>
-                            <div className="mt-1">
-                              Servicios: Agua <strong>{servicios.aguaNuevo}</strong> | Desague <strong>{servicios.desagueNuevo}</strong> | Limpieza <strong>{servicios.limpiezaNuevo}</strong>
-                            </div>
-                            <div className="mt-1">
-                              Fecha corte: <strong>{metadata.fecha_corte || "-"}</strong> | Inspector: <strong>{metadata.inspector || "-"}</strong>
-                            </div>
-                            <div className="mt-1">
-                              Meses deuda: <strong>{metadata.meses_deuda ?? "-"}</strong> | Deuda: <strong>S/. {Number(metadata.deuda_total || 0).toFixed(2)}</strong>
-                            </div>
-                            <div className="mt-1">
-                              Mensual sistema: <strong>S/. {Number(metadata.cargo_mensual_ultimo || 0).toFixed(2)}</strong> | Montos referencia 24m: <strong>{montosAbonoTxt}</strong>
-                            </div>
-                            <div className="mt-1">
-                              Ultima emision recibo: <strong>{metadata.ultima_emision_periodo || "-"}</strong>
-                            </div>
-                            <div className="mt-1">
-                              Ultimo mes pagado: <strong>{metadata.ultimo_mes_pagado_periodo || "-"}</strong>
-                            </div>
-                            <div className="mt-1" style={seguimientoLineStyle}>
-                              {seguimientoPendiente && (
-                                <span className="badge me-2" style={badgeStyle}>
-                                  {seguimientoTipo === "NO_VISITADO_Y_OBSERVACION"
-                                    ? "No visitado + obs"
-                                    : (visitadoSN === "N" ? "No visitado" : "Con observacion")}
-                                </span>
-                              )}
-                              Pendiente proxima visita: <strong>{seguimientoPendiente ? "SI" : "NO"}</strong>{seguimientoMotivo ? ` (${seguimientoMotivo})` : ""}
-                            </div>
-                            {visitadoSN === "S" && hasObservacion && (
-                              <div className="mt-1 small" style={tone ? { color: tone.line } : {}}>
-                                Observacion registrada en visita efectiva (queda para seguimiento).
-                              </div>
+                            {isAltaPredio ? (
+                              <>
+                                <div className="mt-1">
+                                  Direccion: <strong>{s.direccion_verificada || "-"}</strong>
+                                </div>
+                                {metadata.referencia_direccion && (
+                                  <div className="mt-1">
+                                    Referencia: <strong>{metadata.referencia_direccion}</strong>
+                                  </div>
+                                )}
+                                <div className="mt-1">
+                                  Inspector: <strong>{metadata.inspector || "-"}</strong>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="mt-1">
+                                  Estado: <strong>{s.estado_conexion_actual}</strong> {"->"} <strong>{s.estado_conexion_nuevo}</strong>
+                                </div>
+                                <div className="mt-1">
+                                  Visitado: <strong>{metadata.visitado_sn || "N"}</strong> | Cortado: <strong>{metadata.cortado_sn || "N"}</strong>
+                                </div>
+                                <div className="mt-1">
+                                  Servicios: Agua <strong>{servicios.aguaNuevo}</strong> | Desague <strong>{servicios.desagueNuevo}</strong> | Limpieza <strong>{servicios.limpiezaNuevo}</strong>
+                                </div>
+                                <div className="mt-1">
+                                  Fecha corte: <strong>{metadata.fecha_corte || "-"}</strong> | Inspector: <strong>{metadata.inspector || "-"}</strong>
+                                </div>
+                                <div className="mt-1">
+                                  Meses deuda: <strong>{metadata.meses_deuda ?? "-"}</strong> | Deuda: <strong>S/. {Number(metadata.deuda_total || 0).toFixed(2)}</strong>
+                                </div>
+                                <div className="mt-1">
+                                  Mensual sistema: <strong>S/. {Number(metadata.cargo_mensual_ultimo || 0).toFixed(2)}</strong> | Montos referencia 24m: <strong>{montosAbonoTxt}</strong>
+                                </div>
+                                <div className="mt-1">
+                                  Ultima emision recibo: <strong>{metadata.ultima_emision_periodo || "-"}</strong>
+                                </div>
+                                <div className="mt-1">
+                                  Ultimo mes pagado: <strong>{metadata.ultimo_mes_pagado_periodo || "-"}</strong>
+                                </div>
+                                <div className="mt-1" style={seguimientoLineStyle}>
+                                  {seguimientoPendiente && (
+                                    <span className="badge me-2" style={badgeStyle}>
+                                      {seguimientoTipo === "NO_VISITADO_Y_OBSERVACION"
+                                        ? "No visitado + obs"
+                                        : (visitadoSN === "N" ? "No visitado" : "Con observacion")}
+                                    </span>
+                                  )}
+                                  Pendiente proxima visita: <strong>{seguimientoPendiente ? "SI" : "NO"}</strong>{seguimientoMotivo ? ` (${seguimientoMotivo})` : ""}
+                                </div>
+                                {visitadoSN === "S" && hasObservacion && (
+                                  <div className="mt-1 small" style={tone ? { color: tone.line } : {}}>
+                                    Observacion registrada en visita efectiva (queda para seguimiento).
+                                  </div>
+                                )}
+                              </>
                             )}
                             <div className="mt-1 opacity-75">{s.observacion_campo || "Sin observacion."}</div>
                             {s.motivo_revision && <div className="mt-1 text-info">Revision: {s.motivo_revision}</div>}

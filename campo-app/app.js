@@ -21,7 +21,8 @@
   const RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
   const TIPOS_SOLICITUD = {
     ACTUALIZACION: "ACTUALIZACION",
-    ALTA_DIRECCION_ALTERNA: "ALTA_DIRECCION_ALTERNA"
+    ALTA_DIRECCION_ALTERNA: "ALTA_DIRECCION_ALTERNA",
+    ALTA_PREDIO: "ALTA_PREDIO"
   };
   const ROLE_LEVEL = { BRIGADA: 1, CAJERO: 2, ADMIN_SEC: 3, ADMIN: 4 };
   const ROLE_ALIASES = {
@@ -61,7 +62,9 @@
     healthPanel: document.getElementById("healthPanel"),
     queueList: document.getElementById("queueList"),
     searchInput: document.getElementById("searchInput"),
+    clearSearchBtn: document.getElementById("clearSearchBtn"),
     streetFilter: document.getElementById("streetFilter"),
+    newPredioBtn: document.getElementById("newPredioBtn"),
     searchResults: document.getElementById("searchResults"),
     solicitudForm: document.getElementById("solicitudForm"),
     selectedInfo: document.getElementById("selectedInfo"),
@@ -101,6 +104,7 @@
     syncing: false,
     snapshot: null,
     recentSubmissions: [],
+    predioMode: false,
     lastQueueSyncAt: null,
     lastQueueSyncOkAt: null,
     lastQueueSyncError: "",
@@ -134,19 +138,29 @@
   function normalizeTipoSolicitud(value, fallback) {
     const normalized = String(value || "").trim().toUpperCase();
     if (normalized === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA) return TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA;
+    if (normalized === TIPOS_SOLICITUD.ALTA_PREDIO) return TIPOS_SOLICITUD.ALTA_PREDIO;
     if (normalized === TIPOS_SOLICITUD.ACTUALIZACION) return TIPOS_SOLICITUD.ACTUALIZACION;
     return fallback === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA
       ? TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA
-      : TIPOS_SOLICITUD.ACTUALIZACION;
+      : (fallback === TIPOS_SOLICITUD.ALTA_PREDIO ? TIPOS_SOLICITUD.ALTA_PREDIO : TIPOS_SOLICITUD.ACTUALIZACION);
   }
   function isAltaDireccionMode() {
     return normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION) === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA;
   }
+  function isAltaPredioMode() {
+    return normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION) === TIPOS_SOLICITUD.ALTA_PREDIO;
+  }
   function renderTipoSolicitudHint() {
     if (!el.tipoSolicitudHint) return;
-    el.tipoSolicitudHint.textContent = isAltaDireccionMode()
-      ? "Registra una direccion secundaria del mismo contribuyente (no reemplaza la direccion principal)."
-      : "Actualiza datos del registro principal del contribuyente.";
+    if (isAltaDireccionMode()) {
+      el.tipoSolicitudHint.textContent = "Registra una direccion secundaria del mismo contribuyente (no reemplaza la direccion principal).";
+      return;
+    }
+    if (isAltaPredioMode()) {
+      el.tipoSolicitudHint.textContent = "Registra un predio que no figura en el padron usando los mismos datos del formulario.";
+      return;
+    }
+    el.tipoSolicitudHint.textContent = "Actualiza datos del registro principal del contribuyente.";
   }
   function seguimientoMotivoLabel(value) {
     const raw = String(value || "").trim().toUpperCase();
@@ -380,6 +394,7 @@
         el.duplicateWarning.classList.add("hidden");
       }
       parkFormHidden();
+      exitPredioMode();
       el.searchResults.innerHTML = "";
       if (el.queueList) el.queueList.innerHTML = '<p class="muted">Inicia sesion para ver pendientes.</p>';
     }
@@ -677,7 +692,8 @@
         el.duplicateWarning.textContent = "";
         el.duplicateWarning.classList.add("hidden");
       }
-      parkFormHidden();
+      if (state.predioMode) showSolicitudForm();
+      else parkFormHidden();
       return;
     }
     const frag = document.createDocumentFragment();
@@ -718,6 +734,7 @@
       const b = document.createElement("button");
       b.type = "button"; b.textContent = isSelected ? "Seleccionado" : "Seleccionar";
       b.addEventListener("click", () => {
+        exitPredioMode();
         if (state.selectedId === id) {
           state.selectedId = 0;
           resetForm();
@@ -773,7 +790,8 @@
         el.duplicateWarning.textContent = "";
         el.duplicateWarning.classList.add("hidden");
       }
-      parkFormHidden();
+      if (state.predioMode) showSolicitudForm();
+      else parkFormHidden();
     }
     const shown = state.filtered.length;
     const total = state.searchRows.length;
@@ -799,7 +817,7 @@
 
   function closeForm() {
     if (state.selectedId) return;
-    parkFormHidden();
+    if (!state.predioMode) parkFormHidden();
   }
 
   function localSearch(qRaw, idCalleRaw) {
@@ -925,6 +943,10 @@
 
   function syncDireccionFieldForTipo(options) {
     const cfg = options || {};
+    if (isAltaPredioMode()) {
+      if (el.direccionVerificada) el.direccionVerificada.value = "";
+      return;
+    }
     const c = selectedContrib();
     if (!c || !el.direccionVerificada) return;
     const alta = isAltaDireccionMode();
@@ -939,11 +961,13 @@
     el.direccionVerificada.value = c.direccion_completa || "";
   }
 
-  function makeIdempotency(idContribuyente) {
+  function makeIdempotencyKey(kind, idRef) {
     const uid = Number(state.user && state.user.id_usuario) || 0;
+    const ref = Number(idRef || 0);
+    const tag = String(kind || "solicitud").replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "solicitud";
     const hasRandomUuid = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function";
     const r = (hasRandomUuid ? crypto.randomUUID() : String(Date.now()) + String(Math.random()).slice(2)).replace(/-/g, "");
-    return "campo:" + uid + ":" + Number(idContribuyente || 0) + ":" + r.slice(0, 32);
+    return "campo:" + uid + ":" + tag + ":" + ref + ":" + r.slice(0, 28);
   }
 
   async function enqueue(payload, contrib, blocked, reason) {
@@ -984,6 +1008,38 @@
     }
   }
 
+  function showSolicitudForm() {
+    if (!el.solicitudForm || !el.appSection) return;
+    if (el.solicitudForm.parentElement !== el.appSection) el.appSection.appendChild(el.solicitudForm);
+    el.solicitudForm.classList.remove("hidden");
+    requestAnimationFrame(() => el.solicitudForm.classList.add("open"));
+  }
+
+  function enterPredioMode() {
+    state.predioMode = true;
+    state.selectedId = 0;
+    resetForm();
+    if (el.tipoSolicitud) el.tipoSolicitud.value = TIPOS_SOLICITUD.ALTA_PREDIO;
+    renderTipoSolicitudHint();
+    if (el.selectedInfo) el.selectedInfo.textContent = "Registro de predio no encontrado";
+    if (el.duplicateWarning) {
+      el.duplicateWarning.textContent = "";
+      el.duplicateWarning.classList.add("hidden");
+    }
+    renderResults();
+    showSolicitudForm();
+    if (el.direccionVerificada) el.direccionVerificada.focus();
+  }
+
+  function exitPredioMode() {
+    if (!state.predioMode) return;
+    state.predioMode = false;
+    if (!state.selectedId) {
+      if (el.selectedInfo) el.selectedInfo.textContent = "";
+      parkFormHidden();
+    }
+  }
+
   async function submitSolicitud(ev) {
     ev.preventDefault();
     if (!(state.user && state.token)) { setStatus("Debes iniciar sesion.", "warning"); return; }
@@ -991,6 +1047,68 @@
       setStatus("Operacion bloqueada offline: sincroniza snapshot reciente antes de registrar.", "warning", 5000);
       return;
     }
+    const tipoSolicitud = normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION);
+    const direccionVerificada = String(el.direccionVerificada.value || "").trim();
+    const obs = String(el.motivoObs.value || "").trim();
+    const inspector = String(el.inspector.value || "").trim() || String((state.user && state.user.nombre) || "");
+
+    if (tipoSolicitud === TIPOS_SOLICITUD.ALTA_PREDIO) {
+      if (!direccionVerificada) {
+        setStatus("Ingresa la direccion del predio.", "warning", 4500);
+        if (el.direccionVerificada) el.direccionVerificada.focus();
+        return;
+      }
+      const keyPredio = makeIdempotencyKey("predio", 0);
+      const payloadPredio = {
+        tipo_solicitud: tipoSolicitud,
+        direccion_verificada: direccionVerificada,
+        nombre_verificado: String(el.nombreVerificado.value || "").trim() || null,
+        dni_verificado: String(el.dniVerificado.value || "").trim() || null,
+        inspector: inspector || null,
+        motivo_obs: obs || null,
+        observacion_campo: obs || null,
+        idempotency_key: keyPredio,
+        metadata: {
+          app: "campo-app-pwa",
+          idempotency_key: keyPredio,
+          tipo_solicitud: tipoSolicitud,
+          created_offline_at: new Date().toISOString()
+        }
+      };
+
+      el.submitSolicitudBtn.disabled = true;
+      try {
+        if (state.online) {
+          const data = await sendSolicitud(payloadPredio);
+          setStatus((data && data.mensaje) || "Solicitud de predio nuevo enviada.", "success");
+        } else {
+          const ref = { id_contribuyente: 0, codigo_municipal: "PREDIO-NUEVO", nombre_completo: direccionVerificada };
+          await enqueue(payloadPredio, ref, false, "offline");
+          setStatus("Sin internet. Predio guardado en cola offline.", "warning", 5000);
+        }
+      } catch (err) {
+        if (!state.online || err.isNetworkError || err.status >= 500 || err.status === 401 || err.status === 403) {
+          const ref = { id_contribuyente: 0, codigo_municipal: "PREDIO-NUEVO", nombre_completo: direccionVerificada };
+          await enqueue(payloadPredio, ref, false, err.message || "pendiente");
+          setStatus("No se pudo enviar. Predio guardado en cola offline.", "warning", 6000);
+        } else {
+          setStatus(err.message || "No se pudo registrar el predio.", "error", 6000);
+          return;
+        }
+      } finally {
+        el.submitSolicitudBtn.disabled = false;
+      }
+
+      state.selectedId = 0;
+      resetForm();
+      exitPredioMode();
+      renderResults();
+      closeForm();
+      await refreshQueueCount();
+      if (state.online) syncQueue(false).catch((e) => console.error(e));
+      return;
+    }
+
     const c = selectedContrib();
     if (!c) { setStatus("Selecciona un contribuyente.", "warning"); return; }
     const dup = duplicateSummary(c.id_contribuyente);
@@ -1003,10 +1121,7 @@
       if (!window.confirm(confirmMsg)) return;
     }
 
-    const key = makeIdempotency(c.id_contribuyente);
-    const obs = String(el.motivoObs.value || "").trim();
-    const tipoSolicitud = normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION);
-    const direccionVerificada = String(el.direccionVerificada.value || "").trim();
+    const key = makeIdempotencyKey("solicitud", c.id_contribuyente);
     if (tipoSolicitud === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA && !direccionVerificada) {
       setStatus("Para direccion adicional debes registrar una direccion nueva.", "warning", 5000);
       return;
@@ -1020,7 +1135,7 @@
       visitado_sn: String(el.visitadoSn.value || "N").toUpperCase() === "S" ? "S" : "N",
       cortado_sn: String(el.cortadoSn.value || "N").toUpperCase() === "S" ? "S" : "N",
       fecha_corte: String(el.fechaCorte.value || "").trim() || null,
-      inspector: String(el.inspector.value || "").trim() || String((state.user && state.user.nombre) || ""),
+      inspector: inspector || null,
       motivo_obs: obs || null,
       observacion_campo: obs || null,
       nombre_verificado: String(el.nombreVerificado.value || "").trim() || null,
@@ -1189,11 +1304,27 @@
     el.syncQueueBtn.addEventListener("click", () => syncQueue(true).catch((err) => console.error(err)));
     if (el.refreshQueueBtn) el.refreshQueueBtn.addEventListener("click", () => refreshQueueCount().catch((err) => console.error(err)));
     el.searchInput.addEventListener("input", queueSearch);
+    if (el.clearSearchBtn) {
+      el.clearSearchBtn.addEventListener("click", () => {
+        el.searchInput.value = "";
+        el.streetFilter.value = "";
+        search().catch((err) => console.error(err));
+        el.searchInput.focus();
+      });
+    }
     el.streetFilter.addEventListener("change", queueSearch);
+    if (el.newPredioBtn) el.newPredioBtn.addEventListener("click", () => enterPredioMode());
     if (el.tipoSolicitud) {
       el.tipoSolicitud.addEventListener("change", () => {
         renderTipoSolicitudHint();
-        syncDireccionFieldForTipo({ forceClear: isAltaDireccionMode() });
+        syncDireccionFieldForTipo({ forceClear: isAltaDireccionMode() || isAltaPredioMode() });
+        if (isAltaPredioMode()) {
+          state.predioMode = true;
+          if (el.selectedInfo) el.selectedInfo.textContent = "Registro de predio no encontrado";
+          if (!state.selectedId) showSolicitudForm();
+        } else if (state.predioMode && !state.selectedId) {
+          exitPredioMode();
+        }
       });
     }
     el.solicitudForm.addEventListener("submit", (e) => submitSolicitud(e).catch((err) => console.error(err)));
