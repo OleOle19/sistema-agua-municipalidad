@@ -83,6 +83,24 @@
           </div>
         </section>
 
+        <section class="queue-panel" id="seguimientoPanel">
+          <div class="queue-header">
+            <h3>Seguimiento predios (pendientes / aprobados)</h3>
+            <div class="offline-actions">
+              <select id="seguimientoEstadoFilter" class="secondary" aria-label="Filtro de seguimiento">
+                <option value="AMBOS">Pendientes + aprobados</option>
+                <option value="PENDIENTE">Solo pendientes</option>
+                <option value="APROBADO">Solo aprobados</option>
+                <option value="TODOS">Todos</option>
+              </select>
+              <button id="refreshSeguimientoBtn" class="secondary" type="button">Actualizar</button>
+            </div>
+          </div>
+          <div id="seguimientoList" class="queue-list">
+            <p class="muted">Toca "Actualizar" para cargar seguimiento.</p>
+          </div>
+        </section>
+
         <div class="filters">
           <div class="row">
             <label for="searchInput">Buscar contribuyente (nombre, DNI, codigo o direccion)</label>
@@ -100,7 +118,7 @@
           </div>
         </div>
         <div class="search-actions">
-          <button id="newPredioBtn" class="warning" type="button">Registrar predio no encontrado</button>
+          <button id="newPredioBtn" class="warning" type="button">Registrar predio nuevo (no encontrado)</button>
         </div>
 
         <div id="searchResults" class="results"></div>
@@ -114,7 +132,7 @@
             <select id="tipoSolicitud" required>
               <option value="ACTUALIZACION">Actualizar ficha actual</option>
               <option value="ALTA_DIRECCION_ALTERNA">Agregar direccion adicional</option>
-              <option value="ALTA_PREDIO">Registrar predio no encontrado</option>
+              <option value="ALTA_PREDIO">Registrar predio nuevo (no encontrado)</option>
             </select>
             <div id="tipoSolicitudHint" class="muted">Actualiza datos del registro principal del contribuyente.</div>
           </div>
@@ -131,7 +149,53 @@
 
           <div class="row">
             <label for="direccionVerificada">Direccion verificada</label>
-            <input id="direccionVerificada" type="text" maxlength="250" />
+            <input id="direccionVerificada" type="text" maxlength="250" placeholder="Opcional si tomas foto o dejas referencia" />
+          </div>
+
+          <div class="row hidden" id="referenciaDireccionRow">
+            <label for="referenciaDireccion">Referencia de ubicacion (opcional)</label>
+            <input id="referenciaDireccion" type="text" maxlength="250" placeholder="Ej: Frente a la escuela, a 1 cuadra de la plaza..." />
+            <div class="muted">Si no conoces la direccion exacta, agrega una referencia o toma foto.</div>
+          </div>
+
+          <div class="row">
+            <label for="verificacionEstado">Verificacion en campo</label>
+            <select id="verificacionEstado">
+              <option value="VERIFICADO">Verificado</option>
+              <option value="NO_VERIFICADO">No verificado</option>
+            </select>
+            <div class="muted">Si no se pudo verificar, indica el motivo.</div>
+          </div>
+
+          <div class="row hidden" id="verificacionMotivoRow">
+            <label for="verificacionMotivo">Motivo de no verificacion</label>
+            <select id="verificacionMotivo">
+              <option value="">Selecciona un motivo</option>
+              <option value="AUSENTE">Usuario ausente</option>
+              <option value="DIRECCION_INCORRECTA">Direccion incorrecta</option>
+              <option value="SIN_RECIBO">Sin recibo de agua</option>
+              <option value="NO_UBICADO">No se ubico el predio</option>
+            </select>
+          </div>
+
+          <div class="row">
+            <label for="fotoPredio">Foto de fachada (opcional; requerida si no hay direccion/referencia)</label>
+            <div class="photo-actions">
+              <button id="openCameraBtn" type="button">Tomar foto</button>
+              <button id="openFileBtn" class="secondary" type="button">Subir foto</button>
+            </div>
+            <input id="fotoPredio" type="file" accept="image/*" capture="environment" class="hidden" />
+            <div id="cameraWrap" class="camera-wrap hidden">
+              <video id="cameraPreview" autoplay playsinline></video>
+              <div class="camera-actions">
+                <button id="capturePhotoBtn" type="button">Capturar</button>
+                <button id="cancelCameraBtn" class="secondary" type="button">Cancelar</button>
+              </div>
+            </div>
+            <div id="fotoPreviewWrap" class="photo-preview hidden">
+              <img id="fotoPreview" alt="Foto de fachada" />
+              <button id="clearFotoBtn" class="secondary" type="button">Quitar foto</button>
+            </div>
           </div>
 
           <div class="row">

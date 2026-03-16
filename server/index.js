@@ -258,7 +258,8 @@ const ESTADOS_SOLICITUD_CAMPO = {
 const TIPOS_SOLICITUD_CAMPO = {
   ACTUALIZACION: "ACTUALIZACION",
   ALTA_DIRECCION_ALTERNA: "ALTA_DIRECCION_ALTERNA",
-  ALTA_PREDIO: "ALTA_PREDIO"
+  ALTA_PREDIO: "ALTA_PREDIO",
+  ALTA_PREDIO_TEMPORAL: "ALTA_PREDIO_TEMPORAL"
 };
 const ESTADOS_ORDEN_COBRO = {
   PENDIENTE: "PENDIENTE",
@@ -329,6 +330,23 @@ const normalizeTipoSolicitudCampo = (value, fallback = TIPOS_SOLICITUD_CAMPO.ACT
   return Object.prototype.hasOwnProperty.call(TIPOS_SOLICITUD_CAMPO, fallback)
     ? fallback
     : TIPOS_SOLICITUD_CAMPO.ACTUALIZACION;
+};
+const normalizeVerificacionEstado = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  return raw === "NO_VERIFICADO" ? "NO_VERIFICADO" : "VERIFICADO";
+};
+const normalizeVerificacionMotivo = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (!raw) return null;
+  if (["AUSENTE", "DIRECCION_INCORRECTA", "SIN_RECIBO", "NO_UBICADO"].includes(raw)) return raw;
+  return null;
+};
+const normalizeFotoBase64 = (value, maxLen = 900000) => {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (!raw.startsWith("data:image/")) return null;
+  if (raw.length > maxLen) return "__TOO_LARGE__";
+  return raw;
 };
 
 const normalizeSN = (value, fallback = "N") => {
@@ -848,6 +866,8 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/campo\/contribuyentes\/buscar$/, minRole: "BRIGADA" },
   { methods: ["GET"], pattern: /^\/campo\/offline-snapshot$/, minRole: "BRIGADA" },
   { methods: ["POST"], pattern: /^\/campo\/solicitudes$/, minRole: "BRIGADA" },
+  { methods: ["GET"], pattern: /^\/campo\/seguimiento$/, minRole: "BRIGADA" },
+  { methods: ["GET"], pattern: /^\/campo\/seguimiento\/\d+\/foto$/, minRole: "BRIGADA" },
   { methods: ["GET"], pattern: /^\/campo\/solicitudes$/, minRole: "ADMIN_SEC" },
   { methods: ["POST"], pattern: /^\/campo\/solicitudes\/\d+\/aprobar$/, minRole: "ADMIN_SEC" },
   { methods: ["POST"], pattern: /^\/campo\/solicitudes\/\d+\/rechazar$/, minRole: "ADMIN_SEC" },
@@ -1440,7 +1460,7 @@ const ensureCampoSolicitudesTable = async (client) => {
   await client.query(`
     ALTER TABLE campo_solicitudes
     ADD CONSTRAINT chk_campo_solicitudes_tipo
-    CHECK (tipo_solicitud IN ('ACTUALIZACION', 'ALTA_DIRECCION_ALTERNA', 'ALTA_PREDIO'))
+    CHECK (tipo_solicitud IN ('ACTUALIZACION', 'ALTA_DIRECCION_ALTERNA', 'ALTA_PREDIO', 'ALTA_PREDIO_TEMPORAL'))
   `);
   await client.query(`
     DO $$
@@ -1712,6 +1732,7 @@ const CAMPO_PUBLIC_HOST_PATTERN = new RegExp(
   process.env.CAMPO_PUBLIC_HOST_PATTERN || "\\.trycloudflare\\.com$",
   "i"
 );
+const JSON_BODY_LIMIT = String(process.env.JSON_BODY_LIMIT || "2mb");
 const corsOptionsDelegate = (req, callback) => {
   const requestOrigin = String(req.header("Origin") || "").trim();
   const requestHost = String(req.header("Host") || "").trim();
@@ -1733,7 +1754,9 @@ const corsOptionsDelegate = (req, callback) => {
   return callback(new Error("Origen CORS no permitido."));
 };
 app.use(cors(corsOptionsDelegate));
-app.use(express.json());
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
+
+app.get("/favicon.ico", (req, res) => res.status(204).end());
 
 app.use((req, res, next) => {
   if (!CAMPO_PUBLIC_ONLY) return next();
@@ -1777,6 +1800,15 @@ app.use((req, res, next) => {
 app.use((err, req, res, next) => {
   if (err && String(err.message || "").includes("CORS")) {
     return res.status(403).json({ error: "Origen no permitido por politica CORS." });
+  }
+  const errType = String(err?.type || "").trim().toLowerCase();
+  if (err && (err.status === 413 || err.statusCode === 413 || errType === "entity.too.large")) {
+    return res.status(413).json({
+      error: "Payload demasiado grande. Reduce el tamaño de la foto e intenta de nuevo."
+    });
+  }
+  if (err && err.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "JSON invalido." });
   }
   return next(err);
 });
@@ -2396,7 +2428,7 @@ app.post("/campo/solicitudes", async (req, res) => {
       }
     }
 
-    if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO) {
+    if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO || tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO_TEMPORAL) {
       const direccionVerificada = normalizeLimitedText(req.body?.direccion_verificada, 250) || null;
       const nombreVerificado = normalizeLimitedText(req.body?.nombre_verificado, 200) || null;
       const dniVerificado = normalizeLimitedText(req.body?.dni_verificado, 30) || null;
@@ -2407,9 +2439,22 @@ app.post("/campo/solicitudes", async (req, res) => {
       const referenciaDireccion = normalizeLimitedText(req.body?.referencia_direccion, 250)
         || normalizeLimitedText(req.body?.metadata?.referencia_direccion, 250)
         || null;
+      const verificacionEstado = normalizeVerificacionEstado(req.body?.verificacion_estado || req.body?.metadata?.verificacion_estado);
+      const verificacionMotivo = normalizeVerificacionMotivo(req.body?.verificacion_motivo || req.body?.metadata?.verificacion_motivo);
+      const fotoFachada = normalizeFotoBase64(req.body?.foto_fachada_base64 || req.body?.metadata?.foto_fachada_base64);
+      if (fotoFachada === "__TOO_LARGE__") {
+        return res.status(400).json({ error: "La foto es demasiado grande." });
+      }
 
-      if (!direccionVerificada) {
-        return res.status(400).json({ error: "Debe indicar la direccion del predio nuevo." });
+      const predioTemporalSN = (
+        tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO_TEMPORAL
+        || verificacionEstado === "NO_VERIFICADO"
+      )
+        ? "S"
+        : normalizeSN(req.body?.predio_temporal_sn, "N");
+
+      if (!direccionVerificada && !referenciaDireccion && !fotoFachada) {
+        return res.status(400).json({ error: "Debe indicar la direccion, una referencia o adjuntar foto del predio nuevo." });
       }
 
       const metadataInput = req.body?.metadata && typeof req.body.metadata === "object" && !Array.isArray(req.body.metadata)
@@ -2421,6 +2466,10 @@ app.post("/campo/solicitudes", async (req, res) => {
         tipo_solicitud: tipoSolicitud,
         inspector: inspector || normalizeLimitedText(req.user?.nombre || req.user?.username || "", 120),
         referencia_direccion: referenciaDireccion || null,
+        verificacion_estado: verificacionEstado,
+        verificacion_motivo: verificacionMotivo,
+        predio_temporal_sn: predioTemporalSN,
+        foto_fachada_base64: fotoFachada,
         idempotency_key: idempotencyKey
       };
 
@@ -2618,9 +2667,18 @@ app.post("/campo/solicitudes", async (req, res) => {
     const telefonoVerificado = normalizeLimitedText(req.body?.telefono_verificado, 40) || null;
     const direccionVerificada = normalizeLimitedText(req.body?.direccion_verificada, 250) || null;
     const observacionCampo = normalizeLimitedText(req.body?.observacion_campo || motivoObs, 1200) || null;
-    const seguimientoPendienteSN = (visitadoSN === "N" || Boolean(observacionCampo)) ? "S" : "N";
+    const verificacionEstado = normalizeVerificacionEstado(req.body?.verificacion_estado || req.body?.metadata?.verificacion_estado);
+    const verificacionMotivo = normalizeVerificacionMotivo(req.body?.verificacion_motivo || req.body?.metadata?.verificacion_motivo);
+    const predioTemporalSN = normalizeSN(req.body?.predio_temporal_sn, "N");
+    const fotoFachada = normalizeFotoBase64(req.body?.foto_fachada_base64 || req.body?.metadata?.foto_fachada_base64);
+    if (fotoFachada === "__TOO_LARGE__") {
+      return res.status(400).json({ error: "La foto es demasiado grande." });
+    }
+    const verificacionPendiente = verificacionEstado === "NO_VERIFICADO";
+    const seguimientoPendienteSN = (visitadoSN === "N" || Boolean(observacionCampo) || verificacionPendiente) ? "S" : "N";
     const seguimientoMotivos = [];
     if (visitadoSN === "N") seguimientoMotivos.push("NO_VISITADO");
+    if (verificacionPendiente) seguimientoMotivos.push("NO_VERIFICADO");
     if (observacionCampo) seguimientoMotivos.push("OBSERVACION");
     const seguimientoMotivo = seguimientoMotivos.join("|");
     const aguaActual = normalizeSN(row.agua_sn, "S");
@@ -2657,6 +2715,10 @@ app.post("/campo/solicitudes", async (req, res) => {
       servicio_desague_nuevo: desagueNuevo,
       servicio_limpieza_actual: limpiezaActual,
       servicio_limpieza_nuevo: limpiezaNuevo,
+      verificacion_estado: verificacionEstado,
+      verificacion_motivo: verificacionMotivo,
+      predio_temporal_sn: predioTemporalSN,
+      foto_fachada_base64: fotoFachada,
       idempotency_key: idempotencyKey
     };
 
@@ -2860,6 +2922,86 @@ app.get("/campo/solicitudes", async (req, res) => {
   } catch (err) {
     console.error("Error listando solicitudes campo:", err);
     return res.status(500).json({ error: "Error listando solicitudes." });
+  }
+});
+
+app.get("/campo/seguimiento", async (req, res) => {
+  try {
+    const estadoRaw = String(req.query?.estado || "AMBOS").trim().toUpperCase();
+    const allowedEstados = ["PENDIENTE", "APROBADO", "RECHAZADO", "TODOS", "AMBOS"];
+    const estadoFiltro = allowedEstados.includes(estadoRaw) ? estadoRaw : "AMBOS";
+    const limit = Math.min(2000, Math.max(10, parsePositiveInt(req.query?.limit, 400)));
+
+    const where = [
+      `s.tipo_solicitud IN ('ALTA_PREDIO', 'ALTA_PREDIO_TEMPORAL')`
+    ];
+    const params = [];
+
+    if (estadoFiltro === "PENDIENTE" || estadoFiltro === "APROBADO" || estadoFiltro === "RECHAZADO") {
+      params.push(estadoFiltro);
+      where.push(`s.estado_solicitud = $${params.length}`);
+    } else if (estadoFiltro === "AMBOS") {
+      where.push(`s.estado_solicitud IN ('PENDIENTE', 'APROBADO')`);
+    }
+
+    params.push(limit);
+
+    const sql = `
+      SELECT
+        s.id_solicitud,
+        s.creado_en,
+        s.estado_solicitud,
+        s.nombre_solicitante,
+        s.tipo_solicitud,
+        s.nombre_verificado,
+        s.dni_verificado,
+        s.direccion_verificada,
+        jsonb_build_object(
+          'verificacion_estado', COALESCE(s.metadata->>'verificacion_estado', NULL),
+          'verificacion_motivo', COALESCE(s.metadata->>'verificacion_motivo', NULL),
+          'predio_temporal_sn', COALESCE(s.metadata->>'predio_temporal_sn', NULL),
+          'referencia_direccion', COALESCE(s.metadata->>'referencia_direccion', NULL),
+          'created_offline_at', COALESCE(s.metadata->>'created_offline_at', NULL)
+        ) AS metadata,
+        (COALESCE(NULLIF(s.metadata->>'foto_fachada_base64', ''), '') <> '') AS has_foto
+      FROM campo_solicitudes s
+      WHERE ${where.join(" AND ")}
+      ORDER BY
+        CASE WHEN s.estado_solicitud = 'PENDIENTE' THEN 0 ELSE 1 END,
+        s.creado_en DESC
+      LIMIT $${params.length}
+    `;
+
+    const data = await pool.query(sql, params);
+    return res.json(data.rows);
+  } catch (err) {
+    console.error("Error listando seguimiento campo:", err);
+    return res.status(500).json({ error: "Error listando seguimiento." });
+  }
+});
+
+app.get("/campo/seguimiento/:id/foto", async (req, res) => {
+  try {
+    const idSolicitud = parsePositiveInt(req.params?.id, 0);
+    if (!idSolicitud) return res.status(400).json({ error: "ID invalido." });
+
+    const data = await pool.query(
+      `SELECT metadata->>'foto_fachada_base64' AS foto
+       FROM campo_solicitudes
+       WHERE id_solicitud = $1
+         AND tipo_solicitud IN ('ALTA_PREDIO', 'ALTA_PREDIO_TEMPORAL')
+       LIMIT 1`,
+      [idSolicitud]
+    );
+    if (data.rows.length === 0) return res.status(404).json({ error: "Solicitud no encontrada." });
+
+    const foto = String(data.rows[0]?.foto || "").trim();
+    if (!foto) return res.status(404).json({ error: "Sin foto." });
+
+    return res.json({ foto_fachada_base64: foto });
+  } catch (err) {
+    console.error("Error obteniendo foto seguimiento:", err);
+    return res.status(500).json({ error: "Error obteniendo foto." });
   }
 });
 

@@ -22,7 +22,8 @@
   const TIPOS_SOLICITUD = {
     ACTUALIZACION: "ACTUALIZACION",
     ALTA_DIRECCION_ALTERNA: "ALTA_DIRECCION_ALTERNA",
-    ALTA_PREDIO: "ALTA_PREDIO"
+    ALTA_PREDIO: "ALTA_PREDIO",
+    ALTA_PREDIO_TEMPORAL: "ALTA_PREDIO_TEMPORAL"
   };
   const ROLE_LEVEL = { BRIGADA: 1, CAJERO: 2, ADMIN_SEC: 3, ADMIN: 4 };
   const ROLE_ALIASES = {
@@ -61,6 +62,10 @@
     offlineInfo: document.getElementById("offlineInfo"),
     healthPanel: document.getElementById("healthPanel"),
     queueList: document.getElementById("queueList"),
+    seguimientoPanel: document.getElementById("seguimientoPanel"),
+    refreshSeguimientoBtn: document.getElementById("refreshSeguimientoBtn"),
+    seguimientoEstadoFilter: document.getElementById("seguimientoEstadoFilter"),
+    seguimientoList: document.getElementById("seguimientoList"),
     searchInput: document.getElementById("searchInput"),
     clearSearchBtn: document.getElementById("clearSearchBtn"),
     streetFilter: document.getElementById("streetFilter"),
@@ -74,6 +79,21 @@
     nombreVerificado: document.getElementById("nombreVerificado"),
     dniVerificado: document.getElementById("dniVerificado"),
     direccionVerificada: document.getElementById("direccionVerificada"),
+    referenciaDireccion: document.getElementById("referenciaDireccion"),
+    referenciaDireccionRow: document.getElementById("referenciaDireccionRow"),
+    verificacionEstado: document.getElementById("verificacionEstado"),
+    verificacionMotivo: document.getElementById("verificacionMotivo"),
+    verificacionMotivoRow: document.getElementById("verificacionMotivoRow"),
+    fotoPredio: document.getElementById("fotoPredio"),
+    openCameraBtn: document.getElementById("openCameraBtn"),
+    openFileBtn: document.getElementById("openFileBtn"),
+    cameraWrap: document.getElementById("cameraWrap"),
+    cameraPreview: document.getElementById("cameraPreview"),
+    capturePhotoBtn: document.getElementById("capturePhotoBtn"),
+    cancelCameraBtn: document.getElementById("cancelCameraBtn"),
+    fotoPreviewWrap: document.getElementById("fotoPreviewWrap"),
+    fotoPreview: document.getElementById("fotoPreview"),
+    clearFotoBtn: document.getElementById("clearFotoBtn"),
     aguaSn: document.getElementById("aguaSn"),
     desagueSn: document.getElementById("desagueSn"),
     limpiezaSn: document.getElementById("limpiezaSn"),
@@ -105,6 +125,11 @@
     snapshot: null,
     recentSubmissions: [],
     predioMode: false,
+    fotoDataUrl: "",
+    cameraStream: null,
+    seguimientoRows: [],
+    seguimientoLoading: false,
+    seguimientoLastOkAt: null,
     lastQueueSyncAt: null,
     lastQueueSyncOkAt: null,
     lastQueueSyncError: "",
@@ -139,35 +164,183 @@
     const normalized = String(value || "").trim().toUpperCase();
     if (normalized === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA) return TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA;
     if (normalized === TIPOS_SOLICITUD.ALTA_PREDIO) return TIPOS_SOLICITUD.ALTA_PREDIO;
+    if (normalized === TIPOS_SOLICITUD.ALTA_PREDIO_TEMPORAL) return TIPOS_SOLICITUD.ALTA_PREDIO_TEMPORAL;
     if (normalized === TIPOS_SOLICITUD.ACTUALIZACION) return TIPOS_SOLICITUD.ACTUALIZACION;
     return fallback === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA
       ? TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA
-      : (fallback === TIPOS_SOLICITUD.ALTA_PREDIO ? TIPOS_SOLICITUD.ALTA_PREDIO : TIPOS_SOLICITUD.ACTUALIZACION);
+      : (fallback === TIPOS_SOLICITUD.ALTA_PREDIO || fallback === TIPOS_SOLICITUD.ALTA_PREDIO_TEMPORAL
+        ? fallback
+        : TIPOS_SOLICITUD.ACTUALIZACION);
+  }
+  function normalizeVerificacionEstado(value) {
+    const normalized = String(value || "").trim().toUpperCase();
+    return normalized === "NO_VERIFICADO" ? "NO_VERIFICADO" : "VERIFICADO";
   }
   function isAltaDireccionMode() {
     return normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION) === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA;
   }
   function isAltaPredioMode() {
-    return normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION) === TIPOS_SOLICITUD.ALTA_PREDIO;
+    const tipo = normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION);
+    return tipo === TIPOS_SOLICITUD.ALTA_PREDIO || tipo === TIPOS_SOLICITUD.ALTA_PREDIO_TEMPORAL;
+  }
+  function isAltaPredioTemporalMode() {
+    return normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION) === TIPOS_SOLICITUD.ALTA_PREDIO_TEMPORAL;
   }
   function renderTipoSolicitudHint() {
     if (!el.tipoSolicitudHint) return;
+    if (el.referenciaDireccionRow) el.referenciaDireccionRow.classList.toggle("hidden", !isAltaPredioMode());
     if (isAltaDireccionMode()) {
       el.tipoSolicitudHint.textContent = "Registra una direccion secundaria del mismo contribuyente (no reemplaza la direccion principal).";
       return;
     }
     if (isAltaPredioMode()) {
-      el.tipoSolicitudHint.textContent = "Registra un predio que no figura en el padron usando los mismos datos del formulario.";
+      el.tipoSolicitudHint.textContent = isAltaPredioTemporalMode()
+        ? "Registra un predio temporal pendiente de verificacion."
+        : "Registra un predio nuevo cuando no se encuentra al contribuyente en el sistema (sin recibo / sin forma de identificarlo).";
       return;
     }
     el.tipoSolicitudHint.textContent = "Actualiza datos del registro principal del contribuyente.";
+  }
+  function verificacionMotivoText(value) {
+    const raw = String(value || "").trim().toUpperCase();
+    if (raw === "AUSENTE") return "Usuario ausente";
+    if (raw === "DIRECCION_INCORRECTA") return "Direccion incorrecta";
+    if (raw === "SIN_RECIBO") return "Sin recibo de agua";
+    if (raw === "NO_UBICADO") return "No se ubico el predio";
+    return raw;
+  }
+  function updateVerificacionUI() {
+    const estado = normalizeVerificacionEstado(el.verificacionEstado && el.verificacionEstado.value);
+    const noVerificado = estado === "NO_VERIFICADO";
+    if (el.verificacionMotivoRow) el.verificacionMotivoRow.classList.toggle("hidden", !noVerificado);
+    if (!noVerificado && el.verificacionMotivo) el.verificacionMotivo.value = "";
+  }
+  function stopCameraStream() {
+    if (!state.cameraStream) return;
+    state.cameraStream.getTracks().forEach((t) => t.stop());
+    state.cameraStream = null;
+  }
+  async function openCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      if (el.fotoPredio) el.fotoPredio.click();
+      return;
+    }
+    try {
+      stopCameraStream();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false
+      });
+      state.cameraStream = stream;
+      if (el.cameraPreview) {
+        el.cameraPreview.srcObject = stream;
+        el.cameraPreview.play().catch(() => {});
+      }
+      if (el.cameraWrap) el.cameraWrap.classList.remove("hidden");
+    } catch (err) {
+      setStatus("No se pudo abrir la camara. Usa 'Subir foto'.", "warning", 5000);
+    }
+  }
+  async function captureFromCamera() {
+    if (!el.cameraPreview || !state.cameraStream) return;
+    const video = el.cameraPreview;
+    const width = Math.max(1, video.videoWidth || 0);
+    const height = Math.max(1, video.videoHeight || 0);
+    if (!width || !height) {
+      setStatus("Camara no lista para capturar.", "warning", 3500);
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, width, height);
+    let dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+    if (dataUrl.length > 900000) {
+      const scale = Math.min(1, 1200 / Math.max(width, height));
+      const w2 = Math.max(1, Math.round(width * scale));
+      const h2 = Math.max(1, Math.round(height * scale));
+      const canvas2 = document.createElement("canvas");
+      canvas2.width = w2;
+      canvas2.height = h2;
+      const ctx2 = canvas2.getContext("2d");
+      ctx2.drawImage(video, 0, 0, w2, h2);
+      dataUrl = canvas2.toDataURL("image/jpeg", 0.65);
+    }
+    if (dataUrl.length > 900000) {
+      setStatus("Foto demasiado grande. Intenta acercarte mas.", "warning", 4500);
+      return;
+    }
+    state.fotoDataUrl = dataUrl;
+    if (el.fotoPreview) el.fotoPreview.src = dataUrl;
+    if (el.fotoPreviewWrap) el.fotoPreviewWrap.classList.remove("hidden");
+    if (el.cameraWrap) el.cameraWrap.classList.add("hidden");
+    stopCameraStream();
+  }
+  function clearFotoPredio() {
+    state.fotoDataUrl = "";
+    if (el.fotoPredio) el.fotoPredio.value = "";
+    if (el.fotoPreview) el.fotoPreview.src = "";
+    if (el.fotoPreviewWrap) el.fotoPreviewWrap.classList.add("hidden");
+    if (el.cameraWrap) el.cameraWrap.classList.add("hidden");
+    stopCameraStream();
+  }
+  function loadImageFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = reader.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+  async function compressImage(file, maxSize, quality) {
+    const img = await loadImageFromFile(file);
+    const maxDim = Math.max(img.width, img.height);
+    const scale = maxDim > maxSize ? (maxSize / maxDim) : 1;
+    const width = Math.max(1, Math.round(img.width * scale));
+    const height = Math.max(1, Math.round(img.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, width, height);
+    return canvas.toDataURL("image/jpeg", quality);
+  }
+  async function handleFotoPredioChange() {
+    const file = el.fotoPredio && el.fotoPredio.files && el.fotoPredio.files[0];
+    if (!file) { clearFotoPredio(); return; }
+    try {
+      let dataUrl = await compressImage(file, 1280, 0.72);
+      if (dataUrl.length > 900000) {
+        dataUrl = await compressImage(file, 1024, 0.6);
+      }
+      if (dataUrl.length > 900000) {
+        clearFotoPredio();
+        setStatus("Foto demasiado grande. Intenta una foto mas cercana o con menos resolucion.", "warning", 5000);
+        return;
+      }
+      state.fotoDataUrl = dataUrl;
+      if (el.fotoPreview) el.fotoPreview.src = dataUrl;
+      if (el.fotoPreviewWrap) el.fotoPreviewWrap.classList.remove("hidden");
+    } catch (err) {
+      clearFotoPredio();
+      setStatus("No se pudo cargar la foto.", "warning", 4000);
+    }
   }
   function seguimientoMotivoLabel(value) {
     const raw = String(value || "").trim().toUpperCase();
     if (!raw) return "";
     if (raw === "NO_VISITADO") return "No visitado";
+    if (raw === "NO_VERIFICADO") return "No verificado";
     if (raw === "OBSERVACION") return "Con observacion";
     if (raw === "NO_VISITADO_Y_OBSERVACION") return "No visitado + observacion";
+    if (raw.includes("NO_VERIFICADO") && raw.includes("OBSERVACION")) return "No verificado + observacion";
+    if (raw.includes("NO_VERIFICADO") && raw.includes("NO_VISITADO")) return "No visitado + no verificado";
     return raw;
   }
   function parseMontosList(value) {
@@ -210,6 +383,138 @@
     if (h < 24) return "en " + h + " h";
     const d = Math.ceil(h / 24);
     return "en " + d + " d";
+  }
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function buildSeguimientoMeta(row) {
+    const m = row && typeof row.metadata === "object" ? row.metadata : {};
+    const estado = String(m.verificacion_estado || "").trim().toUpperCase() || "VERIFICADO";
+    const motivo = String(m.verificacion_motivo || "").trim().toUpperCase() || "";
+    const predioTemporalSN = normalizeSN(m.predio_temporal_sn, "N");
+    const referencia = String(m.referencia_direccion || "").trim();
+    return { verificacionEstado: estado, verificacionMotivo: motivo, predioTemporalSN, referencia };
+  }
+
+  function renderSeguimiento() {
+    if (!el.seguimientoList) return;
+    const rows = Array.isArray(state.seguimientoRows) ? state.seguimientoRows : [];
+    if (state.seguimientoLoading) {
+      el.seguimientoList.innerHTML = '<p class="muted">Cargando seguimiento...</p>';
+      return;
+    }
+    if (!state.token) {
+      el.seguimientoList.innerHTML = '<p class="muted">Inicia sesion para ver seguimiento.</p>';
+      return;
+    }
+    if (!state.online) {
+      el.seguimientoList.innerHTML = '<p class="muted">Sin internet. El seguimiento requiere conexion.</p>';
+      return;
+    }
+    if (!rows.length) {
+      el.seguimientoList.innerHTML = '<p class="muted">Sin registros de seguimiento.</p>';
+      return;
+    }
+
+    el.seguimientoList.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    rows.forEach((s) => {
+      const meta = buildSeguimientoMeta(s);
+      const item = document.createElement("div");
+      item.className = "queue-item";
+
+      const title = document.createElement("div");
+      title.className = "queue-title";
+      const estado = String(s.estado_solicitud || "").trim().toUpperCase() || "PENDIENTE";
+      const estadoTxt = (estado === "APROBADO") ? "Aprobado" : (estado === "RECHAZADO" ? "Rechazado" : "Pendiente");
+      title.textContent = `#${s.id_solicitud || "-"} · ${estadoTxt} · ${fmtDateTime(s.creado_en)}`;
+
+      const desc = document.createElement("div");
+      desc.className = "queue-desc";
+      const direccion = String(s.direccion_verificada || "").trim();
+      const referencia = meta.referencia;
+      const dirTxt = direccion || referencia || "-";
+      const solicitante = String(s.nombre_solicitante || "Brigada").trim();
+      const verTxt = meta.verificacionEstado === "NO_VERIFICADO" ? "No verificado" : "Verificado";
+      const motivoTxt = meta.verificacionMotivo ? verificacionMotivoText(meta.verificacionMotivo) : "";
+      const pendienteTxt = (meta.predioTemporalSN === "S" || meta.verificacionEstado === "NO_VERIFICADO") ? "SI" : "NO";
+      desc.innerHTML = [
+        `<div><strong>Direccion/Referencia:</strong> ${escapeHtml(dirTxt)}</div>`,
+        `<div class="meta">Solicita: ${escapeHtml(solicitante)} | Verificacion: ${escapeHtml(verTxt)}${motivoTxt ? (" | Motivo: " + escapeHtml(motivoTxt)) : ""} | Pendiente visita: ${escapeHtml(pendienteTxt)}</div>`
+      ].join("");
+
+      const actions = document.createElement("div");
+      actions.className = "queue-actions";
+      if (s && s.has_foto) {
+        const bFoto = document.createElement("button");
+        bFoto.type = "button";
+        bFoto.className = "secondary";
+        bFoto.textContent = "Ver foto";
+        bFoto.addEventListener("click", () => openSeguimientoFoto(s.id_solicitud));
+        actions.appendChild(bFoto);
+      }
+
+      item.appendChild(title);
+      item.appendChild(desc);
+      if (actions.childNodes.length) item.appendChild(actions);
+      frag.appendChild(item);
+    });
+    el.seguimientoList.appendChild(frag);
+  }
+
+  async function loadSeguimiento() {
+    if (state.seguimientoLoading) return;
+    if (!state.token || !state.online) { renderSeguimiento(); return; }
+    state.seguimientoLoading = true;
+    renderSeguimiento();
+    try {
+      const estado = String((el.seguimientoEstadoFilter && el.seguimientoEstadoFilter.value) || "AMBOS").trim().toUpperCase();
+      const qs = new URLSearchParams({ estado, limit: "500" });
+      const data = await api("/campo/seguimiento?" + qs.toString(), { headers: authHeaders() });
+      state.seguimientoRows = Array.isArray(data) ? data : [];
+      state.seguimientoLastOkAt = Date.now();
+    } catch (err) {
+      console.error(err);
+      state.seguimientoRows = [];
+      setStatus(err.message || "No se pudo cargar seguimiento.", "warning", 5000);
+    } finally {
+      state.seguimientoLoading = false;
+      renderSeguimiento();
+    }
+  }
+
+  async function openSeguimientoFoto(idSolicitud) {
+    if (!idSolicitud) return;
+    if (!state.token) { setStatus("Debes iniciar sesion.", "warning"); return; }
+    if (!state.online) { setStatus("Sin internet.", "warning"); return; }
+    try {
+      const data = await api(`/campo/seguimiento/${Number(idSolicitud)}/foto`, { headers: authHeaders() });
+      const foto = String(data && data.foto_fachada_base64 || "").trim();
+      if (!foto) {
+        setStatus("Sin foto.", "warning", 3500);
+        return;
+      }
+      const w = window.open();
+      if (w) {
+        w.document.write(`<title>Foto solicitud #${Number(idSolicitud)}</title><img src="${foto}" style="max-width:100%;height:auto;display:block;margin:0 auto;" />`);
+        w.document.close();
+      } else {
+        const a = document.createElement("a");
+        a.href = foto;
+        a.target = "_blank";
+        a.rel = "noreferrer";
+        a.click();
+      }
+    } catch (err) {
+      setStatus(err.message || "No se pudo abrir la foto.", "warning", 5000);
+    }
   }
   function calcRetryDelayMs(retryCount) {
     const exp = Math.max(0, Number(retryCount || 0));
@@ -752,6 +1057,11 @@
           (direccionAlterna ? (" | Dir. alterna: " + direccionAlterna) : "");
         if (el.tipoSolicitud) el.tipoSolicitud.value = TIPOS_SOLICITUD.ACTUALIZACION;
         renderTipoSolicitudHint();
+        if (el.verificacionEstado) el.verificacionEstado.value = "VERIFICADO";
+        if (el.verificacionMotivo) el.verificacionMotivo.value = "";
+        updateVerificacionUI();
+        clearFotoPredio();
+        if (el.referenciaDireccion) el.referenciaDireccion.value = "";
         el.nombreVerificado.value = c.nombre_completo || "";
         el.dniVerificado.value = c.dni_ruc || "";
         syncDireccionFieldForTipo({ forceClear: false });
@@ -1002,6 +1312,11 @@
     if (el.tipoSolicitud) el.tipoSolicitud.value = TIPOS_SOLICITUD.ACTUALIZACION;
     renderTipoSolicitudHint();
     el.nombreVerificado.value = ""; el.dniVerificado.value = ""; el.direccionVerificada.value = ""; el.inspector.value = String((state.user && state.user.nombre) || "");
+    if (el.referenciaDireccion) el.referenciaDireccion.value = "";
+    if (el.verificacionEstado) el.verificacionEstado.value = "VERIFICADO";
+    if (el.verificacionMotivo) el.verificacionMotivo.value = "";
+    updateVerificacionUI();
+    clearFotoPredio();
     if (el.duplicateWarning) {
       el.duplicateWarning.textContent = "";
       el.duplicateWarning.classList.add("hidden");
@@ -1020,15 +1335,23 @@
     state.selectedId = 0;
     resetForm();
     if (el.tipoSolicitud) el.tipoSolicitud.value = TIPOS_SOLICITUD.ALTA_PREDIO;
+    if (el.verificacionEstado) el.verificacionEstado.value = "NO_VERIFICADO";
     renderTipoSolicitudHint();
-    if (el.selectedInfo) el.selectedInfo.textContent = "Registro de predio no encontrado";
+    if (el.selectedInfo) el.selectedInfo.textContent = "Predio nuevo (no encontrado en el sistema)";
     if (el.duplicateWarning) {
       el.duplicateWarning.textContent = "";
       el.duplicateWarning.classList.add("hidden");
     }
+    updateVerificacionUI();
     renderResults();
     showSolicitudForm();
     if (el.direccionVerificada) el.direccionVerificada.focus();
+  }
+  function enterPredioTemporalMode() {
+    enterPredioMode();
+    if (el.tipoSolicitud) el.tipoSolicitud.value = TIPOS_SOLICITUD.ALTA_PREDIO_TEMPORAL;
+    if (el.verificacionMotivo) el.verificacionMotivo.value = "NO_UBICADO";
+    updateVerificacionUI();
   }
 
   function exitPredioMode() {
@@ -1038,6 +1361,7 @@
       if (el.selectedInfo) el.selectedInfo.textContent = "";
       parkFormHidden();
     }
+    stopCameraStream();
   }
 
   async function submitSolicitud(ev) {
@@ -1049,29 +1373,54 @@
     }
     const tipoSolicitud = normalizeTipoSolicitud(el.tipoSolicitud && el.tipoSolicitud.value, TIPOS_SOLICITUD.ACTUALIZACION);
     const direccionVerificada = String(el.direccionVerificada.value || "").trim();
+    const referenciaDireccion = String((el.referenciaDireccion && el.referenciaDireccion.value) || "").trim();
     const obs = String(el.motivoObs.value || "").trim();
     const inspector = String(el.inspector.value || "").trim() || String((state.user && state.user.nombre) || "");
+    const verificacionEstado = normalizeVerificacionEstado(el.verificacionEstado && el.verificacionEstado.value);
+    const verificacionMotivo = String(el.verificacionMotivo && el.verificacionMotivo.value || "").trim().toUpperCase() || null;
+    const fotoFachada = state.fotoDataUrl || null;
+    let obsFinal = obs;
+    if (!obsFinal && verificacionEstado === "NO_VERIFICADO") {
+      const motivoTxt = verificacionMotivoText(verificacionMotivo);
+      obsFinal = "No verificado" + (motivoTxt ? (": " + motivoTxt) : "");
+    }
+    if (verificacionEstado === "NO_VERIFICADO" && !verificacionMotivo) {
+      setStatus("Selecciona el motivo de no verificacion.", "warning", 4500);
+      if (el.verificacionMotivo) el.verificacionMotivo.focus();
+      return;
+    }
 
-    if (tipoSolicitud === TIPOS_SOLICITUD.ALTA_PREDIO) {
-      if (!direccionVerificada) {
-        setStatus("Ingresa la direccion del predio.", "warning", 4500);
-        if (el.direccionVerificada) el.direccionVerificada.focus();
+    if (tipoSolicitud === TIPOS_SOLICITUD.ALTA_PREDIO || tipoSolicitud === TIPOS_SOLICITUD.ALTA_PREDIO_TEMPORAL) {
+      if (!direccionVerificada && !referenciaDireccion && !fotoFachada) {
+        setStatus("Ingresa una direccion o referencia, o toma una foto del predio.", "warning", 5000);
+        if (el.referenciaDireccion) el.referenciaDireccion.focus();
         return;
       }
       const keyPredio = makeIdempotencyKey("predio", 0);
+      const predioTemporalSN = verificacionEstado === "NO_VERIFICADO" ? "S" : "N";
       const payloadPredio = {
         tipo_solicitud: tipoSolicitud,
         direccion_verificada: direccionVerificada,
+        referencia_direccion: referenciaDireccion || null,
         nombre_verificado: String(el.nombreVerificado.value || "").trim() || null,
         dni_verificado: String(el.dniVerificado.value || "").trim() || null,
         inspector: inspector || null,
-        motivo_obs: obs || null,
-        observacion_campo: obs || null,
+        motivo_obs: obsFinal || null,
+        observacion_campo: obsFinal || null,
+        verificacion_estado: verificacionEstado,
+        verificacion_motivo: verificacionMotivo,
+        predio_temporal_sn: predioTemporalSN,
+        foto_fachada_base64: fotoFachada,
         idempotency_key: keyPredio,
         metadata: {
           app: "campo-app-pwa",
           idempotency_key: keyPredio,
           tipo_solicitud: tipoSolicitud,
+          referencia_direccion: referenciaDireccion || null,
+          verificacion_estado: verificacionEstado,
+          verificacion_motivo: verificacionMotivo,
+          predio_temporal_sn: predioTemporalSN,
+          foto_fachada_base64: fotoFachada,
           created_offline_at: new Date().toISOString()
         }
       };
@@ -1082,13 +1431,21 @@
           const data = await sendSolicitud(payloadPredio);
           setStatus((data && data.mensaje) || "Solicitud de predio nuevo enviada.", "success");
         } else {
-          const ref = { id_contribuyente: 0, codigo_municipal: "PREDIO-NUEVO", nombre_completo: direccionVerificada };
+      const ref = {
+        id_contribuyente: 0,
+        codigo_municipal: "PREDIO-NUEVO",
+        nombre_completo: direccionVerificada || referenciaDireccion || "Predio sin direccion"
+      };
           await enqueue(payloadPredio, ref, false, "offline");
           setStatus("Sin internet. Predio guardado en cola offline.", "warning", 5000);
         }
       } catch (err) {
         if (!state.online || err.isNetworkError || err.status >= 500 || err.status === 401 || err.status === 403) {
-          const ref = { id_contribuyente: 0, codigo_municipal: "PREDIO-NUEVO", nombre_completo: direccionVerificada };
+          const ref = {
+            id_contribuyente: 0,
+            codigo_municipal: "PREDIO-NUEVO",
+            nombre_completo: direccionVerificada || referenciaDireccion || "Predio sin direccion"
+          };
           await enqueue(payloadPredio, ref, false, err.message || "pendiente");
           setStatus("No se pudo enviar. Predio guardado en cola offline.", "warning", 6000);
         } else {
@@ -1136,16 +1493,22 @@
       cortado_sn: String(el.cortadoSn.value || "N").toUpperCase() === "S" ? "S" : "N",
       fecha_corte: String(el.fechaCorte.value || "").trim() || null,
       inspector: inspector || null,
-      motivo_obs: obs || null,
-      observacion_campo: obs || null,
+      motivo_obs: obsFinal || null,
+      observacion_campo: obsFinal || null,
       nombre_verificado: String(el.nombreVerificado.value || "").trim() || null,
       dni_verificado: String(el.dniVerificado.value || "").trim() || null,
       direccion_verificada: direccionVerificada || null,
+      verificacion_estado: verificacionEstado,
+      verificacion_motivo: verificacionMotivo,
+      foto_fachada_base64: fotoFachada,
       idempotency_key: key,
       metadata: {
         app: "campo-app-pwa",
         idempotency_key: key,
         tipo_solicitud: tipoSolicitud,
+        verificacion_estado: verificacionEstado,
+        verificacion_motivo: verificacionMotivo,
+        foto_fachada_base64: fotoFachada,
         created_offline_at: new Date().toISOString()
       }
     };
@@ -1297,12 +1660,15 @@
   }
 
   function bind() {
+    window.addEventListener("beforeunload", () => stopCameraStream());
     el.loginForm.addEventListener("submit", (e) => login(e).catch((err) => console.error(err)));
     el.logoutBtn.addEventListener("click", () => logout().catch((err) => console.error(err)));
     el.saveApiBtn.addEventListener("click", () => { state.apiBase = normalizeBase(el.apiBaseUrl.value); localStorage.setItem(API_BASE_KEY, state.apiBase); el.apiConfigCard.classList.toggle("hidden", state.apiBase === window.location.origin); setStatus("URL API guardada: " + state.apiBase, "success"); });
     el.syncOfflineBtn.addEventListener("click", () => syncSnapshot(false).catch((err) => console.error(err)));
     el.syncQueueBtn.addEventListener("click", () => syncQueue(true).catch((err) => console.error(err)));
     if (el.refreshQueueBtn) el.refreshQueueBtn.addEventListener("click", () => refreshQueueCount().catch((err) => console.error(err)));
+    if (el.refreshSeguimientoBtn) el.refreshSeguimientoBtn.addEventListener("click", () => loadSeguimiento().catch((err) => console.error(err)));
+    if (el.seguimientoEstadoFilter) el.seguimientoEstadoFilter.addEventListener("change", () => loadSeguimiento().catch((err) => console.error(err)));
     el.searchInput.addEventListener("input", queueSearch);
     if (el.clearSearchBtn) {
       el.clearSearchBtn.addEventListener("click", () => {
@@ -1320,13 +1686,22 @@
         syncDireccionFieldForTipo({ forceClear: isAltaDireccionMode() || isAltaPredioMode() });
         if (isAltaPredioMode()) {
           state.predioMode = true;
-          if (el.selectedInfo) el.selectedInfo.textContent = "Registro de predio no encontrado";
+          if (el.selectedInfo) el.selectedInfo.textContent = "Predio nuevo (no encontrado en el sistema)";
           if (!state.selectedId) showSolicitudForm();
         } else if (state.predioMode && !state.selectedId) {
           exitPredioMode();
         }
+        if (!isAltaPredioMode() && el.referenciaDireccion) el.referenciaDireccion.value = "";
+        updateVerificacionUI();
       });
     }
+    if (el.verificacionEstado) el.verificacionEstado.addEventListener("change", () => updateVerificacionUI());
+    if (el.fotoPredio) el.fotoPredio.addEventListener("change", () => handleFotoPredioChange());
+    if (el.clearFotoBtn) el.clearFotoBtn.addEventListener("click", () => clearFotoPredio());
+    if (el.openCameraBtn) el.openCameraBtn.addEventListener("click", () => openCamera());
+    if (el.openFileBtn) el.openFileBtn.addEventListener("click", () => { if (el.fotoPredio) el.fotoPredio.click(); });
+    if (el.capturePhotoBtn) el.capturePhotoBtn.addEventListener("click", () => captureFromCamera());
+    if (el.cancelCameraBtn) el.cancelCameraBtn.addEventListener("click", () => { if (el.cameraWrap) el.cameraWrap.classList.add("hidden"); stopCameraStream(); });
     el.solicitudForm.addEventListener("submit", (e) => submitSolicitud(e).catch((err) => console.error(err)));
     window.addEventListener("online", () => { state.online = true; updateInfo(); syncQueue(false).catch((err) => console.error(err)); });
     window.addEventListener("offline", () => { state.online = false; updateInfo(); });
@@ -1355,9 +1730,11 @@
     await loadLocalData();
     await refreshQueueCount();
     renderAuth();
+    renderSeguimiento();
     if (state.token && state.user && state.online) {
       if (!state.snapshot) await syncSnapshot(true);
       await syncQueue(false);
+      await loadSeguimiento();
     }
   }
 

@@ -17,7 +17,8 @@ const FILTRO_OPTIONS = [
 const TIPO_SOLICITUD_LABELS = {
   ACTUALIZACION: "Actualizacion ficha",
   ALTA_DIRECCION_ALTERNA: "Alta direccion alterna",
-  ALTA_PREDIO: "Alta predio nuevo"
+  ALTA_PREDIO: "Alta predio nuevo",
+  ALTA_PREDIO_TEMPORAL: "Alta predio temporal"
 };
 
 const normalizeText = (value) => String(value || "").trim().toUpperCase();
@@ -31,8 +32,20 @@ const seguimientoMotivoLabel = (value) => {
   const raw = normalizeText(value);
   if (!raw) return "";
   if (raw === "NO_VISITADO") return "No visitado";
+  if (raw === "NO_VERIFICADO") return "No verificado";
   if (raw === "OBSERVACION") return "Con observacion";
   if (raw === "NO_VISITADO|OBSERVACION" || raw === "NO_VISITADO_Y_OBSERVACION") return "No visitado + observacion";
+  if (raw.includes("NO_VERIFICADO") && raw.includes("OBSERVACION")) return "No verificado + observacion";
+  if (raw.includes("NO_VERIFICADO") && raw.includes("NO_VISITADO")) return "No visitado + no verificado";
+  return raw;
+};
+const verificacionMotivoLabel = (value) => {
+  const raw = normalizeText(value);
+  if (!raw) return "";
+  if (raw === "AUSENTE") return "Usuario ausente";
+  if (raw === "DIRECCION_INCORRECTA") return "Direccion incorrecta";
+  if (raw === "SIN_RECIBO") return "Sin recibo de agua";
+  if (raw === "NO_UBICADO") return "No se ubico el predio";
   return raw;
 };
 const parseMontosList = (value) => {
@@ -167,7 +180,11 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
     const changes = [];
     const metadata = s?.metadata && typeof s.metadata === "object" ? s.metadata : {};
     const tipoSolicitud = normalizeText(s?.tipo_solicitud || metadata?.tipo_solicitud || "ACTUALIZACION");
-    const isAltaPredio = tipoSolicitud === "ALTA_PREDIO";
+    const isAltaPredio = tipoSolicitud === "ALTA_PREDIO" || tipoSolicitud === "ALTA_PREDIO_TEMPORAL";
+    const verificacionEstado = normalizeText(metadata?.verificacion_estado || "VERIFICADO");
+    const verificacionMotivo = normalizeText(metadata?.verificacion_motivo || "");
+    const predioTemporalSN = normalizeSN(metadata?.predio_temporal_sn, "N");
+    const fotoFachada = metadata?.foto_fachada_base64 || null;
     const aguaActual = normalizeSN(s?.agua_actual_db, metadata.servicio_agua_actual || "S");
     const desagueActual = normalizeSN(s?.desague_actual_db, metadata.servicio_desague_actual || "S");
     const limpiezaActual = normalizeSN(s?.limpieza_actual_db, metadata.servicio_limpieza_actual || "S");
@@ -239,7 +256,11 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
       seguimientoMotivo,
       visitadoSN,
       hasObservacion,
-      montosAbonoTxt
+      montosAbonoTxt,
+      verificacionEstado,
+      verificacionMotivo,
+      predioTemporalSN,
+      fotoFachada
     };
   }), [solicitudes]);
 
@@ -368,7 +389,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                         </td>
                       </tr>
                     );
-                    const groupItems = group.items.map(({ solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt }) => {
+                    const groupItems = group.items.map(({ solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt, verificacionEstado, verificacionMotivo, predioTemporalSN, fotoFachada }) => {
                       const pending = s.estado_solicitud === "PENDIENTE";
                       const disabled = procesandoId === s.id_solicitud;
                       const isAltaPredio = tipoSolicitud === "ALTA_PREDIO";
@@ -411,6 +432,22 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                                 <div className="mt-1">
                                   Inspector: <strong>{metadata.inspector || "-"}</strong>
                                 </div>
+                                <div className="mt-1">
+                                  Verificacion: <strong>{verificacionEstado === "NO_VERIFICADO" ? "No verificado" : "Verificado"}</strong>
+                                  {verificacionMotivo && (
+                                    <> | Motivo: <strong>{verificacionMotivoLabel(verificacionMotivo)}</strong></>
+                                  )}
+                                </div>
+                                {(verificacionEstado === "NO_VERIFICADO" || predioTemporalSN === "S") && (
+                                  <div className="mt-1">
+                                    Pendiente proxima visita: <strong>SI</strong>
+                                  </div>
+                                )}
+                                {fotoFachada && (
+                                  <div className="mt-1">
+                                    <a href={fotoFachada} target="_blank" rel="noreferrer">Ver foto</a>
+                                  </div>
+                                )}
                               </>
                             ) : (
                               <>
@@ -426,6 +463,17 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                                 <div className="mt-1">
                                   Fecha corte: <strong>{metadata.fecha_corte || "-"}</strong> | Inspector: <strong>{metadata.inspector || "-"}</strong>
                                 </div>
+                                <div className="mt-1">
+                                  Verificacion: <strong>{verificacionEstado === "NO_VERIFICADO" ? "No verificado" : "Verificado"}</strong>
+                                  {verificacionMotivo && (
+                                    <> | Motivo: <strong>{verificacionMotivoLabel(verificacionMotivo)}</strong></>
+                                  )}
+                                </div>
+                                {fotoFachada && (
+                                  <div className="mt-1">
+                                    <a href={fotoFachada} target="_blank" rel="noreferrer">Ver foto</a>
+                                  </div>
+                                )}
                                 <div className="mt-1">
                                   Meses deuda: <strong>{metadata.meses_deuda ?? "-"}</strong> | Deuda: <strong>S/. {Number(metadata.deuda_total || 0).toFixed(2)}</strong>
                                 </div>
