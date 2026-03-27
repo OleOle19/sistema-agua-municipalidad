@@ -41,7 +41,13 @@ const LABEL_TRANSLATIONS = {
   tipo: "Tipo",
   fecha: "Fecha",
   cargo_reimpresion: "Cargo reimpresion",
-  motivo: "Motivo"
+  motivo: "Motivo",
+  codigo_recibo: "Codigo recibo",
+  codigo: "Codigo",
+  autorizacion: "Autorizacion",
+  minutos: "Minutos",
+  acceso: "Tipo acceso",
+  detalle_recibos: "Detalle recibos"
 };
 
 const getActionBadgeClass = (accion) => {

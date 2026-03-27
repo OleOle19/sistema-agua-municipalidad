@@ -408,6 +408,7 @@ const parsePositiveInt = (value, fallback = 0) => {
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
 };
+const normalizeCodigoReciboInput = (value) => parsePositiveInt(value, 0);
 const roundMonto2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 const parsePositiveMonto = (value) => {
   const parsed = roundMonto2(parseMonto(value, 0));
@@ -1075,6 +1076,7 @@ const ensureOrdenesCobroTable = async (client) => {
       id_usuario_anula INTEGER NULL,
       id_contribuyente INTEGER NOT NULL REFERENCES contribuyentes(id_contribuyente),
       codigo_municipal VARCHAR(32) NULL,
+      codigo_recibo INTEGER NULL,
       total_orden NUMERIC(12, 2) NOT NULL DEFAULT 0,
       cargo_reimpresion NUMERIC(12, 2) NOT NULL DEFAULT 0,
       motivo_cargo_reimpresion TEXT NULL,
@@ -1084,6 +1086,10 @@ const ensureOrdenesCobroTable = async (client) => {
       cobrado_en TIMESTAMP NULL,
       anulado_en TIMESTAMP NULL
     )
+  `);
+  await client.query(`
+    ALTER TABLE ordenes_cobro
+    ADD COLUMN IF NOT EXISTS codigo_recibo INTEGER NULL
   `);
   await client.query(`
     ALTER TABLE ordenes_cobro
@@ -2135,7 +2141,9 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
             ELSE CONCAT((ump.periodo_num / 100)::int::text, '-', LPAD((ump.periodo_num % 100)::int::text, 2, '0'))
           END AS ultimo_mes_pagado_periodo,
           CASE
-            WHEN COALESCE(seg.visitado_sn, 'S') = 'N' OR COALESCE(seg.observacion_campo, '') <> '' THEN 'S'
+            WHEN COALESCE(seg.visitado_sn, 'S') = 'N'
+              OR COALESCE(seg.observacion_campo, '') <> ''
+              THEN 'S'
             ELSE 'N'
           END AS seguimiento_pendiente_sn,
           CASE
@@ -2144,7 +2152,8 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
             WHEN COALESCE(seg.observacion_campo, '') <> '' THEN 'OBSERVACION'
             ELSE ''
           END AS seguimiento_motivo,
-          seg.seguimiento_desde
+          seg.seguimiento_desde,
+          'N' AS verificar_caja_sn
         FROM contribuyentes c
         LEFT JOIN LATERAL (
           SELECT id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
@@ -2193,7 +2202,8 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
         b.ultimo_mes_pagado_periodo,
         b.seguimiento_pendiente_sn,
         b.seguimiento_motivo,
-        b.seguimiento_desde
+        b.seguimiento_desde,
+        b.verificar_caja_sn
       FROM base b
       ${whereSql}
       ORDER BY ${orderSql}
@@ -2309,7 +2319,9 @@ app.get("/campo/offline-snapshot", async (req, res) => {
             ELSE CONCAT((ump.periodo_num / 100)::int::text, '-', LPAD((ump.periodo_num % 100)::int::text, 2, '0'))
           END AS ultimo_mes_pagado_periodo,
           CASE
-            WHEN COALESCE(seg.visitado_sn, 'S') = 'N' OR COALESCE(seg.observacion_campo, '') <> '' THEN 'S'
+            WHEN COALESCE(seg.visitado_sn, 'S') = 'N'
+              OR COALESCE(seg.observacion_campo, '') <> ''
+              THEN 'S'
             ELSE 'N'
           END AS seguimiento_pendiente_sn,
           CASE
@@ -2318,7 +2330,8 @@ app.get("/campo/offline-snapshot", async (req, res) => {
             WHEN COALESCE(seg.observacion_campo, '') <> '' THEN 'OBSERVACION'
             ELSE ''
           END AS seguimiento_motivo,
-          seg.seguimiento_desde
+          seg.seguimiento_desde,
+          'N' AS verificar_caja_sn
         FROM contribuyentes c
         LEFT JOIN LATERAL (
           SELECT id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
@@ -2367,7 +2380,8 @@ app.get("/campo/offline-snapshot", async (req, res) => {
         b.ultimo_mes_pagado_periodo,
         b.seguimiento_pendiente_sn,
         b.seguimiento_motivo,
-        b.seguimiento_desde
+        b.seguimiento_desde,
+        b.verificar_caja_sn
       FROM base b
       ORDER BY b.nombre_calle ASC NULLS LAST, b.nombre_completo ASC
       LIMIT $3
@@ -2468,6 +2482,7 @@ app.post("/campo/solicitudes", async (req, res) => {
         verificacion_estado: verificacionEstado,
         verificacion_motivo: verificacionMotivo,
         predio_temporal_sn: predioTemporalSN,
+        verificar_caja_sn: "N",
         foto_fachada_base64: fotoFachada,
         idempotency_key: idempotencyKey
       };
@@ -2717,6 +2732,7 @@ app.post("/campo/solicitudes", async (req, res) => {
       verificacion_estado: verificacionEstado,
       verificacion_motivo: verificacionMotivo,
       predio_temporal_sn: predioTemporalSN,
+      verificar_caja_sn: "N",
       foto_fachada_base64: fotoFachada,
       idempotency_key: idempotencyKey
     };
@@ -3520,12 +3536,24 @@ app.get("/contribuyentes", async (req, res) => {
              COALESCE(rp.abono_total, 0) as abono_anio,
              COALESCE(rp.meses_deuda_total, 0) as meses_deuda,
              COALESCE(rp.monto_pendiente_caja, 0) as pendiente_caja_monto,
-             COALESCE(opr.ordenes_pendientes, 0) as pendiente_caja_ordenes
+             COALESCE(opr.ordenes_pendientes, 0) as pendiente_caja_ordenes,
+             'N' AS verificar_caja_sn,
+             NULL::timestamp AS verificar_caja_desde,
+             NULL::text AS verificar_caja_observacion
       FROM contribuyentes c
       LEFT JOIN predios p ON c.id_contribuyente = p.id_contribuyente
       LEFT JOIN calles ca ON p.id_calle = ca.id_calle
       LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
       LEFT JOIN ordenes_pendientes_predio opr ON opr.id_predio = p.id_predio
+      LEFT JOIN LATERAL (
+        SELECT
+          s.creado_en AS seguimiento_desde
+        FROM campo_solicitudes s
+        WHERE s.id_contribuyente = c.id_contribuyente
+          AND s.estado_solicitud <> 'RECHAZADO'
+        ORDER BY s.creado_en DESC
+        LIMIT 1
+      ) cs ON TRUE
     `;
     const todos = await pool.query(query, [anioActual, mesActual]);
     contribuyentesCache = {
@@ -3838,6 +3866,30 @@ const safeJsonArray = (value) => {
   }
 };
 
+const buildOrdenCobroResponse = (row) => {
+  const items = sanitizeOrdenCobroItems(safeJsonArray(row?.recibos_json));
+  const codigoRecibo = normalizeCodigoReciboInput(row?.codigo_recibo);
+  return {
+    id_orden: Number(row?.id_orden || 0),
+    creado_en: row?.creado_en || null,
+    actualizado_en: row?.actualizado_en || null,
+    estado: row?.estado || ESTADOS_ORDEN_COBRO.PENDIENTE,
+    id_contribuyente: Number(row?.id_contribuyente || 0),
+    codigo_municipal: row?.codigo_municipal || null,
+    total_orden: parseMonto(row?.total_orden, 0),
+    cargo_reimpresion: parseMonto(row?.cargo_reimpresion, 0),
+    observacion: row?.observacion || null,
+    codigo_recibo: codigoRecibo > 0 ? codigoRecibo : null,
+    cantidad_recibos: items.length,
+    items,
+    emisor: {
+      id_usuario: row?.id_usuario_emite ? Number(row.id_usuario_emite) : null,
+      username: row?.usuario_emite || null,
+      nombre: row?.nombre_emite || null
+    }
+  };
+};
+
 app.post("/recibos", async (req, res) => {
   try {
     const { id_contribuyente, anio, mes, montos } = req.body;
@@ -4007,6 +4059,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
   const client = await pool.connect();
   try {
     const idContribuyente = parsePositiveInt(req.body?.id_contribuyente, 0);
+    const codigoRecibo = normalizeCodigoReciboInput(req.body?.codigo_recibo);
     const observacion = normalizeLimitedText(req.body?.observacion, 500) || null;
     const items = sanitizeOrdenCobroItems(req.body?.items);
     const cargoReimpresion = roundMonto2(parseMonto(req.body?.cargo_reimpresion, 0));
@@ -4017,6 +4070,9 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     }
     if (items.length === 0) {
       return res.status(400).json({ error: "Debe incluir al menos un recibo con monto autorizado." });
+    }
+    if (!codigoRecibo) {
+      return res.status(400).json({ error: "Debe digitar un numero de recibo para emitir la orden." });
     }
     if (cargoReimpresion > 0.001 && !canAplicarCargoReimpresion) {
       return res.status(403).json({ error: "No tiene permisos para aplicar cargo por reimpresion." });
@@ -4042,6 +4098,12 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     }
 
     const idsRecibos = items.map((r) => r.id_recibo);
+    if (!idsRecibos.includes(codigoRecibo)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: "El numero de recibo digitado debe pertenecer a los recibos seleccionados en la orden."
+      });
+    }
     const ordenPendienteSolapada = await client.query(`
       SELECT oc.id_orden
       FROM ordenes_cobro oc
@@ -4158,18 +4220,20 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
         id_usuario_emite,
         id_contribuyente,
         codigo_municipal,
+        codigo_recibo,
         total_orden,
         recibos_json,
         observacion,
         cargo_reimpresion,
         motivo_cargo_reimpresion
       )
-      VALUES ('PENDIENTE', $1, $2, $3, $4, $5::jsonb, $6, $7, $8)
-      RETURNING id_orden, creado_en, estado, total_orden, codigo_municipal, cargo_reimpresion
+      VALUES ('PENDIENTE', $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+      RETURNING id_orden, creado_en, actualizado_en, estado, total_orden, codigo_municipal, codigo_recibo, cargo_reimpresion, recibos_json, id_usuario_emite
     `, [
       req.user?.id_usuario || null,
       idContribuyente,
       contrib.rows[0].codigo_municipal || null,
+      codigoRecibo,
       totalOrden,
       JSON.stringify(detalleOrden),
       observacion,
@@ -4183,7 +4247,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_EMITIDA",
-      `orden=${orden.id_orden}; contribuyente=${idContribuyente}; total=${totalOrden.toFixed(2)}; cargo_reimpresion=${aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO.toFixed(2) : "0.00"}; recibos=${detalleOrden.length}; ip=${ip}`,
+      `orden=${orden.id_orden}; codigo_recibo=${codigoRecibo}; contribuyente=${idContribuyente}; total=${totalOrden.toFixed(2)}; cargo_reimpresion=${aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO.toFixed(2) : "0.00"}; recibos=${detalleOrden.length}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -4195,14 +4259,13 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     res.json({
       mensaje: "Orden de cobro emitida.",
       orden: {
-        id_orden: Number(orden.id_orden),
-        creado_en: orden.creado_en,
-        estado: orden.estado,
-        total_orden: parseMonto(orden.total_orden, 0),
-        cargo_reimpresion: parseMonto(orden.cargo_reimpresion, 0),
-        id_contribuyente: idContribuyente,
-        codigo_municipal: orden.codigo_municipal || null,
-        observacion,
+        ...buildOrdenCobroResponse({
+          ...orden,
+          id_contribuyente: idContribuyente,
+          observacion,
+          usuario_emite: req.user?.username || null,
+          nombre_emite: req.user?.nombre || null
+        }),
         items: detalleOrden
       }
     });
@@ -4239,6 +4302,7 @@ app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
         oc.estado,
         oc.id_contribuyente,
         oc.codigo_municipal,
+        oc.codigo_recibo,
         oc.total_orden,
         oc.cargo_reimpresion,
         oc.observacion,
@@ -4253,27 +4317,7 @@ app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
       LIMIT $1
     `, params);
 
-    const data = resultado.rows.map((r) => {
-      const items = sanitizeOrdenCobroItems(safeJsonArray(r.recibos_json));
-      return {
-        id_orden: Number(r.id_orden),
-        creado_en: r.creado_en,
-        actualizado_en: r.actualizado_en,
-        estado: r.estado,
-        id_contribuyente: Number(r.id_contribuyente),
-        codigo_municipal: r.codigo_municipal || null,
-        total_orden: parseMonto(r.total_orden, 0),
-        cargo_reimpresion: parseMonto(r.cargo_reimpresion, 0),
-        observacion: r.observacion || null,
-        cantidad_recibos: items.length,
-        items,
-        emisor: {
-          id_usuario: r.id_usuario_emite ? Number(r.id_usuario_emite) : null,
-          username: r.usuario_emite || null,
-          nombre: r.nombre_emite || null
-        }
-      };
-    });
+    const data = resultado.rows.map((r) => buildOrdenCobroResponse(r));
     res.json(data);
   } catch (err) {
     console.error("Error listando ordenes pendientes:", err.message);
@@ -4320,9 +4364,13 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
+    const codigoReciboDigitado = normalizeCodigoReciboInput(req.body?.codigo_recibo);
     if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
+    if (!codigoReciboDigitado) {
+      return res.status(400).json({ error: "Debe digitar el numero de recibo para cobrar la orden." });
+    }
     const cargoReimpresion = roundMonto2(parseMonto(req.body?.cargo_reimpresion, 0));
-    const canAplicarCargoReimpresion = hasMinRole(req.user?.rol, "ADMIN_SEC");
+    const canAplicarCargoReimpresion = hasMinRole(req.user?.rol, "CAJERO");
     const aplicaCargoSolicitado = Math.abs(cargoReimpresion - CARGO_REIMPRESION_MONTO) <= 0.001;
     if (cargoReimpresion > 0.001 && !canAplicarCargoReimpresion) {
       return res.status(403).json({ error: "No tiene permisos para cobrar nueva impresion." });
@@ -4359,6 +4407,16 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
     if (items.length === 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "La orden no contiene recibos validos." });
+    }
+    const codigoReciboOrden = normalizeCodigoReciboInput(orden.codigo_recibo)
+      || normalizeCodigoReciboInput(items[0]?.id_recibo);
+    if (!codigoReciboOrden) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La orden no tiene codigo de recibo asociado. Debe emitirse nuevamente." });
+    }
+    if (codigoReciboDigitado !== codigoReciboOrden) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "El numero de recibo digitado no coincide con la orden seleccionada." });
     }
 
     const idsRecibos = items.map((i) => i.id_recibo);
@@ -4467,10 +4525,14 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
 
     const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
     const ip = getRequestIp(req);
+    const recibosDetalle = pagosAplicados
+      .slice(0, 12)
+      .map((p) => `${p.id_recibo}:${Number(p.monto_cobrado || 0).toFixed(2)}`)
+      .join(",");
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_COBRADA",
-      `orden=${idOrden}; contribuyente=${orden.id_contribuyente}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=${aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO.toFixed(2) : "0.00"}; recibos=${pagosAplicados.length}; ip=${ip}`,
+      `orden=${idOrden}; codigo_recibo=${codigoReciboOrden}; contribuyente=${orden.id_contribuyente}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=${aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO.toFixed(2) : "0.00"}; recibos=${pagosAplicados.length}; detalle_recibos=${recibosDetalle}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -4493,6 +4555,7 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         estado: ESTADOS_ORDEN_COBRO.COBRADA,
         id_contribuyente: Number(orden.id_contribuyente),
         codigo_municipal: orden.codigo_municipal || null,
+        codigo_recibo: codigoReciboOrden,
         total_orden: parseMonto(orden.total_orden, totalAplicado),
         cargo_reimpresion: aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO : 0,
         total_cobrado: totalCobradoFinal
@@ -5100,6 +5163,7 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
 
 const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   const includeAllMovimientos = Boolean(options.includeAllMovimientos);
+  const includeCodigoImpresion = Boolean(options.includeCodigoImpresion);
   const pageRaw = Number(options.page ?? 1);
   const pageSizeRaw = Number(options.pageSize ?? 200);
   const safePage = Number.isFinite(pageRaw) ? Math.max(1, pageRaw) : 1;
@@ -5175,6 +5239,10 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     ? [desde, hasta]
     : [desde, hasta, safePageSize, offset];
   const movimientos = await pool.query(movimientosSql, movimientosParams);
+  const movimientosSanitizados = movimientos.rows.map((row) => ({
+    ...row,
+    codigo_impresion: includeCodigoImpresion ? (row.codigo_impresion || null) : null
+  }));
   const pageSizeRespuesta = includeAllMovimientos
     ? Math.max(1, cantidadMovimientos)
     : safePageSize;
@@ -5190,7 +5258,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       page_size: pageSizeRespuesta,
       total_paginas: totalPaginas
     },
-    movimientos: movimientos.rows
+    movimientos: movimientosSanitizados
   };
 };
 
@@ -5201,7 +5269,8 @@ app.get("/caja/reporte", async (req, res) => {
     const fecha = String(req.query.fecha || toISODate());
     const page = Number(req.query.page || 1);
     const pageSize = Number(req.query.page_size || 200);
-    const data = await construirReporteCaja(tipo, fecha, { page, pageSize });
+    const mostrarCodigoImpresion = hasMinRole(req.user?.rol, "ADMIN");
+    const data = await construirReporteCaja(tipo, fecha, { page, pageSize, includeCodigoImpresion: mostrarCodigoImpresion });
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: "Error reporte caja." });
@@ -5213,7 +5282,11 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
     const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
     const fecha = String(req.query.fecha || toISODate());
-    const data = await construirReporteCaja(tipo, fecha, { includeAllMovimientos: true });
+    const mostrarCodigoImpresion = hasMinRole(req.user?.rol, "ADMIN");
+    const data = await construirReporteCaja(tipo, fecha, {
+      includeAllMovimientos: true,
+      includeCodigoImpresion: mostrarCodigoImpresion
+    });
 
     const workbook = new ExcelJS.Workbook();
 
@@ -5311,7 +5384,10 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
 app.get("/caja/diaria", async (req, res) => {
   try {
     const fecha = String(req.query.fecha || toISODate());
-    const data = await construirReporteCaja("diario", fecha, { includeAllMovimientos: true });
+    const data = await construirReporteCaja("diario", fecha, {
+      includeAllMovimientos: true,
+      includeCodigoImpresion: hasMinRole(req.user?.rol, "ADMIN")
+    });
     res.json({
       ...data,
       fecha_consulta: fecha
