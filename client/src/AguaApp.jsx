@@ -1563,6 +1563,7 @@ const actaPageStyle = `
         tokenStorageKey={AGUA_TOKEN_KEY}
         titulo="Sistema Agua Potable"
         subtitulo="Municipalidad Distrital de Pueblo Nuevo"
+        onBackToSelector={onBackToSelector}
         onLoginSuccess={(datos) => {
           const { ...user } = datos || {};
           const baseUser = user?.id_usuario ? user : datos;

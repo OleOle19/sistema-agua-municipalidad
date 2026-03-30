@@ -684,6 +684,7 @@ function LuzApp({ onBackToSelector }) {
         subtitulo="Municipalidad Distrital de Pueblo Nuevo"
         loginPath="/auth/login"
         registerPath="/auth/registro"
+        onBackToSelector={onBackToSelector}
         onLoginSuccess={(datos) => {
           const baseUser = datos?.id_usuario ? datos : datos;
           setUsuarioSistema(baseUser ? { ...baseUser, rol: normalizeRole(baseUser.rol), sistema: "LUZ" } : null);

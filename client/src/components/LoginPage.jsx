@@ -1,6 +1,6 @@
 import { useState } from "react";
 import api from "../api";
-import { FaUserShield, FaKey, FaUserPlus } from "react-icons/fa";
+import { FaUserShield, FaKey } from "react-icons/fa";
 
 const LoginPage = ({
   onLoginSuccess,
@@ -9,7 +9,8 @@ const LoginPage = ({
   titulo = "Sistema Agua Potable",
   subtitulo = "Municipalidad Distrital de Pueblo Nuevo",
   loginPath = "/auth/login",
-  registerPath = "/auth/registro"
+  registerPath = "/auth/registro",
+  onBackToSelector = null
 }) => {
   const [modo, setModo] = useState("LOGIN"); // 'LOGIN' o 'REGISTRO'
   const [form, setForm] = useState({ username: "", password: "", nombre_completo: "" });
@@ -47,6 +48,13 @@ const LoginPage = ({
   return (
     <div className="d-flex justify-content-center align-items-center vh-100 bg-light">
       <div className="card shadow-lg p-4" style={{ width: "400px" }}>
+        {typeof onBackToSelector === "function" && (
+          <div className="d-flex justify-content-end mb-2">
+            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onBackToSelector}>
+              Cambiar modulo
+            </button>
+          </div>
+        )}
         <div className="text-center mb-4">
           <div className="bg-primary text-white rounded-circle d-inline-flex p-3 mb-2">
             <FaUserShield size={40} />
