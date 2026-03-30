@@ -24,32 +24,25 @@ const toNum = (v) => {
 };
 
 const round2 = (v) => Math.round((toNum(v) + Number.EPSILON) * 100) / 100;
-const CARGO_REIMPRESION = 0.5;
-const isMontoReimpresion = (v) => Math.abs(round2(toNum(v)) - CARGO_REIMPRESION) <= 0.001;
-const normalizeCodigoRecibo = (value) => String(value || "").replace(/\D/g, "").slice(0, 12);
-const parseCodigoRecibo = (value) => {
-  const raw = normalizeCodigoRecibo(value);
-  if (!raw) return 0;
-  const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : 0;
-};
 
-const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, realtimeConnected = false, realtimeTick = 0, onImprimirRecibo }) => {
+const ModalPago = ({
+  usuario,
+  usuarioSistema,
+  cerrarModal,
+  alGuardar,
+  darkMode,
+  realtimeConnected = false,
+  realtimeTick = 0
+}) => {
   const rol = normalizeRole(usuarioSistema?.rol);
   const isCaja = rol === "CAJERO";
   const canEmitir = hasMinRole(rol, "ADMIN_SEC");
-  const canCobrarReimpresion = isCaja || hasMinRole(rol, "ADMIN_SEC");
   const [cargando, setCargando] = useState(false);
   const [seleccion, setSeleccion] = useState({});
   const [ordenes, setOrdenes] = useState([]);
   const [ordenId, setOrdenId] = useState(0);
-  const [codigoReciboEmitir, setCodigoReciboEmitir] = useState("");
-  const [codigoReciboCobrar, setCodigoReciboCobrar] = useState("");
   const [cargandoOrdenes, setCargandoOrdenes] = useState(false);
   const [avisoOrden, setAvisoOrden] = useState("");
-  const [aplicarRecargoReimpresion, setAplicarRecargoReimpresion] = useState(false);
-  const [idReciboImpresion, setIdReciboImpresion] = useState(0);
-  const [reimpresionHashImpresa, setReimpresionHashImpresa] = useState("");
   const maxOrdenConocidaRef = useRef(0);
 
   const recibosPendientes = useMemo(
@@ -157,36 +150,14 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     cargarOrdenes().catch(() => {});
   }, [realtimeTick, usuario?.id_contribuyente, cargarOrdenes]);
 
-  useEffect(() => {
-    if (!isCaja) return;
-    const ordenActual = (Array.isArray(ordenes) ? ordenes : []).find(
-      (o) => Number(o.id_orden) === Number(ordenId)
-    );
-    setAplicarRecargoReimpresion(isMontoReimpresion(ordenActual?.cargo_reimpresion));
-  }, [isCaja, ordenId, usuario?.id_contribuyente, ordenes]);
-
   const ordenSeleccionada = useMemo(
     () => ordenes.find((o) => Number(o.id_orden) === Number(ordenId)) || null,
     [ordenes, ordenId]
   );
-  useEffect(() => {
-    if (!isCaja) return;
-    setCodigoReciboCobrar("");
-  }, [isCaja, ordenId, usuario?.id_contribuyente]);
-
-  useEffect(() => {
-    if (!isCaja) return;
-    const firstId = Number(ordenSeleccionada?.items?.[0]?.id_recibo || 0);
-    setIdReciboImpresion(firstId > 0 ? firstId : 0);
-  }, [isCaja, ordenSeleccionada?.id_orden, ordenSeleccionada?.items]);
 
   const totalOrdenCaja = round2(toNum(ordenSeleccionada?.total_orden));
-  const cargoReimpresionOrden = isMontoReimpresion(ordenSeleccionada?.cargo_reimpresion) ? CARGO_REIMPRESION : 0;
   const codigoReciboOrden = Number(ordenSeleccionada?.codigo_recibo || 0);
-  const recargoReimpresion = isCaja
-    ? (cargoReimpresionOrden > 0 ? cargoReimpresionOrden : (canCobrarReimpresion && aplicarRecargoReimpresion ? CARGO_REIMPRESION : 0))
-    : (canCobrarReimpresion && aplicarRecargoReimpresion ? CARGO_REIMPRESION : 0);
-  const totalCobroCaja = round2(totalOrdenCaja + recargoReimpresion);
+  const totalCobroCaja = totalOrdenCaja;
 
   const toggleRecibo = (id, disabled = false) => {
     if (disabled) return;
@@ -251,123 +222,26 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
       .filter((i) => i.monto_autorizado > 0)
   ), [recibosPendientes, seleccion]);
 
-  useEffect(() => {
-    if (isCaja) return;
-    if (itemsSeleccionadosParaOrden.length === 0) {
-      setIdReciboImpresion(0);
-      return;
-    }
-    const selected = Number(idReciboImpresion || 0);
-    const existe = itemsSeleccionadosParaOrden.some((it) => Number(it.id_recibo) === selected);
-    if (!existe) {
-      setIdReciboImpresion(Number(itemsSeleccionadosParaOrden[0].id_recibo || 0));
-    }
-  }, [isCaja, itemsSeleccionadosParaOrden, idReciboImpresion]);
-
-  const reimpresionActualHash = useMemo(() => {
-    if (isCaja || !aplicarRecargoReimpresion) return "";
-    const targetId = Number(idReciboImpresion || 0);
-    const itemsHash = itemsSeleccionadosParaOrden
-      .map((it) => `${Number(it.id_recibo)}:${round2(toNum(it.monto_autorizado)).toFixed(2)}`)
-      .join("|");
-    return `${targetId}::${itemsHash}`;
-  }, [isCaja, aplicarRecargoReimpresion, idReciboImpresion, itemsSeleccionadosParaOrden]);
-
-  useEffect(() => {
-    if (isCaja || !aplicarRecargoReimpresion) {
-      if (reimpresionHashImpresa) setReimpresionHashImpresa("");
-      return;
-    }
-    if (reimpresionHashImpresa && reimpresionHashImpresa !== reimpresionActualHash) {
-      setReimpresionHashImpresa("");
-    }
-  }, [isCaja, aplicarRecargoReimpresion, reimpresionActualHash, reimpresionHashImpresa]);
-
-  const requiereImpresionAntesEmitir = (
-    !isCaja &&
-    aplicarRecargoReimpresion &&
-    itemsSeleccionadosParaOrden.length > 0 &&
-    reimpresionHashImpresa !== reimpresionActualHash
-  );
-
-  const buildDatosImpresion = (orden, cargoAplicado = 0, codigoImpresion = "", idReciboObjetivo = 0) => {
-    const allItems = Array.isArray(orden?.items) ? orden.items : [];
-    const targetId = Number(idReciboObjetivo || 0);
-    const selectedItem = allItems.find((it) => Number(it?.id_recibo) === targetId);
-    const items = selectedItem ? [selectedItem] : allItems;
-    const totalAgua = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_agua), 0));
-    const totalDesague = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_desague), 0));
-    const totalLimpieza = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_limpieza), 0));
-    const totalAdmin = round2(items.reduce((acc, it) => acc + toNum(it?.subtotal_admin), 0));
-    const cargoFinal = round2(
-      Math.max(
-        toNum(cargoAplicado),
-        (!isCaja && aplicarRecargoReimpresion ? CARGO_REIMPRESION : 0)
-      )
-    );
-    const totalBase = round2(totalAgua + totalDesague + totalLimpieza + totalAdmin);
-    const totalFinal = round2(totalBase + cargoFinal);
-    const primerItem = items[0] || {};
-    const periodoUnico = items.length === 1;
-
-    return {
-      contribuyente: {
-        codigo_municipal: usuario?.codigo_municipal || "",
-        nombre_completo: usuario?.nombre_completo || "",
-        deuda_anio: toNum(usuario?.deuda_anio ?? usuario?.deuda_total ?? 0),
-        deuda_meses_label: usuario?.deuda_meses_label || ""
-      },
-      predio: {
-        direccion_completa: usuario?.direccion_completa || ""
-      },
-      recibo: {
-        id_recibo: periodoUnico ? (primerItem?.id_recibo || 0) : 0,
-        mes: periodoUnico ? (primerItem?.mes || "") : "",
-        mes_nombre: periodoUnico ? undefined : "Varios",
-        anio: periodoUnico ? (primerItem?.anio || "") : "Varios",
-        total: totalFinal,
-        codigo_impresion: codigoImpresion || "",
-        cargo_reimpresion: cargoFinal
-      },
-      detalles: {
-        agua: totalAgua,
-        desague: totalDesague,
-        limpieza: totalLimpieza,
-        admin: totalAdmin
-      }
-    };
-  };
-
   const emitirOrden = async () => {
     if (!canEmitir) return alert("No tiene permisos para emitir ordenes.");
     const items = itemsSeleccionadosParaOrden;
-    const codigoRecibo = parseCodigoRecibo(codigoReciboEmitir);
 
     if (items.length === 0) return alert("Seleccione al menos un recibo con monto valido.");
-    if (!codigoRecibo) return alert("Debe digitar el numero de recibo para emitir la orden.");
-    if (!items.some((it) => Number(it.id_recibo) === codigoRecibo)) {
-      return alert("El numero de recibo debe coincidir con uno de los recibos seleccionados.");
-    }
-    if (requiereImpresionAntesEmitir) {
-      return alert("Para continuar, primero use el boton IMPRIMIR REIMPRESION.");
-    }
-    const totalConCargo = round2(totalOrden + recargoReimpresion);
-    if (!window.confirm(`Emitir orden por S/. ${totalConCargo.toFixed(2)}?`)) return;
+    if (!window.confirm(`Emitir orden por S/. ${totalOrden.toFixed(2)}?`)) return;
 
     setCargando(true);
     try {
       const res = await api.post("/caja/ordenes-cobro", {
         id_contribuyente: usuario.id_contribuyente,
-        codigo_recibo: codigoRecibo,
         items,
-        cargo_reimpresion: recargoReimpresion
+        cargo_reimpresion: 0
       });
-      const id = res?.data?.orden?.id_orden;
-      const cargoAplicado = toNum(res?.data?.orden?.cargo_reimpresion);
-      if (cargoAplicado > 0) {
-        alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.\nCodigo de recibo: #${codigoRecibo}\nIncluye reimpresion: S/. ${cargoAplicado.toFixed(2)}`);
+      const id = Number(res?.data?.orden?.id_orden || 0);
+      const codigoReferencia = Number(res?.data?.orden?.codigo_recibo || 0);
+      if (codigoReferencia > 0) {
+        alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.\nReferencia recibo: #${codigoReferencia}`);
       } else {
-        alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.\nCodigo de recibo: #${codigoRecibo}`);
+        alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.`);
       }
       alGuardar?.();
       cerrarModal?.();
@@ -381,22 +255,14 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
   const cobrarOrden = async () => {
     if (!isCaja) return;
     if (!ordenSeleccionada) return alert("Seleccione una orden pendiente.");
-    const codigoRecibo = parseCodigoRecibo(codigoReciboCobrar);
-    if (!codigoRecibo) return alert("Debe digitar el numero de recibo para cobrar la orden.");
     if (!window.confirm(`Cobrar orden #${ordenSeleccionada.id_orden} por S/. ${totalCobroCaja.toFixed(2)}?`)) return;
 
     setCargando(true);
     try {
-      const res = await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`, {
-        codigo_recibo: codigoRecibo,
-        cargo_reimpresion: canCobrarReimpresion ? recargoReimpresion : 0
+      await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`, {
+        cargo_reimpresion: 0
       });
-      const cargoAplicado = toNum(res?.data?.orden?.cargo_reimpresion);
-      if (cargoAplicado > 0) {
-        alert(`Cobro registrado correctamente.\nIncluye reimpresion: S/. ${cargoAplicado.toFixed(2)}`);
-      } else {
-        alert("Cobro registrado correctamente.");
-      }
+      alert("Cobro registrado correctamente.");
       alGuardar?.();
       cerrarModal?.();
     } catch (err) {
@@ -404,32 +270,6 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
     } finally {
       setCargando(false);
     }
-  };
-
-  const imprimirReimpresionVentanilla = () => {
-    if (isCaja) return;
-    if (!canCobrarReimpresion || !aplicarRecargoReimpresion) {
-      alert("Active el cobro por reimpresion para imprimir.");
-      return;
-    }
-    if (itemsSeleccionadosParaOrden.length === 0) {
-      alert("Seleccione al menos un mes para imprimir.");
-      return;
-    }
-    if (typeof onImprimirRecibo !== "function") {
-      alert("No se pudo iniciar impresion.");
-      return;
-    }
-    const targetId = itemsSeleccionadosParaOrden.some((it) => Number(it.id_recibo) === Number(idReciboImpresion))
-      ? Number(idReciboImpresion)
-      : Number(itemsSeleccionadosParaOrden[0]?.id_recibo || 0);
-    onImprimirRecibo(buildDatosImpresion(
-      { items: itemsSeleccionadosParaOrden },
-      CARGO_REIMPRESION,
-      "",
-      targetId
-    ));
-    setReimpresionHashImpresa(reimpresionActualHash);
   };
 
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
@@ -477,7 +317,7 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                           Recibos: {o.cantidad_recibos} | Emitida: {new Date(o.creado_en).toLocaleString()}
                         </div>
                         <div className="small text-muted">
-                          Codigo recibo: {Number(o.codigo_recibo || 0) > 0 ? `#${Number(o.codigo_recibo)}` : "-"}
+                          Recibo referencia: {Number(o.codigo_recibo || 0) > 0 ? `#${Number(o.codigo_recibo)}` : "-"}
                         </div>
                       </button>
                     ))}
@@ -498,43 +338,10 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                       </tbody>
                     </table>
                     <div className="small mt-2">
-                      Codigo recibo requerido: {codigoReciboOrden > 0 ? `#${codigoReciboOrden}` : "-"}
+                      Recibo referencia: {codigoReciboOrden > 0 ? `#${codigoReciboOrden}` : "-"}
                     </div>
-                    <div className="mt-2">
-                      <label className="form-label form-label-sm mb-1">Digitar numero de recibo para cobrar</label>
-                      <input
-                        type="text"
-                        className="form-control form-control-sm"
-                        placeholder="Ejemplo: 12345"
-                        value={codigoReciboCobrar}
-                        onChange={(e) => setCodigoReciboCobrar(normalizeCodigoRecibo(e.target.value))}
-                        disabled={cargando}
-                        inputMode="numeric"
-                      />
-                    </div>
-                    {cargoReimpresionOrden > 0 && (
-                      <div className="alert alert-info py-1 px-2 mt-2 mb-0 small">
-                        Esta orden ya incluye reimpresion: S/. {CARGO_REIMPRESION.toFixed(2)}.
-                      </div>
-                    )}
-                    {canCobrarReimpresion && cargoReimpresionOrden <= 0 && (
-                      <div className="form-check mt-2">
-                        <input
-                          className="form-check-input"
-                          type="checkbox"
-                          id="chk-recargo-reimpresion"
-                          checked={aplicarRecargoReimpresion}
-                          onChange={(e) => setAplicarRecargoReimpresion(Boolean(e.target.checked))}
-                          disabled={cargando}
-                        />
-                        <label className="form-check-label" htmlFor="chk-recargo-reimpresion">
-                          Cobrar nueva impresion: S/. {CARGO_REIMPRESION.toFixed(2)}
-                        </label>
-                      </div>
-                    )}
                     <div className="small fw-bold text-end mt-2">
                       Total a cobrar: S/. {totalCobroCaja.toFixed(2)}
-                      {recargoReimpresion > 0 ? " (incluye reimpresion)" : ""}
                     </div>
                   </div>
                 )}
@@ -546,21 +353,6 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                     Existen {ordenes.length} orden(es) pendiente(s) para este contribuyente. Los recibos en orden pendiente se muestran bloqueados.
                   </div>
                 )}
-                <div className="border rounded p-2 mb-3">
-                  <div className="small fw-bold mb-1">Codigo de recibo para autorizar la orden</div>
-                  <input
-                    type="text"
-                    className="form-control form-control-sm"
-                    placeholder="Digitar numero de recibo"
-                    value={codigoReciboEmitir}
-                    onChange={(e) => setCodigoReciboEmitir(normalizeCodigoRecibo(e.target.value))}
-                    disabled={cargando}
-                    inputMode="numeric"
-                  />
-                  <div className="small text-muted mt-2">
-                    Debe coincidir con uno de los recibos seleccionados.
-                  </div>
-                </div>
                 <div className="list-group mb-3" style={{ maxHeight: "320px", overflowY: "auto" }}>
                   {recibosPendientes.length === 0 && <p className="text-muted text-center p-3">No hay deudas pendientes.</p>}
                   {recibosPendientes.map((r) => {
@@ -599,50 +391,8 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
                     );
                   })}
                 </div>
-                {canCobrarReimpresion && (
-                  <div className="form-check mb-2">
-                    <input
-                      className="form-check-input"
-                      type="checkbox"
-                      id="chk-recargo-reimpresion-emitir"
-                      checked={aplicarRecargoReimpresion}
-                      onChange={(e) => setAplicarRecargoReimpresion(Boolean(e.target.checked))}
-                      disabled={cargando}
-                    />
-                    <label className="form-check-label" htmlFor="chk-recargo-reimpresion-emitir">
-                      Incluir cobro por reimpresion: S/. {CARGO_REIMPRESION.toFixed(2)}
-                    </label>
-                  </div>
-                )}
-                {canCobrarReimpresion && aplicarRecargoReimpresion && itemsSeleccionadosParaOrden.length > 0 && (
-                  <div className="mb-2">
-                    <div className="small fw-bold mb-1">Mes a reimprimir</div>
-                    <select
-                      className="form-select form-select-sm"
-                      style={{ maxWidth: "260px" }}
-                      value={idReciboImpresion || ""}
-                      onChange={(e) => setIdReciboImpresion(Number(e.target.value || 0))}
-                      disabled={cargando}
-                    >
-                      {itemsSeleccionadosParaOrden.map((it) => (
-                        <option key={`imp-v-${it.id_recibo}`} value={it.id_recibo}>
-                          {it.mes}/{it.anio} - S/. {toNum(it.monto_autorizado).toFixed(2)}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="small text-muted mt-1">
-                      Este recibo se imprimira con el cargo de reimpresion (S/. {CARGO_REIMPRESION.toFixed(2)}).
-                    </div>
-                    <div className={`small mt-1 ${requiereImpresionAntesEmitir ? "text-danger fw-bold" : "text-success fw-bold"}`}>
-                      {requiereImpresionAntesEmitir
-                        ? "Pendiente: debe imprimir reimpresion antes de emitir la orden."
-                        : "OK: reimpresion registrada para esta seleccion."}
-                    </div>
-                  </div>
-                )}
                 <div className="alert alert-info text-center fw-bold">
-                  Total orden: S/. {round2(totalOrden + recargoReimpresion).toFixed(2)}
-                  {recargoReimpresion > 0 ? " (incluye reimpresion)" : ""}
+                  Total orden: S/. {totalOrden.toFixed(2)}
                 </div>
               </>
             )}
@@ -653,27 +403,18 @@ const ModalPago = ({ usuario, usuarioSistema, cerrarModal, alGuardar, darkMode, 
               <button
                 className="btn btn-primary fw-bold"
                 onClick={cobrarOrden}
-                disabled={cargando || !ordenSeleccionada || !parseCodigoRecibo(codigoReciboCobrar)}
+                disabled={cargando || !ordenSeleccionada}
               >
                 {cargando ? "Procesando..." : "COBRAR ORDEN"}
               </button>
             ) : (
-              <>
-                <button
-                  className="btn btn-outline-primary fw-bold"
-                  onClick={imprimirReimpresionVentanilla}
-                  disabled={cargando || !aplicarRecargoReimpresion || itemsSeleccionadosParaOrden.length === 0}
-                >
-                  IMPRIMIR REIMPRESION
-                </button>
-                <button
-                  className="btn btn-primary fw-bold"
-                  onClick={emitirOrden}
-                  disabled={cargando || requiereImpresionAntesEmitir || !parseCodigoRecibo(codigoReciboEmitir)}
-                >
-                  {cargando ? "Procesando..." : "EMITIR ORDEN"}
-                </button>
-              </>
+              <button
+                className="btn btn-primary fw-bold"
+                onClick={emitirOrden}
+                disabled={cargando}
+              >
+                {cargando ? "Procesando..." : "EMITIR ORDEN"}
+              </button>
             )}
           </div>
         </div>

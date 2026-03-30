@@ -16,13 +16,11 @@ const MONTH_OPTIONS = [
   { value: 11, label: "Nov" },
   { value: 12, label: "Dic" }
 ];
-const CARGO_REIMPRESION = 0.5;
 
 const ModalImpresionMasiva = ({ cerrarModal, alConfirmar, idsSeleccionados = [], darkMode }) => {
   const [calles, setCalles] = useState([]);
   const [cargando, setCargando] = useState(false);
   const [modo, setModo] = useState(idsSeleccionados.length > 0 ? "seleccion" : "calle");
-  const [incluirReimpresion, setIncluirReimpresion] = useState(true);
   const currentYear = new Date().getFullYear();
   const [seleccion, setSeleccion] = useState({
     id_calle: "",
@@ -60,10 +58,9 @@ const ModalImpresionMasiva = ({ cerrarModal, alConfirmar, idsSeleccionados = [],
         ids_usuarios: idsSeleccionados
       };
       const res = await api.post("/recibos/masivos", payload);
-      const cargoReimpresion = incluirReimpresion ? CARGO_REIMPRESION : 0;
       const datosImpresion = (Array.isArray(res.data) ? res.data : []).map((row) => ({
         ...row,
-        cargo_reimpresion: cargoReimpresion
+        cargo_reimpresion: 0
       }));
       alConfirmar(datosImpresion);
       cerrarModal();
@@ -135,19 +132,6 @@ const ModalImpresionMasiva = ({ cerrarModal, alConfirmar, idsSeleccionados = [],
                   <label className="form-label fw-bold">Año</label>
                   <input type="number" className={inputClass} value={seleccion.anio} onChange={(e) => setSeleccion({ ...seleccion, anio: e.target.value })} />
                 </div>
-              </div>
-
-              <div className="form-check mb-3">
-                <input
-                  className="form-check-input"
-                  type="checkbox"
-                  id="chk-cargo-reimpresion-masiva"
-                  checked={incluirReimpresion}
-                  onChange={(e) => setIncluirReimpresion(Boolean(e.target.checked))}
-                />
-                <label className="form-check-label" htmlFor="chk-cargo-reimpresion-masiva">
-                  Incluir recargo de impresion: S/. {CARGO_REIMPRESION.toFixed(2)}
-                </label>
               </div>
 
               <div className="d-flex justify-content-end gap-2">

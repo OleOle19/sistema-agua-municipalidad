@@ -274,7 +274,6 @@ const LOGIN_LOCK_DURATION_MS = Number(process.env.LOGIN_LOCK_DURATION_MS || (15 
 const CAJA_CIERRE_ALERTA_UMBRAL = parseMonto(process.env.CAJA_CIERRE_ALERTA_UMBRAL, 2);
 const CAJA_RIESGO_WINDOW_HOURS = Math.min(168, Math.max(1, Number(process.env.CAJA_RIESGO_WINDOW_HOURS || 24)));
 const CAJA_RIESGO_ANULACIONES_UMBRAL = Math.min(20, Math.max(1, Number(process.env.CAJA_RIESGO_ANULACIONES_UMBRAL || 3)));
-const CARGO_REIMPRESION_MONTO = 0.5;
 const PAGO_OPERATIVO_CAJA_SQL = "(p.id_orden_cobro IS NOT NULL OR COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '')";
 const normalizeHoraHM = (value, fallback) => {
   const raw = String(value || "").trim();
@@ -2915,6 +2914,7 @@ app.get("/campo/solicitudes", async (req, res) => {
         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_actual_db,
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_actual_db,
         COALESCE(NULLIF(TRIM(p.direccion_alterna), ''), '') AS direccion_alterna_actual_db,
+        COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle_db,
         ${buildDireccionSql("ca", "p")} AS direccion_actual_db
       FROM campo_solicitudes s
       LEFT JOIN contribuyentes c ON c.id_contribuyente = s.id_contribuyente
@@ -4059,28 +4059,14 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
   const client = await pool.connect();
   try {
     const idContribuyente = parsePositiveInt(req.body?.id_contribuyente, 0);
-    const codigoRecibo = normalizeCodigoReciboInput(req.body?.codigo_recibo);
+    const codigoReciboDigitado = normalizeCodigoReciboInput(req.body?.codigo_recibo);
     const observacion = normalizeLimitedText(req.body?.observacion, 500) || null;
     const items = sanitizeOrdenCobroItems(req.body?.items);
-    const cargoReimpresion = roundMonto2(parseMonto(req.body?.cargo_reimpresion, 0));
-    const canAplicarCargoReimpresion = hasMinRole(req.user?.rol, "ADMIN_SEC");
-    const aplicaCargoReimpresion = Math.abs(cargoReimpresion - CARGO_REIMPRESION_MONTO) <= 0.001;
     if (!idContribuyente) {
       return res.status(400).json({ error: "Contribuyente invalido." });
     }
     if (items.length === 0) {
       return res.status(400).json({ error: "Debe incluir al menos un recibo con monto autorizado." });
-    }
-    if (!codigoRecibo) {
-      return res.status(400).json({ error: "Debe digitar un numero de recibo para emitir la orden." });
-    }
-    if (cargoReimpresion > 0.001 && !canAplicarCargoReimpresion) {
-      return res.status(403).json({ error: "No tiene permisos para aplicar cargo por reimpresion." });
-    }
-    if (cargoReimpresion < 0 || (!aplicaCargoReimpresion && cargoReimpresion > 0.001)) {
-      return res.status(400).json({
-        error: `Cargo de reimpresion invalido. Solo se permite 0 o S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}.`
-      });
     }
 
     await client.query("BEGIN");
@@ -4098,11 +4084,10 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     }
 
     const idsRecibos = items.map((r) => r.id_recibo);
-    if (!idsRecibos.includes(codigoRecibo)) {
+    const codigoRecibo = codigoReciboDigitado || idsRecibos[0] || 0;
+    if (!codigoRecibo) {
       await client.query("ROLLBACK");
-      return res.status(400).json({
-        error: "El numero de recibo digitado debe pertenecer a los recibos seleccionados en la orden."
-      });
+      return res.status(400).json({ error: "No se pudo determinar recibo de referencia para la orden." });
     }
     const ordenPendienteSolapada = await client.query(`
       SELECT oc.id_orden
@@ -4237,8 +4222,8 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
       totalOrden,
       JSON.stringify(detalleOrden),
       observacion,
-      aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO : 0,
-      aplicaCargoReimpresion ? `Reimpresion de recibo (registrada en ventanilla) - S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}` : null
+      0,
+      null
     ]);
 
     const orden = insertOrden.rows[0];
@@ -4247,7 +4232,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_EMITIDA",
-      `orden=${orden.id_orden}; codigo_recibo=${codigoRecibo}; contribuyente=${idContribuyente}; total=${totalOrden.toFixed(2)}; cargo_reimpresion=${aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO.toFixed(2) : "0.00"}; recibos=${detalleOrden.length}; ip=${ip}`,
+      `orden=${orden.id_orden}; codigo_recibo=${codigoRecibo}; contribuyente=${idContribuyente}; total=${totalOrden.toFixed(2)}; cargo_reimpresion=0.00; recibos=${detalleOrden.length}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -4364,22 +4349,7 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
-    const codigoReciboDigitado = normalizeCodigoReciboInput(req.body?.codigo_recibo);
     if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
-    if (!codigoReciboDigitado) {
-      return res.status(400).json({ error: "Debe digitar el numero de recibo para cobrar la orden." });
-    }
-    const cargoReimpresion = roundMonto2(parseMonto(req.body?.cargo_reimpresion, 0));
-    const canAplicarCargoReimpresion = hasMinRole(req.user?.rol, "CAJERO");
-    const aplicaCargoSolicitado = Math.abs(cargoReimpresion - CARGO_REIMPRESION_MONTO) <= 0.001;
-    if (cargoReimpresion > 0.001 && !canAplicarCargoReimpresion) {
-      return res.status(403).json({ error: "No tiene permisos para cobrar nueva impresion." });
-    }
-    if (cargoReimpresion < 0 || (!aplicaCargoSolicitado && cargoReimpresion > 0.001)) {
-      return res.status(400).json({
-        error: `Cargo de reimpresion invalido. Solo se permite 0 o S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}.`
-      });
-    }
 
     await client.query("BEGIN");
     await ensureOrdenesCobroTable(client);
@@ -4399,9 +4369,6 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: `La orden ya no esta pendiente (estado: ${orden.estado}).` });
     }
-    const cargoRegistrado = roundMonto2(parseMonto(orden.cargo_reimpresion, 0));
-    const aplicaCargoRegistrado = Math.abs(cargoRegistrado - CARGO_REIMPRESION_MONTO) <= 0.001;
-    const aplicaCargoReimpresion = aplicaCargoRegistrado || aplicaCargoSolicitado;
 
     const items = sanitizeOrdenCobroItems(safeJsonArray(orden.recibos_json));
     if (items.length === 0) {
@@ -4413,10 +4380,6 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
     if (!codigoReciboOrden) {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: "La orden no tiene codigo de recibo asociado. Debe emitirse nuevamente." });
-    }
-    if (codigoReciboDigitado !== codigoReciboOrden) {
-      await client.query("ROLLBACK");
-      return res.status(403).json({ error: "El numero de recibo digitado no coincide con la orden seleccionada." });
     }
 
     const idsRecibos = items.map((i) => i.id_recibo);
@@ -4517,10 +4480,8 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
     `, [
       idOrden,
       req.user?.id_usuario || null,
-      aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO : 0,
-      aplicaCargoReimpresion
-        ? (orden.motivo_cargo_reimpresion || `Reimpresion de recibo (sin documento fisico) - S/. ${CARGO_REIMPRESION_MONTO.toFixed(2)}`)
-        : null
+      0,
+      null
     ]);
 
     const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
@@ -4532,13 +4493,13 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_COBRADA",
-      `orden=${idOrden}; codigo_recibo=${codigoReciboOrden}; contribuyente=${orden.id_contribuyente}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=${aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO.toFixed(2) : "0.00"}; recibos=${pagosAplicados.length}; detalle_recibos=${recibosDetalle}; ip=${ip}`,
+      `orden=${idOrden}; codigo_recibo=${codigoReciboOrden}; contribuyente=${orden.id_contribuyente}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=0.00; recibos=${pagosAplicados.length}; detalle_recibos=${recibosDetalle}; ip=${ip}`,
       usuarioAuditoria
     );
 
     await client.query("COMMIT");
     invalidateContribuyentesCache();
-    const totalCobradoFinal = roundMonto2(totalAplicado + (aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO : 0));
+    const totalCobradoFinal = totalAplicado;
     realtimeHub.broadcast("caja", "orden_cobrada", {
       id_orden: Number(idOrden || 0),
       id_contribuyente: Number(orden.id_contribuyente || 0),
@@ -4557,7 +4518,7 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         codigo_municipal: orden.codigo_municipal || null,
         codigo_recibo: codigoReciboOrden,
         total_orden: parseMonto(orden.total_orden, totalAplicado),
-        cargo_reimpresion: aplicaCargoReimpresion ? CARGO_REIMPRESION_MONTO : 0,
+        cargo_reimpresion: 0,
         total_cobrado: totalCobradoFinal
       },
       pagos: pagosAplicados

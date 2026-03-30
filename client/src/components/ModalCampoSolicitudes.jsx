@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api, { API_BASE_URL } from "../api";
-import { FaCheck, FaClipboardCheck, FaMobileAlt, FaSyncAlt, FaTimes } from "react-icons/fa";
+import { FaCheck, FaClipboardCheck, FaFileDownload, FaMobileAlt, FaSyncAlt, FaTimes } from "react-icons/fa";
 
 const ESTADO_LABELS = {
   PENDIENTE: "Pendiente",
@@ -13,6 +13,24 @@ const FILTRO_OPTIONS = [
   { value: "APROBADO", label: "Aprobadas" },
   { value: "RECHAZADO", label: "Rechazadas" },
   { value: "TODOS", label: "Todas" }
+];
+const ORGANIZAR_OPTIONS = [
+  { value: "FECHA", label: "Organizar: Fecha" },
+  { value: "CALLE", label: "Organizar: Calle" }
+];
+const ORDEN_GRUPO_OPTIONS = {
+  FECHA: [
+    { value: "DESC", label: "Grupos: fecha reciente primero" },
+    { value: "ASC", label: "Grupos: fecha antigua primero" }
+  ],
+  CALLE: [
+    { value: "ASC", label: "Grupos: calle A-Z" },
+    { value: "DESC", label: "Grupos: calle Z-A" }
+  ]
+};
+const ORDEN_ITEMS_OPTIONS = [
+  { value: "DESC", label: "Solicitudes: recientes primero" },
+  { value: "ASC", label: "Solicitudes: antiguas primero" }
 ];
 const TIPO_SOLICITUD_LABELS = {
   ACTUALIZACION: "Actualizacion ficha",
@@ -70,6 +88,34 @@ const formatDateTime = (value) => {
   if (Number.isNaN(date.getTime())) return "-";
   return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
 };
+const toMs = (value) => {
+  const ms = Date.parse(String(value || ""));
+  return Number.isFinite(ms) ? ms : 0;
+};
+const buildDateGroup = (value) => {
+  const ms = toMs(value);
+  if (!ms) return { key: "SIN_FECHA", label: "Sin fecha", sortMs: 0 };
+  const date = new Date(ms);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const key = `${y}-${m}-${d}`;
+  const label = date.toLocaleDateString("es-PE", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric"
+  });
+  const sortMs = new Date(y, date.getMonth(), date.getDate()).getTime();
+  return { key, label, sortMs };
+};
+const inferCalleFromDireccion = (direccion) => {
+  const raw = String(direccion || "").trim();
+  if (!raw) return "";
+  const firstPart = raw.split(",")[0].trim();
+  if (firstPart) return firstPart;
+  return raw;
+};
 
 const renderChangeLine = (label, nuevo, actual) => (
   <div className="small" key={label}>
@@ -85,6 +131,11 @@ const renderInfoLine = (label, value) => (
     <span className="text-success">{value || "-"}</span>
   </div>
 );
+const csvEscape = (value) => {
+  const text = String(value ?? "");
+  if (/[\",\n]/.test(text)) return `"${text.replace(/\"/g, "\"\"")}"`;
+  return text;
+};
 
 const estadoBadgeClass = (estado) => {
   if (estado === "APROBADO") return "bg-success";
@@ -117,7 +168,9 @@ const getSeguimientoTone = (tipo, darkMode) => {
 
 const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl }) => {
   const [filtroEstado, setFiltroEstado] = useState("PENDIENTE");
-  const [filtroBrigadista, setFiltroBrigadista] = useState("TODOS");
+  const [organizarPor, setOrganizarPor] = useState("FECHA");
+  const [ordenGrupo, setOrdenGrupo] = useState("DESC");
+  const [ordenItems, setOrdenItems] = useState("DESC");
   const [solicitudes, setSolicitudes] = useState([]);
   const [cargando, setCargando] = useState(false);
   const [procesandoId, setProcesandoId] = useState(null);
@@ -141,6 +194,10 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
   useEffect(() => {
     cargarSolicitudes();
   }, [filtroEstado]);
+
+  useEffect(() => {
+    setOrdenGrupo(organizarPor === "CALLE" ? "ASC" : "DESC");
+  }, [organizarPor]);
 
   const procesarSolicitud = async (solicitud, accion) => {
     const id = Number(solicitud?.id_solicitud);
@@ -204,6 +261,10 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
     );
     const montosAbono = parseMontosList(metadata.montos_mensuales_24m);
     const montosAbonoTxt = montosAbono.length > 0 ? montosAbono.map((n) => n.toFixed(2)).join(", ") : "-";
+    const calleRaw = String(s?.nombre_calle_db || metadata?.nombre_calle || metadata?.calle || "").trim();
+    const calleLabel = calleRaw || inferCalleFromDireccion(
+      s?.direccion_actual_db || s?.direccion_verificada || metadata?.referencia_direccion
+    ) || "Sin calle";
     if (isAltaPredio) {
       if (s?.direccion_verificada) changes.push(renderInfoLine("Direccion", s.direccion_verificada));
       if (metadata?.referencia_direccion) changes.push(renderInfoLine("Referencia", metadata.referencia_direccion));
@@ -257,6 +318,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
       visitadoSN,
       hasObservacion,
       montosAbonoTxt,
+      calleLabel,
       verificacionEstado,
       verificacionMotivo,
       predioTemporalSN,
@@ -267,44 +329,38 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
   const groupedRows = useMemo(() => {
     const groups = new Map();
     rows.forEach((row) => {
-      const raw = String(row?.solicitud?.nombre_solicitante || "").trim();
-      const label = raw || "Sin brigadista";
-      const key = normalizeText(label);
-      if (!groups.has(key)) {
-        groups.set(key, { key, label, items: [] });
+      if (organizarPor === "CALLE") {
+        const label = String(row?.calleLabel || "").trim() || "Sin calle";
+        const key = normalizeText(label) || "SIN_CALLE";
+        if (!groups.has(key)) {
+          groups.set(key, { key, label, sortValue: label, items: [] });
+        }
+        groups.get(key).items.push(row);
+        return;
       }
-      groups.get(key).items.push(row);
+      const dateGroup = buildDateGroup(row?.solicitud?.creado_en);
+      if (!groups.has(dateGroup.key)) {
+        groups.set(dateGroup.key, { key: dateGroup.key, label: dateGroup.label, sortValue: dateGroup.sortMs, items: [] });
+      }
+      groups.get(dateGroup.key).items.push(row);
     });
-    return Array.from(groups.values()).sort((a, b) =>
-      a.label.localeCompare(b.label, "es", { sensitivity: "base" })
-    );
-  }, [rows]);
 
-  const brigadistaOptions = useMemo(() => {
-    const seen = new Map();
-    groupedRows.forEach((g) => {
-      if (!seen.has(g.key)) seen.set(g.key, g.label);
-    });
-    const list = Array.from(seen.entries())
-      .map(([key, label]) => ({ key, label }))
-      .sort((a, b) => a.label.localeCompare(b.label, "es", { sensitivity: "base" }));
-    return [{ key: "TODOS", label: "Todos los brigadistas" }, ...list];
-  }, [groupedRows]);
-
-  useEffect(() => {
-    if (filtroBrigadista === "TODOS") return;
-    const exists = brigadistaOptions.some((op) => op.key === filtroBrigadista);
-    if (!exists) setFiltroBrigadista("TODOS");
-  }, [brigadistaOptions, filtroBrigadista]);
-
-  const groupedRowsFiltered = useMemo(() => {
-    if (filtroBrigadista === "TODOS") return groupedRows;
-    return groupedRows.filter((g) => g.key === filtroBrigadista);
-  }, [groupedRows, filtroBrigadista]);
+    const itemFactor = ordenItems === "ASC" ? 1 : -1;
+    const list = Array.from(groups.values()).map((group) => ({
+      ...group,
+      items: (group.items || []).slice().sort((a, b) => itemFactor * (toMs(a?.solicitud?.creado_en) - toMs(b?.solicitud?.creado_en)))
+    }));
+    if (organizarPor === "CALLE") {
+      const factor = ordenGrupo === "DESC" ? -1 : 1;
+      return list.sort((a, b) => factor * String(a.label || "").localeCompare(String(b.label || ""), "es", { sensitivity: "base" }));
+    }
+    const factor = ordenGrupo === "ASC" ? 1 : -1;
+    return list.sort((a, b) => factor * (Number(a.sortValue || 0) - Number(b.sortValue || 0)));
+  }, [rows, organizarPor, ordenGrupo, ordenItems]);
 
   const totalVisibleSolicitudes = useMemo(
-    () => groupedRowsFiltered.reduce((acc, g) => acc + g.items.length, 0),
-    [groupedRowsFiltered]
+    () => groupedRows.reduce((acc, g) => acc + g.items.length, 0),
+    [groupedRows]
   );
 
   const modalContentClass = `modal-content ${darkMode ? "text-white" : ""}`;
@@ -314,6 +370,70 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
   const tableClass = `table mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
   const inputClass = `form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
   const campoHref = campoAppUrl || `${API_BASE_URL}/campo-app/`;
+  const generarInformeEmpadronados = () => {
+    const sourceRows = groupedRows.flatMap((group) => group.items);
+    if (sourceRows.length === 0) {
+      alert("No hay solicitudes visibles para generar informe.");
+      return;
+    }
+
+    const headers = [
+      "id_solicitud",
+      "fecha_registro",
+      "estado_solicitud",
+      "solicitante",
+      "calle",
+      "codigo_municipal",
+      "contribuyente",
+      "tipo_solicitud",
+      "direccion_reportada",
+      "verificacion",
+      "motivo_no_verificacion",
+      "pendiente_proxima_visita",
+      "inspector",
+      "observacion"
+    ];
+
+    const lines = sourceRows.map(({ solicitud: s, metadata, tipoSolicitud, seguimientoPendiente, verificacionEstado, verificacionMotivo, calleLabel }) => {
+      const isAltaPredio = tipoSolicitud === "ALTA_PREDIO" || tipoSolicitud === "ALTA_PREDIO_TEMPORAL";
+      const tipoTxt = TIPO_SOLICITUD_LABELS[tipoSolicitud] || tipoSolicitud || "ACTUALIZACION";
+      const direccionTxt = String(s?.direccion_verificada || metadata?.referencia_direccion || "").trim();
+      const contribuyenteTxt = isAltaPredio
+        ? String(s?.nombre_verificado || "Sin nombre").trim()
+        : String(s?.nombre_actual_db || "").trim();
+      const values = [
+        Number(s?.id_solicitud || 0),
+        formatDateTime(s?.creado_en),
+        String(s?.estado_solicitud || ""),
+        String(s?.nombre_solicitante || ""),
+        String(calleLabel || ""),
+        String(s?.codigo_municipal || (isAltaPredio ? "PREDIO-NUEVO" : "")),
+        contribuyenteTxt,
+        tipoTxt,
+        direccionTxt,
+        verificacionEstado === "NO_VERIFICADO" ? "No verificado" : "Verificado",
+        verificacionMotivoLabel(verificacionMotivo),
+        seguimientoPendiente ? "SI" : "NO",
+        String(metadata?.inspector || ""),
+        String(s?.observacion_campo || "")
+      ];
+      return values.map(csvEscape).join(",");
+    });
+
+    const csv = [headers.map(csvEscape).join(","), ...lines].join("\n");
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `informe_empadronados_${stamp}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setMensaje(`Informe generado: ${sourceRows.length} registro(s) exportado(s).`);
+    setError("");
+  };
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
@@ -340,22 +460,45 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
               </select>
               <select
                 className={inputClass}
-                style={{ maxWidth: "240px" }}
-                value={filtroBrigadista}
-                onChange={(e) => setFiltroBrigadista(e.target.value)}
+                style={{ maxWidth: "220px" }}
+                value={organizarPor}
+                onChange={(e) => setOrganizarPor(e.target.value)}
               >
-                {brigadistaOptions.map((op) => (
-                  <option key={op.key} value={op.key}>{op.label}</option>
+                {ORGANIZAR_OPTIONS.map((op) => (
+                  <option key={op.value} value={op.value}>{op.label}</option>
+                ))}
+              </select>
+              <select
+                className={inputClass}
+                style={{ maxWidth: "260px" }}
+                value={ordenGrupo}
+                onChange={(e) => setOrdenGrupo(e.target.value)}
+              >
+                {(ORDEN_GRUPO_OPTIONS[organizarPor] || ORDEN_GRUPO_OPTIONS.FECHA).map((op) => (
+                  <option key={op.value} value={op.value}>{op.label}</option>
+                ))}
+              </select>
+              <select
+                className={inputClass}
+                style={{ maxWidth: "260px" }}
+                value={ordenItems}
+                onChange={(e) => setOrdenItems(e.target.value)}
+              >
+                {ORDEN_ITEMS_OPTIONS.map((op) => (
+                  <option key={op.value} value={op.value}>{op.label}</option>
                 ))}
               </select>
               <button type="button" className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" onClick={cargarSolicitudes} disabled={cargando}>
                 <FaSyncAlt /> Recargar
               </button>
+              <button type="button" className="btn btn-sm btn-outline-success d-flex align-items-center gap-1" onClick={generarInformeEmpadronados} disabled={cargando || totalVisibleSolicitudes === 0}>
+                <FaFileDownload /> Generar informe
+              </button>
               <a href={campoHref} target="_blank" rel="noreferrer" className="btn btn-sm btn-outline-info d-flex align-items-center gap-1">
                 <FaMobileAlt /> Abrir App Campo
               </a>
               <div className="ms-auto small opacity-75">
-                Mostrando: <strong>{totalVisibleSolicitudes}</strong> de <strong>{solicitudes.length}</strong> | Brigadas: <strong>{groupedRowsFiltered.length}</strong>
+                Mostrando: <strong>{totalVisibleSolicitudes}</strong> de <strong>{solicitudes.length}</strong> | Grupos: <strong>{groupedRows.length}</strong>
               </div>
             </div>
 
@@ -379,17 +522,15 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                     <tr><td colSpan="6" className="text-center py-3">Cargando solicitudes...</td></tr>
                   ) : rows.length === 0 ? (
                     <tr><td colSpan="6" className="text-center py-3">No hay solicitudes para este filtro.</td></tr>
-                  ) : groupedRowsFiltered.length === 0 ? (
-                    <tr><td colSpan="6" className="text-center py-3">No hay solicitudes para este brigadista.</td></tr>
-                  ) : groupedRowsFiltered.flatMap((group) => {
+                  ) : groupedRows.flatMap((group) => {
                     const groupHeader = (
                       <tr key={`group-${group.key}`} className={darkMode ? "table-secondary" : "table-light"}>
                         <td colSpan="6" className="small fw-semibold">
-                          Brigadista: {group.label} <span className="opacity-75 ms-2">({group.items.length} solicitudes)</span>
+                          {organizarPor === "CALLE" ? "Calle" : "Fecha"}: {group.label} <span className="opacity-75 ms-2">({group.items.length} solicitudes)</span>
                         </td>
                       </tr>
                     );
-                    const groupItems = group.items.map(({ solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt, verificacionEstado, verificacionMotivo, predioTemporalSN, fotoFachada }) => {
+                    const groupItems = group.items.map(({ solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt, calleLabel, verificacionEstado, verificacionMotivo, predioTemporalSN, fotoFachada }) => {
                       const pending = s.estado_solicitud === "PENDIENTE";
                       const disabled = procesandoId === s.id_solicitud;
                       const isAltaPredio = tipoSolicitud === "ALTA_PREDIO";
@@ -413,6 +554,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                             {isAltaPredio && (
                               <div className="small opacity-75">Direccion: {s.direccion_verificada || metadata.referencia_direccion || "-"}</div>
                             )}
+                            <div className="small opacity-75">Calle: {calleLabel || "-"}</div>
                             <div className="small opacity-75">Solicita: {s.nombre_solicitante || "Usuario"}</div>
                           </td>
                           <td className="small align-top">
