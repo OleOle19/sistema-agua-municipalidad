@@ -494,7 +494,7 @@ function AguaApp({ onBackToSelector = null }) {
     canGenerarActaCorte: hasMinRole(rolActual, "ADMIN_SEC"),
     canImpresionMasiva: hasMinRole(rolActual, "ADMIN_SEC"),
     canReporteCortes: hasMinRole(rolActual, "ADMIN_SEC"),
-    canGestionCampo: hasMinRole(rolActual, "ADMIN_SEC")
+    canGestionCampo: hasMinRole(rolActual, "ADMIN")
   }), [rolActual]);
   const cargarCampoAppUrl = useCallback(async () => {
     const fallbackUrl = getLocalCampoAppUrl();

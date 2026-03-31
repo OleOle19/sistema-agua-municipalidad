@@ -6198,8 +6198,8 @@ app.get("/exportar/padron", async (req, res) => {
       { header: 'DNI / RUC', key: 'dni', width: 15 },
       { header: 'NOMBRE COMPLETO', key: 'nombre', width: 40 },
       { header: 'DIRECCIÓN', key: 'direccion', width: 50 },
-      { header: 'TELÉFONO', key: 'telefono', width: 15 },
       { header: 'DEUDA (S/.)', key: 'deuda', width: 20 },
+      { header: 'MESES DEUDA', key: 'meses_deuda', width: 14 },
       { header: 'ESTADO', key: 'estado', width: 15 }
     ];
     worksheet.getRow(1).font = { bold: true };
@@ -6210,8 +6210,8 @@ app.get("/exportar/padron", async (req, res) => {
         dni: u.dni_ruc,
         nombre: u.nombre_completo,
         direccion: u.direccion_completa,
-        telefono: u.telefono,
         deuda: parseFloat(u.deuda_anio),
+        meses_deuda: Number.parseInt(u.meses_deuda, 10) || 0,
         estado: parseInt(u.meses_deuda) >= 2 ? 'MOROSO' : 'AL DÍA'
       });
       if (parseInt(u.meses_deuda) >= 2) row.getCell('estado').font = { color: { argb: 'FFFF0000' }, bold: true };
