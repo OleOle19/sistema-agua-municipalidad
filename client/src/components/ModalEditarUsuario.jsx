@@ -5,7 +5,7 @@ const normalizeEstadoConexion = (value) => {
   const raw = String(value || "").trim().toUpperCase();
   if (["CON_CONEXION", "CONEXION", "CONECTADO", "ACTIVO"].includes(raw)) return "CON_CONEXION";
   if (["SIN_CONEXION", "SIN CONEXION", "SIN_SERVICIO", "NO_CONECTADO", "INACTIVO"].includes(raw)) return "SIN_CONEXION";
-  if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return "CORTADO";
+  if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return "SIN_CONEXION";
   return "CON_CONEXION";
 };
 const normalizeCodigoMunicipalInput = (value) => {
@@ -15,6 +15,13 @@ const normalizeCodigoMunicipalInput = (value) => {
   if (onlyDigits) return onlyDigits.slice(0, 8).padStart(6, "0");
   return raw.toUpperCase().slice(0, 32);
 };
+const MOTIVOS_CAMBIO_RAZON_SOCIAL = [
+  { value: "FALLECIMIENTO_TITULAR", label: "Fallecimiento del titular" },
+  { value: "TRANSFERENCIA_PROPIEDAD", label: "Transferencia o compra de propiedad" },
+  { value: "TRASPASO_CONYUGAL", label: "Traspaso entre conyuges" },
+  { value: "CORRECCION_DATOS", label: "Correccion de datos registrales" },
+  { value: "OTRO", label: "Otro motivo" }
+];
 
 const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
   const [formData, setFormData] = useState({
@@ -28,12 +35,15 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
     id_calle: "",
     numero_casa: "",
     manzana: "",
-    lote: ""
+    lote: "",
+    motivo_cambio_razon_social: "",
+    detalle_motivo_cambio_razon_social: ""
   });
 
   const [calles, setCalles] = useState([]);
   const [sectores, setSectores] = useState([]);
   const [cargando, setCargando] = useState(true);
+  const [nombreOriginal, setNombreOriginal] = useState("");
 
   useEffect(() => {
     const cargarDatos = async () => {
@@ -57,8 +67,11 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
           id_calle: u.id_calle || "",
           numero_casa: u.numero_casa || "",
           manzana: u.manzana || "",
-          lote: u.lote || ""
+          lote: u.lote || "",
+          motivo_cambio_razon_social: "",
+          detalle_motivo_cambio_razon_social: ""
         });
+        setNombreOriginal(String(u.nombre_completo || ""));
         setCargando(false);
       } catch {
         cerrarModal();
@@ -78,9 +91,25 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const cambioRazonSocial = String(formData.nombre_completo || "").trim().toUpperCase() !== String(nombreOriginal || "").trim().toUpperCase();
+    if (cambioRazonSocial && !formData.motivo_cambio_razon_social) {
+      alert("Debe marcar el motivo del cambio de razon social.");
+      return;
+    }
+    if (cambioRazonSocial && formData.motivo_cambio_razon_social === "OTRO" && !String(formData.detalle_motivo_cambio_razon_social || "").trim()) {
+      alert("Detalle el motivo del cambio de razon social.");
+      return;
+    }
     try {
-      await api.put(`/contribuyentes/${usuario.id_contribuyente}`, formData);
-      alert("Usuario actualizado");
+      const res = await api.put(`/contribuyentes/${usuario.id_contribuyente}`, {
+        ...formData,
+        motivo_cambio_razon_social: cambioRazonSocial ? formData.motivo_cambio_razon_social : null,
+        detalle_motivo_cambio_razon_social: cambioRazonSocial
+          ? String(formData.detalle_motivo_cambio_razon_social || "").trim() || null
+          : null
+      });
+      const recalc = Number(res?.data?.recibos_recalculados || 0);
+      alert(`Usuario actualizado.\nRecibos futuros recalculados: ${recalc}`);
       alGuardar();
       cerrarModal();
     } catch (error) {
@@ -96,6 +125,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
   const sectorActualExiste = sectores.some(
     (s) => String(s?.sec_nombre || "").trim().toLowerCase() === sectorNormalizado
   );
+  const cambioRazonSocial = String(formData.nombre_completo || "").trim().toUpperCase() !== String(nombreOriginal || "").trim().toUpperCase();
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -126,6 +156,38 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                   <div className="col-md-3"><label className="form-label small fw-bold">DNI / RUC</label><input type="text" className={inputClass} name="dni_ruc" value={formData.dni_ruc} onChange={handleChange} /></div>
                   <div className="col-md-3"><label className="form-label small fw-bold">Telefono</label><input type="text" className={inputClass} name="telefono" value={formData.telefono} onChange={handleChange} /></div>
                   <div className="col-md-12"><label className="form-label small fw-bold">Nombre Completo</label><input type="text" className={inputClass} name="nombre_completo" value={formData.nombre_completo} onChange={handleChange} required /></div>
+                  {cambioRazonSocial && (
+                    <>
+                      <div className="col-md-12">
+                        <div className={`border rounded p-2 ${darkMode ? "border-secondary" : "border-warning"}`}>
+                          <div className="small fw-bold mb-2">Motivo de cambio de razon social</div>
+                          <select
+                            className={selectClass}
+                            name="motivo_cambio_razon_social"
+                            value={formData.motivo_cambio_razon_social}
+                            onChange={handleChange}
+                            required
+                          >
+                            <option value="">-- Seleccionar motivo --</option>
+                            {MOTIVOS_CAMBIO_RAZON_SOCIAL.map((motivo) => (
+                              <option key={motivo.value} value={motivo.value}>{motivo.label}</option>
+                            ))}
+                          </select>
+                          {formData.motivo_cambio_razon_social === "OTRO" && (
+                            <textarea
+                              className={`${inputClass} mt-2`}
+                              rows={2}
+                              name="detalle_motivo_cambio_razon_social"
+                              value={formData.detalle_motivo_cambio_razon_social}
+                              onChange={handleChange}
+                              placeholder="Detalle breve del motivo"
+                              required
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
                   <div className="col-md-12">
                     <label className="form-label small fw-bold">Nombre del Sector</label>
                     <select className={selectClass} name="sec_nombre" value={formData.sec_nombre} onChange={handleChange}>
@@ -145,7 +207,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                     <select className={selectClass} name="estado_conexion" value={formData.estado_conexion} onChange={handleChange}>
                       <option value="CON_CONEXION">Con conexion</option>
                       <option value="SIN_CONEXION">Sin conexion</option>
-                      <option value="CORTADO">Corte de conexion</option>
+                      
                     </select>
                   </div>
                 </div>

@@ -24,12 +24,17 @@ const toNum = (v) => {
 };
 
 const round2 = (v) => Math.round((toNum(v) + Number.EPSILON) * 100) / 100;
+const normalizeRuc = (value) => {
+  const raw = String(value || "").replace(/[^\d]/g, "");
+  return /^\d{11}$/.test(raw) ? raw : "";
+};
 
 const ModalPago = ({
   usuario,
   usuarioSistema,
   cerrarModal,
   alGuardar,
+  onImprimirAnexo,
   darkMode,
   realtimeConnected = false,
   realtimeTick = 0
@@ -272,6 +277,63 @@ const ModalPago = ({
     }
   };
 
+  const buildDatosAnexoCaja = (orden) => {
+    const items = Array.isArray(orden?.items) ? orden.items : [];
+    const resumenServicios = items.reduce((acc, it) => ({
+      agua: round2(acc.agua + toNum(it?.subtotal_agua)),
+      desague: round2(acc.desague + toNum(it?.subtotal_desague)),
+      limpieza: round2(acc.limpieza + toNum(it?.subtotal_limpieza)),
+      admin: round2(acc.admin + toNum(it?.subtotal_admin))
+    }), {
+      agua: 0,
+      desague: 0,
+      limpieza: 0,
+      admin: 0
+    });
+    const detalles = [
+      { concepto: "SERVICIO DE AGUA", importe: resumenServicios.agua },
+      { concepto: "SERVICIO DE DESAGUE", importe: resumenServicios.desague },
+      { concepto: "LIMPIEZA PUBLICA", importe: resumenServicios.limpieza },
+      { concepto: "SERVICIO ADMIN", importe: resumenServicios.admin }
+    ].filter((row) => row.importe > 0);
+    const totalOrden = round2(toNum(orden?.total_orden));
+    if (detalles.length === 0 && totalOrden > 0) {
+      detalles.push({ concepto: "SERVICIOS", importe: totalOrden });
+    } else if (detalles.length > 0) {
+      const totalDetalle = round2(detalles.reduce((acc, row) => acc + toNum(row.importe), 0));
+      const diferencia = round2(totalOrden - totalDetalle);
+      if (Math.abs(diferencia) >= 0.01) {
+        const lastIdx = detalles.length - 1;
+        detalles[lastIdx] = {
+          ...detalles[lastIdx],
+          importe: round2(toNum(detalles[lastIdx].importe) + diferencia)
+        };
+      }
+    }
+    const ruc = normalizeRuc(usuario?.ruc) || normalizeRuc(usuario?.dni_ruc);
+    return {
+      entidad: "MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO",
+      entidad_detalle: "ARCO 301  RUC. 20192401004",
+      contribuyente: {
+        codigo_municipal: usuario?.codigo_municipal || "",
+        nombre_completo: usuario?.nombre_completo || "",
+        calle: usuario?.nombre_calle || usuario?.direccion_completa || "",
+        ruc
+      },
+      total: totalOrden,
+      detalles
+    };
+  };
+
+  const imprimirAnexoCaja = () => {
+    if (!isCaja) return;
+    if (!ordenSeleccionada) return alert("Seleccione una orden pendiente.");
+    if (typeof onImprimirAnexo !== "function") {
+      return alert("No se pudo iniciar la impresion del anexo.");
+    }
+    onImprimirAnexo(buildDatosAnexoCaja(ordenSeleccionada));
+  };
+
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
   const listClass = darkMode ? "list-group-item bg-dark text-white border-secondary" : "list-group-item";
 
@@ -400,13 +462,22 @@ const ModalPago = ({
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={cerrarModal} disabled={cargando}>Cerrar</button>
             {isCaja ? (
-              <button
-                className="btn btn-primary fw-bold"
-                onClick={cobrarOrden}
-                disabled={cargando || !ordenSeleccionada}
-              >
-                {cargando ? "Procesando..." : "COBRAR ORDEN"}
-              </button>
+              <>
+                <button
+                  className="btn btn-outline-primary fw-bold"
+                  onClick={imprimirAnexoCaja}
+                  disabled={cargando || !ordenSeleccionada}
+                >
+                  IMPRIMIR ANEXO A4
+                </button>
+                <button
+                  className="btn btn-primary fw-bold"
+                  onClick={cobrarOrden}
+                  disabled={cargando || !ordenSeleccionada}
+                >
+                  {cargando ? "Procesando..." : "COBRAR ORDEN"}
+                </button>
+              </>
             ) : (
               <button
                 className="btn btn-primary fw-bold"

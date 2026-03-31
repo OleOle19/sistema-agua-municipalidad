@@ -9,6 +9,7 @@ import ModalCierre from "./components/ModalCierre";
 import ModalEditarUsuario from "./components/ModalEditarUsuario";
 import DashboardStats from "./components/DashboardStats"; 
 import Recibo from "./components/Recibo"; 
+import ReciboAnexoCaja from "./components/ReciboAnexoCaja";
 import ReporteCortes from "./components/ReporteCortes"; 
 import ActasCorteLote from "./components/ActasCorteLote";
 import ModalAuditoria from "./components/ModalAuditoria";
@@ -58,14 +59,12 @@ const hasMinRole = (role, requiredRole) => {
 
 const ESTADOS_CONEXION = {
   CON_CONEXION: "CON_CONEXION",
-  SIN_CONEXION: "SIN_CONEXION",
-  CORTADO: "CORTADO"
+  SIN_CONEXION: "SIN_CONEXION"
 };
 
 const ESTADO_CONEXION_LABELS = {
   CON_CONEXION: "Con conexion",
-  SIN_CONEXION: "Sin conexion",
-  CORTADO: "Corte de conexion"
+  SIN_CONEXION: "Sin conexion"
 };
 
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
@@ -81,13 +80,12 @@ const normalizeEstadoConexion = (value) => {
   const raw = String(value || "").trim().toUpperCase();
   if (["CON_CONEXION", "CONEXION", "CONECTADO", "ACTIVO"].includes(raw)) return ESTADOS_CONEXION.CON_CONEXION;
   if (["SIN_CONEXION", "SIN CONEXION", "SIN_SERVICIO", "NO_CONECTADO", "INACTIVO"].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
-  if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return ESTADOS_CONEXION.CORTADO;
+  if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
   return ESTADOS_CONEXION.CON_CONEXION;
 };
 
 const badgeEstadoConexionClass = (estado) => {
   const n = normalizeEstadoConexion(estado);
-  if (n === ESTADOS_CONEXION.CORTADO) return "bg-danger";
   if (n === ESTADOS_CONEXION.SIN_CONEXION) return "bg-secondary";
   return "bg-success";
 };
@@ -97,7 +95,7 @@ import {
   FaUserPlus, FaMoneyBillWave, FaFileInvoiceDollar, 
   FaPrint, FaTrashAlt, FaSearch, FaUserEdit, FaUserTimes, 
   FaSort, FaCut, FaShieldAlt, FaFileExcel, FaSignOutAlt, 
-  FaUserShield, FaMoon, FaSun, FaDatabase, FaPlug, FaLink,
+  FaUserShield, FaDatabase, FaPlug, FaLink,
   FaCloudUploadAlt, FaClipboardCheck
 } from "react-icons/fa";
 
@@ -109,7 +107,7 @@ const Sidebar = memo(({
   setMostrarModalPago, setMostrarModalCierre, setMostrarModalAuditoria, 
   setMostrarModalUsuarios, 
   usuarioActivo, onLogout, 
-  darkMode, setDarkMode, descargarPadron,
+  darkMode, descargarPadron,
   setMostrarImportar,
   setMostrarModalExportaciones,
   setMostrarModalCampo,
@@ -217,10 +215,6 @@ const Sidebar = memo(({
     </ul>
     
     <div className="mt-2 pt-2 border-top flex-shrink-0">
-      <button className="btn btn-sm btn-outline-secondary w-100 mb-2 d-flex align-items-center justify-content-center gap-2" onClick={() => setDarkMode(!darkMode)}>
-        {darkMode ? <><FaSun className="text-warning"/> Modo Claro</> : <><FaMoon/> Modo Oscuro</>}
-      </button>
-
       <div className="small text-white-50 mb-1 text-truncate">Usuario: <strong className="text-white">{usuarioActivo?.nombre || 'Invitado'}</strong></div>
       <div className="small text-info mb-2 text-truncate">{permisos.roleLabel}</div>
       <button className="btn btn-outline-danger btn-sm w-100 d-flex align-items-center justify-content-center gap-2" onClick={onLogout}><FaSignOutAlt /> Cerrar Sesion</button>
@@ -240,9 +234,7 @@ const Toolbar = memo(({
   const usuarioConConexion = normalizeEstadoConexion(usuarioSeleccionado?.estado_conexion) === ESTADOS_CONEXION.CON_CONEXION;
   const estadoSeleccionado = normalizeEstadoConexion(usuarioSeleccionado?.estado_conexion);
   const puedeCortar = Boolean(usuarioSeleccionado) && estadoSeleccionado === ESTADOS_CONEXION.CON_CONEXION;
-  const puedeReconectar = Boolean(usuarioSeleccionado) && (
-    estadoSeleccionado === ESTADOS_CONEXION.SIN_CONEXION || estadoSeleccionado === ESTADOS_CONEXION.CORTADO
-  );
+  const puedeReconectar = Boolean(usuarioSeleccionado) && estadoSeleccionado === ESTADOS_CONEXION.SIN_CONEXION;
   return (
   <div className={`${darkMode ? 'bg-secondary border-secondary text-white' : 'bg-light border-bottom'} p-2 d-flex gap-2 align-items-center sticky-top shadow-sm`} style={{ flexWrap: "nowrap", overflowX: "hidden" }} onClick={(e) => e.stopPropagation()}>
     
@@ -261,7 +253,6 @@ const Toolbar = memo(({
         <option value="TODOS">Todos</option>
         <option value="CON_CONEXION">Con conexion</option>
         <option value="SIN_CONEXION">Sin conexion</option>
-        <option value="CORTADO">Cortado</option>
       </select>
     </div>
     
@@ -462,7 +453,7 @@ function AguaApp({ onBackToSelector = null }) {
   const rowHeight = 32;
   const overscan = 24;
 
-  const [darkMode, setDarkMode] = useState(false);
+  const darkMode = false;
   const [refreshDashboard, setRefreshDashboard] = useState(0);
   const [realtimeStatus, setRealtimeStatus] = useState("disabled");
   const [realtimeTick, setRealtimeTick] = useState(0);
@@ -642,6 +633,22 @@ const actaPageStyle = `
   }
 `;
 
+const anexoCajaPageStyle = `
+  @page {
+    size: A4 portrait;
+    margin: 0;
+  }
+  @media print {
+    html, body {
+      margin: 0;
+      padding: 0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      background: #fff !important;
+    }
+  }
+`;
+
   const handlePrintMasivo = useReactToPrint({
     contentRef: masivoRef,
     documentTitle: 'Recibos_Masivos',
@@ -667,10 +674,13 @@ const actaPageStyle = `
   }, [datosMasivos, handlePrintMasivo]);
 
   const componentRef = useRef(null);
+  const anexoCajaRef = useRef(null);
   const isPrintingReciboRef = useRef(false);
+  const isPrintingAnexoCajaRef = useRef(false);
   const cortesRef = useRef(null);
   const actaCorteRef = useRef(null);
   const [datosReciboImprimir, setDatosReciboImprimir] = useState(null);
+  const [datosAnexoCajaImprimir, setDatosAnexoCajaImprimir] = useState(null);
   const [datosActaCorteImprimir, setDatosActaCorteImprimir] = useState([]);
   const [datosCortesImprimir, setDatosCortesImprimir] = useState(null);
   const isPrintingActaRef = useRef(false);
@@ -708,6 +718,15 @@ const actaPageStyle = `
     onAfterPrint: () => {
       isPrintingReciboRef.current = false;
       setDatosReciboImprimir(null);
+    }
+  });
+  const handlePrintAnexoCaja = useReactToPrint({
+    contentRef: anexoCajaRef,
+    documentTitle: "Anexo_Recibo_Agua",
+    pageStyle: anexoCajaPageStyle,
+    onAfterPrint: () => {
+      isPrintingAnexoCajaRef.current = false;
+      setDatosAnexoCajaImprimir(null);
     }
   });
 
@@ -829,6 +848,20 @@ const actaPageStyle = `
     });
     return () => cancelAnimationFrame(raf);
   }, [datosReciboImprimir, handlePrintRecibo]);
+
+  useEffect(() => {
+    if (!datosAnexoCajaImprimir) return;
+    if (isPrintingAnexoCajaRef.current) return;
+    isPrintingAnexoCajaRef.current = true;
+    const raf = requestAnimationFrame(() => {
+      if (anexoCajaRef.current) {
+        handlePrintAnexoCaja();
+      } else {
+        isPrintingAnexoCajaRef.current = false;
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [datosAnexoCajaImprimir, handlePrintAnexoCaja]);
 
   useEffect(() => {
     if (!Array.isArray(datosActaCorteImprimir) || datosActaCorteImprimir.length === 0) return;
@@ -1160,14 +1193,14 @@ const actaPageStyle = `
       alert("El contribuyente ya tiene ese estado.");
       return;
     }
-    if (estadoDestino === ESTADOS_CONEXION.CORTADO && estadoActual !== ESTADOS_CONEXION.CON_CONEXION) {
-      alert("Solo se puede aplicar corte a contribuyentes con conexion activa.");
+    if (estadoDestino === ESTADOS_CONEXION.SIN_CONEXION && estadoActual !== ESTADOS_CONEXION.CON_CONEXION) {
+      alert("Solo se puede pasar a sin conexion desde estado con conexion.");
       return;
     }
 
-    const accion = estadoDestino === ESTADOS_CONEXION.CORTADO ? "aplicar corte" : "reconectar";
-    const motivoDefault = estadoDestino === ESTADOS_CONEXION.CORTADO
-      ? "Corte por morosidad."
+    const accion = estadoDestino === ESTADOS_CONEXION.SIN_CONEXION ? "pasar a sin conexion" : "reconectar";
+    const motivoDefault = estadoDestino === ESTADOS_CONEXION.SIN_CONEXION
+      ? "Suspension por morosidad."
       : "Reconexion por regularizacion de pago.";
     const motivo = window.prompt(`Motivo para ${accion}:`, motivoDefault);
     if (motivo === null) return;
@@ -1184,14 +1217,15 @@ const actaPageStyle = `
         motivo: motivoFinal
       });
       const fechaEvento = res?.data?.fecha_evento ? new Date(res.data.fecha_evento).toLocaleString() : null;
-      alert(`${res?.data?.mensaje || "Estado actualizado."}${fechaEvento ? `\nFecha: ${fechaEvento}` : ""}`);
+      const recalc = Number(res?.data?.recibos_recalculados || 0);
+      alert(`${res?.data?.mensaje || "Estado actualizado."}${fechaEvento ? `\nFecha: ${fechaEvento}` : ""}\nRecibos futuros recalculados: ${recalc}`);
       recargarTodo();
     } catch (error) {
       alert(error?.response?.data?.error || "No se pudo actualizar el estado de conexion.");
     }
   };
 
-  const aplicarCorteSeleccionado = () => cambiarEstadoConexionSeleccionado(ESTADOS_CONEXION.CORTADO);
+  const aplicarCorteSeleccionado = () => cambiarEstadoConexionSeleccionado(ESTADOS_CONEXION.SIN_CONEXION);
   const reconectarSeleccionado = () => cambiarEstadoConexionSeleccionado(ESTADOS_CONEXION.CON_CONEXION);
 
   const eliminarUsuarioCompleto = async () => {
@@ -1511,7 +1545,7 @@ const actaPageStyle = `
       const estadoConexion = c._estadoNorm || normalizeEstadoConexion(c.estado_conexion);
       if (selectedIds.has(c.id_contribuyente)) return "table-active border border-primary border-2";
       if (usuarioSeleccionado?.id_contribuyente === c.id_contribuyente) return "table-primary border-primary"; 
-      if (estadoConexion === ESTADOS_CONEXION.CORTADO) return "table-secondary";
+      if (estadoConexion === ESTADOS_CONEXION.SIN_CONEXION) return "table-secondary";
       if (meses >= 3) return "table-danger"; 
       if (meses === 2) return "table-warning"; 
       return ""; 
@@ -1603,7 +1637,7 @@ const actaPageStyle = `
         setMostrarModalPago={setMostrarModalPago} setMostrarModalCierre={setMostrarModalCierre}
         setMostrarModalAuditoria={setMostrarModalAuditoria} setMostrarModalUsuarios={setMostrarModalUsuarios}
         usuarioActivo={usuarioSistema} onLogout={handleLogout}
-        darkMode={darkMode} setDarkMode={setDarkMode}
+        darkMode={darkMode}
         descargarPadron={descargarPadron}
         setMostrarImportar={setMostrarImportar}
         setMostrarModalExportaciones={setMostrarModalExportaciones}
@@ -1771,7 +1805,7 @@ const actaPageStyle = `
           darkMode={darkMode}
           realtimeConnected={realtimeStatus === "connected"}
           realtimeTick={realtimeTick}
-          onImprimirRecibo={(datos) => setDatosReciboImprimir(datos)}
+          onImprimirAnexo={(datos) => setDatosAnexoCajaImprimir(datos)}
         />
       )}
       {mostrarModalEliminar && usuarioSeleccionado && (<ModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
@@ -1835,6 +1869,10 @@ const actaPageStyle = `
       {/* OCULTOS PARA IMPRESION */}
       <div style={{ position: "fixed", left: "-10000px", top: "0", width: "148mm", height: "auto" }}>
           <Recibo ref={componentRef} datos={datosReciboImprimir} />
+      </div>
+
+      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", height: "106mm", background: "#fff" }}>
+          <ReciboAnexoCaja ref={anexoCajaRef} datos={datosAnexoCajaImprimir} />
       </div>
 
       <div style={{ position: "absolute", width: "0px", height: "0px", overflow: "hidden" }}>

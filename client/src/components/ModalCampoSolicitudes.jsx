@@ -131,11 +131,6 @@ const renderInfoLine = (label, value) => (
     <span className="text-success">{value || "-"}</span>
   </div>
 );
-const csvEscape = (value) => {
-  const text = String(value ?? "");
-  if (/[\",\n]/.test(text)) return `"${text.replace(/\"/g, "\"\"")}"`;
-  return text;
-};
 
 const estadoBadgeClass = (estado) => {
   if (estado === "APROBADO") return "bg-success";
@@ -168,6 +163,7 @@ const getSeguimientoTone = (tipo, darkMode) => {
 
 const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl }) => {
   const [filtroEstado, setFiltroEstado] = useState("PENDIENTE");
+  const [busquedaContribuyente, setBusquedaContribuyente] = useState("");
   const [organizarPor, setOrganizarPor] = useState("FECHA");
   const [ordenGrupo, setOrdenGrupo] = useState("DESC");
   const [ordenItems, setOrdenItems] = useState("DESC");
@@ -223,7 +219,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
       setError("");
       setMensaje("");
       await api.post(`/campo/solicitudes/${id}/${accion}`, payload);
-      setMensaje(accion === "aprobar" ? "Solicitud aprobada y aplicada." : "Solicitud rechazada.");
+      setMensaje(accion === "aprobar" ? "Solicitud aprobada (sin aplicación automática)." : "Solicitud rechazada.");
       await cargarSolicitudes();
       if (onAplicado) onAplicado();
     } catch (err) {
@@ -259,6 +255,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
       metadata.seguimiento_motivo
       || (visitadoSN === "N" && hasObservacion ? "NO_VISITADO|OBSERVACION" : (visitadoSN === "N" ? "NO_VISITADO" : (hasObservacion ? "OBSERVACION" : "")))
     );
+    const contribuyenteLabel = isAltaPredio
+      ? String(s?.nombre_verificado || "").trim()
+      : String(s?.nombre_actual_db || "").trim();
     const montosAbono = parseMontosList(metadata.montos_mensuales_24m);
     const montosAbonoTxt = montosAbono.length > 0 ? montosAbono.map((n) => n.toFixed(2)).join(", ") : "-";
     const calleRaw = String(s?.nombre_calle_db || metadata?.nombre_calle || metadata?.calle || "").trim();
@@ -315,6 +314,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
       servicios: { aguaNuevo, desagueNuevo, limpiezaNuevo },
       seguimientoPendiente,
       seguimientoMotivo,
+      contribuyenteLabel,
       visitadoSN,
       hasObservacion,
       montosAbonoTxt,
@@ -326,9 +326,15 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
     };
   }), [solicitudes]);
 
+  const rowsFiltrados = useMemo(() => {
+    const needle = String(busquedaContribuyente || "").trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter((row) => String(row?.contribuyenteLabel || "").toLowerCase().includes(needle));
+  }, [rows, busquedaContribuyente]);
+
   const groupedRows = useMemo(() => {
     const groups = new Map();
-    rows.forEach((row) => {
+    rowsFiltrados.forEach((row) => {
       if (organizarPor === "CALLE") {
         const label = String(row?.calleLabel || "").trim() || "Sin calle";
         const key = normalizeText(label) || "SIN_CALLE";
@@ -356,7 +362,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
     }
     const factor = ordenGrupo === "ASC" ? 1 : -1;
     return list.sort((a, b) => factor * (Number(a.sortValue || 0) - Number(b.sortValue || 0)));
-  }, [rows, organizarPor, ordenGrupo, ordenItems]);
+  }, [rowsFiltrados, organizarPor, ordenGrupo, ordenItems]);
 
   const totalVisibleSolicitudes = useMemo(
     () => groupedRows.reduce((acc, g) => acc + g.items.length, 0),
@@ -370,69 +376,56 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
   const tableClass = `table mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
   const inputClass = `form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
   const campoHref = campoAppUrl || `${API_BASE_URL}/campo-app/`;
-  const generarInformeEmpadronados = () => {
-    const sourceRows = groupedRows.flatMap((group) => group.items);
-    if (sourceRows.length === 0) {
-      alert("No hay solicitudes visibles para generar informe.");
-      return;
-    }
-
-    const headers = [
-      "id_solicitud",
-      "fecha_registro",
-      "estado_solicitud",
-      "solicitante",
-      "calle",
-      "codigo_municipal",
-      "contribuyente",
-      "tipo_solicitud",
-      "direccion_reportada",
-      "verificacion",
-      "motivo_no_verificacion",
-      "pendiente_proxima_visita",
-      "inspector",
-      "observacion"
-    ];
-
-    const lines = sourceRows.map(({ solicitud: s, metadata, tipoSolicitud, seguimientoPendiente, verificacionEstado, verificacionMotivo, calleLabel }) => {
-      const isAltaPredio = tipoSolicitud === "ALTA_PREDIO" || tipoSolicitud === "ALTA_PREDIO_TEMPORAL";
-      const tipoTxt = TIPO_SOLICITUD_LABELS[tipoSolicitud] || tipoSolicitud || "ACTUALIZACION";
-      const direccionTxt = String(s?.direccion_verificada || metadata?.referencia_direccion || "").trim();
-      const contribuyenteTxt = isAltaPredio
-        ? String(s?.nombre_verificado || "Sin nombre").trim()
-        : String(s?.nombre_actual_db || "").trim();
-      const values = [
-        Number(s?.id_solicitud || 0),
-        formatDateTime(s?.creado_en),
-        String(s?.estado_solicitud || ""),
-        String(s?.nombre_solicitante || ""),
-        String(calleLabel || ""),
-        String(s?.codigo_municipal || (isAltaPredio ? "PREDIO-NUEVO" : "")),
-        contribuyenteTxt,
-        tipoTxt,
-        direccionTxt,
-        verificacionEstado === "NO_VERIFICADO" ? "No verificado" : "Verificado",
-        verificacionMotivoLabel(verificacionMotivo),
-        seguimientoPendiente ? "SI" : "NO",
-        String(metadata?.inspector || ""),
-        String(s?.observacion_campo || "")
+  const generarInformeEmpadronados = async () => {
+    try {
+      setError("");
+      setMensaje("");
+      const requestConfig = {
+        params: {
+          estado: filtroEstado,
+          limit: 5000,
+          organizar_por: organizarPor,
+          orden_grupo: ordenGrupo,
+          orden_items: ordenItems
+        },
+        responseType: "blob"
+      };
+      let res = null;
+      let lastError = null;
+      const endpoints = [
+        "/campo/solicitudes/reporte-empadronados",
+        "/campo/solicitudes/reporte-empadronados.xlsx"
       ];
-      return values.map(csvEscape).join(",");
-    });
-
-    const csv = [headers.map(csvEscape).join(","), ...lines].join("\n");
-    const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `informe_empadronados_${stamp}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    setMensaje(`Informe generado: ${sourceRows.length} registro(s) exportado(s).`);
-    setError("");
+      for (const endpoint of endpoints) {
+        try {
+          res = await api.get(endpoint, requestConfig);
+          break;
+        } catch (err) {
+          lastError = err;
+          if (Number(err?.response?.status || 0) === 404) continue;
+          throw err;
+        }
+      }
+      if (!res) throw lastError || new Error("No se pudo generar el informe Excel.");
+      const disposition = String(res?.headers?.["content-disposition"] || "");
+      const fileNameMatch = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
+      const fileName = decodeURIComponent(fileNameMatch?.[1] || fileNameMatch?.[2] || "").trim() || `informe_empadronados_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const blob = new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      const totalUsuarios = Number(res?.headers?.["x-total-usuarios"] || 0);
+      setMensaje(totalUsuarios > 0
+        ? `Informe Excel generado: ${totalUsuarios} usuario(s).`
+        : "Informe Excel generado correctamente.");
+    } catch (err) {
+      setError(err?.response?.data?.error || "No se pudo generar el informe Excel.");
+    }
   };
 
   return (
@@ -478,6 +471,14 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                   <option key={op.value} value={op.value}>{op.label}</option>
                 ))}
               </select>
+              <input
+                type="text"
+                className={`form-control form-control-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
+                style={{ maxWidth: "240px" }}
+                placeholder="Buscar contribuyente..."
+                value={busquedaContribuyente}
+                onChange={(e) => setBusquedaContribuyente(e.target.value)}
+              />
               <select
                 className={inputClass}
                 style={{ maxWidth: "260px" }}
@@ -491,8 +492,8 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
               <button type="button" className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" onClick={cargarSolicitudes} disabled={cargando}>
                 <FaSyncAlt /> Recargar
               </button>
-              <button type="button" className="btn btn-sm btn-outline-success d-flex align-items-center gap-1" onClick={generarInformeEmpadronados} disabled={cargando || totalVisibleSolicitudes === 0}>
-                <FaFileDownload /> Generar informe
+              <button type="button" className="btn btn-sm btn-outline-success d-flex align-items-center gap-1" onClick={() => generarInformeEmpadronados()} disabled={cargando}>
+                <FaFileDownload /> Excel Usuarios
               </button>
               <a href={campoHref} target="_blank" rel="noreferrer" className="btn btn-sm btn-outline-info d-flex align-items-center gap-1">
                 <FaMobileAlt /> Abrir App Campo
@@ -597,7 +598,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                                   Estado: <strong>{s.estado_conexion_actual}</strong> {"->"} <strong>{s.estado_conexion_nuevo}</strong>
                                 </div>
                                 <div className="mt-1">
-                                  Visitado: <strong>{metadata.visitado_sn || "N"}</strong> | Cortado: <strong>{metadata.cortado_sn || "N"}</strong>
+                                  Visitado: <strong>{metadata.visitado_sn || "N"}</strong> | Estado nuevo: <strong>{s.estado_conexion_nuevo || "-"}</strong>
                                 </div>
                                 <div className="mt-1">
                                   Servicios: Agua <strong>{servicios.aguaNuevo}</strong> | Desague <strong>{servicios.desagueNuevo}</strong> | Limpieza <strong>{servicios.limpiezaNuevo}</strong>

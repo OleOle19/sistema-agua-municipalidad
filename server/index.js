@@ -241,8 +241,7 @@ const AUTO_DEUDA_BASE = {
 const AUDIT_REDACT_KEYS = new Set(["password", "token", "archivo"]);
 const ESTADOS_CONEXION = {
   CON_CONEXION: "CON_CONEXION",
-  SIN_CONEXION: "SIN_CONEXION",
-  CORTADO: "CORTADO"
+  SIN_CONEXION: "SIN_CONEXION"
 };
 const FUENTES_ESTADO_CONEXION = {
   INFERIDO: "INFERIDO",
@@ -267,6 +266,13 @@ const ESTADOS_ORDEN_COBRO = {
   ANULADA: "ANULADA"
 };
 const FUENTE_SOLICITUD_CAMPO = "APP_CAMPO";
+const MOTIVOS_CAMBIO_RAZON_SOCIAL_VALIDOS = new Set([
+  "FALLECIMIENTO_TITULAR",
+  "TRANSFERENCIA_PROPIEDAD",
+  "TRASPASO_CONYUGAL",
+  "CORRECCION_DATOS",
+  "OTRO"
+]);
 const LOGIN_RATE_LIMIT_WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || (10 * 60 * 1000));
 const LOGIN_RATE_LIMIT_MAX_ATTEMPTS = Number(process.env.LOGIN_RATE_LIMIT_MAX_ATTEMPTS || 25);
 const LOGIN_LOCK_THRESHOLD = Number(process.env.LOGIN_LOCK_THRESHOLD || 5);
@@ -298,7 +304,7 @@ const normalizeEstadoConexion = (value) => {
   ].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
   if ([
     "CORTADO", "CORTE", "SUSPENDIDO", "SUSPENSION"
-  ].includes(raw)) return ESTADOS_CONEXION.CORTADO;
+  ].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
   return ESTADOS_CONEXION.CON_CONEXION;
 };
 
@@ -313,7 +319,7 @@ const tryNormalizeEstadoConexion = (value) => {
   ].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
   if ([
     "CORTADO", "CORTE", "SUSPENDIDO", "SUSPENSION"
-  ].includes(raw)) return ESTADOS_CONEXION.CORTADO;
+  ].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
   return null;
 };
 
@@ -353,6 +359,20 @@ const normalizeSN = (value, fallback = "N") => {
   if (["S", "1", "SI", "TRUE", "Y", "YES"].includes(raw)) return "S";
   if (["N", "0", "NO", "FALSE"].includes(raw)) return "N";
   return fallback;
+};
+const normalizeMotivoCambioRazonSocial = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (!raw) return "";
+  return MOTIVOS_CAMBIO_RAZON_SOCIAL_VALIDOS.has(raw) ? raw : "";
+};
+const motivoCambioRazonSocialLabel = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (raw === "FALLECIMIENTO_TITULAR") return "Fallecimiento del titular";
+  if (raw === "TRANSFERENCIA_PROPIEDAD") return "Transferencia de propiedad";
+  if (raw === "TRASPASO_CONYUGAL") return "Traspaso conyugal";
+  if (raw === "CORRECCION_DATOS") return "Correccion de datos";
+  if (raw === "OTRO") return "Otro";
+  return raw;
 };
 
 const normalizeDateOnly = (value) => {
@@ -434,9 +454,11 @@ const recalcularRecibosFuturosPorServicios = async (
   const montoDesague = roundMonto2(parseMonto(montosBase?.desague, AUTO_DEUDA_BASE.desague));
   const montoLimpieza = roundMonto2(parseMonto(montosBase?.limpieza, AUTO_DEUDA_BASE.limpieza));
   const montoAdmin = roundMonto2(parseMonto(montosBase?.admin, AUTO_DEUDA_BASE.admin));
-  const periodo = Number.isFinite(Number(desdePeriodoNum))
+  const periodoSolicitado = Number.isFinite(Number(desdePeriodoNum))
     ? Number(desdePeriodoNum)
     : getNextPeriod().periodoNum;
+  const periodoMinimoFuturo = getNextPeriod().periodoNum;
+  const periodo = Math.max(periodoSolicitado, periodoMinimoFuturo);
 
   const resultado = await client.query(`
     WITH objetivo AS (
@@ -551,9 +573,6 @@ const resolveCalleIdByNombre = async (client, calleNombreRaw, fallbackIdCalle = 
 
 const estadoConexionToPredio = (estadoConexion) => {
   const estado = normalizeEstadoConexion(estadoConexion);
-  if (estado === ESTADOS_CONEXION.CORTADO) {
-    return { activo_sn: "N", estado_servicio: "CORTADO" };
-  }
   if (estado === ESTADOS_CONEXION.SIN_CONEXION) {
     return { activo_sn: "N", estado_servicio: "SIN_CONEXION" };
   }
@@ -867,6 +886,7 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/campo\/offline-snapshot$/, minRole: "BRIGADA" },
   { methods: ["POST"], pattern: /^\/campo\/solicitudes$/, minRole: "BRIGADA" },
   { methods: ["GET"], pattern: /^\/campo\/seguimiento(\/|$)/, minRole: "BRIGADA" },
+  { methods: ["GET"], pattern: /^\/campo\/solicitudes\/reporte-empadronados(?:\.xlsx)?$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/campo\/solicitudes$/, minRole: "ADMIN_SEC" },
   { methods: ["POST"], pattern: /^\/campo\/solicitudes\/\d+\/aprobar$/, minRole: "ADMIN_SEC" },
   { methods: ["POST"], pattern: /^\/campo\/solicitudes\/\d+\/rechazar$/, minRole: "ADMIN_SEC" },
@@ -1207,14 +1227,16 @@ const ensureEstadoConexionContribuyentes = async (client) => {
   await client.query(`
     UPDATE contribuyentes c
     SET estado_conexion = CASE
-      WHEN UPPER(COALESCE(TRIM(c.estado_conexion), '')) IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO')
+      WHEN UPPER(COALESCE(TRIM(c.estado_conexion), '')) IN ('CON_CONEXION', 'SIN_CONEXION')
         THEN UPPER(TRIM(c.estado_conexion))
+      WHEN UPPER(COALESCE(TRIM(c.estado_conexion), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
+        THEN 'SIN_CONEXION'
       WHEN EXISTS (
         SELECT 1
         FROM predios p
         WHERE p.id_contribuyente = c.id_contribuyente
-          AND UPPER(COALESCE(p.estado_servicio, '')) = 'CORTADO'
-      ) THEN 'CORTADO'
+          AND UPPER(COALESCE(p.estado_servicio, '')) IN ('CORTADO', 'SIN_CONEXION')
+      ) THEN 'SIN_CONEXION'
       WHEN EXISTS (
         SELECT 1
         FROM predios p
@@ -1224,21 +1246,35 @@ const ensureEstadoConexionContribuyentes = async (client) => {
       ELSE 'SIN_CONEXION'
     END
     WHERE c.estado_conexion IS NULL
-       OR UPPER(COALESCE(TRIM(c.estado_conexion), '')) NOT IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO')
+       OR UPPER(COALESCE(TRIM(c.estado_conexion), '')) NOT IN ('CON_CONEXION', 'SIN_CONEXION')
   `);
   await client.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conname = 'chk_contribuyentes_estado_conexion'
-      ) THEN
-        ALTER TABLE contribuyentes
-        ADD CONSTRAINT chk_contribuyentes_estado_conexion
-        CHECK (estado_conexion IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO'));
-      END IF;
-    END $$;
+    ALTER TABLE contribuyentes
+    DROP CONSTRAINT IF EXISTS chk_contribuyentes_estado_conexion
+  `);
+  await client.query(`
+    ALTER TABLE contribuyentes
+    ADD CONSTRAINT chk_contribuyentes_estado_conexion
+    CHECK (estado_conexion IN ('CON_CONEXION', 'SIN_CONEXION'))
+  `);
+  await client.query(`
+    UPDATE predios p
+    SET
+      estado_servicio = CASE
+        WHEN UPPER(COALESCE(TRIM(c.estado_conexion), 'CON_CONEXION')) = 'CON_CONEXION' THEN 'ACTIVO'
+        ELSE 'SIN_CONEXION'
+      END,
+      activo_sn = CASE
+        WHEN UPPER(COALESCE(TRIM(c.estado_conexion), 'CON_CONEXION')) = 'CON_CONEXION' THEN 'S'
+        ELSE 'N'
+      END
+    FROM contribuyentes c
+    WHERE c.id_contribuyente = p.id_contribuyente
+      AND (
+        UPPER(COALESCE(TRIM(p.estado_servicio), '')) IN ('ACTIVO', 'SIN_CONEXION', 'CORTADO')
+        OR p.estado_servicio IS NULL
+        OR p.activo_sn IS NULL
+      )
   `);
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_contribuyentes_estado_conexion
@@ -1267,6 +1303,14 @@ const ensureEstadoConexionContribuyentes = async (client) => {
   await client.query(`
     ALTER TABLE contribuyentes
     ADD COLUMN IF NOT EXISTS estado_conexion_motivo_ultimo TEXT
+  `);
+  await client.query(`
+    ALTER TABLE contribuyentes
+    ADD COLUMN IF NOT EXISTS razon_social_motivo_ultimo TEXT
+  `);
+  await client.query(`
+    ALTER TABLE contribuyentes
+    ADD COLUMN IF NOT EXISTS razon_social_actualizado_en TIMESTAMP NULL
   `);
   await client.query(`
     UPDATE contribuyentes
@@ -1370,16 +1414,18 @@ const ensurePrediosDireccionAlterna = async (client) => {
     END $$;
   `);
   await client.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'chk_predios_dir_alt_estado_conexion'
-      ) THEN
-        ALTER TABLE predios_direcciones_alternas
-        ADD CONSTRAINT chk_predios_dir_alt_estado_conexion
-        CHECK (estado_conexion IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO'));
-      END IF;
-    END $$;
+    UPDATE predios_direcciones_alternas
+    SET estado_conexion = 'SIN_CONEXION'
+    WHERE UPPER(COALESCE(TRIM(estado_conexion), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
+  `);
+  await client.query(`
+    ALTER TABLE predios_direcciones_alternas
+    DROP CONSTRAINT IF EXISTS chk_predios_dir_alt_estado_conexion
+  `);
+  await client.query(`
+    ALTER TABLE predios_direcciones_alternas
+    ADD CONSTRAINT chk_predios_dir_alt_estado_conexion
+    CHECK (estado_conexion IN ('CON_CONEXION', 'SIN_CONEXION'))
   `);
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_predios_dir_alt_contribuyente
@@ -1467,28 +1513,39 @@ const ensureCampoSolicitudesTable = async (client) => {
     CHECK (tipo_solicitud IN ('ACTUALIZACION', 'ALTA_DIRECCION_ALTERNA', 'ALTA_PREDIO', 'ALTA_PREDIO_TEMPORAL'))
   `);
   await client.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'chk_campo_solicitudes_estado_actual'
-      ) THEN
-        ALTER TABLE campo_solicitudes
-        ADD CONSTRAINT chk_campo_solicitudes_estado_actual
-        CHECK (estado_conexion_actual IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO'));
-      END IF;
-    END $$;
+    UPDATE campo_solicitudes
+    SET
+      estado_conexion_actual = CASE
+        WHEN UPPER(COALESCE(TRIM(estado_conexion_actual), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
+          THEN 'SIN_CONEXION'
+        ELSE estado_conexion_actual
+      END,
+      estado_conexion_nuevo = CASE
+        WHEN UPPER(COALESCE(TRIM(estado_conexion_nuevo), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
+          THEN 'SIN_CONEXION'
+        ELSE estado_conexion_nuevo
+      END
+    WHERE
+      UPPER(COALESCE(TRIM(estado_conexion_actual), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
+      OR UPPER(COALESCE(TRIM(estado_conexion_nuevo), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
   `);
   await client.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'chk_campo_solicitudes_estado_nuevo'
-      ) THEN
-        ALTER TABLE campo_solicitudes
-        ADD CONSTRAINT chk_campo_solicitudes_estado_nuevo
-        CHECK (estado_conexion_nuevo IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO'));
-      END IF;
-    END $$;
+    ALTER TABLE campo_solicitudes
+    DROP CONSTRAINT IF EXISTS chk_campo_solicitudes_estado_actual
+  `);
+  await client.query(`
+    ALTER TABLE campo_solicitudes
+    ADD CONSTRAINT chk_campo_solicitudes_estado_actual
+    CHECK (estado_conexion_actual IN ('CON_CONEXION', 'SIN_CONEXION'))
+  `);
+  await client.query(`
+    ALTER TABLE campo_solicitudes
+    DROP CONSTRAINT IF EXISTS chk_campo_solicitudes_estado_nuevo
+  `);
+  await client.query(`
+    ALTER TABLE campo_solicitudes
+    ADD CONSTRAINT chk_campo_solicitudes_estado_nuevo
+    CHECK (estado_conexion_nuevo IN ('CON_CONEXION', 'SIN_CONEXION'))
   `);
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_campo_solicitudes_estado
@@ -2668,11 +2725,14 @@ app.post("/campo/solicitudes", async (req, res) => {
     const row = actual.rows[0];
     const estadoActual = normalizeEstadoConexion(row.estado_conexion);
     const visitadoSN = normalizeSN(req.body?.visitado_sn, "N");
-    const cortadoSN = normalizeSN(req.body?.cortado_sn, "N");
-    const estadoSolicitado = normalizeEstadoConexion(req.body?.estado_conexion_nuevo || estadoActual);
-    const estadoNuevo = cortadoSN === "S" ? ESTADOS_CONEXION.CORTADO : estadoSolicitado;
+    const cortadoSNLegacy = normalizeSN(req.body?.cortado_sn, "N");
+    const estadoSolicitado = normalizeEstadoConexion(
+      req.body?.estado_conexion_nuevo
+      || (cortadoSNLegacy === "S" ? ESTADOS_CONEXION.SIN_CONEXION : estadoActual)
+    );
+    const estadoNuevo = estadoSolicitado;
     const fechaCorte = normalizeDateOnly(req.body?.fecha_corte) || null;
-    const fechaCorteFinal = cortadoSN === "S" ? (fechaCorte || toISODate()) : fechaCorte;
+    const fechaCorteFinal = fechaCorte;
     const inspector = normalizeLimitedText(req.body?.inspector, 120) || null;
     const motivoObs = normalizeLimitedText(req.body?.motivo_obs, 1200) || null;
     const nombreVerificado = normalizeLimitedText(req.body?.nombre_verificado, 200) || null;
@@ -2707,7 +2767,7 @@ app.post("/campo/solicitudes", async (req, res) => {
       ...metadataInput,
       formato: "REPORTE_CORTES",
       visitado_sn: visitadoSN,
-      cortado_sn: cortadoSN,
+      cortado_sn: estadoNuevo === ESTADOS_CONEXION.SIN_CONEXION ? "S" : "N",
       fecha_corte: fechaCorteFinal,
       motivo_obs: motivoObs,
       inspector: inspector || normalizeLimitedText(req.user?.nombre || req.user?.username || "", 120),
@@ -2765,7 +2825,6 @@ app.post("/campo/solicitudes", async (req, res) => {
       estadoNuevo !== estadoActual ||
       visitadoSN === "S" ||
       visitadoSN === "N" ||
-      cortadoSN === "S" ||
       Boolean(fechaCorteFinal) ||
       Boolean(inspector) ||
       Boolean(motivoObs) ||
@@ -2940,6 +2999,356 @@ app.get("/campo/solicitudes", async (req, res) => {
   }
 });
 
+const exportarReporteEmpadronados = async (req, res) => {
+  try {
+    const estadoRaw = String(req.query?.estado || "TODOS").trim().toUpperCase();
+    const organizarPor = String(req.query?.organizar_por || "CALLE").trim().toUpperCase() === "CALLE" ? "CALLE" : "NOMBRE";
+    const ordenGrupo = String(req.query?.orden_grupo || "ASC").trim().toUpperCase() === "DESC" ? "DESC" : "ASC";
+    const ordenItems = String(req.query?.orden_items || "ASC").trim().toUpperCase() === "DESC" ? "DESC" : "ASC";
+
+    const sql = `
+      WITH predio_base AS (
+        SELECT
+          c.id_contribuyente,
+          c.codigo_municipal,
+          c.sec_cod,
+          c.sec_nombre,
+          c.dni_ruc,
+          c.nombre_completo,
+          c.email,
+          c.telefono,
+          COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
+          COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion_fuente)), ''), 'INFERIDO') AS estado_conexion_fuente,
+          COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion_verificado_sn)), ''), 'N') AS estado_conexion_verificado_sn,
+          c.estado_conexion_fecha_verificacion,
+          c.estado_conexion_motivo_ultimo,
+          c.razon_social_motivo_ultimo,
+          c.razon_social_actualizado_en,
+          p.id_predio,
+          p.id_calle,
+          p.numero_casa,
+          p.manzana,
+          p.lote,
+          p.referencia_direccion,
+          p.direccion_alterna,
+          p.id_tarifa,
+          p.tipo_tarifa,
+          COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+          COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+          COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+          COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+          COALESCE(NULLIF(UPPER(TRIM(p.estado_servicio)), ''), '') AS estado_servicio,
+          COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle,
+          ${buildDireccionSql("ca", "p")} AS direccion_completa
+        FROM contribuyentes c
+        LEFT JOIN LATERAL (
+          SELECT
+            id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion,
+            direccion_alterna, id_tarifa, tipo_tarifa, agua_sn, desague_sn,
+            limpieza_sn, activo_sn, estado_servicio
+          FROM predios
+          WHERE id_contribuyente = c.id_contribuyente
+          ORDER BY id_predio ASC
+          LIMIT 1
+        ) p ON TRUE
+        LEFT JOIN calles ca ON ca.id_calle = p.id_calle
+      ),
+      solicitudes_stats AS (
+        SELECT
+          s.id_contribuyente,
+          COUNT(*)::int AS total_solicitudes,
+          COUNT(*) FILTER (WHERE s.estado_solicitud = 'PENDIENTE')::int AS solicitudes_pendientes,
+          COUNT(*) FILTER (WHERE s.estado_solicitud = 'APROBADO')::int AS solicitudes_aprobadas,
+          COUNT(*) FILTER (WHERE s.estado_solicitud = 'RECHAZADO')::int AS solicitudes_rechazadas,
+          MAX(s.creado_en) AS ultima_solicitud
+        FROM campo_solicitudes s
+        WHERE s.id_contribuyente IS NOT NULL
+        GROUP BY s.id_contribuyente
+      ),
+      recibos_base AS (
+        SELECT
+          r.id_recibo,
+          p.id_contribuyente,
+          r.anio,
+          r.mes,
+          COALESCE(r.subtotal_agua, 0) AS subtotal_agua,
+          COALESCE(r.subtotal_desague, 0) AS subtotal_desague,
+          COALESCE(r.subtotal_limpieza, 0) AS subtotal_limpieza,
+          COALESCE(r.subtotal_admin, 0) AS subtotal_admin,
+          COALESCE(r.total_pagar, 0) AS total_pagar
+        FROM recibos r
+        JOIN predios p ON p.id_predio = r.id_predio
+      ),
+      pagos_por_recibo AS (
+        SELECT p.id_recibo, SUM(p.monto_pagado)::numeric AS total_pagado
+        FROM pagos p
+        GROUP BY p.id_recibo
+      ),
+      recibos_calc AS (
+        SELECT
+          rb.*,
+          COALESCE(ppr.total_pagado, 0) AS total_pagado,
+          GREATEST(rb.total_pagar - COALESCE(ppr.total_pagado, 0), 0) AS saldo_pendiente
+        FROM recibos_base rb
+        LEFT JOIN pagos_por_recibo ppr ON ppr.id_recibo = rb.id_recibo
+      ),
+      fin_agg AS (
+        SELECT
+          rc.id_contribuyente,
+          COUNT(*)::int AS total_recibos_emitidos,
+          SUM(rc.total_pagar)::numeric AS facturado_total,
+          SUM(rc.total_pagado)::numeric AS pagado_total,
+          SUM(rc.saldo_pendiente)::numeric AS deuda_pendiente_total,
+          COUNT(*) FILTER (WHERE rc.saldo_pendiente > 0)::int AS meses_con_deuda,
+          MAX((rc.anio * 100) + rc.mes) AS ultimo_periodo_num,
+          SUM(rc.subtotal_agua)::numeric AS cargo_agua_historico,
+          SUM(rc.subtotal_desague)::numeric AS cargo_desague_historico,
+          SUM(rc.subtotal_limpieza)::numeric AS cargo_limpieza_historico,
+          SUM(rc.subtotal_admin)::numeric AS cargo_admin_historico
+        FROM recibos_calc rc
+        GROUP BY rc.id_contribuyente
+      ),
+      ultimo_periodo AS (
+        SELECT id_contribuyente, MAX((anio * 100) + mes) AS periodo_num
+        FROM recibos_base
+        GROUP BY id_contribuyente
+      ),
+      ultimo_mes AS (
+        SELECT
+          rb.id_contribuyente,
+          rb.anio,
+          rb.mes,
+          SUM(rb.subtotal_agua)::numeric AS cargo_agua_ultimo_mes,
+          SUM(rb.subtotal_desague)::numeric AS cargo_desague_ultimo_mes,
+          SUM(rb.subtotal_limpieza)::numeric AS cargo_limpieza_ultimo_mes,
+          SUM(rb.subtotal_admin)::numeric AS cargo_admin_ultimo_mes,
+          SUM(rb.total_pagar)::numeric AS total_cargo_ultimo_mes
+        FROM recibos_base rb
+        JOIN ultimo_periodo up
+          ON up.id_contribuyente = rb.id_contribuyente
+          AND up.periodo_num = ((rb.anio * 100) + rb.mes)
+        GROUP BY rb.id_contribuyente, rb.anio, rb.mes
+      )
+      SELECT
+        pb.*,
+        COALESCE(ss.total_solicitudes, 0) AS total_solicitudes,
+        COALESCE(ss.solicitudes_pendientes, 0) AS solicitudes_pendientes,
+        COALESCE(ss.solicitudes_aprobadas, 0) AS solicitudes_aprobadas,
+        COALESCE(ss.solicitudes_rechazadas, 0) AS solicitudes_rechazadas,
+        ss.ultima_solicitud,
+        CASE WHEN ss.id_contribuyente IS NULL THEN 'N' ELSE 'S' END AS visitado_campo_sn,
+        COALESCE(fa.total_recibos_emitidos, 0) AS total_recibos_emitidos,
+        COALESCE(fa.facturado_total, 0) AS facturado_total,
+        COALESCE(fa.pagado_total, 0) AS pagado_total,
+        COALESCE(fa.deuda_pendiente_total, 0) AS deuda_pendiente_total,
+        COALESCE(fa.meses_con_deuda, 0) AS meses_con_deuda,
+        fa.ultimo_periodo_num,
+        COALESCE(fa.cargo_agua_historico, 0) AS cargo_agua_historico,
+        COALESCE(fa.cargo_desague_historico, 0) AS cargo_desague_historico,
+        COALESCE(fa.cargo_limpieza_historico, 0) AS cargo_limpieza_historico,
+        COALESCE(fa.cargo_admin_historico, 0) AS cargo_admin_historico,
+        COALESCE(um.cargo_agua_ultimo_mes, 0) AS cargo_agua_ultimo_mes,
+        COALESCE(um.cargo_desague_ultimo_mes, 0) AS cargo_desague_ultimo_mes,
+        COALESCE(um.cargo_limpieza_ultimo_mes, 0) AS cargo_limpieza_ultimo_mes,
+        COALESCE(um.cargo_admin_ultimo_mes, 0) AS cargo_admin_ultimo_mes,
+        COALESCE(um.total_cargo_ultimo_mes, 0) AS total_cargo_ultimo_mes,
+        um.anio AS ultimo_anio,
+        um.mes AS ultimo_mes
+      FROM predio_base pb
+      LEFT JOIN solicitudes_stats ss ON ss.id_contribuyente = pb.id_contribuyente
+      LEFT JOIN fin_agg fa ON fa.id_contribuyente = pb.id_contribuyente
+      LEFT JOIN ultimo_mes um ON um.id_contribuyente = pb.id_contribuyente
+    `;
+    const data = await pool.query(sql);
+
+    const toDateText = (value) => {
+      if (!value) return "";
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("es-PE");
+    };
+    const toPeriod = (anio, mes, fallbackNum) => {
+      const y = Number(anio || 0);
+      const m = Number(mes || 0);
+      if (y > 0 && m > 0) return `${y}-${String(m).padStart(2, "0")}`;
+      const n = Number(fallbackNum || 0);
+      if (!n) return "";
+      return `${Math.floor(n / 100)}-${String(n % 100).padStart(2, "0")}`;
+    };
+
+    let filtroVisita = "TODOS";
+    if (["VISITADOS", "CON_SOLICITUD", "EMPADRONADOS"].includes(estadoRaw)) filtroVisita = "VISITADOS";
+    if (["NO_VISITADOS", "SIN_SOLICITUD"].includes(estadoRaw)) filtroVisita = "NO_VISITADOS";
+
+    const rows = (Array.isArray(data.rows) ? data.rows : [])
+      .map((row) => {
+        const visitado = String(row?.visitado_campo_sn || "N") === "S";
+        return {
+          ...row,
+          visitado_campo_sn: visitado ? "S" : "N",
+          grupo_campo: visitado ? "VISITADO_CAMPO" : "NO_VISITADO"
+        };
+      })
+      .filter((row) => {
+        if (filtroVisita === "VISITADOS") return row.visitado_campo_sn === "S";
+        if (filtroVisita === "NO_VISITADOS") return row.visitado_campo_sn === "N";
+        return true;
+      });
+
+    rows.sort((a, b) => {
+      const rankA = a.visitado_campo_sn === "S" ? 0 : 1;
+      const rankB = b.visitado_campo_sn === "S" ? 0 : 1;
+      const groupFactor = ordenGrupo === "DESC" ? -1 : 1;
+      if (rankA !== rankB) return groupFactor * (rankA - rankB);
+
+      const itemFactor = ordenItems === "DESC" ? -1 : 1;
+      if (organizarPor === "CALLE") {
+        const calleA = String(a.nombre_calle || "").trim() || "Sin calle";
+        const calleB = String(b.nombre_calle || "").trim() || "Sin calle";
+        const byStreet = calleA.localeCompare(calleB, "es", { sensitivity: "base" });
+        if (byStreet !== 0) return itemFactor * byStreet;
+      }
+
+      const nombreA = String(a.nombre_completo || "").trim();
+      const nombreB = String(b.nombre_completo || "").trim();
+      const byName = nombreA.localeCompare(nombreB, "es", { sensitivity: "base" });
+      if (byName !== 0) return itemFactor * byName;
+
+      const codA = String(a.codigo_municipal || "");
+      const codB = String(b.codigo_municipal || "");
+      return itemFactor * codA.localeCompare(codB, "es", { sensitivity: "base" });
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const wsUsuarios = workbook.addWorksheet("Usuarios");
+    wsUsuarios.columns = [
+      { header: "grupo_campo", key: "grupo_campo", width: 20 },
+      { header: "visitado_campo_sn", key: "visitado_campo_sn", width: 16 },
+      { header: "total_solicitudes", key: "total_solicitudes", width: 16 },
+      { header: "solicitudes_pendientes", key: "solicitudes_pendientes", width: 20 },
+      { header: "solicitudes_aprobadas", key: "solicitudes_aprobadas", width: 20 },
+      { header: "solicitudes_rechazadas", key: "solicitudes_rechazadas", width: 20 },
+      { header: "ultima_solicitud", key: "ultima_solicitud", width: 24 },
+      { header: "id_contribuyente", key: "id_contribuyente", width: 16 },
+      { header: "codigo_municipal", key: "codigo_municipal", width: 16 },
+      { header: "sec_cod", key: "sec_cod", width: 12 },
+      { header: "sec_nombre", key: "sec_nombre", width: 28 },
+      { header: "dni_ruc", key: "dni_ruc", width: 18 },
+      { header: "nombre_completo", key: "nombre_completo", width: 36 },
+      { header: "email", key: "email", width: 30 },
+      { header: "telefono", key: "telefono", width: 16 },
+      { header: "estado_conexion", key: "estado_conexion", width: 18 },
+      { header: "estado_conexion_fuente", key: "estado_conexion_fuente", width: 18 },
+      { header: "estado_conexion_verificado_sn", key: "estado_conexion_verificado_sn", width: 22 },
+      { header: "estado_conexion_fecha_verificacion", key: "estado_conexion_fecha_verificacion", width: 24 },
+      { header: "estado_conexion_motivo_ultimo", key: "estado_conexion_motivo_ultimo", width: 34 },
+      { header: "razon_social_motivo_ultimo", key: "razon_social_motivo_ultimo", width: 30 },
+      { header: "razon_social_actualizado_en", key: "razon_social_actualizado_en", width: 24 },
+      { header: "id_predio", key: "id_predio", width: 12 },
+      { header: "id_calle", key: "id_calle", width: 12 },
+      { header: "nombre_calle", key: "nombre_calle", width: 24 },
+      { header: "direccion_completa", key: "direccion_completa", width: 42 },
+      { header: "direccion_alterna", key: "direccion_alterna", width: 36 },
+      { header: "referencia_direccion", key: "referencia_direccion", width: 34 },
+      { header: "numero_casa", key: "numero_casa", width: 14 },
+      { header: "manzana", key: "manzana", width: 12 },
+      { header: "lote", key: "lote", width: 12 },
+      { header: "agua_sn", key: "agua_sn", width: 10 },
+      { header: "desague_sn", key: "desague_sn", width: 12 },
+      { header: "limpieza_sn", key: "limpieza_sn", width: 12 },
+      { header: "activo_sn", key: "activo_sn", width: 10 },
+      { header: "estado_servicio", key: "estado_servicio", width: 18 },
+      { header: "id_tarifa", key: "id_tarifa", width: 12 },
+      { header: "tipo_tarifa", key: "tipo_tarifa", width: 14 }
+    ];
+
+    const wsFin = workbook.addWorksheet("Financiero");
+    wsFin.columns = [
+      { header: "grupo_campo", key: "grupo_campo", width: 20 },
+      { header: "visitado_campo_sn", key: "visitado_campo_sn", width: 16 },
+      { header: "id_contribuyente", key: "id_contribuyente", width: 16 },
+      { header: "codigo_municipal", key: "codigo_municipal", width: 16 },
+      { header: "nombre_completo", key: "nombre_completo", width: 34 },
+      { header: "nombre_calle", key: "nombre_calle", width: 24 },
+      { header: "direccion_completa", key: "direccion_completa", width: 42 },
+      { header: "agua_sn", key: "agua_sn", width: 10 },
+      { header: "desague_sn", key: "desague_sn", width: 12 },
+      { header: "limpieza_sn", key: "limpieza_sn", width: 12 },
+      { header: "tipo_tarifa", key: "tipo_tarifa", width: 14 },
+      { header: "total_recibos_emitidos", key: "total_recibos_emitidos", width: 18 },
+      { header: "facturado_total", key: "facturado_total", width: 16 },
+      { header: "pagado_total", key: "pagado_total", width: 16 },
+      { header: "deuda_pendiente_total", key: "deuda_pendiente_total", width: 20 },
+      { header: "meses_con_deuda", key: "meses_con_deuda", width: 16 },
+      { header: "periodo_ultimo_recibo", key: "periodo_ultimo_recibo", width: 18 },
+      { header: "cargo_agua_ultimo_mes", key: "cargo_agua_ultimo_mes", width: 18 },
+      { header: "cargo_desague_ultimo_mes", key: "cargo_desague_ultimo_mes", width: 20 },
+      { header: "cargo_limpieza_ultimo_mes", key: "cargo_limpieza_ultimo_mes", width: 20 },
+      { header: "cargo_admin_ultimo_mes", key: "cargo_admin_ultimo_mes", width: 18 },
+      { header: "total_cargo_ultimo_mes", key: "total_cargo_ultimo_mes", width: 20 },
+      { header: "cargo_agua_historico", key: "cargo_agua_historico", width: 18 },
+      { header: "cargo_desague_historico", key: "cargo_desague_historico", width: 20 },
+      { header: "cargo_limpieza_historico", key: "cargo_limpieza_historico", width: 20 },
+      { header: "cargo_admin_historico", key: "cargo_admin_historico", width: 18 }
+    ];
+
+    rows.forEach((row) => {
+      wsUsuarios.addRow({
+        ...row,
+        ultima_solicitud: toDateText(row.ultima_solicitud),
+        estado_conexion_fecha_verificacion: row.estado_conexion_fecha_verificacion ? String(row.estado_conexion_fecha_verificacion).slice(0, 10) : "",
+        razon_social_actualizado_en: toDateText(row.razon_social_actualizado_en)
+      });
+
+      wsFin.addRow({
+        ...row,
+        periodo_ultimo_recibo: toPeriod(row.ultimo_anio, row.ultimo_mes, row.ultimo_periodo_num)
+      });
+    });
+
+    const toExcelColumnName = (index) => {
+      let n = Number(index || 0);
+      let out = "";
+      while (n > 0) {
+        const rem = (n - 1) % 26;
+        out = String.fromCharCode(65 + rem) + out;
+        n = Math.floor((n - 1) / 26);
+      }
+      return out || "A";
+    };
+
+    [wsUsuarios, wsFin].forEach((ws) => {
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+      const lastCol = toExcelColumnName(ws.columns.length);
+      ws.autoFilter = { from: "A1", to: `${lastCol}1` };
+      ws.getRow(1).font = { bold: true };
+      ws.getRow(1).fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFE8EEF9" }
+      };
+      ws.eachRow((rowWs, rowNumber) => {
+        if (rowNumber === 1) return;
+        rowWs.eachCell((cell) => {
+          cell.alignment = { vertical: "top", wrapText: true };
+        });
+      });
+    });
+
+    const fechaSafe = toISODate().replace(/-/g, "");
+    res.setHeader("X-Total-Usuarios", String(rows.length));
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename=informe_usuarios_campo_${fechaSafe}.xlsx`);
+    await workbook.xlsx.write(res);
+    return res.end();
+  } catch (err) {
+    console.error("Error exportando informe empadronados:", err);
+    return res.status(500).json({ error: "Error generando informe Excel de empadronados." });
+  }
+};
+
+app.get("/campo/solicitudes/reporte-empadronados", exportarReporteEmpadronados);
+app.get("/campo/solicitudes/reporte-empadronados.xlsx", exportarReporteEmpadronados);
+
 app.get("/campo/seguimiento", async (req, res) => {
   try {
     const estadoRaw = String(req.query?.estado || "AMBOS").trim().toUpperCase();
@@ -3029,6 +3438,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     }
 
     const motivoRevision = normalizeLimitedText(req.body?.motivo_revision, 500) || null;
+    const aplicarCambiosSN = normalizeSN(req.body?.aplicar_cambios_sn, "N");
 
     await client.query("BEGIN");
     await ensureEstadoConexionEventosTable(client);
@@ -3056,6 +3466,45 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       solicitud.tipo_solicitud || metadataSolicitud.tipo_solicitud,
       TIPOS_SOLICITUD_CAMPO.ACTUALIZACION
     );
+
+    if (aplicarCambiosSN !== "S") {
+      await client.query(`
+        UPDATE campo_solicitudes
+        SET estado_solicitud = $1,
+            motivo_revision = $2,
+            id_usuario_revision = $3,
+            revisado_en = NOW(),
+            actualizado_en = NOW(),
+            metadata = COALESCE(metadata, '{}'::jsonb)
+              || jsonb_build_object(
+                'aplicacion_automatica_sn', 'N',
+                'aplicacion_pendiente_sn', 'S',
+                'aprobado_sin_aplicar_por', COALESCE($4::text, '')
+              )
+        WHERE id_solicitud = $5
+      `, [
+        ESTADOS_SOLICITUD_CAMPO.APROBADO,
+        motivoRevision,
+        req.user?.id_usuario || null,
+        req.user?.username || req.user?.nombre || "SISTEMA",
+        idSolicitud
+      ]);
+
+      await registrarAuditoria(
+        client,
+        "CAMPO_SOLICITUD_APROBADA",
+        `Solicitud ${idSolicitud} (${tipoSolicitud}) aprobada sin aplicación automática.`,
+        req.user?.nombre || req.user?.username || "SISTEMA"
+      );
+
+      await client.query("COMMIT");
+      return res.json({
+        mensaje: "Solicitud aprobada. No se aplicaron cambios automáticos.",
+        id_solicitud: idSolicitud,
+        tipo_solicitud: tipoSolicitud,
+        aplicada_automaticamente: false
+      });
+    }
 
     if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO) {
       await client.query(`
@@ -3632,7 +4081,8 @@ app.put("/contribuyentes/:id", async (req, res) => {
     const { id } = req.params;
     const {
       nombre_completo, codigo_municipal, sec_cod, sec_nombre,
-      dni_ruc, email, telefono, id_calle, numero_casa, manzana, lote, estado_conexion
+      dni_ruc, email, telefono, id_calle, numero_casa, manzana, lote, estado_conexion,
+      motivo_cambio_razon_social, detalle_motivo_cambio_razon_social
     } = req.body;
     const codigoMunicipal = normalizeCodigoMunicipal(codigo_municipal);
     const codigoSistema = sec_cod ? String(sec_cod).trim() : null;
@@ -3662,6 +4112,35 @@ app.put("/contribuyentes/:id", async (req, res) => {
     }
     
     await client.query('BEGIN');
+    const actualData = await client.query(
+      `SELECT nombre_completo
+       FROM contribuyentes
+       WHERE id_contribuyente = $1
+       FOR UPDATE`,
+      [id]
+    );
+    if (actualData.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Contribuyente no encontrado." });
+    }
+
+    const nombreAnterior = normalizeLimitedText(actualData.rows[0].nombre_completo, 200) || "";
+    const nombreNuevo = normalizeLimitedText(nombre_completo, 200) || "";
+    const cambioRazonSocial = String(nombreNuevo || "").trim().toUpperCase() !== String(nombreAnterior || "").trim().toUpperCase();
+    const motivoCambioRazonSocial = normalizeMotivoCambioRazonSocial(motivo_cambio_razon_social);
+    const detalleMotivoRazonSocial = normalizeLimitedText(detalle_motivo_cambio_razon_social, 300) || "";
+    if (cambioRazonSocial && !motivoCambioRazonSocial) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Debe indicar el motivo del cambio de razon social." });
+    }
+    if (cambioRazonSocial && motivoCambioRazonSocial === "OTRO" && !detalleMotivoRazonSocial) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Debe detallar el motivo de cambio de razon social." });
+    }
+    const motivoRazonSocialTexto = cambioRazonSocial
+      ? (motivoCambioRazonSocial === "OTRO" ? `OTRO: ${detalleMotivoRazonSocial}` : motivoCambioRazonSocial)
+      : null;
+
     await client.query(
       `UPDATE contribuyentes
        SET nombre_completo = $1,
@@ -3674,17 +4153,32 @@ app.put("/contribuyentes/:id", async (req, res) => {
            estado_conexion = $8,
            estado_conexion_fuente = 'OFICINA',
            estado_conexion_verificado_sn = 'N',
-           estado_conexion_fecha_verificacion = NULL
+           estado_conexion_fecha_verificacion = NULL,
+           razon_social_motivo_ultimo = CASE WHEN $10::boolean THEN $11 ELSE razon_social_motivo_ultimo END,
+           razon_social_actualizado_en = CASE WHEN $10::boolean THEN NOW() ELSE razon_social_actualizado_en END
        WHERE id_contribuyente = $9`,
-      [nombre_completo, codigoMunicipal, codigoSistema, sec_nombre || null, dni_ruc, email, telefono, estadoConexion, id]
+      [nombreNuevo, codigoMunicipal, codigoSistema, sec_nombre || null, dni_ruc, email, telefono, estadoConexion, id, cambioRazonSocial, motivoRazonSocialTexto]
     );
     await client.query(
       "UPDATE predios SET id_calle = $1, numero_casa = $2, manzana = $3, lote = $4, activo_sn = $5, estado_servicio = $6 WHERE id_contribuyente = $7",
       [id_calle, numero_casa, manzana, lote, predioEstado.activo_sn, predioEstado.estado_servicio, id]
     );
+    const recalcManual = await recalcularRecibosFuturosPorServicios(client, id);
+    const recibosRecalculados = Number(recalcManual?.actualizados || 0);
+    if (cambioRazonSocial) {
+      const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
+      const motivoLabel = motivoCambioRazonSocialLabel(motivoCambioRazonSocial);
+      const extraOtro = motivoCambioRazonSocial === "OTRO" ? ` (${detalleMotivoRazonSocial})` : "";
+      await registrarAuditoria(
+        client,
+        "CAMBIO_RAZON_SOCIAL",
+        `contribuyente=${id}; codigo_municipal=${codigoMunicipal}; anterior=${nombreAnterior}; nuevo=${nombreNuevo}; motivo=${motivoLabel}${extraOtro}`,
+        usuarioAuditoria
+      );
+    }
     await client.query('COMMIT');
     invalidateContribuyentesCache();
-    res.json({ mensaje: "Datos actualizados correctamente" });
+    res.json({ mensaje: "Datos actualizados correctamente", recibos_recalculados: recibosRecalculados });
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '23505') {
@@ -3738,11 +4232,6 @@ app.post("/contribuyentes/:id/estado-conexion", async (req, res) => {
       return res.status(400).json({ error: "El contribuyente ya tiene ese estado de conexión." });
     }
 
-    if (estadoDestino === ESTADOS_CONEXION.CORTADO && estadoActual !== ESTADOS_CONEXION.CON_CONEXION) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Solo se puede cortar a contribuyentes con conexión activa." });
-    }
-
     if (estadoDestino === ESTADOS_CONEXION.CON_CONEXION && estadoActual === ESTADOS_CONEXION.CON_CONEXION) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "El contribuyente ya está con conexión activa." });
@@ -3764,6 +4253,8 @@ app.post("/contribuyentes/:id/estado-conexion", async (req, res) => {
       "UPDATE predios SET activo_sn = $1, estado_servicio = $2 WHERE id_contribuyente = $3",
       [predioEstado.activo_sn, predioEstado.estado_servicio, idContribuyente]
     );
+    const recalc = await recalcularRecibosFuturosPorServicios(client, idContribuyente);
+    const recibosRecalculados = Number(recalc?.actualizados || 0);
 
     const evento = await client.query(`
       INSERT INTO estado_conexion_eventos (
@@ -3794,7 +4285,8 @@ app.post("/contribuyentes/:id/estado-conexion", async (req, res) => {
       estado_anterior: estadoActual,
       estado_nuevo: estadoDestino,
       fecha_evento: evento.rows[0].creado_en,
-      id_evento: Number(evento.rows[0].id_evento)
+      id_evento: Number(evento.rows[0].id_evento),
+      recibos_recalculados: recibosRecalculados
     });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
@@ -5747,8 +6239,8 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
     }
     if (modo === "morosos") {
       where.push("COALESCE(rp.meses_deuda_total, 0) >= 2");
-    } else if (modo === "cortados") {
-      where.push("COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CORTADO'");
+    } else if (modo === "cortados" || modo === "sin_conexion") {
+      where.push("COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'SIN_CONEXION'");
     }
 
     const sql = `
@@ -5851,7 +6343,7 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
     [
       "1) Use la hoja Verificacion_Campo para imprimir o digitar resultados de visita.",
       "2) Complete CODIGO y los campos *_VERIFICADO si hubo cambio.",
-      "3) En ESTADO_CONEXION_VERIFICADO use: CON_CONEXION, SIN_CONEXION o CORTADO.",
+      "3) En ESTADO_CONEXION_VERIFICADO use: CON_CONEXION o SIN_CONEXION.",
       "4) FECHA_VERIFICACION_CAMPO en formato YYYY-MM-DD o DD/MM/YYYY.",
       "5) Luego sincronice cambios desde la app de campo o por API interna."
     ].forEach((txt) => wsAyuda.addRow({ txt }));
@@ -8058,7 +8550,10 @@ app.post("/recibos/masivos", async (req, res) => {
       LEFT JOIN calles ca ON p.id_calle = ca.id_calle
       LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-      WHERE r.anio = $1 AND r.mes = ANY($2::int[]) ${filtro}
+      WHERE r.anio = $1
+        AND r.mes = ANY($2::int[])
+        AND COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'
+        ${filtro}
       ORDER BY r.mes ASC, ca.nombre ASC, p.numero_casa ASC, c.nombre_completo ASC
     `;
     
@@ -8648,18 +9143,31 @@ const getFechaLocalPartes = (timeZone = AUTO_DEUDA_TIMEZONE, fecha = new Date())
 const generarDeudaMensualAutomatica = async () => {
   if (!AUTO_DEUDA_ACTIVA || autoDeudaEnCurso) return;
 
-  const { anio, mes, dia, hora } = getFechaLocalPartes();
-  if (dia !== 1 || hora !== 0) return;
+  const { anio, mes, dia, hora, minuto } = getFechaLocalPartes();
+  const diasDelMesActual = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+  const esCierreMes = dia === diasDelMesActual && hora === 23 && minuto >= 55;
+  const esInicioMes = dia === 1 && hora === 0 && minuto <= 10;
+  if (!esCierreMes && !esInicioMes) return;
 
-  const periodo = `${anio}-${String(mes).padStart(2, "0")}`;
+  let anioObjetivo = anio;
+  let mesObjetivo = mes;
+  if (esCierreMes) {
+    mesObjetivo += 1;
+    if (mesObjetivo > 12) {
+      mesObjetivo = 1;
+      anioObjetivo += 1;
+    }
+  }
+
+  const periodo = `${anioObjetivo}-${String(mesObjetivo).padStart(2, "0")}`;
   if (ultimoPeriodoAutoDeuda === periodo) return;
 
   autoDeudaEnCurso = true;
   const client = await pool.connect();
   try {
     const params = [
-      anio,
-      mes,
+      anioObjetivo,
+      mesObjetivo,
       AUTO_DEUDA_BASE.agua,
       AUTO_DEUDA_BASE.desague,
       AUTO_DEUDA_BASE.limpieza,
@@ -8731,7 +9239,7 @@ const iniciarTareaAutoDeuda = () => {
     : 60 * 60 * 1000;
   const intervalo = Math.min(intervaloBase, 60 * 1000);
   if (intervaloBase > intervalo) {
-    console.log(`[AUTO_DEUDA] Intervalo ajustado a ${intervalo}ms para ejecución precisa a las 00:00 (${AUTO_DEUDA_TIMEZONE}).`);
+    console.log(`[AUTO_DEUDA] Intervalo ajustado a ${intervalo}ms para ejecución precisa al cierre de mes (${AUTO_DEUDA_TIMEZONE}).`);
   }
 
   generarDeudaMensualAutomatica().catch((err) => {

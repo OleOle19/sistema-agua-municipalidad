@@ -98,7 +98,7 @@
     desagueSn: document.getElementById("desagueSn"),
     limpiezaSn: document.getElementById("limpiezaSn"),
     visitadoSn: document.getElementById("visitadoSn"),
-    cortadoSn: document.getElementById("cortadoSn"),
+    estadoConexionNuevo: document.getElementById("estadoConexionNuevo"),
     fechaCorte: document.getElementById("fechaCorte"),
     motivoObs: document.getElementById("motivoObs"),
     inspector: document.getElementById("inspector"),
@@ -159,6 +159,12 @@
     if (normalized === "S" || normalized === "SI") return "S";
     if (normalized === "N" || normalized === "NO") return "N";
     return String(fallback || "S").trim().toUpperCase() === "N" ? "N" : "S";
+  }
+  function normalizeEstadoConexion(value, fallback) {
+    const normalized = String(value || "").trim().toUpperCase();
+    if (["CON_CONEXION", "CONEXION", "ACTIVO", "EN_SERVICIO"].includes(normalized)) return "CON_CONEXION";
+    if (["SIN_CONEXION", "SIN CONEXION", "INACTIVO", "SIN_SERVICIO", "CORTADO", "CORTE", "SUSPENDIDO"].includes(normalized)) return "SIN_CONEXION";
+    return String(fallback || "CON_CONEXION").trim().toUpperCase() === "SIN_CONEXION" ? "SIN_CONEXION" : "CON_CONEXION";
   }
   function normalizeTipoSolicitud(value, fallback) {
     const normalized = String(value || "").trim().toUpperCase();
@@ -1050,10 +1056,12 @@
         const aguaSn = normalizeSN(c.agua_sn, "S");
         const desagueSn = normalizeSN(c.desague_sn, "S");
         const limpiezaSn = normalizeSN(c.limpieza_sn, "S");
+        const estadoConexion = normalizeEstadoConexion(c.estado_conexion, "CON_CONEXION");
         state.selectedId = id;
         el.selectedInfo.textContent =
           "Seleccionado: " + (c.codigo_municipal || "SIN-CODIGO") + " - " + (c.nombre_completo || "Sin nombre") +
           " | Servicios: Agua " + aguaSn + " | Desague " + desagueSn + " | Limpieza " + limpiezaSn +
+          " | Estado: " + (estadoConexion === "CON_CONEXION" ? "CON CONEXION" : "SIN CONEXION") +
           (direccionAlterna ? (" | Dir. alterna: " + direccionAlterna) : "");
         if (el.tipoSolicitud) el.tipoSolicitud.value = TIPOS_SOLICITUD.ACTUALIZACION;
         renderTipoSolicitudHint();
@@ -1068,6 +1076,7 @@
         el.aguaSn.value = aguaSn;
         el.desagueSn.value = desagueSn;
         if (el.limpiezaSn) el.limpiezaSn.value = limpiezaSn;
+        if (el.estadoConexionNuevo) el.estadoConexionNuevo.value = estadoConexion;
         el.inspector.value = String((state.user && state.user.nombre) || "");
         updateDuplicateWarning(id);
         renderResults();
@@ -1306,9 +1315,10 @@
   }
 
   function resetForm() {
-    el.visitadoSn.value = "N"; el.cortadoSn.value = "N"; el.fechaCorte.value = ""; el.motivoObs.value = "";
+    el.visitadoSn.value = "N"; el.fechaCorte.value = ""; el.motivoObs.value = "";
     el.aguaSn.value = "S"; el.desagueSn.value = "S";
     if (el.limpiezaSn) el.limpiezaSn.value = "S";
+    if (el.estadoConexionNuevo) el.estadoConexionNuevo.value = "CON_CONEXION";
     if (el.tipoSolicitud) el.tipoSolicitud.value = TIPOS_SOLICITUD.ACTUALIZACION;
     renderTipoSolicitudHint();
     el.nombreVerificado.value = ""; el.dniVerificado.value = ""; el.direccionVerificada.value = ""; el.inspector.value = String((state.user && state.user.nombre) || "");
@@ -1489,8 +1499,8 @@
       agua_sn: normalizeSN(el.aguaSn.value, "S"),
       desague_sn: normalizeSN(el.desagueSn.value, "S"),
       limpieza_sn: normalizeSN(el.limpiezaSn && el.limpiezaSn.value, "S"),
+      estado_conexion_nuevo: normalizeEstadoConexion(el.estadoConexionNuevo && el.estadoConexionNuevo.value, "CON_CONEXION"),
       visitado_sn: String(el.visitadoSn.value || "N").toUpperCase() === "S" ? "S" : "N",
-      cortado_sn: String(el.cortadoSn.value || "N").toUpperCase() === "S" ? "S" : "N",
       fecha_corte: String(el.fechaCorte.value || "").trim() || null,
       inspector: inspector || null,
       motivo_obs: obsFinal || null,
