@@ -40,6 +40,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
     tarifa_desague: "",
     tarifa_limpieza: "",
     tarifa_admin: "",
+    tarifa_extra: "",
     motivo_cambio_razon_social: "",
     detalle_motivo_cambio_razon_social: ""
   });
@@ -76,6 +77,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
           tarifa_desague: u.tarifa_desague ?? "",
           tarifa_limpieza: u.tarifa_limpieza ?? "",
           tarifa_admin: u.tarifa_admin ?? "",
+          tarifa_extra: u.tarifa_extra ?? "",
           motivo_cambio_razon_social: "",
           detalle_motivo_cambio_razon_social: ""
         });
@@ -237,6 +239,10 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                         <div className="col-md-3">
                           <label className="form-label small">Admin</label>
                           <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_admin" value={formData.tarifa_admin} onChange={handleChange} placeholder="0.50" />
+                        </div>
+                        <div className="col-md-3">
+                          <label className="form-label small">Extra</label>
+                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_extra" value={formData.tarifa_extra} onChange={handleChange} placeholder="0.00" />
                         </div>
                       </div>
                       <div className="small text-muted mt-2">
