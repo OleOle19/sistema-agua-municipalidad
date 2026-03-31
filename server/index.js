@@ -434,6 +434,14 @@ const parsePositiveMonto = (value) => {
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   return parsed;
 };
+const parseOptionalTarifaMonto = (value) => {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const parsed = roundMonto2(parseMonto(raw, Number.NaN));
+  if (!Number.isFinite(parsed) || parsed < 0) return "__INVALID__";
+  return parsed;
+};
 const clampArray = (rows, max = 200) => {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, Math.max(1, Math.min(1000, max)));
@@ -466,22 +474,22 @@ const recalcularRecibosFuturosPorServicios = async (
         r.id_recibo,
         CASE
           WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.agua_sn, 'S')) = 'S'
-            THEN CASE WHEN COALESCE(r.subtotal_agua, 0) > 0 THEN COALESCE(r.subtotal_agua, 0) ELSE $2::numeric END
+            THEN COALESCE(p.tarifa_agua, $2::numeric)
           ELSE 0::numeric
         END AS nuevo_agua,
         CASE
           WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.desague_sn, 'S')) = 'S'
-            THEN CASE WHEN COALESCE(r.subtotal_desague, 0) > 0 THEN COALESCE(r.subtotal_desague, 0) ELSE $3::numeric END
+            THEN COALESCE(p.tarifa_desague, $3::numeric)
           ELSE 0::numeric
         END AS nuevo_desague,
         CASE
           WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S'
-            THEN CASE WHEN COALESCE(r.subtotal_limpieza, 0) > 0 THEN COALESCE(r.subtotal_limpieza, 0) ELSE $4::numeric END
+            THEN COALESCE(p.tarifa_limpieza, $4::numeric)
           ELSE 0::numeric
         END AS nuevo_limpieza,
         CASE
           WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S'
-            THEN CASE WHEN COALESCE(r.subtotal_admin, 0) > 0 THEN COALESCE(r.subtotal_admin, 0) ELSE $5::numeric END
+            THEN COALESCE(p.tarifa_admin, $5::numeric)
           ELSE 0::numeric
         END AS nuevo_admin
       FROM recibos r
@@ -1380,6 +1388,36 @@ const ensurePrediosDireccionAlterna = async (client) => {
   await client.query(`
     ALTER TABLE predios
     ADD COLUMN IF NOT EXISTS direccion_alterna TEXT NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS tarifa_agua NUMERIC(12, 2) NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS tarifa_desague NUMERIC(12, 2) NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS tarifa_limpieza NUMERIC(12, 2) NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS tarifa_admin NUMERIC(12, 2) NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    DROP CONSTRAINT IF EXISTS chk_predios_tarifas_non_negative
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD CONSTRAINT chk_predios_tarifas_non_negative
+    CHECK (
+      (tarifa_agua IS NULL OR tarifa_agua >= 0) AND
+      (tarifa_desague IS NULL OR tarifa_desague >= 0) AND
+      (tarifa_limpieza IS NULL OR tarifa_limpieza >= 0) AND
+      (tarifa_admin IS NULL OR tarifa_admin >= 0)
+    )
   `);
   await client.query(`
     CREATE TABLE IF NOT EXISTS predios_direcciones_alternas (
@@ -3980,6 +4018,7 @@ app.get("/contribuyentes", async (req, res) => {
              p.id_predio, 
              ${buildDireccionSql("ca", "p")} as direccion_completa,
              p.id_calle, p.numero_casa, p.manzana, p.lote,
+             p.tarifa_agua, p.tarifa_desague, p.tarifa_limpieza, p.tarifa_admin,
              
              COALESCE(rp.deuda_total, 0) as deuda_anio,
              COALESCE(rp.abono_total, 0) as abono_anio,
@@ -4018,7 +4057,8 @@ app.get("/contribuyentes/detalle/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const data = await pool.query(`
-      SELECT c.*, p.id_calle, p.numero_casa, p.manzana, p.lote, p.referencia_direccion 
+      SELECT c.*, p.id_calle, p.numero_casa, p.manzana, p.lote, p.referencia_direccion,
+             p.tarifa_agua, p.tarifa_desague, p.tarifa_limpieza, p.tarifa_admin
       FROM contribuyentes c
       LEFT JOIN predios p ON c.id_contribuyente = p.id_contribuyente
       WHERE c.id_contribuyente = $1
@@ -4082,7 +4122,8 @@ app.put("/contribuyentes/:id", async (req, res) => {
     const {
       nombre_completo, codigo_municipal, sec_cod, sec_nombre,
       dni_ruc, email, telefono, id_calle, numero_casa, manzana, lote, estado_conexion,
-      motivo_cambio_razon_social, detalle_motivo_cambio_razon_social
+      motivo_cambio_razon_social, detalle_motivo_cambio_razon_social,
+      tarifa_agua, tarifa_desague, tarifa_limpieza, tarifa_admin
     } = req.body;
     const codigoMunicipal = normalizeCodigoMunicipal(codigo_municipal);
     const codigoSistema = sec_cod ? String(sec_cod).trim() : null;
@@ -4109,6 +4150,13 @@ app.put("/contribuyentes/:id", async (req, res) => {
       if (exSistema.rows.length > 0) {
         return res.status(400).json({ error: "El código de sistema ya pertenece a otro contribuyente." });
       }
+    }
+    const tarifaAgua = parseOptionalTarifaMonto(tarifa_agua);
+    const tarifaDesague = parseOptionalTarifaMonto(tarifa_desague);
+    const tarifaLimpieza = parseOptionalTarifaMonto(tarifa_limpieza);
+    const tarifaAdmin = parseOptionalTarifaMonto(tarifa_admin);
+    if ([tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin].includes("__INVALID__")) {
+      return res.status(400).json({ error: "Tarifas inválidas. Deben ser números mayores o iguales a 0." });
     }
     
     await client.query('BEGIN');
@@ -4160,8 +4208,19 @@ app.put("/contribuyentes/:id", async (req, res) => {
       [nombreNuevo, codigoMunicipal, codigoSistema, sec_nombre || null, dni_ruc, email, telefono, estadoConexion, id, cambioRazonSocial, motivoRazonSocialTexto]
     );
     await client.query(
-      "UPDATE predios SET id_calle = $1, numero_casa = $2, manzana = $3, lote = $4, activo_sn = $5, estado_servicio = $6 WHERE id_contribuyente = $7",
-      [id_calle, numero_casa, manzana, lote, predioEstado.activo_sn, predioEstado.estado_servicio, id]
+      `UPDATE predios
+       SET id_calle = $1,
+           numero_casa = $2,
+           manzana = $3,
+           lote = $4,
+           activo_sn = $5,
+           estado_servicio = $6,
+           tarifa_agua = $8,
+           tarifa_desague = $9,
+           tarifa_limpieza = $10,
+           tarifa_admin = $11
+       WHERE id_contribuyente = $7`,
+      [id_calle, numero_casa, manzana, lote, predioEstado.activo_sn, predioEstado.estado_servicio, id, tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin]
     );
     const recalcManual = await recalcularRecibosFuturosPorServicios(client, id);
     const recibosRecalculados = Number(recalcManual?.actualizados || 0);
@@ -4393,6 +4452,10 @@ app.post("/recibos", async (req, res) => {
         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+        p.tarifa_agua,
+        p.tarifa_desague,
+        p.tarifa_limpieza,
+        p.tarifa_admin,
         COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
       FROM predios p
       JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
@@ -4404,9 +4467,12 @@ app.post("/recibos", async (req, res) => {
       return res.status(400).json({ error: "El contribuyente no tiene conexion activa para generar deuda." });
     }
     
-    // Aquí podrías consultar la tabla 'tarifas' si la usas, por defecto usamos valores fijos o del body
-    // Para simplificar uso valores fijos pero puedes ajustarlos
-    const base = { agua: 7.5, desague: 3.5, limpieza: 3.5, admin: 0.5 };
+    const base = {
+      agua: parseMonto(predio.rows[0].tarifa_agua, AUTO_DEUDA_BASE.agua),
+      desague: parseMonto(predio.rows[0].tarifa_desague, AUTO_DEUDA_BASE.desague),
+      limpieza: parseMonto(predio.rows[0].tarifa_limpieza, AUTO_DEUDA_BASE.limpieza),
+      admin: parseMonto(predio.rows[0].tarifa_admin, AUTO_DEUDA_BASE.admin)
+    };
     const activoSN = normalizeSN(predio.rows[0].activo_sn, "S");
     const aguaHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].agua_sn, "S") === "S";
     const desagueHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].desague_sn, "S") === "S";
@@ -4472,15 +4538,15 @@ app.post("/recibos/generar-masivo", async (req, res) => {
         p.id_predio,
         $1,
         $2,
-        CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN $3 ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN $4 ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN $5 ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN $6 ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_agua, $3) ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_desague, $4) ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_limpieza, $5) ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_admin, $6) ELSE 0 END,
         (
-          CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN $3 ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN $4 ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN $5 ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN $6 ELSE 0 END
+          CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_agua, $3) ELSE 0 END +
+          CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_desague, $4) ELSE 0 END +
+          CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_limpieza, $5) ELSE 0 END +
+          CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_admin, $6) ELSE 0 END
         ),
         'PENDIENTE'
       FROM predios p
@@ -9183,15 +9249,15 @@ const generarDeudaMensualAutomatica = async () => {
         p.id_predio,
         $1::int,
         $2::int,
-        CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN $3::numeric ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN $4::numeric ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN $5::numeric ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN $6::numeric ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_agua, $3::numeric) ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_desague, $4::numeric) ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_limpieza, $5::numeric) ELSE 0 END,
+        CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_admin, $6::numeric) ELSE 0 END,
         (
-          CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN $3::numeric ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN $4::numeric ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN $5::numeric ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN $6::numeric ELSE 0 END
+          CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_agua, $3::numeric) ELSE 0 END +
+          CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_desague, $4::numeric) ELSE 0 END +
+          CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_limpieza, $5::numeric) ELSE 0 END +
+          CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_admin, $6::numeric) ELSE 0 END
         ) AS total_pagar,
         'PENDIENTE',
         make_date($1::int, $2::int, 1),

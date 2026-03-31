@@ -36,6 +36,10 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
     numero_casa: "",
     manzana: "",
     lote: "",
+    tarifa_agua: "",
+    tarifa_desague: "",
+    tarifa_limpieza: "",
+    tarifa_admin: "",
     motivo_cambio_razon_social: "",
     detalle_motivo_cambio_razon_social: ""
   });
@@ -68,6 +72,10 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
           numero_casa: u.numero_casa || "",
           manzana: u.manzana || "",
           lote: u.lote || "",
+          tarifa_agua: u.tarifa_agua ?? "",
+          tarifa_desague: u.tarifa_desague ?? "",
+          tarifa_limpieza: u.tarifa_limpieza ?? "",
+          tarifa_admin: u.tarifa_admin ?? "",
           motivo_cambio_razon_social: "",
           detalle_motivo_cambio_razon_social: ""
         });
@@ -209,6 +217,32 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                       <option value="SIN_CONEXION">Sin conexion</option>
                       
                     </select>
+                  </div>
+                  <div className="col-md-12">
+                    <div className={`border rounded p-2 ${darkMode ? "border-secondary" : "border-info"}`}>
+                      <div className="small fw-bold mb-2">Tarifa personalizada por servicio (S/.)</div>
+                      <div className="row g-2">
+                        <div className="col-md-3">
+                          <label className="form-label small">Agua</label>
+                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_agua" value={formData.tarifa_agua} onChange={handleChange} placeholder="7.50" />
+                        </div>
+                        <div className="col-md-3">
+                          <label className="form-label small">Desague</label>
+                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_desague" value={formData.tarifa_desague} onChange={handleChange} placeholder="3.50" />
+                        </div>
+                        <div className="col-md-3">
+                          <label className="form-label small">Limpieza</label>
+                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_limpieza" value={formData.tarifa_limpieza} onChange={handleChange} placeholder="3.50" />
+                        </div>
+                        <div className="col-md-3">
+                          <label className="form-label small">Admin</label>
+                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_admin" value={formData.tarifa_admin} onChange={handleChange} placeholder="0.50" />
+                        </div>
+                      </div>
+                      <div className="small text-muted mt-2">
+                        Deja vacío para usar la tarifa base del sistema.
+                      </div>
+                    </div>
                   </div>
                 </div>
 

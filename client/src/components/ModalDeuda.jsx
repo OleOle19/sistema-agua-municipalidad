@@ -5,7 +5,12 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
   const [anio, setAnio] = useState(new Date().getFullYear());
   const [mes, setMes] = useState(new Date().getMonth() + 1);
   const [cargando, setCargando] = useState(false);
-  const tarifasBase = { agua: 7.5, desague: 3.5, limpieza: 3.5, admin: 0.5 };
+  const tarifasBase = {
+    agua: Number.isFinite(Number.parseFloat(usuario?.tarifa_agua)) ? Number.parseFloat(usuario?.tarifa_agua) : 7.5,
+    desague: Number.isFinite(Number.parseFloat(usuario?.tarifa_desague)) ? Number.parseFloat(usuario?.tarifa_desague) : 3.5,
+    limpieza: Number.isFinite(Number.parseFloat(usuario?.tarifa_limpieza)) ? Number.parseFloat(usuario?.tarifa_limpieza) : 3.5,
+    admin: Number.isFinite(Number.parseFloat(usuario?.tarifa_admin)) ? Number.parseFloat(usuario?.tarifa_admin) : 0.5
+  };
   const [servicios, setServicios] = useState({
     agua: true,
     desague: true,
