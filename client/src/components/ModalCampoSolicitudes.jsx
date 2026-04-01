@@ -329,7 +329,11 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
   const rowsFiltrados = useMemo(() => {
     const needle = String(busquedaContribuyente || "").trim().toLowerCase();
     if (!needle) return rows;
-    return rows.filter((row) => String(row?.contribuyenteLabel || "").toLowerCase().includes(needle));
+    return rows.filter((row) => {
+      const contribuyente = String(row?.contribuyenteLabel || "").toLowerCase();
+      const calle = String(row?.calleLabel || "").toLowerCase();
+      return contribuyente.includes(needle) || calle.includes(needle);
+    });
   }, [rows, busquedaContribuyente]);
 
   const groupedRows = useMemo(() => {
@@ -475,7 +479,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
                 type="text"
                 className={`form-control form-control-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
                 style={{ maxWidth: "240px" }}
-                placeholder="Buscar contribuyente..."
+                placeholder="Buscar contribuyente o calle..."
                 value={busquedaContribuyente}
                 onChange={(e) => setBusquedaContribuyente(e.target.value)}
               />

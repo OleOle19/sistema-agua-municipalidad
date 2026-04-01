@@ -635,7 +635,7 @@ const actaPageStyle = `
 
 const anexoCajaPageStyle = `
   @page {
-    size: 210mm 106mm;
+    size: A4 portrait;
     margin: 0;
   }
   @media print {
