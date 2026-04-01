@@ -1,5 +1,7 @@
 import React, { forwardRef } from "react";
 
+const mm = (value) => `${value}mm`;
+
 const toNum = (value) => {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -7,41 +9,38 @@ const toNum = (value) => {
 
 const formatMonto = (value) => toNum(value).toFixed(2);
 
-const mm = (value) => `${value}mm`;
+// Formato fisico del anexo: 21.0 cm x 10.6 cm.
+const PAGE = {
+  width: 210,
+  height: 106
+};
 
-// Ajuste fino global para mover todo el texto en pruebas de calibracion.
-const NUDGE_X_MM = 0;
-const NUDGE_Y_MM = 0;
-
-const BLOCKS = [
-  {
-    key: "CONTROL",
-    x: 0,
-    width: 105,
-    showTopData: true
+// Ajuste global para pruebas de calibracion (mm).
+const CAL = {
+  nudgeX: 0,
+  nudgeY: 0,
+  blocks: [
+    { key: "CONTROL", x: 0, width: 70, showHeaderData: true },
+    { key: "COPIA", x: 70, width: 70, showHeaderData: false },
+    { key: "CAJA", x: 140, width: 70, showHeaderData: false }
+  ],
+  table: {
+    conceptX: 3.8,
+    amountX: 58.0,
+    amountWidth: 9.0,
+    topY: 35.2,
+    lineGap: 6.0,
+    totalY: 91.2
   },
-  {
-    key: "COPIA",
-    x: 105,
-    width: 52.5,
-    showTopData: false
-  },
-  {
-    key: "CAJA",
-    x: 157.5,
-    width: 52.5,
-    showTopData: false
+  topData: {
+    yLine1: 10.2,
+    yCode: 17.2,
+    yName: 23.0,
+    xCalle: 2.2,
+    xRuc: 36.0,
+    xCodigo: 2.2,
+    xNombre: 2.2
   }
-];
-
-// Misma caja de tabla en los 3 bloques (alineacion uniforme).
-const TABLE_BOX = {
-  conceptX: 2.2,
-  conceptY: 39.8,
-  lineGap: 5.2,
-  amountX: 40.6,
-  amountWidth: 9.4,
-  totalY: 94.1
 };
 
 const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
@@ -60,11 +59,15 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
     .slice(0, 5);
   const total = formatMonto(datos?.total);
 
-  const baseFont = {
+  const x = (value) => mm(value + CAL.nudgeX);
+  const y = (value) => mm(value + CAL.nudgeY);
+
+  const baseText = {
     position: "absolute",
     fontFamily: "'Arial Narrow', Arial, sans-serif",
     color: "#1a2a4a",
-    lineHeight: 1.1
+    lineHeight: 1.1,
+    textAlign: "left"
   };
 
   return (
@@ -72,28 +75,26 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
       ref={ref}
       style={{
         position: "relative",
-        width: mm(210),
-        height: mm(106),
-        boxSizing: "border-box",
+        width: mm(PAGE.width),
+        height: mm(PAGE.height),
         overflow: "hidden",
         background: "transparent"
       }}
     >
-      {BLOCKS.map((block) => {
-        const blockX = block.x + NUDGE_X_MM;
-        const blockY = NUDGE_Y_MM;
+      {CAL.blocks.map((block) => {
+        const blockX = block.x;
 
         return (
           <React.Fragment key={block.key}>
-            {block.showTopData && (
+            {block.showHeaderData && (
               <>
                 <div
                   style={{
-                    ...baseFont,
-                    left: mm(blockX + 12.2),
-                    top: mm(blockY + 10.2),
-                    fontSize: "2.4mm",
-                    maxWidth: mm(46),
+                    ...baseText,
+                    left: x(blockX + CAL.topData.xCalle),
+                    top: y(CAL.topData.yLine1),
+                    fontSize: "2.6mm",
+                    maxWidth: mm(34),
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis"
@@ -103,11 +104,11 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                 </div>
                 <div
                   style={{
-                    ...baseFont,
-                    left: mm(blockX + 64.8),
-                    top: mm(blockY + 10.2),
-                    fontSize: "2.4mm",
-                    maxWidth: mm(36),
+                    ...baseText,
+                    left: x(blockX + CAL.topData.xRuc),
+                    top: y(CAL.topData.yLine1),
+                    fontSize: "2.6mm",
+                    maxWidth: mm(31),
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis"
@@ -117,12 +118,12 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                 </div>
                 <div
                   style={{
-                    ...baseFont,
-                    left: mm(blockX + 13.2),
-                    top: mm(blockY + 21.6),
+                    ...baseText,
+                    left: x(blockX + CAL.topData.xCodigo),
+                    top: y(CAL.topData.yCode),
                     fontSize: "3.1mm",
-                    fontWeight: 600,
-                    maxWidth: mm(32),
+                    fontWeight: 700,
+                    maxWidth: mm(26),
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis"
@@ -132,11 +133,11 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                 </div>
                 <div
                   style={{
-                    ...baseFont,
-                    left: mm(blockX + 16.5),
-                    top: mm(blockY + 27.6),
+                    ...baseText,
+                    left: x(blockX + CAL.topData.xNombre),
+                    top: y(CAL.topData.yName),
                     fontSize: "2.8mm",
-                    maxWidth: mm(84),
+                    maxWidth: mm(62),
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis"
@@ -151,11 +152,11 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
               <React.Fragment key={`${block.key}-${idx}`}>
                 <div
                   style={{
-                    ...baseFont,
-                    left: mm(blockX + TABLE_BOX.conceptX),
-                    top: mm(blockY + TABLE_BOX.conceptY + (idx * TABLE_BOX.lineGap)),
-                    fontSize: "2.8mm",
-                    maxWidth: mm(TABLE_BOX.amountX - TABLE_BOX.conceptX - 1.2),
+                    ...baseText,
+                    left: x(blockX + CAL.table.conceptX),
+                    top: y(CAL.table.topY + (idx * CAL.table.lineGap)),
+                    fontSize: "2.9mm",
+                    maxWidth: mm(CAL.table.amountX - CAL.table.conceptX - 1),
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis"
@@ -165,13 +166,13 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                 </div>
                 <div
                   style={{
-                    ...baseFont,
-                    left: mm(blockX + TABLE_BOX.amountX),
-                    top: mm(blockY + TABLE_BOX.conceptY + (idx * TABLE_BOX.lineGap)),
-                    width: mm(TABLE_BOX.amountWidth),
+                    ...baseText,
+                    left: x(blockX + CAL.table.amountX),
+                    top: y(CAL.table.topY + (idx * CAL.table.lineGap)),
+                    width: mm(CAL.table.amountWidth),
                     textAlign: "right",
-                    fontSize: "2.8mm",
-                    fontWeight: 600
+                    fontSize: "2.9mm",
+                    fontWeight: 700
                   }}
                 >
                   {row.importe}
@@ -181,12 +182,12 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
 
             <div
               style={{
-                ...baseFont,
-                left: mm(blockX + TABLE_BOX.amountX),
-                top: mm(blockY + TABLE_BOX.totalY),
-                width: mm(TABLE_BOX.amountWidth),
+                ...baseText,
+                left: x(blockX + CAL.table.amountX),
+                top: y(CAL.table.totalY),
+                width: mm(CAL.table.amountWidth),
                 textAlign: "right",
-                fontSize: "3.1mm",
+                fontSize: "3.2mm",
                 fontWeight: 700
               }}
             >

@@ -67,8 +67,8 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
 
   // One receipt per physical A5 sheet.
   const hojaStyle = {
-    width: "148mm",
-    height: "209mm",
+    width: "145mm",
+    height: "203mm",
     pageBreakAfter: "always",
     display: "flex",
     justifyContent: "center",

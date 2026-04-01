@@ -599,9 +599,9 @@ function AguaApp({ onBackToSelector = null }) {
     return { por_anio, total };
   };
 
-const a5PageStyle = `
+const reciboPageStyle = `
   @page {
-    size: A5 portrait;
+    size: 145mm 203mm;
     margin: 0;
   }
   @media print {
@@ -635,7 +635,7 @@ const actaPageStyle = `
 
 const anexoCajaPageStyle = `
   @page {
-    size: A4 portrait;
+    size: 210mm 106mm;
     margin: 0;
   }
   @media print {
@@ -652,7 +652,7 @@ const anexoCajaPageStyle = `
   const handlePrintMasivo = useReactToPrint({
     contentRef: masivoRef,
     documentTitle: 'Recibos_Masivos',
-    pageStyle: a5PageStyle,
+    pageStyle: reciboPageStyle,
     onAfterPrint: () => {
       isPrintingMasivoRef.current = false;
       setDatosMasivos(null);
@@ -714,7 +714,7 @@ const anexoCajaPageStyle = `
   const handlePrintRecibo = useReactToPrint({
     contentRef: componentRef,
     documentTitle: 'Recibo_Agua',
-    pageStyle: a5PageStyle,
+    pageStyle: reciboPageStyle,
     onAfterPrint: () => {
       isPrintingReciboRef.current = false;
       setDatosReciboImprimir(null);

@@ -1,14 +1,80 @@
 import React, { forwardRef } from "react";
 
+const mm = (value) => `${value}mm`;
+
+const toNum = (value) => {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const formatMonto = (value) => toNum(value).toFixed(2);
+
+const RECIBO_SIZE_MM = {
+  width: 145,
+  height: 203
+};
+
+// Ajustes finos globales en mm para prueba/error con la impresora.
+const CAL = {
+  nudgeX: 0,
+  nudgeY: 0,
+  top: {
+    xMes: 33.0,
+    xAnio: 74.0,
+    xNumero: 118.0,
+    yCabecera: 21.0,
+    xCodigo: 27.0,
+    yCodigo: 30.0,
+    xNombre: 27.0,
+    yNombre: 35.0,
+    xDireccion: 27.0,
+    yDireccion: 40.0,
+    xDistrito: 27.0,
+    yDistrito: 45.0,
+    xTipoServicio: 16.5,
+    yTipoServicio: 58.2,
+    xConcepto: 17.0,
+    xImporte: 112.0,
+    yDetalleInicio: 64.0,
+    detalleGap: 5.7,
+    xTotal: 112.0,
+    yTotal: 88.8,
+    xNota: 15.0,
+    yNota: 97.8,
+    xFechaTop: 109.0,
+    yFechaEmisionTop: 103.6,
+    yFechaCorteTop: 113.6,
+    fechaWidth: 18.0,
+    debt: {
+      y: 119.6,
+      boxW: 39.0,
+      xAnterior: 18.8,
+      xMes: 69.8
+    }
+  },
+  bottom: {
+    xMes: 33.0,
+    xAnio: 74.0,
+    xNumero: 118.0,
+    yCabecera: 157.0,
+    xNombre: 55.0,
+    yNombre: 166.8,
+    xEmision: 55.0,
+    yEmision: 172.5,
+    xCorte: 55.0,
+    yCorte: 178.3,
+    xTotal: 112.0,
+    yTotal: 189.2
+  }
+};
+
 const Recibo = forwardRef(({ datos }, ref) => {
   if (!datos) return <div ref={ref}></div>;
 
-  const { contribuyente, predio, recibo, detalles } = datos;
-
-  const formatMonto = (value) => {
-    const parsed = parseFloat(value);
-    return Number.isFinite(parsed) ? parsed.toFixed(2) : "0.00";
-  };
+  const contribuyente = datos?.contribuyente || {};
+  const predio = datos?.predio || {};
+  const recibo = datos?.recibo || {};
+  const detalles = datos?.detalles || {};
 
   const getMesNombre = (value) => {
     const meses = [
@@ -25,354 +91,236 @@ const Recibo = forwardRef(({ datos }, ref) => {
       "Noviembre",
       "Diciembre"
     ];
-    const num = parseInt(value, 10);
+    const num = Number.parseInt(value, 10);
     if (Number.isFinite(num) && num >= 1 && num <= 12) return meses[num - 1];
     return value ?? "";
   };
 
   const mesLabel = recibo.mes_nombre ?? getMesNombre(recibo.mes);
-  const anioLabel = recibo.anio ?? "";
-  const cargoReimpresion = parseFloat(recibo?.cargo_reimpresion || 0) || 0;
-  const totalDetalle = (
-    (parseFloat(detalles?.agua || 0) || 0)
-    + (parseFloat(detalles?.desague || 0) || 0)
-    + (parseFloat(detalles?.limpieza || 0) || 0)
-    + (parseFloat(detalles?.admin || 0) || 0)
+  const anioLabel = String(recibo.anio ?? "");
+  const codigoImpresion = String(recibo.codigo_impresion || "").trim();
+  const reciboNumero = codigoImpresion || (
+    Number.isInteger(Number(recibo.id_recibo))
+      ? String(recibo.id_recibo).padStart(6, "0")
+      : ""
   );
-  const totalCalculado = totalDetalle + cargoReimpresion;
-  const totalRecibo = Number.isFinite(totalCalculado)
-    ? totalCalculado
-    : (parseFloat(recibo?.total || 0) || 0);
+
+  const cargoReimpresion = toNum(recibo.cargo_reimpresion);
+  const filasServicios = [
+    { concepto: "SERVICIO DE AGUA", monto: toNum(detalles.agua) },
+    { concepto: "SERVICIO DE DESAGUE", monto: toNum(detalles.desague) },
+    { concepto: "LIMPIEZA PUBLICA", monto: toNum(detalles.limpieza) },
+    { concepto: "GASTOS ADMINISTRATIVOS", monto: toNum(detalles.admin) }
+  ].filter((row) => row.monto > 0);
+  if (cargoReimpresion > 0) {
+    filasServicios.push({ concepto: "REIMPRESION", monto: cargoReimpresion });
+  }
+
+  const totalDetalle = filasServicios.reduce((acc, row) => acc + toNum(row.monto), 0);
+  const totalCalculado = totalDetalle > 0 ? totalDetalle : toNum(recibo.total);
+  const totalRecibo = Number.isFinite(totalCalculado) ? totalCalculado : 0;
+
   const deudaMesesLabel = contribuyente.deuda_meses_label ? ` (${contribuyente.deuda_meses_label})` : "";
   const deudaAnioLabel = `${anioLabel}${deudaMesesLabel}`.trim();
-  const reciboNumero = String(recibo.codigo_impresion || "").trim()
-    || (recibo.id_recibo ? recibo.id_recibo.toString().padStart(6, "0") : "");
-  const fechaEmision = new Date().toLocaleDateString();
-  const ultimoDiaPago = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0).toLocaleDateString();
-  const fechaCorte = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 5).toLocaleDateString();
 
-  const styles = {
-    container: {
-      width: "14cm",
-      height: "20cm",
-      backgroundColor: "transparent",
-      fontFamily: "'Arial Narrow', Arial, sans-serif",
-      fontSize: "10px",
-      color: "#000",
-      margin: "0 auto",
-      position: "relative"
-    },
-    sectionTop: {
-      display: "flex",
-      height: "14cm"
-    },
-    sectionBottom: {
-      display: "flex",
-      height: "6cm"
-    },
-    leftSpacer: {
-      width: "25px",
-      flexShrink: 0
-    },
-    content: {
-      flex: 1,
-      padding: "5px 10px",
-      display: "flex",
-      flexDirection: "column"
-    },
-    headerSpacer: {
-      height: "50px"
-    },
-    rowThree: {
-      display: "flex",
-      marginBottom: "6px",
-      alignItems: "center"
-    },
-    colLeft: {
-      flex: 1
-    },
-    colCenter: {
-      flex: 1,
-      textAlign: "center"
-    },
-    colRight: {
-      flex: 1,
-      textAlign: "right"
-    },
-    value: {
-      fontWeight: "bold"
-    },
-    gridTop: {
-      display: "grid",
-      gridTemplateColumns: "80px 1fr",
-      alignItems: "center",
-      minHeight: "14px"
-    },
-    gridBottom: {
-      display: "grid",
-      gridTemplateColumns: "60px 1fr",
-      alignItems: "center",
-      minHeight: "14px"
-    },
-    spacerSm: {
-      height: "6px"
-    },
-    noteSpacer: {
-      height: "12px"
-    },
-    noteText: {
-      fontSize: "9px",
-      fontStyle: "italic",
-      textAlign: "center"
-    },
-    itemRow: {
-      display: "flex",
-      alignItems: "center",
-      minHeight: "14px"
-    },
-    itemAmount: {
-      width: "60px",
-      textAlign: "right",
-      fontWeight: "bold"
-    },
-    totalAmount: {
-      width: "70px",
-      textAlign: "right",
-      fontWeight: "bold",
-      fontSize: "12px"
-    },
-    datesRow: {
-      display: "flex",
-      justifyContent: "space-between",
-      marginTop: "6px"
-    },
-    dateBox: {
-      width: "50%"
-    },
-    dateLabelSpacer: {
-      height: "10px"
-    },
-    debtRow: {
-      display: "flex",
-      gap: "10px",
-      marginTop: "6px",
-      fontSize: "9px"
-    },
-    debtCol: {
-      flex: 1
-    },
-    debtTitle: {
-      fontWeight: "bold",
-      marginBottom: "2px",
-      paddingBottom: "2px",
-      borderBottom: "1px solid #000",
-      textAlign: "center",
-      width: "50%",
-      marginLeft: "auto",
-      marginRight: "auto"
-    },
-    debtTable: {
-      padding: "2px 0",
-      width: "50%",
-      margin: "0 auto"
-    },
-    debtHeader: {
-      display: "flex",
-      fontWeight: "bold",
-      borderBottom: "1px solid #000",
-      paddingBottom: "2px",
-      marginBottom: "2px"
-    },
-    debtRowLine: {
-      display: "flex",
-      justifyContent: "space-between",
-      padding: "1px 0"
-    },
-    debtTotal: {
-      display: "flex",
-      justifyContent: "space-between",
-      borderTop: "1px solid #000",
-      marginTop: "2px",
-      paddingTop: "2px",
-      fontWeight: "bold"
-    },
-    debtColLeft: {
-      width: "60%",
-      textAlign: "left"
-    },
-    debtColRight: {
-      width: "40%",
-      textAlign: "right"
-    },
-    cajaTotal: {
-      display: "flex",
-      justifyContent: "flex-end",
-      alignItems: "center",
-      marginTop: "auto",
-      paddingTop: "4px"
-    },
-    cajaTotalLabelSpacer: {
-      width: "90px"
-    },
-    cajaTotalAmount: {
-      fontWeight: "bold",
-      fontSize: "18px"
-    }
+  const formatDate = (value) => {
+    if (!value) return "";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value);
+    return d.toLocaleDateString("es-PE");
   };
 
+  const now = new Date();
+  const fallbackEmision = now.toLocaleDateString("es-PE");
+  const fallbackCorte = new Date(now.getFullYear(), now.getMonth() + 1, 5).toLocaleDateString("es-PE");
+  const fechaEmision = formatDate(recibo.fecha_emision || recibo.creado_en) || fallbackEmision;
+  const fechaCorte = formatDate(recibo.fecha_corte) || fallbackCorte;
+
+  const x = (value) => mm(value + CAL.nudgeX);
+  const y = (value) => mm(value + CAL.nudgeY);
+
+  const baseText = {
+    position: "absolute",
+    fontFamily: "'Arial Narrow', Arial, sans-serif",
+    color: "#000",
+    lineHeight: 1.1
+  };
+
+  const servicioRows = filasServicios.length > 0
+    ? filasServicios
+    : [{ concepto: "SERVICIOS", monto: totalRecibo }];
+
+  const deudaAnualMonto = formatMonto(contribuyente.deuda_anio || 0);
+
   return (
-    <div ref={ref} style={styles.container}>
-      {/* PARTE SUPERIOR - USUARIO (SOLO DATOS) */}
-      <div style={styles.sectionTop}>
-        <div style={styles.leftSpacer} />
-        <div style={styles.content}>
-          <div style={styles.headerSpacer} />
+    <div
+      ref={ref}
+      style={{
+        position: "relative",
+        width: mm(RECIBO_SIZE_MM.width),
+        height: mm(RECIBO_SIZE_MM.height),
+        margin: "0 auto",
+        overflow: "hidden",
+        background: "transparent"
+      }}
+    >
+      <div style={{ ...baseText, left: x(CAL.top.xMes), top: y(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+        {mesLabel}
+      </div>
+      <div style={{ ...baseText, left: x(CAL.top.xAnio), top: y(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+        {anioLabel}
+      </div>
+      <div style={{ ...baseText, left: x(CAL.top.xNumero), top: y(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+        {reciboNumero}
+      </div>
 
-          <div style={styles.rowThree}>
-            <div style={styles.colLeft}><span style={styles.value}>{mesLabel}</span></div>
-            <div style={styles.colCenter}><span style={styles.value}>{anioLabel}</span></div>
-            <div style={styles.colRight}><span style={styles.value}>{reciboNumero}</span></div>
-          </div>
+      <div style={{ ...baseText, left: x(CAL.top.xCodigo), top: y(CAL.top.yCodigo), fontSize: "3.0mm", fontWeight: 700 }}>
+        {contribuyente.codigo_municipal || ""}
+      </div>
+      <div style={{ ...baseText, left: x(CAL.top.xNombre), top: y(CAL.top.yNombre), fontSize: "2.9mm", maxWidth: mm(78), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {contribuyente.nombre_completo || ""}
+      </div>
+      <div style={{ ...baseText, left: x(CAL.top.xDireccion), top: y(CAL.top.yDireccion), fontSize: "2.9mm", maxWidth: mm(78), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {predio.direccion_completa || ""}
+      </div>
+      <div style={{ ...baseText, left: x(CAL.top.xDistrito), top: y(CAL.top.yDistrito), fontSize: "2.9mm", maxWidth: mm(40), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        PUEBLO NUEVO
+      </div>
+      <div style={{ ...baseText, left: x(CAL.top.xTipoServicio), top: y(CAL.top.yTipoServicio), fontSize: "3.0mm", maxWidth: mm(45), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        Servicio: Domestico
+      </div>
 
-          <div style={styles.gridTop}>
-            <span />
-            <span style={styles.value}>{contribuyente.codigo_municipal}</span>
+      {servicioRows.slice(0, 6).map((row, idx) => (
+        <React.Fragment key={`${row.concepto}-${idx}`}>
+          <div
+            style={{
+              ...baseText,
+              left: x(CAL.top.xConcepto),
+              top: y(CAL.top.yDetalleInicio + (idx * CAL.top.detalleGap)),
+              fontSize: "3.0mm",
+              maxWidth: mm(80),
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis"
+            }}
+          >
+            {row.concepto}
           </div>
-          <div style={styles.gridTop}>
-            <span />
-            <span style={styles.value}>{contribuyente.nombre_completo}</span>
+          <div
+            style={{
+              ...baseText,
+              left: x(CAL.top.xImporte),
+              top: y(CAL.top.yDetalleInicio + (idx * CAL.top.detalleGap)),
+              width: mm(14),
+              textAlign: "right",
+              fontSize: "3.0mm",
+              fontWeight: 700
+            }}
+          >
+            {formatMonto(row.monto)}
           </div>
-          <div style={styles.gridTop}>
-            <span />
-            <span style={styles.value}>{predio.direccion_completa}</span>
-          </div>
-          <div style={styles.gridTop}>
-            <span />
-            <span style={styles.value}>PUEBLO NUEVO</span>
-          </div>
+        </React.Fragment>
+      ))}
 
-          <div style={styles.spacerSm} />
+      <div
+        style={{
+          ...baseText,
+          left: x(CAL.top.xTotal),
+          top: y(CAL.top.yTotal),
+          width: mm(14),
+          textAlign: "right",
+          fontSize: "3.3mm",
+          fontWeight: 700
+        }}
+      >
+        {formatMonto(totalRecibo)}
+      </div>
 
-          <div>
-            <div style={styles.itemRow}>
-              <span style={{ flex: 1 }} />
-              <span style={styles.itemAmount} />
-            </div>
-            <div style={styles.itemRow}>
-              <span style={{ flex: 1 }} />
-              <span style={styles.itemAmount}>{formatMonto(detalles.agua)}</span>
-            </div>
-            <div style={styles.itemRow}>
-              <span style={{ flex: 1 }} />
-              <span style={styles.itemAmount}>{formatMonto(detalles.desague)}</span>
-            </div>
-            <div style={styles.itemRow}>
-              <span style={{ flex: 1 }} />
-              <span style={styles.itemAmount}>{formatMonto(detalles.limpieza)}</span>
-            </div>
-            <div style={styles.itemRow}>
-              <span style={{ flex: 1 }} />
-              <span style={styles.itemAmount}>{formatMonto(detalles.admin)}</span>
-            </div>
-            {cargoReimpresion > 0 && (
-              <div style={styles.itemRow}>
-                <span style={{ flex: 1 }} />
-                <span style={styles.itemAmount}>{formatMonto(cargoReimpresion)}</span>
-              </div>
-            )}
-            <div style={styles.itemRow}>
-              <span style={{ flex: 1 }} />
-              <span style={styles.totalAmount}>{formatMonto(totalRecibo)}</span>
-            </div>
-          </div>
+      <div style={{ ...baseText, left: x(CAL.top.xNota), top: y(CAL.top.yNota), fontSize: "3.0mm", maxWidth: mm(95) }}>
+        El pago de este recibo no cancela deudas anteriores.
+      </div>
 
-          <div style={styles.noteText}>
-            "El pago de este recibo no cancela deudas anteriores."
-          </div>
-          {cargoReimpresion > 0 && (
-            <div style={styles.noteText}>
-              Incluye reimpresion: S/. {formatMonto(cargoReimpresion)}
-            </div>
-          )}
+      <div style={{ ...baseText, left: x(CAL.top.xFechaTop), top: y(CAL.top.yFechaEmisionTop), width: mm(CAL.top.fechaWidth), textAlign: "right", fontSize: "3.0mm", fontWeight: 700 }}>
+        {fechaEmision}
+      </div>
+      <div style={{ ...baseText, left: x(CAL.top.xFechaTop), top: y(CAL.top.yFechaCorteTop), width: mm(CAL.top.fechaWidth), textAlign: "right", fontSize: "3.0mm", fontWeight: 700 }}>
+        {fechaCorte}
+      </div>
 
-          <div style={styles.datesRow}>
-            <div style={styles.dateBox}>
-              <div style={styles.dateLabelSpacer} />
-              <div style={styles.value}>{fechaEmision}</div>
-            </div>
-            <div style={{ ...styles.dateBox, textAlign: "right" }}>
-              <div style={styles.dateLabelSpacer} />
-              <div style={styles.value}>{ultimoDiaPago}</div>
-            </div>
-          </div>
-
-          <div style={styles.debtRow}>
-            <div style={styles.debtCol}>
-              <div style={styles.debtTitle}>Deuda Anterior</div>
-              <div style={styles.debtTable}>
-                <div style={styles.debtHeader}>
-                  <span style={styles.debtColLeft}>Año</span>
-                  <span style={styles.debtColRight}>Deuda S/.</span>
-                </div>
-                <div style={styles.debtRowLine}>
-                  <span style={styles.debtColLeft}>{deudaAnioLabel}</span>
-                  <span style={styles.debtColRight}>{formatMonto(contribuyente.deuda_anio || 0)}</span>
-                </div>
-                <div style={styles.debtTotal}>
-                  <span style={styles.debtColLeft}>Total</span>
-                  <span style={styles.debtColRight}>{formatMonto(contribuyente.deuda_anio || 0)}</span>
-                </div>
-              </div>
-            </div>
-            <div style={styles.debtCol}>
-              <div style={styles.debtTitle}>Mes</div>
-              <div style={styles.debtTable}>
-                <div style={styles.debtHeader}>
-                  <span style={styles.debtColLeft}>Mes</span>
-                  <span style={styles.debtColRight}>Deuda S/.</span>
-                </div>
-                <div style={styles.debtRowLine}>
-                  <span style={styles.debtColLeft}>&nbsp;</span>
-                  <span style={styles.debtColRight}>&nbsp;</span>
-                </div>
-                <div style={styles.debtTotal}>
-                  <span style={styles.debtColLeft}>Total</span>
-                  <span style={styles.debtColRight}>&nbsp;</span>
-                </div>
-              </div>
-            </div>
-          </div>
+      <div
+        style={{
+          ...baseText,
+          left: x(CAL.top.debt.xAnterior),
+          top: y(CAL.top.debt.y),
+          width: mm(CAL.top.debt.boxW),
+          fontSize: "3.5mm"
+        }}
+      >
+        <div style={{ textAlign: "center", fontWeight: 700, fontSize: "4.1mm" }}>Deuda Anterior</div>
+        <div style={{ borderTop: "0.35mm solid #000", marginTop: mm(0.5) }} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.6), textAlign: "center", fontWeight: 700 }}>
+          <span>Año</span>
+          <span>Deuda S/.</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.5), textAlign: "center", fontWeight: 700 }}>
+          <span>{deudaAnioLabel}</span>
+          <span>{deudaAnualMonto}</span>
+        </div>
+        <div style={{ borderTop: "0.35mm solid #000", marginTop: mm(0.6) }} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.6), textAlign: "center", fontWeight: 700 }}>
+          <span>Total</span>
+          <span>{deudaAnualMonto}</span>
         </div>
       </div>
 
-      {/* PARTE INFERIOR - CAJA (SOLO DATOS) */}
-      <div style={styles.sectionBottom}>
-        <div style={styles.leftSpacer} />
-        <div style={styles.content}>
-          <div style={styles.rowThree}>
-            <div style={styles.colLeft}><span style={styles.value}>{mesLabel}</span></div>
-            <div style={styles.colCenter}><span style={styles.value}>{anioLabel}</span></div>
-            <div style={styles.colRight}><span style={styles.value}>{reciboNumero}</span></div>
-          </div>
-
-          <div style={styles.gridBottom}>
-            <span />
-            <span style={styles.value}>{contribuyente.nombre_completo}</span>
-          </div>
-          <div style={styles.gridBottom}>
-            <span />
-            <span style={styles.value}>{fechaEmision}</span>
-          </div>
-          <div style={styles.gridBottom}>
-            <span />
-            <span style={styles.value}>{fechaCorte}</span>
-          </div>
-
-          <div style={styles.cajaTotal}>
-            <span style={styles.cajaTotalLabelSpacer} />
-            <span style={styles.cajaTotalAmount}>{formatMonto(totalRecibo)}</span>
-          </div>
+      <div
+        style={{
+          ...baseText,
+          left: x(CAL.top.debt.xMes),
+          top: y(CAL.top.debt.y),
+          width: mm(CAL.top.debt.boxW),
+          fontSize: "3.5mm"
+        }}
+      >
+        <div style={{ textAlign: "center", fontWeight: 700, fontSize: "4.1mm" }}>Mes</div>
+        <div style={{ borderTop: "0.35mm solid #000", marginTop: mm(0.5) }} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.6), textAlign: "center", fontWeight: 700 }}>
+          <span>Mes</span>
+          <span>Deuda S/.</span>
         </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.5), textAlign: "center", fontWeight: 700 }}>
+          <span>&nbsp;</span>
+          <span>&nbsp;</span>
+        </div>
+        <div style={{ borderTop: "0.35mm solid #000", marginTop: mm(0.6) }} />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.6), textAlign: "center", fontWeight: 700 }}>
+          <span>Total</span>
+          <span>&nbsp;</span>
+        </div>
+      </div>
+
+      <div style={{ ...baseText, left: x(CAL.bottom.xMes), top: y(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+        {mesLabel}
+      </div>
+      <div style={{ ...baseText, left: x(CAL.bottom.xAnio), top: y(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+        {anioLabel}
+      </div>
+      <div style={{ ...baseText, left: x(CAL.bottom.xNumero), top: y(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+        {reciboNumero}
+      </div>
+
+      <div style={{ ...baseText, left: x(CAL.bottom.xNombre), top: y(CAL.bottom.yNombre), fontSize: "2.9mm", maxWidth: mm(55), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {contribuyente.nombre_completo || ""}
+      </div>
+      <div style={{ ...baseText, left: x(CAL.bottom.xEmision), top: y(CAL.bottom.yEmision), fontSize: "2.9mm", fontWeight: 700 }}>
+        {fechaEmision}
+      </div>
+      <div style={{ ...baseText, left: x(CAL.bottom.xCorte), top: y(CAL.bottom.yCorte), fontSize: "2.9mm", fontWeight: 700 }}>
+        {fechaCorte}
+      </div>
+
+      <div style={{ ...baseText, left: x(CAL.bottom.xTotal), top: y(CAL.bottom.yTotal), width: mm(14), textAlign: "right", fontSize: "4.0mm", fontWeight: 700 }}>
+        {formatMonto(totalRecibo)}
       </div>
     </div>
   );
