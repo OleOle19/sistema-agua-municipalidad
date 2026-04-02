@@ -1235,7 +1235,14 @@ const anexoCajaPageStyle = `
       return;
     }
     if(!window.confirm(`PELIGRO: Eliminar a ${usuarioSeleccionado.nombre_completo}?`)) return;
-    try { await api.delete(`/contribuyentes/${usuarioSeleccionado.id_contribuyente}`); alert("Usuario eliminado."); setUsuarioSeleccionado(null); recargarTodo(); } catch { alert("Error al eliminar."); }
+    try {
+      await api.delete(`/contribuyentes/${usuarioSeleccionado.id_contribuyente}`);
+      alert("Usuario eliminado.");
+      setUsuarioSeleccionado(null);
+      recargarTodo();
+    } catch (error) {
+      alert(error?.response?.data?.error || "Error al eliminar.");
+    }
   };
 
   const descargarPadron = async () => {

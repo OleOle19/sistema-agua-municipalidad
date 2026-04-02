@@ -4366,18 +4366,71 @@ app.post("/contribuyentes/:id/estado-conexion", async (req, res) => {
 app.delete("/contribuyentes/:id", async (req, res) => {
   const client = await pool.connect();
   try {
-    const { id } = req.params;
+    const targetId = Number(req.params?.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return res.status(400).json({ error: "ID inválido." });
+    }
+
     await client.query('BEGIN');
-    await client.query(`DELETE FROM pagos WHERE id_recibo IN (SELECT id_recibo FROM recibos WHERE id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1))`, [id]);
-    await client.query(`DELETE FROM recibos WHERE id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)`, [id]);
-    await client.query("DELETE FROM predios WHERE id_contribuyente = $1", [id]);
-    await client.query("DELETE FROM contribuyentes WHERE id_contribuyente = $1", [id]);
+    const existe = await client.query(
+      "SELECT 1 FROM contribuyentes WHERE id_contribuyente = $1 LIMIT 1",
+      [targetId]
+    );
+    if (existe.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Contribuyente no encontrado." });
+    }
+
+    await client.query(`
+      DELETE FROM pagos
+      WHERE id_recibo IN (
+        SELECT r.id_recibo
+        FROM recibos r
+        WHERE r.id_predio IN (
+          SELECT p.id_predio
+          FROM predios p
+          WHERE p.id_contribuyente = $1
+        )
+      )
+      OR id_orden_cobro IN (
+        SELECT oc.id_orden
+        FROM ordenes_cobro oc
+        WHERE oc.id_contribuyente = $1
+      )
+    `, [targetId]);
+
+    await client.query(`
+      DELETE FROM predios_direcciones_alternas
+      WHERE id_contribuyente = $1
+         OR id_predio_base IN (
+           SELECT p.id_predio
+           FROM predios p
+           WHERE p.id_contribuyente = $1
+         )
+    `, [targetId]);
+
+    await client.query("DELETE FROM campo_solicitudes WHERE id_contribuyente = $1", [targetId]);
+    await client.query("DELETE FROM estado_conexion_eventos WHERE id_contribuyente = $1", [targetId]);
+    await client.query("DELETE FROM actas_corte WHERE id_contribuyente = $1", [targetId]);
+    await client.query("DELETE FROM codigos_impresion WHERE id_contribuyente = $1", [targetId]);
+    await client.query("DELETE FROM ordenes_cobro WHERE id_contribuyente = $1", [targetId]);
+    await client.query(`
+      DELETE FROM recibos
+      WHERE id_predio IN (
+        SELECT p.id_predio
+        FROM predios p
+        WHERE p.id_contribuyente = $1
+      )
+    `, [targetId]);
+    await client.query("DELETE FROM predios WHERE id_contribuyente = $1", [targetId]);
+    await client.query("DELETE FROM contribuyentes WHERE id_contribuyente = $1", [targetId]);
     await client.query('COMMIT');
     invalidateContribuyentesCache();
     res.json({ mensaje: "Usuario eliminado permanentemente." });
   } catch (err) {
     await client.query('ROLLBACK');
-    res.status(500).send("Error al eliminar usuario.");
+    console.error("Error eliminando contribuyente:", err);
+    res.status(500).json({ error: err?.detail || err?.message || "Error al eliminar usuario." });
   } finally { client.release(); }
 });
 
@@ -9225,11 +9278,13 @@ const generarDeudaMensualAutomatica = async () => {
 
   let anioObjetivo = anio;
   let mesObjetivo = mes;
-  if (esCierreMes) {
-    mesObjetivo += 1;
-    if (mesObjetivo > 12) {
-      mesObjetivo = 1;
-      anioObjetivo += 1;
+  if (esInicioMes && !esCierreMes) {
+    // Contingencia: si el servidor no corrió al cierre, en el minuto 0 del día 1
+    // se intenta crear el periodo del mes que acaba de terminar.
+    mesObjetivo -= 1;
+    if (mesObjetivo < 1) {
+      mesObjetivo = 12;
+      anioObjetivo -= 1;
     }
   }
 

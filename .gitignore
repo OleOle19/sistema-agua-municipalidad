@@ -27,6 +27,7 @@ ops/runtime/historial_patch_*.txt
 **/backups/
 *.sql
 !server/sql/migrations/*.sql
+!server/sql/limpiar_deuda_abril_2026_pre_cierre.sql
 *.dump
 *.bak
 *.backup
