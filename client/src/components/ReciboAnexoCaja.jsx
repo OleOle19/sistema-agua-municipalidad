@@ -86,7 +86,7 @@ const CAL = {
         amountX: 30.2,
         amountWidth: 6.2,
         topY: 35.0,
-        lineGap: 9.6,
+        lineGap: 8.0,
         totalY: 91.0
       }
     },
@@ -105,7 +105,7 @@ const CAL = {
         amountX: 30.2,
         amountWidth: 6.2,
         topY: 35.0,
-        lineGap: 9.6,
+        lineGap: 8.0,
         totalY: 91.0
       }
     }
