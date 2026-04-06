@@ -6,6 +6,7 @@ import {
   FaCashRegister,
   FaCog,
   FaFileImport,
+  FaHistory,
   FaList,
   FaPrint,
   FaReceipt,
@@ -13,11 +14,13 @@ import {
   FaSearch,
   FaSignOutAlt,
   FaSyncAlt,
-  FaTrashAlt
+  FaTrashAlt,
+  FaUserShield
 } from "react-icons/fa";
 import LoginPage from "../components/LoginPage";
 import luzApi from "./apiLuz";
 import ReciboLuz from "./ReciboLuz";
+import UsuariosLuzPanel from "./UsuariosLuzPanel";
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -99,6 +102,33 @@ const parseMonto = (value) => {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+const parseEntero = (value, fallback = 0) => {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+const getPeriodoAnterior = (anio, mes) => {
+  const anioNum = parseEntero(anio, 0);
+  const mesNum = parseEntero(mes, 0);
+  if (!anioNum || mesNum < 1 || mesNum > 12) return null;
+  if (mesNum === 1) return { anio: anioNum - 1, mes: 12 };
+  return { anio: anioNum, mes: mesNum - 1 };
+};
+const formatPeriodoCorto = (anio, mes) => `${String(mes).padStart(2, "0")}/${anio}`;
+const compareMedidorAsc = (a, b) => {
+  const medidorA = String(a?.nro_medidor || "").trim();
+  const medidorB = String(b?.nro_medidor || "").trim();
+  const onlyDigitsA = medidorA.replace(/\D/g, "");
+  const onlyDigitsB = medidorB.replace(/\D/g, "");
+  const hasDigitsA = onlyDigitsA.length > 0;
+  const hasDigitsB = onlyDigitsB.length > 0;
+  if (hasDigitsA !== hasDigitsB) return hasDigitsA ? -1 : 1;
+  if (hasDigitsA && hasDigitsB) {
+    const numA = Number.parseFloat(onlyDigitsA);
+    const numB = Number.parseFloat(onlyDigitsB);
+    if (numA !== numB) return numA - numB;
+  }
+  return medidorA.localeCompare(medidorB, "es", { numeric: true, sensitivity: "base" });
+};
 
 const formatMoney = (value) => `S/. ${parseMonto(value).toFixed(2)}`;
 const formatPeriodo = (anio, mes) => `${String(mes).padStart(2, "0")}/${anio}`;
@@ -126,7 +156,7 @@ const createReciboDefaults = () => {
     mes: String(now.getMonth() + 1),
     lectura_anterior: "",
     lectura_actual: "",
-    fecha_emision: "",
+    fecha_emision: toIsoDate(),
     fecha_vencimiento: "",
     fecha_corte: "",
     observacion: ""
@@ -161,6 +191,12 @@ function LuzApp({ onBackToSelector }) {
   const [loadingHistorial, setLoadingHistorial] = useState(false);
 
   const [reciboForm, setReciboForm] = useState(createReciboDefaults);
+  const [lecturaAnteriorInfo, setLecturaAnteriorInfo] = useState({
+    loading: false,
+    encontrada: false,
+    periodoAnterior: null,
+    error: ""
+  });
   const [emitiendoRecibo, setEmitiendoRecibo] = useState(false);
 
   const [ordenObservacion, setOrdenObservacion] = useState("");
@@ -179,6 +215,9 @@ function LuzApp({ onBackToSelector }) {
   const [loadingReporte, setLoadingReporte] = useState(false);
 
   const [importacion, setImportacion] = useState(createImportState);
+  const [auditoriaRows, setAuditoriaRows] = useState([]);
+  const [auditoriaFiltro, setAuditoriaFiltro] = useState("");
+  const [loadingAuditoria, setLoadingAuditoria] = useState(false);
 
   const [reciboImpresion, setReciboImpresion] = useState(null);
   const reciboRef = useRef(null);
@@ -193,12 +232,18 @@ function LuzApp({ onBackToSelector }) {
     canEditarPadron: hasMinRole(rolActual, "ADMIN_SEC"),
     canBorrarPadron: hasMinRole(rolActual, "ADMIN"),
     canImportarPadron: hasMinRole(rolActual, "ADMIN"),
-    canConfigurar: hasMinRole(rolActual, "ADMIN_SEC")
+    canImportarLecturas: hasMinRole(rolActual, "ADMIN"),
+    canConfigurar: hasMinRole(rolActual, "ADMIN_SEC"),
+    canManageUsers: hasMinRole(rolActual, "ADMIN")
   }), [rolActual]);
 
   const suministroSeleccionado = useMemo(
     () => suministros.find((s) => Number(s.id_suministro) === Number(selectedSuministroId)) || null,
     [suministros, selectedSuministroId]
+  );
+  const suministrosOrdenados = useMemo(
+    () => [...suministros].sort(compareMedidorAsc),
+    [suministros]
   );
 
   const yearsHistorial = useMemo(() => {
@@ -330,6 +375,67 @@ function LuzApp({ onBackToSelector }) {
     }
   }, [handleApiError, selectedSuministroId]);
 
+  const cargarLecturaAnterior = useCallback(async (idSuministro, anioRaw, mesRaw) => {
+    const id = Number(idSuministro || 0);
+    const anio = parseEntero(anioRaw, 0);
+    const mes = parseEntero(mesRaw, 0);
+    const periodoAnterior = getPeriodoAnterior(anio, mes);
+
+    if (!id || !periodoAnterior) {
+      setLecturaAnteriorInfo({
+        loading: false,
+        encontrada: false,
+        periodoAnterior,
+        error: ""
+      });
+      return;
+    }
+
+    setLecturaAnteriorInfo({
+      loading: true,
+      encontrada: false,
+      periodoAnterior,
+      error: ""
+    });
+
+    try {
+      const res = await luzApi.get(`/recibos/lectura-anterior/${id}`, {
+        params: { anio, mes }
+      });
+      const found = Boolean(res.data?.encontrada);
+      const lectura = parseMonto(res.data?.lectura_anterior);
+      setLecturaAnteriorInfo({
+        loading: false,
+        encontrada: found,
+        periodoAnterior,
+        error: ""
+      });
+      setReciboForm((prev) => {
+        if (found) {
+          return {
+            ...prev,
+            lectura_anterior: lectura.toFixed(2)
+          };
+        }
+        return {
+          ...prev,
+          lectura_anterior: ""
+        };
+      });
+    } catch (err) {
+      setLecturaAnteriorInfo({
+        loading: false,
+        encontrada: false,
+        periodoAnterior,
+        error: String(err?.response?.data?.error || "No se pudo consultar lectura anterior.")
+      });
+      setReciboForm((prev) => ({
+        ...prev,
+        lectura_anterior: ""
+      }));
+    }
+  }, []);
+
   const cargarOrdenesPendientes = useCallback(async () => {
     setLoadingOrdenes(true);
     try {
@@ -380,18 +486,40 @@ function LuzApp({ onBackToSelector }) {
     }
   }, [handleApiError, permisos.canCaja, reporteFecha, reporteTipo]);
 
+  const cargarAuditoria = useCallback(async () => {
+    setLoadingAuditoria(true);
+    try {
+      const params = {};
+      if (String(auditoriaFiltro || "").trim()) params.q = auditoriaFiltro.trim();
+      const res = await luzApi.get("/auditoria", { params });
+      setAuditoriaRows(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      if (Number(err?.response?.status || 0) === 404) {
+        setAuditoriaRows([]);
+        showFlash("warning", "Auditoria no disponible en el backend actual. Reinicie backend para aplicar la nueva ruta.");
+      } else {
+        handleApiError(err, "No se pudo cargar auditoria.");
+      }
+    } finally {
+      setLoadingAuditoria(false);
+    }
+  }, [auditoriaFiltro, handleApiError, showFlash]);
+
   useEffect(() => {
     if (!usuarioSistema) return;
     cargarZonas();
     cargarSuministros();
     cargarConfig();
-    if (permisos.canCaja) {
-      cargarOrdenesPendientes();
-      cargarReporte();
-    }
-  }, [cargarConfig, cargarOrdenesPendientes, cargarReporte, cargarSuministros, cargarZonas, permisos.canCaja, usuarioSistema]);
+  }, [cargarConfig, cargarSuministros, cargarZonas, usuarioSistema]);
 
   useEffect(() => {
+    if (!usuarioSistema || tab !== "caja" || !permisos.canCaja) return;
+    cargarOrdenesPendientes();
+    cargarReporte();
+  }, [cargarOrdenesPendientes, cargarReporte, permisos.canCaja, tab, usuarioSistema]);
+
+  useEffect(() => {
+    if (tab !== "recibos") return;
     if (!selectedSuministroId || !usuarioSistema) {
       setHistorial([]);
       setPendientes([]);
@@ -399,12 +527,43 @@ function LuzApp({ onBackToSelector }) {
     }
     cargarHistorial(selectedSuministroId);
     cargarPendientes(selectedSuministroId);
-  }, [cargarHistorial, cargarPendientes, historialAnio, selectedSuministroId, usuarioSistema]);
+  }, [cargarHistorial, cargarPendientes, historialAnio, selectedSuministroId, tab, usuarioSistema]);
 
   useEffect(() => {
+    if (tab !== "recibos") return;
+    if (!selectedSuministroId || !usuarioSistema) {
+      setLecturaAnteriorInfo({
+        loading: false,
+        encontrada: false,
+        periodoAnterior: null,
+        error: ""
+      });
+      setReciboForm((prev) => ({
+        ...prev,
+        lectura_anterior: "",
+        fecha_emision: toIsoDate()
+      }));
+      return;
+    }
+    cargarLecturaAnterior(selectedSuministroId, reciboForm.anio, reciboForm.mes);
+  }, [cargarLecturaAnterior, reciboForm.anio, reciboForm.mes, selectedSuministroId, tab, usuarioSistema]);
+
+  useEffect(() => {
+    if (tab !== "caja") return;
     if (!soloOrdenesDelSeleccionado || !permisos.canCaja || !usuarioSistema) return;
     cargarOrdenesPendientes();
-  }, [cargarOrdenesPendientes, permisos.canCaja, soloOrdenesDelSeleccionado, selectedSuministroId, usuarioSistema]);
+  }, [cargarOrdenesPendientes, permisos.canCaja, soloOrdenesDelSeleccionado, selectedSuministroId, tab, usuarioSistema]);
+
+  useEffect(() => {
+    if (!usuarioSistema || tab !== "auditoria") return;
+    cargarAuditoria();
+  }, [cargarAuditoria, tab, usuarioSistema]);
+
+  useEffect(() => {
+    if (tab !== "importar") return;
+    if (permisos.canImportarPadron) return;
+    setTab("padron");
+  }, [permisos.canImportarPadron, tab]);
 
   useEffect(() => {
     if (!selectedSuministroId) return;
@@ -422,6 +581,37 @@ function LuzApp({ onBackToSelector }) {
       nombre_usuario: suministroSeleccionado.nombre_usuario || "",
       direccion: suministroSeleccionado.direccion || "",
       estado: suministroSeleccionado.estado || "ACTIVO"
+    });
+  };
+
+  const limpiarSeleccionSuministro = () => {
+    setSelectedSuministroId(null);
+    setSuministroForm(createEmptySuministroForm());
+    setHistorial([]);
+    setPendientes([]);
+    setReciboForm((prev) => ({
+      ...prev,
+      lectura_anterior: "",
+      lectura_actual: "",
+      observacion: ""
+    }));
+  };
+
+  const seleccionarSuministro = (row) => {
+    if (!row) return;
+    if (Number(selectedSuministroId) === Number(row.id_suministro)) {
+      limpiarSeleccionSuministro();
+      return;
+    }
+    setSelectedSuministroId(row.id_suministro);
+    setSuministroForm({
+      id_suministro: row.id_suministro,
+      id_zona: String(row.id_zona || ""),
+      zona_nombre: row.zona || "",
+      nro_medidor: row.nro_medidor || "",
+      nombre_usuario: row.nombre_usuario || "",
+      direccion: row.direccion || "",
+      estado: row.estado || "ACTIVO"
     });
   };
 
@@ -446,7 +636,7 @@ function LuzApp({ onBackToSelector }) {
     }
 
     if (!payload.nro_medidor || !payload.nombre_usuario || (!payload.id_zona && !payload.zona_nombre)) {
-      showFlash("warning", "Debe completar zona, medidor y nombre.");
+      showFlash("warning", "Debe completar zona, ID y nombre.");
       return;
     }
 
@@ -473,7 +663,7 @@ function LuzApp({ onBackToSelector }) {
 
   const eliminarSuministro = async () => {
     if (!permisos.canBorrarPadron || !suministroSeleccionado) return;
-    const ok = window.confirm(`Eliminar suministro ${suministroSeleccionado.nro_medidor} de ${suministroSeleccionado.nombre_usuario}?`);
+    const ok = window.confirm(`Eliminar suministro ID ${suministroSeleccionado.nro_medidor} de ${suministroSeleccionado.nombre_usuario}?`);
     if (!ok) return;
     try {
       const res = await luzApi.delete(`/suministros/${suministroSeleccionado.id_suministro}`);
@@ -490,17 +680,23 @@ function LuzApp({ onBackToSelector }) {
   const emitirReciboManual = async (e) => {
     e.preventDefault();
     if (!permisos.canEmitirRecibo || !suministroSeleccionado) return;
+    const lecturaAnteriorTxt = String(reciboForm.lectura_anterior || "").trim();
+    if (!lecturaAnteriorInfo.encontrada && !lecturaAnteriorTxt) {
+      showFlash("warning", "No existe lectura del mes anterior. Ingrese la lectura anterior manualmente.");
+      return;
+    }
+
     const payload = {
       id_suministro: Number(suministroSeleccionado.id_suministro),
       anio: Number.parseInt(reciboForm.anio, 10),
       mes: Number.parseInt(reciboForm.mes, 10),
       lectura_actual: parseMonto(reciboForm.lectura_actual),
+      fecha_emision: reciboForm.fecha_emision || toIsoDate(),
       observacion: String(reciboForm.observacion || "").trim()
     };
-    if (String(reciboForm.lectura_anterior || "").trim()) {
+    if (lecturaAnteriorTxt) {
       payload.lectura_anterior = parseMonto(reciboForm.lectura_anterior);
     }
-    if (String(reciboForm.fecha_emision || "").trim()) payload.fecha_emision = reciboForm.fecha_emision;
     if (String(reciboForm.fecha_vencimiento || "").trim()) payload.fecha_vencimiento = reciboForm.fecha_vencimiento;
     if (String(reciboForm.fecha_corte || "").trim()) payload.fecha_corte = reciboForm.fecha_corte;
 
@@ -642,6 +838,10 @@ function LuzApp({ onBackToSelector }) {
   };
 
   const importarArchivo = async (tipo) => {
+    if (!permisos.canImportarPadron) {
+      showFlash("warning", "Solo administrador puede importar en el modulo de luz.");
+      return;
+    }
     const isPadron = tipo === "padron";
     const endpoint = isPadron ? "/importar/padron" : "/importar/lecturas";
     const file = isPadron ? importacion.archivoPadron : importacion.archivoLecturas;
@@ -706,6 +906,12 @@ function LuzApp({ onBackToSelector }) {
           </div>
         </div>
         <div className="d-flex align-items-center gap-2">
+          <img
+            src="/logo.png"
+            alt="Logo municipal"
+            style={{ width: "42px", height: "42px", objectFit: "contain" }}
+            className="rounded border bg-white p-1"
+          />
           {typeof onBackToSelector === "function" && (
             <button className="btn btn-outline-secondary btn-sm" onClick={onBackToSelector}>
               Cambiar modulo
@@ -739,36 +945,46 @@ function LuzApp({ onBackToSelector }) {
             </button>
           </li>
           <li className="nav-item">
-            <button className={`nav-link ${tab === "caja" ? "active" : ""}`} onClick={() => setTab("caja")}>
-              <FaCashRegister className="me-1" />
-              Caja
-            </button>
-          </li>
-          <li className="nav-item">
             <button className={`nav-link ${tab === "config" ? "active" : ""}`} onClick={() => setTab("config")}>
               <FaCog className="me-1" />
               Config
             </button>
           </li>
+          {permisos.canImportarPadron && (
+            <li className="nav-item">
+              <button className={`nav-link ${tab === "importar" ? "active" : ""}`} onClick={() => setTab("importar")}>
+                <FaFileImport className="me-1" />
+                Importar
+              </button>
+            </li>
+          )}
           <li className="nav-item">
-            <button className={`nav-link ${tab === "importar" ? "active" : ""}`} onClick={() => setTab("importar")}>
-              <FaFileImport className="me-1" />
-              Importar
+            <button className={`nav-link ${tab === "auditoria" ? "active" : ""}`} onClick={() => setTab("auditoria")}>
+              <FaHistory className="me-1" />
+              Auditoria
             </button>
           </li>
+          {permisos.canManageUsers && (
+            <li className="nav-item">
+              <button className={`nav-link ${tab === "usuarios" ? "active" : ""}`} onClick={() => setTab("usuarios")}>
+                <FaUserShield className="me-1" />
+                Usuarios
+              </button>
+            </li>
+          )}
         </ul>
 
         <div className="card border-top-0 shadow-sm">
           <div className="card-body">
             {tab === "padron" && (
-              <div className="row g-3">
-                <div className="col-12 col-xl-8">
+              <div className="row g-3" onClick={limpiarSeleccionSuministro}>
+                <div className="col-12 col-xl-8" onClick={(e) => e.stopPropagation()}>
                   <div className="d-flex flex-wrap gap-2 mb-3">
                     <div className="input-group" style={{ maxWidth: "280px" }}>
                       <span className="input-group-text"><FaSearch /></span>
                       <input
                         className="form-control"
-                        placeholder="Buscar por nombre, medidor o zona"
+                        placeholder="Buscar por nombre, id o zona"
                         value={filtros.q}
                         onChange={(e) => setFiltros((prev) => ({ ...prev, q: e.target.value }))}
                       />
@@ -795,9 +1011,9 @@ function LuzApp({ onBackToSelector }) {
                       <option value="CORTADO">Cortado</option>
                       <option value="INACTIVO">Inactivo</option>
                     </select>
-                    <button className="btn btn-outline-primary d-flex align-items-center gap-2" onClick={cargarSuministros}>
+                    <button className="btn btn-outline-primary d-flex align-items-center gap-2" onClick={cargarSuministros} disabled={loadingPadron}>
                       <FaSyncAlt />
-                      Recargar
+                      {loadingPadron ? "Actualizando..." : "Recargar"}
                     </button>
                   </div>
 
@@ -805,30 +1021,35 @@ function LuzApp({ onBackToSelector }) {
                     <table className="table table-hover table-sm align-middle mb-0">
                       <thead className="table-light sticky-top">
                         <tr>
-                          <th>Zona</th>
-                          <th>Medidor</th>
-                          <th>Usuario</th>
-                          <th>Estado</th>
-                          <th className="text-end">Deuda</th>
-                          <th className="text-center">Meses</th>
+                          <th style={{ minWidth: "120px" }}>Zona</th>
+                          <th style={{ minWidth: "120px" }}>ID</th>
+                          <th style={{ minWidth: "120px" }}>Medidor</th>
+                          <th style={{ minWidth: "260px" }}>Usuario</th>
+                          <th style={{ minWidth: "100px" }}>Estado</th>
+                          <th className="text-end text-nowrap" style={{ minWidth: "120px" }}>Deuda</th>
+                          <th className="text-center text-nowrap" style={{ minWidth: "70px" }}>Meses</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {loadingPadron && (
-                          <tr><td colSpan="6" className="text-center py-3">Cargando...</td></tr>
+                        {loadingPadron && suministros.length === 0 && (
+                          <tr><td colSpan="7" className="text-center py-3">Cargando...</td></tr>
                         )}
                         {!loadingPadron && suministros.length === 0 && (
-                          <tr><td colSpan="6" className="text-center py-3 text-muted">Sin registros</td></tr>
+                          <tr><td colSpan="7" className="text-center py-3 text-muted">Sin registros</td></tr>
                         )}
-                        {!loadingPadron && suministros.map((row) => (
+                        {suministrosOrdenados.map((row) => (
                           <tr
                             key={row.id_suministro}
                             className={Number(selectedSuministroId) === Number(row.id_suministro) ? "table-primary" : ""}
                             style={{ cursor: "pointer" }}
-                            onClick={() => setSelectedSuministroId(row.id_suministro)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              seleccionarSuministro(row);
+                            }}
                           >
                             <td>{row.zona}</td>
-                            <td>{row.nro_medidor}</td>
+                            <td className="fw-semibold">{row.nro_medidor || "-"}</td>
+                            <td className="text-muted">-</td>
                             <td>
                               <div className="fw-semibold">{row.nombre_usuario}</div>
                               <div className="small text-muted">{row.direccion || "-"}</div>
@@ -838,8 +1059,8 @@ function LuzApp({ onBackToSelector }) {
                                 {row.estado}
                               </span>
                             </td>
-                            <td className="text-end">{formatMoney(row.deuda_total)}</td>
-                            <td className="text-center">{Number(row.meses_deuda || 0)}</td>
+                            <td className="text-end text-nowrap">{formatMoney(row.deuda_total)}</td>
+                            <td className="text-center text-nowrap">{Number(row.meses_deuda || 0)}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -847,7 +1068,7 @@ function LuzApp({ onBackToSelector }) {
                   </div>
                 </div>
 
-                <div className="col-12 col-xl-4">
+                <div className="col-12 col-xl-4" onClick={(e) => e.stopPropagation()}>
                   <div className="card border">
                     <div className="card-header d-flex justify-content-between align-items-center">
                       <strong>{suministroForm.id_suministro ? "Editar suministro" : "Nuevo suministro"}</strong>
@@ -883,13 +1104,17 @@ function LuzApp({ onBackToSelector }) {
                           </div>
                         )}
                         <div className="mb-2">
-                          <label className="form-label">Nro medidor</label>
+                          <label className="form-label">ID usuario (antes medidor)</label>
                           <input
                             className="form-control"
                             value={suministroForm.nro_medidor}
                             onChange={(e) => setSuministroForm((prev) => ({ ...prev, nro_medidor: e.target.value }))}
                             required
                           />
+                        </div>
+                        <div className="mb-2">
+                          <label className="form-label">Nro medidor (pendiente de validacion)</label>
+                          <input className="form-control" value="" disabled readOnly placeholder="Por confirmar con municipalidad" />
                         </div>
                         <div className="mb-2">
                           <label className="form-label">Nombre usuario</label>
@@ -928,15 +1153,20 @@ function LuzApp({ onBackToSelector }) {
                           <button type="button" className="btn btn-outline-secondary btn-sm" onClick={limpiarFormularioSuministro}>
                             Limpiar
                           </button>
-                          <button
-                            type="button"
-                            className="btn btn-outline-danger btn-sm d-flex align-items-center gap-2"
-                            disabled={!permisos.canBorrarPadron || !suministroSeleccionado}
-                            onClick={eliminarSuministro}
-                          >
-                            <FaTrashAlt />
-                            Eliminar
+                          <button type="button" className="btn btn-outline-dark btn-sm" onClick={limpiarSeleccionSuministro}>
+                            Deseleccionar
                           </button>
+                          {permisos.canBorrarPadron && (
+                            <button
+                              type="button"
+                              className="btn btn-outline-danger btn-sm d-flex align-items-center gap-2"
+                              disabled={!suministroSeleccionado}
+                              onClick={eliminarSuministro}
+                            >
+                              <FaTrashAlt />
+                              Eliminar
+                            </button>
+                          )}
                         </div>
                       </form>
                     </div>
@@ -946,7 +1176,8 @@ function LuzApp({ onBackToSelector }) {
                     <div className="card border mt-3">
                       <div className="card-body">
                         <div className="fw-semibold mb-1">{suministroSeleccionado.nombre_usuario}</div>
-                        <div className="small text-muted">Medidor: {suministroSeleccionado.nro_medidor}</div>
+                        <div className="small text-muted">ID: {suministroSeleccionado.nro_medidor}</div>
+                        <div className="small text-muted">Medidor: -</div>
                         <div className="small text-muted">Zona: {suministroSeleccionado.zona}</div>
                         <div className="small text-muted">Deuda: {formatMoney(suministroSeleccionado.deuda_total)}</div>
                         <div className="small text-muted">Meses deuda: {suministroSeleccionado.meses_deuda}</div>
@@ -969,7 +1200,8 @@ function LuzApp({ onBackToSelector }) {
                           <div className="small mb-3">
                             <div><strong>Usuario:</strong> {suministroSeleccionado.nombre_usuario}</div>
                             <div><strong>Zona:</strong> {suministroSeleccionado.zona}</div>
-                            <div><strong>Medidor:</strong> {suministroSeleccionado.nro_medidor}</div>
+                            <div><strong>ID:</strong> {suministroSeleccionado.nro_medidor}</div>
+                            <div><strong>Medidor:</strong> -</div>
                           </div>
                           <form onSubmit={emitirReciboManual}>
                             <div className="row g-2">
@@ -998,14 +1230,28 @@ function LuzApp({ onBackToSelector }) {
                                 />
                               </div>
                               <div className="col-6">
-                                <label className="form-label">Lectura anterior (opcional)</label>
+                                <label className="form-label">Lectura anterior</label>
                                 <input
                                   type="number"
                                   className="form-control"
                                   step="0.01"
                                   value={reciboForm.lectura_anterior}
                                   onChange={(e) => setReciboForm((prev) => ({ ...prev, lectura_anterior: e.target.value }))}
+                                  readOnly={lecturaAnteriorInfo.encontrada}
+                                  disabled={lecturaAnteriorInfo.loading}
+                                  required={!lecturaAnteriorInfo.encontrada}
                                 />
+                                <div className="form-text">
+                                  {lecturaAnteriorInfo.loading && "Buscando lectura del mes anterior..."}
+                                  {!lecturaAnteriorInfo.loading && lecturaAnteriorInfo.encontrada && lecturaAnteriorInfo.periodoAnterior && (
+                                    <>Auto desde {formatPeriodoCorto(lecturaAnteriorInfo.periodoAnterior.anio, lecturaAnteriorInfo.periodoAnterior.mes)}.</>
+                                  )}
+                                  {!lecturaAnteriorInfo.loading && !lecturaAnteriorInfo.encontrada && lecturaAnteriorInfo.periodoAnterior && (
+                                    <>No hay registro en {formatPeriodoCorto(lecturaAnteriorInfo.periodoAnterior.anio, lecturaAnteriorInfo.periodoAnterior.mes)}. Ingrese manualmente.</>
+                                  )}
+                                  {!lecturaAnteriorInfo.loading && !lecturaAnteriorInfo.periodoAnterior && "Ingrese anio y mes validos."}
+                                  {!lecturaAnteriorInfo.loading && lecturaAnteriorInfo.error && ` ${lecturaAnteriorInfo.error}`}
+                                </div>
                               </div>
                               <div className="col-6">
                                 <label className="form-label">Lectura actual</label>
@@ -1024,7 +1270,8 @@ function LuzApp({ onBackToSelector }) {
                                   type="date"
                                   className="form-control"
                                   value={reciboForm.fecha_emision}
-                                  onChange={(e) => setReciboForm((prev) => ({ ...prev, fecha_emision: e.target.value }))}
+                                  readOnly
+                                  disabled
                                 />
                               </div>
                               <div className="col-4">
@@ -1099,6 +1346,41 @@ function LuzApp({ onBackToSelector }) {
                             </tfoot>
                           </table>
                         </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="card border mt-3">
+                    <div className="card-header fw-semibold d-flex align-items-center gap-2">
+                      <FaCashRegister />
+                      Derivar a Caja Municipal
+                    </div>
+                    <div className="card-body">
+                      <div className="small text-muted mb-2">
+                        Caja de Luz se centraliza en la caja municipal unica para todos los servicios.
+                      </div>
+                      {!suministroSeleccionado ? (
+                        <div className="small text-muted">Seleccione un suministro en Padron.</div>
+                      ) : (
+                        <>
+                          <div className="small mb-1"><strong>Usuario:</strong> {suministroSeleccionado.nombre_usuario}</div>
+                          <div className="small mb-1"><strong>ID:</strong> {suministroSeleccionado.nro_medidor}</div>
+                          <div className="small mb-2"><strong>Pendiente:</strong> {formatMoney(totalPendienteSeleccionado)}</div>
+                          <label className="form-label">Observacion</label>
+                          <textarea
+                            rows="2"
+                            className="form-control"
+                            value={ordenObservacion}
+                            onChange={(e) => setOrdenObservacion(e.target.value)}
+                          />
+                          <button
+                            className="btn btn-primary mt-3"
+                            onClick={emitirOrdenCobro}
+                            disabled={!permisos.canEmitirRecibo || totalPendienteSeleccionado <= 0}
+                          >
+                            Emitir orden para caja municipal
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -1428,6 +1710,14 @@ function LuzApp({ onBackToSelector }) {
                 </div>
               </div>
             )}
+            {tab === "usuarios" && (
+              <UsuariosLuzPanel
+                visible={tab === "usuarios"}
+                usuarioActivo={usuarioSistema}
+                canManageUsers={permisos.canManageUsers}
+                onFlash={showFlash}
+              />
+            )}
 
             {tab === "importar" && (
               <div className="row g-3">
@@ -1477,7 +1767,7 @@ function LuzApp({ onBackToSelector }) {
                       />
                       <button
                         className="btn btn-primary mt-3"
-                        disabled={!permisos.canEmitirRecibo || importacion.subiendo === "lecturas"}
+                        disabled={!permisos.canImportarLecturas || importacion.subiendo === "lecturas"}
                         onClick={() => importarArchivo("lecturas")}
                       >
                         {importacion.subiendo === "lecturas" ? "Importando..." : "Importar lecturas"}
@@ -1530,11 +1820,59 @@ function LuzApp({ onBackToSelector }) {
                 )}
               </div>
             )}
+            {tab === "auditoria" && (
+              <div className="row g-3">
+                <div className="col-12">
+                  <div className="d-flex flex-wrap gap-2 align-items-center mb-2">
+                    <div className="input-group" style={{ maxWidth: "360px" }}>
+                      <span className="input-group-text"><FaSearch /></span>
+                      <input
+                        className="form-control"
+                        placeholder="Buscar por usuario, accion o detalle"
+                        value={auditoriaFiltro}
+                        onChange={(e) => setAuditoriaFiltro(e.target.value)}
+                      />
+                    </div>
+                    <button className="btn btn-outline-primary btn-sm d-flex align-items-center gap-2" onClick={cargarAuditoria} disabled={loadingAuditoria}>
+                      <FaSyncAlt />
+                      Recargar auditoria
+                    </button>
+                  </div>
+
+                  <div className="table-responsive border rounded" style={{ maxHeight: "72vh" }}>
+                    <table className="table table-sm table-hover align-middle mb-0">
+                      <thead className="table-light sticky-top">
+                        <tr>
+                          <th style={{ minWidth: "170px" }}>Fecha</th>
+                          <th style={{ minWidth: "170px" }}>Usuario</th>
+                          <th style={{ minWidth: "220px" }}>Accion</th>
+                          <th>Detalle</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {loadingAuditoria && <tr><td colSpan="4" className="text-center py-3">Cargando...</td></tr>}
+                        {!loadingAuditoria && auditoriaRows.length === 0 && (
+                          <tr><td colSpan="4" className="text-center py-3 text-muted">Sin registros de auditoria.</td></tr>
+                        )}
+                        {!loadingAuditoria && auditoriaRows.map((row) => (
+                          <tr key={row.id_auditoria}>
+                            <td>{formatFechaHora(row.fecha)}</td>
+                            <td>{row.usuario || "-"}</td>
+                            <td><span className="badge bg-secondary">{row.accion}</span></td>
+                            <td>{row.detalle || "-"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "148mm", background: "#fff" }}>
+      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "210mm", background: "#fff" }}>
         <ReciboLuz ref={reciboRef} datos={reciboImpresion} />
       </div>
     </div>

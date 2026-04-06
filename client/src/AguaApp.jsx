@@ -68,6 +68,7 @@ const ESTADO_CONEXION_LABELS = {
 };
 
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+const SHOW_LEGACY_CAJA_MENU = true;
 const getLocalCampoAppUrl = () => `${API_BASE_URL}/campo-app/`;
 const normalizeCampoAppUrl = (value) => {
   const raw = String(value || "").trim();
@@ -112,7 +113,10 @@ const Sidebar = memo(({
   setMostrarModalExportaciones,
   setMostrarModalCampo,
   permisos,
-  resumenPendientesCaja
+  resumenPendientesCaja,
+  resumenConteoEfectivo,
+  onRegistrarConteoEfectivo,
+  showLegacyCajaMenu
 }) => {
   const isSoloCobrosCajero = permisos.role === "CAJERO";
   const showReportesSection = !isSoloCobrosCajero && (permisos.canReportesCaja || permisos.canExportPadron);
@@ -145,7 +149,7 @@ const Sidebar = memo(({
         </li>
       )}
 
-      {permisos.canCaja && (
+      {showLegacyCajaMenu && permisos.canCaja && (
         <>
           <li className="nav-item mt-2 text-white-50 text-uppercase small fw-bold">Caja</li>
           <li>
@@ -161,6 +165,21 @@ const Sidebar = memo(({
               </div>
             )}
           </li>
+          {permisos.canConteoEfectivo && (
+            <li>
+              <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={onRegistrarConteoEfectivo}>
+                <FaMoneyBillWave/> <span>Conteo Efectivo</span>
+                {Number(resumenConteoEfectivo?.total_pendientes_hoy || 0) > 0 && (
+                  <span className="badge bg-warning text-dark ms-auto">{Number(resumenConteoEfectivo?.total_pendientes_hoy || 0)}</span>
+                )}
+              </button>
+              {Number(resumenConteoEfectivo?.total_pendientes_hoy || 0) > 0 && (
+                <div className="small text-info mt-1 ms-4">
+                  Declarado hoy: S/. {Number(resumenConteoEfectivo?.monto_pendiente_hoy || 0).toFixed(2)}
+                </div>
+              )}
+            </li>
+          )}
         </>
       )}
 
@@ -168,7 +187,19 @@ const Sidebar = memo(({
         <>
           <li className="nav-item mt-2 text-white-50 text-uppercase small fw-bold">Reportes</li>
           {permisos.canReportesCaja && (
-            <li><button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => setMostrarModalCierre(true)}><FaFileInvoiceDollar/> <span>Ver Cobranzas (F9)</span></button></li>
+            <li>
+              <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => setMostrarModalCierre(true)}>
+                <FaFileInvoiceDollar/> <span>Ver Cobranzas (F9)</span>
+                {Number(resumenConteoEfectivo?.total_pendientes_hoy || 0) > 0 && (
+                  <span className="badge bg-warning text-dark ms-auto">{Number(resumenConteoEfectivo?.total_pendientes_hoy || 0)}</span>
+                )}
+              </button>
+              {Number(resumenConteoEfectivo?.total_pendientes_hoy || 0) > 0 && (
+                <div className="small text-info mt-1 ms-4">
+                  Conteo pendiente: S/. {Number(resumenConteoEfectivo?.monto_pendiente_hoy || 0).toFixed(2)}
+                </div>
+              )}
+            </li>
           )}
           {permisos.canExportPadron && (
             <li>
@@ -463,12 +494,20 @@ function AguaApp({ onBackToSelector = null }) {
   const realtimeOpsRef = useRef({
     cargarContribuyentes: () => {},
     cargarResumen: () => {},
+    cargarConteo: () => {},
     cargarHistorial: () => {}
   });
   const [resumenPendientesCaja, setResumenPendientesCaja] = useState({
     total_ordenes: 0,
     total_monto: 0,
     total_contribuyentes: 0
+  });
+  const [resumenConteoEfectivo, setResumenConteoEfectivo] = useState({
+    fecha_referencia: "",
+    total_pendientes: 0,
+    total_pendientes_hoy: 0,
+    monto_pendiente_hoy: 0,
+    ultimo_pendiente: null
   });
   const [campoAppUrl, setCampoAppUrl] = useState(getLocalCampoAppUrl);
 
@@ -481,6 +520,7 @@ function AguaApp({ onBackToSelector = null }) {
     role: rolActual,
     roleLabel: ROLE_LABELS[rolActual] || "Nivel 4 - Consulta",
     canCaja: hasMinRole(rolActual, "CAJERO"),
+    canConteoEfectivo: rolActual === "ADMIN" || rolActual === "CAJERO",
     canManageOps: hasMinRole(rolActual, "ADMIN_SEC"),
     canManageContribuyentes: hasMinRole(rolActual, "ADMIN_SEC"),
     canReportesCaja: hasMinRole(rolActual, "ADMIN_SEC"),
@@ -599,9 +639,26 @@ function AguaApp({ onBackToSelector = null }) {
     return { por_anio, total };
   };
 
-const reciboPageStyle = `
+const reciboMasivoPageStyle = `
   @page {
-    size: 145mm 203mm;
+    /* Recibos masivos en horizontal. */
+    size: 203mm 145mm;
+    margin: 0;
+  }
+  @media print {
+    html, body {
+      margin: 0;
+      padding: 0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+  }
+`;
+
+const reciboIndividualPageStyle = `
+  @page {
+    /* Recibo principal en horizontal. */
+    size: 203mm 145mm;
     margin: 0;
   }
   @media print {
@@ -635,7 +692,8 @@ const actaPageStyle = `
 
 const anexoCajaPageStyle = `
   @page {
-    size: A4 portrait;
+    /* Anexo en horizontal (paisaje). */
+    size: A4 landscape;
     margin: 0;
   }
   @media print {
@@ -652,7 +710,7 @@ const anexoCajaPageStyle = `
   const handlePrintMasivo = useReactToPrint({
     contentRef: masivoRef,
     documentTitle: 'Recibos_Masivos',
-    pageStyle: reciboPageStyle,
+    pageStyle: reciboMasivoPageStyle,
     onAfterPrint: () => {
       isPrintingMasivoRef.current = false;
       setDatosMasivos(null);
@@ -714,7 +772,7 @@ const anexoCajaPageStyle = `
   const handlePrintRecibo = useReactToPrint({
     contentRef: componentRef,
     documentTitle: 'Recibo_Agua',
-    pageStyle: reciboPageStyle,
+    pageStyle: reciboIndividualPageStyle,
     onAfterPrint: () => {
       isPrintingReciboRef.current = false;
       setDatosReciboImprimir(null);
@@ -906,7 +964,7 @@ const anexoCajaPageStyle = `
       setContribuyentes([]);
     }
   };
-  const cargarResumenPendientesCaja = async () => {
+  const cargarResumenPendientesCaja = useCallback(async () => {
     try {
       const res = await api.get("/caja/ordenes-cobro/resumen-pendientes");
       const data = res?.data || {};
@@ -922,7 +980,28 @@ const anexoCajaPageStyle = `
         total_contribuyentes: 0
       });
     }
-  };
+  }, []);
+  const cargarResumenConteoEfectivo = useCallback(async () => {
+    try {
+      const res = await api.get("/caja/conteo-efectivo/resumen");
+      const data = res?.data || {};
+      setResumenConteoEfectivo({
+        fecha_referencia: data.fecha_referencia || "",
+        total_pendientes: Number(data.total_pendientes || 0),
+        total_pendientes_hoy: Number(data.total_pendientes_hoy || 0),
+        monto_pendiente_hoy: Number(data.monto_pendiente_hoy || 0),
+        ultimo_pendiente: data.ultimo_pendiente || null
+      });
+    } catch {
+      setResumenConteoEfectivo({
+        fecha_referencia: "",
+        total_pendientes: 0,
+        total_pendientes_hoy: 0,
+        monto_pendiente_hoy: 0,
+        ultimo_pendiente: null
+      });
+    }
+  }, []);
   const cargarHistorial = async (id_contribuyente, anio = historialYear, force = false) => {
     const cacheKey = `${id_contribuyente}:${anio}`;
     if (!force && historialCacheRef.current.has(cacheKey)) {
@@ -1052,9 +1131,34 @@ const anexoCajaPageStyle = `
     historialCacheRef.current.clear();
     cargarContribuyentes();
     if (permisos.canCaja) cargarResumenPendientesCaja();
+    if (permisos.canCaja) cargarResumenConteoEfectivo();
     if (usuarioSeleccionado) cargarHistorial(usuarioSeleccionado.id_contribuyente, "all", true);
     setRefreshDashboard(prev => prev + 1);
     setSelectedIds(new Set());
+  };
+
+  const registrarConteoEfectivoCaja = async () => {
+    if (!permisos.canConteoEfectivo) return;
+    const montoSugerido = Number(resumenConteoEfectivo?.ultimo_pendiente?.monto_efectivo || 0);
+    const montoDefault = montoSugerido > 0 ? montoSugerido.toFixed(2) : "";
+    const montoRaw = window.prompt("Ingrese el conteo de efectivo (S/.):", montoDefault);
+    if (montoRaw === null) return;
+    const monto = Number.parseFloat(String(montoRaw).replace(",", "."));
+    if (!Number.isFinite(monto) || monto < 0) {
+      alert("Ingrese un monto valido de efectivo.");
+      return;
+    }
+    const observacionRaw = window.prompt("Observacion opcional del conteo:", "") || "";
+    try {
+      const res = await api.post("/caja/conteo-efectivo", {
+        monto_efectivo: monto,
+        observacion: observacionRaw
+      });
+      alert(res?.data?.mensaje || "Conteo de efectivo enviado.");
+      await cargarResumenConteoEfectivo();
+    } catch (error) {
+      alert(error?.response?.data?.error || "No se pudo enviar el conteo de efectivo.");
+    }
   };
 
   useEffect(() => {
@@ -1069,9 +1173,10 @@ const anexoCajaPageStyle = `
     realtimeOpsRef.current = {
       cargarContribuyentes,
       cargarResumen: cargarResumenPendientesCaja,
+      cargarConteo: cargarResumenConteoEfectivo,
       cargarHistorial
     };
-  }, [cargarContribuyentes, cargarResumenPendientesCaja, cargarHistorial]);
+  }, [cargarContribuyentes, cargarResumenPendientesCaja, cargarResumenConteoEfectivo, cargarHistorial]);
 
   useEffect(() => {
     const unsubscribeStatus = realtime.onStatus((status) => {
@@ -1095,6 +1200,7 @@ const anexoCajaPageStyle = `
         }
         if (realtimeNeedsCajaRef.current && context.canCaja) {
           ops.cargarResumen();
+          ops.cargarConteo();
         }
         realtimeNeedsCajaRef.current = false;
         setRefreshDashboard((prev) => prev + 1);
@@ -1133,14 +1239,23 @@ const anexoCajaPageStyle = `
         total_monto: 0,
         total_contribuyentes: 0
       });
+      setResumenConteoEfectivo({
+        fecha_referencia: "",
+        total_pendientes: 0,
+        total_pendientes_hoy: 0,
+        monto_pendiente_hoy: 0,
+        ultimo_pendiente: null
+      });
       return undefined;
     }
     cargarResumenPendientesCaja();
+    cargarResumenConteoEfectivo();
     const timer = setInterval(() => {
       cargarResumenPendientesCaja();
+      cargarResumenConteoEfectivo();
     }, 10000);
     return () => clearInterval(timer);
-  }, [usuarioSistema, permisos.canCaja]);
+  }, [usuarioSistema, permisos.canCaja, cargarResumenPendientesCaja, cargarResumenConteoEfectivo]);
   useEffect(() => {
     if (usuarioSeleccionado) {
       setHistorialYear("all");
@@ -1651,6 +1766,9 @@ const anexoCajaPageStyle = `
         setMostrarModalCampo={setMostrarModalCampo}
         permisos={permisos}
         resumenPendientesCaja={resumenPendientesCaja}
+        resumenConteoEfectivo={resumenConteoEfectivo}
+        onRegistrarConteoEfectivo={registrarConteoEfectivoCaja}
+        showLegacyCajaMenu={SHOW_LEGACY_CAJA_MENU}
       />
       
       <div className={`flex-grow-1 d-flex flex-column ${bgMain}`} style={{ overflow: "hidden" }}>
@@ -1816,7 +1934,13 @@ const anexoCajaPageStyle = `
         />
       )}
       {mostrarModalEliminar && usuarioSeleccionado && (<ModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
-      {mostrarModalCierre && (<ModalCierre cerrarModal={() => setMostrarModalCierre(false)} darkMode={darkMode} />)}
+      {mostrarModalCierre && (
+        <ModalCierre
+          cerrarModal={() => setMostrarModalCierre(false)}
+          darkMode={darkMode}
+          onCierreRegistrado={cargarResumenConteoEfectivo}
+        />
+      )}
       {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
       {mostrarModalAuditoria && (<ModalAuditoria cerrarModal={() => setMostrarModalAuditoria(false)} darkMode={darkMode} />)}
       {mostrarModalUsuarios && (<ModalUsuarios cerrarModal={() => setMostrarModalUsuarios(false)} usuarioActivo={usuarioSistema} darkMode={darkMode} />)}
@@ -1890,7 +2014,7 @@ const anexoCajaPageStyle = `
           <ActasCorteLote ref={actaCorteRef} actas={datosActaCorteImprimir} />
       </div>
 
-      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "148mm", height: "auto" }}>
+      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "203mm", height: "auto" }}>
           <RecibosMasivos ref={masivoRef} datos={datosMasivos} />
       </div>
     </div>

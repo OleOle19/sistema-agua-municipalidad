@@ -2,6 +2,23 @@ import { useState, useEffect } from "react";
 import api from "../api";
 import { FaLayerGroup, FaBuilding, FaUsers } from "react-icons/fa";
 
+const validarPeriodoNoFuturo = (anioInput, mesInput) => {
+  const anio = Number.parseInt(String(anioInput ?? ""), 10);
+  const mes = Number.parseInt(String(mesInput ?? ""), 10);
+  if (!Number.isFinite(anio) || anio < 2000 || anio > 9999) {
+    return { ok: false, error: "Año inválido." };
+  }
+  if (!Number.isFinite(mes) || mes < 1 || mes > 12) {
+    return { ok: false, error: "Mes inválido." };
+  }
+  const now = new Date();
+  const periodoActual = (now.getFullYear() * 100) + (now.getMonth() + 1);
+  if ((anio * 100) + mes > periodoActual) {
+    return { ok: false, error: "No se puede generar deuda en un periodo futuro." };
+  }
+  return { ok: true, anio, mes };
+};
+
 const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkMode }) => {
   const [modo, setModo] = useState(idsSeleccionados.length > 0 ? "seleccion" : "todos");
   const [calles, setCalles] = useState([]);
@@ -57,6 +74,8 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
     e.preventDefault();
     if (modo === "calle" && !form.id_calle) return alert("Seleccione una calle");
     if (totalServicios <= 0) return alert("Debe seleccionar al menos un servicio.");
+    const periodo = validarPeriodoNoFuturo(form.anio, form.mes);
+    if (!periodo.ok) return alert(periodo.error);
     if (!confirm(`¿Está seguro de generar deuda masiva en modo: ${modo.toUpperCase()}?`)) return;
 
     setLoading(true);
@@ -71,8 +90,8 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
         tipo_seleccion: modo,
         ids_usuarios: idsSeleccionados,
         id_calle: form.id_calle,
-        mes: form.mes,
-        anio: form.anio,
+        mes: periodo.mes,
+        anio: periodo.anio,
         montos: montosPayload
       };
       const res = await api.post("/recibos/generar-masivo", payload);

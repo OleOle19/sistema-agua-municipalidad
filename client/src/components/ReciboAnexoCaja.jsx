@@ -15,10 +15,19 @@ const PAGE = {
   height: 106
 };
 
+// Textos editables del anexo.
+// Si quieres cambiar etiquetas impresas, edita este objeto.
+const ANEXO_TEXTOS = {
+  prefijoCalle: "CALLE:",
+  prefijoRuc: "RUC:"
+};
+
 // Ajustes globales para calibracion.
+// nudgeX/nudgeY mueven todo el anexo.
 const CAL = {
-  nudgeX: 0,
-  nudgeY: 0,
+  nudgeX: 15,
+  nudgeY: 5,
+  // Coordenadas de los datos de cabecera (solo bloque CONTROL).
   topData: {
     yLine1: 10.2,
     yCode: 17.2,
@@ -30,6 +39,7 @@ const CAL = {
   },
   blocks: [
     {
+      // Bloque izquierdo principal.
       key: "CONTROL",
       x: 0,
       showHeaderData: true,
@@ -47,36 +57,40 @@ const CAL = {
       }
     },
     {
+      // Bloque central (copia).
       key: "COPIA",
       x: 105,
+      compact: true,
       showHeaderData: false,
       conceptFont: 2.35,
       amountFont: 2.35,
       totalFont: 2.8,
       table: {
         conceptX: 1.8,
-        conceptMax: 33.5,
-        amountX: 44.2,
+        conceptMax: 26.5,
+        amountX: 30.2,
         amountWidth: 6.2,
         topY: 35.0,
-        lineGap: 5.2,
+        lineGap: 9.6,
         totalY: 91.0
       }
     },
     {
+      // Bloque derecho (caja).
       key: "CAJA",
       x: 157.5,
+      compact: true,
       showHeaderData: false,
       conceptFont: 2.35,
       amountFont: 2.35,
       totalFont: 2.8,
       table: {
         conceptX: 1.8,
-        conceptMax: 33.5,
-        amountX: 44.2,
+        conceptMax: 26.5,
+        amountX: 30.2,
         amountWidth: 6.2,
         topY: 35.0,
-        lineGap: 5.2,
+        lineGap: 9.6,
         totalY: 91.0
       }
     }
@@ -99,6 +113,7 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
     .slice(0, 5);
   const total = formatMonto(datos?.total);
 
+  // Helpers para aplicar calibracion global a cada coordenada.
   const x = (value) => mm(value + CAL.nudgeX);
   const y = (value) => mm(value + CAL.nudgeY);
 
@@ -137,7 +152,7 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                   textOverflow: "ellipsis"
                 }}
               >
-                {calle ? `CALLE: ${calle}` : ""}
+                {calle ? `${ANEXO_TEXTOS.prefijoCalle} ${calle}` : ""}
               </div>
               <div
                 style={{
@@ -151,7 +166,7 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                   textOverflow: "ellipsis"
                 }}
               >
-                {ruc ? `RUC: ${ruc}` : ""}
+                {ruc ? `${ANEXO_TEXTOS.prefijoRuc} ${ruc}` : ""}
               </div>
               <div
                 style={{
@@ -194,9 +209,14 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                   top: y(block.table.topY + (idx * block.table.lineGap)),
                   fontSize: mm(block.conceptFont),
                   maxWidth: mm(block.table.conceptMax),
-                  whiteSpace: "nowrap",
+                  whiteSpace: block.compact ? "normal" : "nowrap",
+                  lineHeight: block.compact ? 1.05 : 1.1,
                   overflow: "hidden",
-                  textOverflow: "ellipsis"
+                  textOverflow: "ellipsis",
+                  display: block.compact ? "-webkit-box" : "block",
+                  WebkitLineClamp: block.compact ? 2 : "unset",
+                  WebkitBoxOrient: block.compact ? "vertical" : "horizontal",
+                  minHeight: block.compact ? mm(block.conceptFont * 2.3) : "auto"
                 }}
               >
                 {row.concepto}

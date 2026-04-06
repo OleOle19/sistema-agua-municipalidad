@@ -37,3 +37,48 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #a8a8a8; 
 }
+
+.module-entry {
+  transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.module-entry:not(:disabled):hover,
+.module-entry:not(:disabled):focus-visible {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+}
+
+.module-entry__icon {
+  width: 52px;
+  height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid transparent;
+  border-radius: 12px;
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.module-entry--agua:not(:disabled):hover .module-entry__icon,
+.module-entry--agua:not(:disabled):focus-visible .module-entry__icon {
+  border-color: #0d6efd;
+  background-color: rgba(13, 110, 253, 0.08);
+  box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.12);
+  color: #ffffff !important;
+}
+
+.module-entry--luz:not(:disabled):hover .module-entry__icon,
+.module-entry--luz:not(:disabled):focus-visible .module-entry__icon {
+  border-color: #f0ad00;
+  background-color: rgba(240, 173, 0, 0.1);
+  box-shadow: 0 0 0 3px rgba(240, 173, 0, 0.16);
+  color: #212529 !important;
+}
+
+.module-entry--caja:not(:disabled):hover .module-entry__icon,
+.module-entry--caja:not(:disabled):focus-visible .module-entry__icon {
+  border-color: #198754;
+  background-color: rgba(25, 135, 84, 0.1);
+  box-shadow: 0 0 0 3px rgba(25, 135, 84, 0.16);
+  color: #ffffff !important;
+}

@@ -117,6 +117,14 @@ const ROLE_ORDER = {
   ADMIN_SEC: 4,
   ADMIN: 5
 };
+const ROLE_LABELS = {
+  ADMIN: "Nivel 1 - Admin principal",
+  ADMIN_SEC: "Nivel 2 - Ventanilla",
+  CAJERO: "Nivel 3 - Operador de caja",
+  CONSULTA: "Nivel 4 - Consulta",
+  BRIGADA: "Nivel 5 - Brigada"
+};
+const USER_STATUS_ALLOWED = new Set(["PENDIENTE", "ACTIVO", "BLOQUEADO"]);
 
 const normalizeRole = (role) => {
   const raw = String(role || "").trim().toUpperCase();
@@ -132,6 +140,15 @@ const hasMinRole = (role, requiredRole) => {
   const current = ROLE_ORDER[normalizeRole(role)] || 0;
   const needed = ROLE_ORDER[normalizeRole(requiredRole)] || 0;
   return current >= needed;
+};
+const isKnownRoleValue = (role) => {
+  const normalized = normalizeRole(role);
+  return Object.prototype.hasOwnProperty.call(ROLE_ORDER, normalized);
+};
+const normalizeEstadoUsuario = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (USER_STATUS_ALLOWED.has(raw)) return raw;
+  return "";
 };
 
 const round2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
@@ -256,6 +273,16 @@ const addDaysIso = (isoDate, days) => {
   return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 };
 
+const getPeriodoAnterior = (anio, mes) => {
+  const anioNum = parsePositiveInt(anio, 0);
+  const mesNum = parsePositiveInt(mes, 0);
+  if (!anioNum || mesNum < 1 || mesNum > 12) return null;
+  if (mesNum === 1) {
+    return { anio: anioNum - 1, mes: 12 };
+  }
+  return { anio: anioNum, mes: mesNum - 1 };
+};
+
 const issueLuzToken = (user) => jwt.sign(
   {
     id_usuario: user.id_usuario,
@@ -306,6 +333,41 @@ const authenticateLuzToken = async (req, res, next) => {
     return res.status(401).json({ error: "No autorizado" });
   }
   const resolved = await resolverUsuarioLuz(token);
+  if (!resolved.ok) {
+    return res.status(resolved.status || 401).json({ error: resolved.error || "No autorizado" });
+  }
+  req.user = resolved.user;
+  return next();
+};
+const resolveCajaUserFromAnySystemToken = async (token) => {
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    const sistema = String(payload?.sistema || "AGUA").trim().toUpperCase();
+    if (sistema === "LUZ") {
+      return resolverUsuarioLuz(token);
+    }
+    return {
+      ok: true,
+      user: {
+        id_usuario: Number(payload?.id_usuario || 0),
+        username: String(payload?.username || "").trim() || "usuario",
+        nombre: String(payload?.nombre || payload?.username || "Usuario"),
+        rol: normalizeRole(payload?.rol),
+        estado: "ACTIVO",
+        sistema: "AGUA"
+      }
+    };
+  } catch {
+    return { ok: false, status: 401, error: "Token inválido o expirado" };
+  }
+};
+const authenticateCajaMunicipalToken = async (req, res, next) => {
+  const auth = String(req.headers.authorization || "");
+  const [scheme, token] = auth.split(" ");
+  if (scheme !== "Bearer" || !token) {
+    return res.status(401).json({ error: "No autorizado" });
+  }
+  const resolved = await resolveCajaUserFromAnySystemToken(token);
   if (!resolved.ok) {
     return res.status(resolved.status || 401).json({ error: resolved.error || "No autorizado" });
   }
@@ -434,6 +496,9 @@ const resolveZoneId = async (client, payload = {}) => {
 };
 
 const getLecturaAnterior = async (client, idSuministro, anio, mes) => {
+  const exacta = await getLecturaMesAnteriorExacta(client, idSuministro, anio, mes);
+  if (exacta.encontrada) return exacta.lectura_anterior;
+
   const prev = await client.query(
     `SELECT lectura_actual
      FROM recibos
@@ -444,6 +509,37 @@ const getLecturaAnterior = async (client, idSuministro, anio, mes) => {
     [idSuministro, anio, mes]
   );
   return parseMonto(prev.rows[0]?.lectura_actual, 0);
+};
+
+const getLecturaMesAnteriorExacta = async (client, idSuministro, anio, mes) => {
+  const periodoAnterior = getPeriodoAnterior(anio, mes);
+  if (!periodoAnterior) {
+    return {
+      encontrada: false,
+      lectura_anterior: null,
+      anio: null,
+      mes: null
+    };
+  }
+
+  const prev = await client.query(
+    `SELECT lectura_actual
+     FROM recibos
+     WHERE id_suministro = $1
+       AND anio = $2
+       AND mes = $3
+     ORDER BY id_recibo DESC
+     LIMIT 1`,
+    [idSuministro, periodoAnterior.anio, periodoAnterior.mes]
+  );
+
+  const encontrada = Boolean(prev.rows[0]);
+  return {
+    encontrada,
+    lectura_anterior: encontrada ? round2(parseMonto(prev.rows[0].lectura_actual, 0)) : null,
+    anio: periodoAnterior.anio,
+    mes: periodoAnterior.mes
+  };
 };
 
 const computeRecibo = ({ lecturaAnterior, lecturaActual, tarifaKwh, cargoFijo }) => {
@@ -527,6 +623,10 @@ const normHeader = (value) => String(value || "")
   .trim();
 
 const toISODate = () => normalizeHoraPartes(new Date(), APP_TIMEZONE).iso;
+const getCurrentPeriodoNum = () => {
+  const { anio, mes } = normalizeHoraPartes(new Date(), APP_TIMEZONE);
+  return (anio * 100) + mes;
+};
 
 router.use(async (req, res, next) => {
   try {
@@ -633,7 +733,6 @@ router.post("/auth/login", async (req, res) => {
       registerLoginFailure(usernameKey);
       return res.status(403).json({ error: "Cuenta no activa." });
     }
-
     clearLoginFailure(usernameKey);
     const token = issueLuzToken(user);
     return res.json({
@@ -646,6 +745,237 @@ router.post("/auth/login", async (req, res) => {
   } catch (err) {
     console.error("[LUZ] Error login:", err.message);
     return res.status(500).json({ error: "Error login." });
+  }
+});
+
+router.get("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
+  try {
+    const usuarios = await pool.query(
+      `SELECT id_usuario, username, nombre_completo, rol, estado
+       FROM usuarios_sistema
+       ORDER BY
+         CASE UPPER(TRIM(rol))
+           WHEN 'ADMIN' THEN 1
+           WHEN 'SUPERADMIN' THEN 1
+           WHEN 'ADMIN_PRINCIPAL' THEN 1
+           WHEN 'NIVEL_1' THEN 1
+           WHEN 'ADMIN_SEC' THEN 2
+           WHEN 'ADMIN_SECUNDARIO' THEN 2
+           WHEN 'JEFE_CAJA' THEN 2
+           WHEN 'NIVEL_2' THEN 2
+           WHEN 'CAJERO' THEN 3
+           WHEN 'OPERADOR_CAJA' THEN 3
+           WHEN 'OPERADOR' THEN 3
+           WHEN 'NIVEL_3' THEN 3
+           WHEN 'CONSULTA' THEN 4
+           WHEN 'LECTURA' THEN 4
+           WHEN 'NIVEL_4' THEN 4
+           ELSE 5
+         END ASC,
+         username ASC`
+    );
+    return res.json(usuarios.rows.map((u) => {
+      const rol = normalizeRole(u.rol);
+      const estado = normalizeEstadoUsuario(u.estado) || "PENDIENTE";
+      return {
+        id_usuario: Number(u.id_usuario),
+        username: u.username,
+        nombre_completo: u.nombre_completo,
+        rol,
+        rol_label: ROLE_LABELS[rol] || rol,
+        estado
+      };
+    }));
+  } catch (err) {
+    console.error("[LUZ] Error listando usuarios admin:", err.message);
+    return res.status(500).json({ error: "Error listando usuarios del sistema." });
+  }
+});
+
+router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
+  try {
+    const username = normalizeText(req.body?.username, 120);
+    const nombreCompleto = normalizeText(req.body?.nombre_completo, 180);
+    const password = String(req.body?.password || "");
+    const rol = normalizeRole(req.body?.rol || "CONSULTA");
+    const estado = normalizeEstadoUsuario(req.body?.estado || "ACTIVO") || "ACTIVO";
+
+    if (!username || username.length < 3) {
+      return res.status(400).json({ error: "Username inválido. Mínimo 3 caracteres." });
+    }
+    if (!nombreCompleto || nombreCompleto.length < 5) {
+      return res.status(400).json({ error: "Nombre completo inválido. Mínimo 5 caracteres." });
+    }
+    if (password.length < 8 || password.length > 120) {
+      return res.status(400).json({ error: "Contraseña inválida. Debe tener entre 8 y 120 caracteres." });
+    }
+    if (!isKnownRoleValue(rol)) {
+      return res.status(400).json({ error: "Rol inválido." });
+    }
+    if (!USER_STATUS_ALLOWED.has(estado)) {
+      return res.status(400).json({ error: "Estado inválido." });
+    }
+
+    const existe = await pool.query("SELECT 1 FROM usuarios_sistema WHERE UPPER(TRIM(username)) = UPPER(TRIM($1)) LIMIT 1", [username]);
+    if (existe.rows[0]) {
+      return res.status(409).json({ error: "Ya existe un usuario con ese username." });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const created = await pool.query(
+      `INSERT INTO usuarios_sistema (username, password, nombre_completo, rol, estado)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id_usuario, username, nombre_completo, rol, estado`,
+      [username, passwordHash, nombreCompleto, rol, estado]
+    );
+    const usuario = created.rows[0];
+    const rolNormalizado = normalizeRole(usuario.rol);
+
+    await registrarAuditoria(
+      null,
+      req.user?.username,
+      "ADMIN_LUZ_USUARIO_CREADO",
+      `id_usuario=${usuario.id_usuario}; username=${usuario.username}; rol=${rolNormalizado}; estado=${usuario.estado}`
+    );
+    return res.status(201).json({
+      mensaje: "Usuario creado.",
+      usuario: {
+        id_usuario: Number(usuario.id_usuario),
+        username: usuario.username,
+        nombre_completo: usuario.nombre_completo,
+        rol: rolNormalizado,
+        rol_label: ROLE_LABELS[rolNormalizado] || rolNormalizado,
+        estado: normalizeEstadoUsuario(usuario.estado) || "PENDIENTE"
+      }
+    });
+  } catch (err) {
+    console.error("[LUZ] Error creando usuario admin:", err.message);
+    return res.status(500).json({ error: "Error creando usuario del sistema." });
+  }
+});
+
+router.put("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
+  try {
+    const targetId = parsePositiveInt(req.params?.id, 0);
+    if (!targetId) return res.status(400).json({ error: "ID inválido." });
+
+    const updateParts = [];
+    const params = [];
+    let index = 1;
+    let nuevoRol = null;
+    let nuevoEstado = null;
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "rol")) {
+      if (!isKnownRoleValue(req.body.rol)) {
+        return res.status(400).json({ error: "Rol inválido." });
+      }
+      nuevoRol = normalizeRole(req.body.rol);
+      updateParts.push(`rol = $${index++}`);
+      params.push(nuevoRol);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "estado")) {
+      nuevoEstado = normalizeEstadoUsuario(req.body.estado);
+      if (!nuevoEstado) {
+        return res.status(400).json({ error: "Estado inválido." });
+      }
+      updateParts.push(`estado = $${index++}`);
+      params.push(nuevoEstado);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "password")) {
+      const nuevaPassword = String(req.body.password || "");
+      if (nuevaPassword.length < 8 || nuevaPassword.length > 120) {
+        return res.status(400).json({ error: "Contraseña inválida. Debe tener entre 8 y 120 caracteres." });
+      }
+      const hash = await bcrypt.hash(nuevaPassword, 10);
+      updateParts.push(`password = $${index++}`);
+      params.push(hash);
+    }
+
+    if (updateParts.length === 0) {
+      return res.status(400).json({ error: "No hay campos para actualizar." });
+    }
+
+    if (Number(req.user?.id_usuario || 0) === targetId) {
+      if (nuevoEstado && nuevoEstado !== "ACTIVO") {
+        return res.status(400).json({ error: "No puedes bloquearte a ti mismo." });
+      }
+      if (nuevoRol && nuevoRol !== "ADMIN") {
+        return res.status(400).json({ error: "No puedes quitarte el nivel 1 a ti mismo." });
+      }
+    }
+
+    params.push(targetId);
+    const updated = await pool.query(
+      `UPDATE usuarios_sistema
+       SET ${updateParts.join(", ")}
+       WHERE id_usuario = $${index}
+       RETURNING id_usuario, username, nombre_completo, rol, estado`,
+      params
+    );
+    if (!updated.rows[0]) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    const user = updated.rows[0];
+    const rolNormalizado = normalizeRole(user.rol);
+    await registrarAuditoria(
+      null,
+      req.user?.username,
+      "ADMIN_LUZ_USUARIO_ACTUALIZADO",
+      `id_usuario=${user.id_usuario}; campos=${updateParts.map((p) => p.split("=")[0].trim()).join(",")}`
+    );
+    return res.json({
+      mensaje: "Usuario actualizado.",
+      usuario: {
+        id_usuario: Number(user.id_usuario),
+        username: user.username,
+        nombre_completo: user.nombre_completo,
+        rol: rolNormalizado,
+        rol_label: ROLE_LABELS[rolNormalizado] || rolNormalizado,
+        estado: normalizeEstadoUsuario(user.estado) || "PENDIENTE"
+      }
+    });
+  } catch (err) {
+    console.error("[LUZ] Error actualizando usuario admin:", err.message);
+    return res.status(500).json({ error: "Error actualizando usuario del sistema." });
+  }
+});
+
+router.delete("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
+  try {
+    const targetId = parsePositiveInt(req.params?.id, 0);
+    if (!targetId) return res.status(400).json({ error: "ID inválido." });
+    if (Number(req.user?.id_usuario || 0) === targetId) {
+      return res.status(400).json({ error: "No puedes eliminar tu propio usuario." });
+    }
+
+    const actual = await pool.query(
+      "SELECT id_usuario, username, rol FROM usuarios_sistema WHERE id_usuario = $1",
+      [targetId]
+    );
+    if (!actual.rows[0]) return res.status(404).json({ error: "Usuario no encontrado." });
+
+    const rolTarget = normalizeRole(actual.rows[0].rol);
+    if (rolTarget === "ADMIN") {
+      const admins = await pool.query(
+        "SELECT COUNT(*)::int AS total FROM usuarios_sistema WHERE UPPER(TRIM(rol)) IN ('ADMIN', 'SUPERADMIN', 'ADMIN_PRINCIPAL', 'NIVEL_1')"
+      );
+      if (Number(admins.rows?.[0]?.total || 0) <= 1) {
+        return res.status(400).json({ error: "No se puede eliminar el único administrador principal." });
+      }
+    }
+
+    await pool.query("DELETE FROM usuarios_sistema WHERE id_usuario = $1", [targetId]);
+    await registrarAuditoria(
+      null,
+      req.user?.username,
+      "ADMIN_LUZ_USUARIO_ELIMINADO",
+      `id_usuario=${targetId}; username=${actual.rows[0].username}; rol=${rolTarget}`
+    );
+    return res.json({ mensaje: "Usuario eliminado." });
+  } catch (err) {
+    console.error("[LUZ] Error eliminando usuario admin:", err.message);
+    return res.status(500).json({ error: "Error eliminando usuario del sistema." });
   }
 });
 
@@ -668,6 +998,52 @@ router.get("/zonas", authenticateLuzToken, requireRole("CONSULTA"), async (req, 
   } catch (err) {
     console.error("[LUZ] Error zonas:", err.message);
     return res.status(500).json({ error: "Error listando zonas." });
+  }
+});
+
+router.get("/auditoria", authenticateLuzToken, requireRole("ADMIN_SEC"), async (req, res) => {
+  try {
+    const q = normalizeText(req.query?.q || "", 160).toUpperCase();
+    const accion = normalizeText(req.query?.accion || "", 120).toUpperCase();
+    const limitRaw = parsePositiveInt(req.query?.limit, 250);
+    const limit = Math.min(Math.max(limitRaw, 1), 1000);
+
+    const params = [];
+    const where = [];
+
+    if (accion) {
+      params.push(accion);
+      where.push(`UPPER(a.accion) = $${params.length}`);
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      where.push(`(
+        UPPER(COALESCE(a.usuario, '')) LIKE $${params.length}
+        OR UPPER(COALESCE(a.accion, '')) LIKE $${params.length}
+        OR UPPER(COALESCE(a.detalle, '')) LIKE $${params.length}
+      )`);
+    }
+
+    params.push(limit);
+    const rows = await pool.query(
+      `SELECT a.id_auditoria, a.fecha, a.usuario, a.accion, a.detalle
+       FROM auditoria a
+       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY a.fecha DESC, a.id_auditoria DESC
+       LIMIT $${params.length}`,
+      params
+    );
+
+    return res.json(rows.rows.map((r) => ({
+      id_auditoria: Number(r.id_auditoria),
+      fecha: r.fecha,
+      usuario: r.usuario || null,
+      accion: r.accion,
+      detalle: r.detalle || null
+    })));
+  } catch (err) {
+    console.error("[LUZ] Error listando auditoria:", err.message);
+    return res.status(500).json({ error: "Error listando auditoria." });
   }
 });
 
@@ -731,7 +1107,19 @@ router.get("/suministros", authenticateLuzToken, requireRole("CONSULTA"), async 
       JOIN zonas z ON z.id_zona = s.id_zona
       LEFT JOIN resumen rs ON rs.id_suministro = s.id_suministro
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-      ORDER BY z.nombre ASC, s.nombre_usuario ASC
+      ORDER BY
+        CASE
+          WHEN regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g') <> '' THEN 0
+          ELSE 1
+        END ASC,
+        CASE
+          WHEN regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g') <> ''
+            THEN NULLIF(regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g'), '')::numeric
+          ELSE NULL
+        END ASC NULLS LAST,
+        UPPER(COALESCE(s.nro_medidor, '')) ASC,
+        UPPER(z.nombre) ASC,
+        UPPER(s.nombre_usuario) ASC
       LIMIT 1500
     `;
 
@@ -991,6 +1379,9 @@ const insertRecibo = async (client, payload = {}, usuario = "SISTEMA") => {
   if (!idSuministro || !anio || mes < 1 || mes > 12) {
     throw new Error("DATOS_RECIBO_INVALIDOS");
   }
+  if ((anio * 100) + mes > getCurrentPeriodoNum()) {
+    throw new Error("PERIODO_FUTURO_NO_PERMITIDO");
+  }
 
   const suministro = await client.query(
     `SELECT s.id_suministro, s.estado, s.nro_medidor, s.nombre_usuario, z.nombre AS zona
@@ -1093,12 +1484,51 @@ router.post("/recibos", authenticateLuzToken, requireRole("ADMIN_SEC"), async (r
       return res.status(409).json({ error: "Ya existe recibo para ese suministro y periodo." });
     }
     if (err.message === "DATOS_RECIBO_INVALIDOS") return res.status(400).json({ error: "Datos de recibo inválidos." });
+    if (err.message === "PERIODO_FUTURO_NO_PERMITIDO") return res.status(400).json({ error: "No se permite generar recibo en un periodo futuro." });
     if (err.message === "SUMINISTRO_NO_ENCONTRADO") return res.status(404).json({ error: "Suministro no encontrado." });
     if (err.message === "SUMINISTRO_INACTIVO") return res.status(400).json({ error: "Suministro inactivo. No se puede generar deuda." });
     if (err.message === "LECTURA_ACTUAL_REQUERIDA") return res.status(400).json({ error: "Lectura actual es obligatoria." });
     if (err.message === "LECTURA_INVALIDA") return res.status(400).json({ error: "Lectura actual no puede ser menor que lectura anterior." });
     console.error("[LUZ] Error generando recibo:", err.message);
     return res.status(500).json({ error: "Error generando recibo." });
+  } finally {
+    client.release();
+  }
+});
+
+router.get("/recibos/lectura-anterior/:id_suministro", authenticateLuzToken, requireRole("CONSULTA"), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const idSuministro = parsePositiveInt(req.params?.id_suministro, 0);
+    const anio = parsePositiveInt(req.query?.anio, 0);
+    const mes = parsePositiveInt(req.query?.mes, 0);
+
+    if (!idSuministro || !anio || mes < 1 || mes > 12) {
+      return res.status(400).json({ error: "Parametros invalidos para consultar lectura anterior." });
+    }
+
+    const suministro = await client.query(
+      "SELECT id_suministro FROM suministros WHERE id_suministro = $1 LIMIT 1",
+      [idSuministro]
+    );
+    if (!suministro.rows[0]) {
+      return res.status(404).json({ error: "Suministro no encontrado." });
+    }
+
+    const lectura = await getLecturaMesAnteriorExacta(client, idSuministro, anio, mes);
+    return res.json({
+      anio,
+      mes,
+      periodo_anterior: {
+        anio: lectura.anio,
+        mes: lectura.mes
+      },
+      encontrada: lectura.encontrada,
+      lectura_anterior: lectura.encontrada ? lectura.lectura_anterior : null
+    });
+  } catch (err) {
+    console.error("[LUZ] Error consultando lectura anterior:", err.message);
+    return res.status(500).json({ error: "Error consultando lectura anterior." });
   } finally {
     client.release();
   }
@@ -1200,7 +1630,7 @@ router.get("/recibos/pendientes/:id_suministro", authenticateLuzToken, requireRo
   }
 });
 
-router.post("/caja/ordenes-cobro", authenticateLuzToken, requireRole("ADMIN_SEC"), async (req, res) => {
+router.post("/caja/ordenes-cobro", authenticateCajaMunicipalToken, requireRole("ADMIN_SEC"), async (req, res) => {
   const client = await pool.connect();
   try {
     const idSuministro = parsePositiveInt(req.body?.id_suministro, 0);
@@ -1387,7 +1817,7 @@ router.post("/caja/ordenes-cobro", authenticateLuzToken, requireRole("ADMIN_SEC"
   }
 });
 
-router.get("/caja/ordenes-cobro/pendientes", authenticateLuzToken, requireRole("CAJERO"), async (req, res) => {
+router.get("/caja/ordenes-cobro/pendientes", authenticateCajaMunicipalToken, requireRole("CAJERO"), async (req, res) => {
   try {
     const idSuministro = parsePositiveInt(req.query?.id_suministro, 0);
     const params = [];
@@ -1441,7 +1871,7 @@ router.get("/caja/ordenes-cobro/pendientes", authenticateLuzToken, requireRole("
     return res.status(500).json({ error: "Error listando órdenes pendientes." });
   }
 });
-router.post("/caja/ordenes-cobro/:id/cobrar", authenticateLuzToken, requireRole("CAJERO"), async (req, res) => {
+router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, requireRole("CAJERO"), async (req, res) => {
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params?.id, 0);
@@ -1566,7 +1996,7 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateLuzToken, requireRole(
   }
 });
 
-router.post("/caja/ordenes-cobro/:id/anular", authenticateLuzToken, requireRole("ADMIN_SEC"), async (req, res) => {
+router.post("/caja/ordenes-cobro/:id/anular", authenticateCajaMunicipalToken, requireRole("ADMIN_SEC"), async (req, res) => {
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params?.id, 0);
@@ -1606,11 +2036,15 @@ router.post("/caja/ordenes-cobro/:id/anular", authenticateLuzToken, requireRole(
   }
 });
 
-router.get("/caja/reporte", authenticateLuzToken, requireRole("CAJERO"), async (req, res) => {
+router.get("/caja/reporte", authenticateCajaMunicipalToken, requireRole("CAJERO"), async (req, res) => {
   try {
     const tipoRaw = normalizeText(req.query?.tipo || "diario", 20).toLowerCase();
     const tipo = ["diario", "mensual", "anual"].includes(tipoRaw) ? tipoRaw : "diario";
-    const fechaRef = normalizeText(req.query?.fecha || toISODate(), 20) || toISODate();
+    const hoy = toISODate();
+    const fechaRef = normalizeText(req.query?.fecha || hoy, 20) || hoy;
+    if (fechaRef > hoy) {
+      return res.status(400).json({ error: "No se permite consultar caja con fecha futura." });
+    }
 
     const range = await pool.query(
       `SELECT
@@ -1868,7 +2302,7 @@ router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), uplo
   }
 });
 
-router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN_SEC"), uploadImportSingle("archivo"), async (req, res) => {
+router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN"), uploadImportSingle("archivo"), async (req, res) => {
   const client = await pool.connect();
   const rechazos = [];
   const resumen = {
@@ -2035,6 +2469,15 @@ router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN_SEC")
             anio,
             mes,
             motivo: "Suministro inactivo; no se genera recibo."
+          });
+        } else if (errFila.message === "PERIODO_FUTURO_NO_PERMITIDO") {
+          pushRechazo("datos_invalidos", {
+            linea: r,
+            zona,
+            nro_medidor: nroMedidor,
+            anio,
+            mes,
+            motivo: "No se permite generar recibo en periodo futuro."
           });
         } else {
           pushRechazo("error_bd", {

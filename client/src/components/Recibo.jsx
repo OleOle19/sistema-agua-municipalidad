@@ -14,57 +14,73 @@ const RECIBO_SIZE_MM = {
   height: 203
 };
 
+// Textos editables del recibo.
+// Si quieres cambiar textos impresos, edita este objeto.
+const RECIBO_TEXTOS = {
+  distrito: "PUEBLO NUEVO",
+  tipoServicio: "Servicio: Domestico",
+  notaPago: "El pago de este recibo no cancela deudas anteriores.",
+  tituloDeudaAnterior: "Deuda Anterior",
+  tituloDeudaMes: "Mes",
+  labelDeuda: "Deuda S/."
+};
+
 // Ajustes finos globales en mm para prueba/error con la impresora.
+// nudgeX/nudgeY mueven TODO el recibo.
 const CAL = {
   nudgeX: 0,
   nudgeY: 0,
+  // Coordenadas del bloque superior.
   top: {
-    xMes: 34.2,
+    // IMPORTANTE: estos nombres deben mantenerse exactos (xMes, xAnio, xNumero).
+    // Si escribes xMesS u otro nombre, no se reflejara ningun cambio.
+    xMes: 39.2,
     xAnio: 75.2,
-    xNumero: 119.2,
-    yCabecera: 21.8,
+    xNumero: 114.2,
+    yCabecera: 24.8,
     xCodigo: 26.2,
     yCodigo: 30.4,
     xNombre: 26.2,
-    yNombre: 35.5,
+    yNombre: 34.0,
     xDireccion: 26.2,
-    yDireccion: 40.5,
+    yDireccion: 39.0,
     xDistrito: 26.2,
-    yDistrito: 45.5,
+    yDistrito: 44.0,
     xTipoServicio: 16.5,
-    yTipoServicio: 58.2,
+    yTipoServicio: 56.7,
     xConcepto: 17.0,
-    xImporte: 111.0,
-    yDetalleInicio: 64.0,
-    detalleGap: 5.7,
-    xTotal: 111.0,
-    yTotal: 88.8,
+    xImporte: 91.0,
+    yDetalleInicio: 62.5,
+    detalleGap: 4.2,
+    xTotal: 91.0,
+    yTotal: 86.8,
     xNota: 16.8,
-    yNota: 94.2,
+    yNota: 92.7,
     xFechaTop: 104.0,
-    yFechaEmisionTop: 103.0,
-    yFechaCorteTop: 113.0,
+    yFechaEmisionTop: 101.0,
+    yFechaCorteTop: 106.0,
     fechaWidth: 18.0,
     debt: {
-      y: 117.8,
-      boxW: 39.0,
+      y: 115.8,
+      boxW: 36.0,
       xAnterior: 19.8,
       xMes: 70.8
     }
   },
+  // Coordenadas del bloque inferior (talon).
   bottom: {
-    xMes: 33.0,
-    xAnio: 74.0,
-    xNumero: 118.0,
-    yCabecera: 158.5,
-    xNombre: 55.0,
-    yNombre: 168.0,
-    xEmision: 55.0,
-    yEmision: 173.6,
-    xCorte: 55.0,
-    yCorte: 179.5,
-    xTotal: 109.5,
-    yTotal: 188.5
+    xMes: 23.0,
+    xAnio: 64.0,
+    xNumero: 108.0,
+    yCabecera: 160.5,
+    xNombre: 40.0,
+    yNombre: 173.0,
+    xEmision: 40.0,
+    yEmision: 177.3,
+    xCorte: 40.0,
+    yCorte: 181.8,
+    xTotal: 106.5,
+    yTotal: 181.5
   }
 };
 
@@ -106,6 +122,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
   );
 
   const cargoReimpresion = toNum(recibo.cargo_reimpresion);
+  // Conceptos editables del detalle del recibo.
   const filasServicios = [
     { concepto: "SERVICIO DE AGUA", monto: toNum(detalles.agua) },
     { concepto: "SERVICIO DE DESAGUE", monto: toNum(detalles.desague) },
@@ -136,6 +153,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
   const fechaEmision = formatDate(recibo.fecha_emision || recibo.creado_en) || fallbackEmision;
   const fechaCorte = formatDate(recibo.fecha_corte) || fallbackCorte;
 
+  // Helpers para aplicar calibracion global a cada coordenada.
   const x = (value) => mm(value + CAL.nudgeX);
   const y = (value) => mm(value + CAL.nudgeY);
 
@@ -184,10 +202,10 @@ const Recibo = forwardRef(({ datos }, ref) => {
         {predio.direccion_completa || ""}
       </div>
       <div style={{ ...baseText, left: x(CAL.top.xDistrito), top: y(CAL.top.yDistrito), fontSize: "2.9mm", maxWidth: mm(40), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        PUEBLO NUEVO
+        {RECIBO_TEXTOS.distrito}
       </div>
       <div style={{ ...baseText, left: x(CAL.top.xTipoServicio), top: y(CAL.top.yTipoServicio), fontSize: "3.0mm", maxWidth: mm(45), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        Servicio: Domestico
+        {RECIBO_TEXTOS.tipoServicio}
       </div>
 
       {servicioRows.slice(0, 6).map((row, idx) => (
@@ -237,7 +255,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
       </div>
 
       <div style={{ ...baseText, left: x(CAL.top.xNota), top: y(CAL.top.yNota), fontSize: "3.0mm", maxWidth: mm(95) }}>
-        El pago de este recibo no cancela deudas anteriores.
+        {RECIBO_TEXTOS.notaPago}
       </div>
 
       <div style={{ ...baseText, left: x(CAL.top.xFechaTop), top: y(CAL.top.yFechaEmisionTop), width: mm(CAL.top.fechaWidth), textAlign: "right", fontSize: "3.0mm", fontWeight: 700 }}>
@@ -253,14 +271,14 @@ const Recibo = forwardRef(({ datos }, ref) => {
           left: x(CAL.top.debt.xAnterior),
           top: y(CAL.top.debt.y),
           width: mm(CAL.top.debt.boxW),
-          fontSize: "3.5mm"
+          fontSize: "3.0mm"
         }}
       >
-        <div style={{ textAlign: "center", fontWeight: 700, fontSize: "4.1mm" }}>Deuda Anterior</div>
+        <div style={{ textAlign: "center", fontWeight: 700, fontSize: "3.6mm" }}>{RECIBO_TEXTOS.tituloDeudaAnterior}</div>
         <div style={{ borderTop: "0.35mm solid #000", marginTop: mm(0.5) }} />
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.6), textAlign: "center", fontWeight: 700 }}>
           <span>Año</span>
-          <span>Deuda S/.</span>
+          <span>{RECIBO_TEXTOS.labelDeuda}</span>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.5), textAlign: "center", fontWeight: 700 }}>
           <span>{deudaAnioLabel}</span>
@@ -279,14 +297,14 @@ const Recibo = forwardRef(({ datos }, ref) => {
           left: x(CAL.top.debt.xMes),
           top: y(CAL.top.debt.y),
           width: mm(CAL.top.debt.boxW),
-          fontSize: "3.5mm"
+          fontSize: "3.0mm"
         }}
       >
-        <div style={{ textAlign: "center", fontWeight: 700, fontSize: "4.1mm" }}>Mes</div>
+        <div style={{ textAlign: "center", fontWeight: 700, fontSize: "3.6mm" }}>{RECIBO_TEXTOS.tituloDeudaMes}</div>
         <div style={{ borderTop: "0.35mm solid #000", marginTop: mm(0.5) }} />
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.6), textAlign: "center", fontWeight: 700 }}>
-          <span>Mes</span>
-          <span>Deuda S/.</span>
+          <span>{RECIBO_TEXTOS.tituloDeudaMes}</span>
+          <span>{RECIBO_TEXTOS.labelDeuda}</span>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.5), textAlign: "center", fontWeight: 700 }}>
           <span>&nbsp;</span>

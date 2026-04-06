@@ -265,6 +265,11 @@ const ESTADOS_ORDEN_COBRO = {
   COBRADA: "COBRADA",
   ANULADA: "ANULADA"
 };
+const ESTADOS_CONTEO_EFECTIVO = {
+  PENDIENTE: "PENDIENTE",
+  APLICADO: "APLICADO",
+  ANULADO: "ANULADO"
+};
 const FUENTE_SOLICITUD_CAMPO = "APP_CAMPO";
 const MOTIVOS_CAMBIO_RAZON_SOCIAL_VALIDOS = new Set([
   "FALLECIMIENTO_TITULAR",
@@ -291,6 +296,8 @@ const normalizeHoraHM = (value, fallback) => {
 };
 const CAJA_HORA_INICIO = normalizeHoraHM(process.env.CAJA_HORA_INICIO, "07:00");
 const CAJA_HORA_FIN = normalizeHoraHM(process.env.CAJA_HORA_FIN, "19:00");
+const CAJA_AUTO_CIERRE_HORA = normalizeHoraHM(process.env.CAJA_AUTO_CIERRE_HORA, "16:00");
+const CAJA_AUTO_CIERRE_CHECK_MS = Math.max(60 * 1000, Number(process.env.CAJA_AUTO_CIERRE_CHECK_MS || (5 * 60 * 1000)));
 const loginIpRateMap = new Map();
 const loginUserFailMap = new Map();
 
@@ -426,6 +433,21 @@ const parsePositiveInt = (value, fallback = 0) => {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
+};
+const getCurrentPeriodoNum = () => {
+  const { anio, mes } = getFechaPartesZona(new Date(), APP_TIMEZONE);
+  return (anio * 100) + mes;
+};
+const validateReciboPeriodoNoFuturo = (anioInput, mesInput) => {
+  const anio = parsePositiveInt(anioInput, 0);
+  const mes = parsePositiveInt(mesInput, 0);
+  if (!anio || mes < 1 || mes > 12) {
+    return { ok: false, error: "Año y mes son requeridos." };
+  }
+  if ((anio * 100) + mes > getCurrentPeriodoNum()) {
+    return { ok: false, error: "No se permite registrar deuda en un periodo futuro." };
+  }
+  return { ok: true, anio, mes };
 };
 const normalizeCodigoReciboInput = (value) => parsePositiveInt(value, 0);
 const roundMonto2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
@@ -937,6 +959,8 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro\/resumen-pendientes$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro\/\d+\/cobrar$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro\/\d+\/anular$/, minRole: "ADMIN_SEC" },
+  { methods: ["POST"], pattern: /^\/caja\/conteo-efectivo$/, minRole: "CAJERO" },
+  { methods: ["GET"], pattern: /^\/caja\/conteo-efectivo\/resumen$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/cierre$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/alertas-riesgo$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/reporte\/excel$/, minRole: "ADMIN_SEC" },
@@ -1190,6 +1214,10 @@ const ensureCajaCierresTable = async (client) => {
     )
   `);
   await client.query(`
+    ALTER TABLE caja_cierres
+    ADD COLUMN IF NOT EXISTS cierre_bloquea_sn CHAR(1) NOT NULL DEFAULT 'N'
+  `);
+  await client.query(`
     DO $$
     BEGIN
       IF NOT EXISTS (
@@ -1220,6 +1248,62 @@ const ensureCajaCierresTable = async (client) => {
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_caja_cierres_tipo_fecha
     ON caja_cierres (tipo, fecha_referencia DESC)
+  `);
+};
+
+const ensureCajaConteosEfectivoTable = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS caja_conteos_efectivo (
+      id_conteo BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      actualizado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      id_usuario INTEGER NULL,
+      fecha_referencia DATE NOT NULL,
+      monto_efectivo NUMERIC(12, 2) NOT NULL DEFAULT 0,
+      estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+      observacion TEXT NULL,
+      id_cierre BIGINT NULL REFERENCES caja_cierres(id_cierre)
+    )
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_caja_cierres_bloquea'
+      ) THEN
+        ALTER TABLE caja_cierres
+        ADD CONSTRAINT chk_caja_cierres_bloquea
+        CHECK (cierre_bloquea_sn IN ('S', 'N'));
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_caja_conteos_efectivo_monto_nonnegative'
+      ) THEN
+        ALTER TABLE caja_conteos_efectivo
+        ADD CONSTRAINT chk_caja_conteos_efectivo_monto_nonnegative
+        CHECK (monto_efectivo >= 0);
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_caja_conteos_efectivo_estado'
+      ) THEN
+        ALTER TABLE caja_conteos_efectivo
+        ADD CONSTRAINT chk_caja_conteos_efectivo_estado
+        CHECK (estado IN ('PENDIENTE', 'APLICADO', 'ANULADO'));
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_caja_conteos_efectivo_fecha_estado
+    ON caja_conteos_efectivo (fecha_referencia DESC, estado, creado_en DESC)
   `);
 };
 
@@ -1752,6 +1836,7 @@ const ensurePerformanceIndexes = async (client) => {
   await ensureCodigosImpresionTable(client);
   await ensureOrdenesCobroTable(client);
   await ensureCajaCierresTable(client);
+  await ensureCajaConteosEfectivoTable(client);
   await ensureEstadoConexionContribuyentes(client);
   await ensureEstadoConexionEventosTable(client);
   await ensurePrediosDireccionAlterna(client);
@@ -4497,6 +4582,13 @@ const buildOrdenCobroResponse = (row) => {
       id_usuario: row?.id_usuario_emite ? Number(row.id_usuario_emite) : null,
       username: row?.usuario_emite || null,
       nombre: row?.nombre_emite || null
+    },
+    contribuyente: {
+      id_contribuyente: Number(row?.id_contribuyente || 0) || null,
+      codigo_municipal: row?.codigo_municipal || null,
+      nombre_completo: row?.nombre_contribuyente || null,
+      dni_ruc: row?.dni_ruc || null,
+      direccion: row?.direccion_contribuyente || null
     }
   };
 };
@@ -4504,6 +4596,10 @@ const buildOrdenCobroResponse = (row) => {
 app.post("/recibos", async (req, res) => {
   try {
     const { id_contribuyente, anio, mes, montos } = req.body;
+    const periodo = validateReciboPeriodoNoFuturo(anio, mes);
+    if (!periodo.ok) {
+      return res.status(400).json({ error: periodo.error });
+    }
     const predio = await pool.query(`
       SELECT
         p.id_predio,
@@ -4553,7 +4649,7 @@ app.post("/recibos", async (req, res) => {
     const nuevoRecibo = await pool.query(
       `INSERT INTO recibos (id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, total_pagar, estado)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'PENDIENTE') RETURNING *`,
-      [predio.rows[0].id_predio, anio, mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin, totalPagar]
+      [predio.rows[0].id_predio, periodo.anio, periodo.mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin, totalPagar]
     );
     invalidateContribuyentesCache();
     realtimeHub.broadcast("deuda", "recibo_generado", {
@@ -4571,7 +4667,10 @@ app.post("/recibos", async (req, res) => {
 app.post("/recibos/generar-masivo", async (req, res) => {
   try {
     const { tipo_seleccion = "todos", ids_usuarios = [], id_calle, anio, mes, montos } = req.body;
-    if (!anio || !mes) return res.status(400).json({ error: "Año y mes son requeridos." });
+    const periodo = validateReciboPeriodoNoFuturo(anio, mes);
+    if (!periodo.ok) {
+      return res.status(400).json({ error: periodo.error });
+    }
 
     if (tipo_seleccion === "calle" && !id_calle) {
       return res.status(400).json({ error: "Seleccione una calle." });
@@ -4613,7 +4712,7 @@ app.post("/recibos/generar-masivo", async (req, res) => {
       FROM predios p
       JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
     `;
-    const params = [anio, mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin];
+    const params = [periodo.anio, periodo.mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin];
     const whereParts = [
       "UPPER(COALESCE(p.activo_sn, 'S')) = 'S'",
       "COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'"
@@ -4692,7 +4791,12 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     await ensureOrdenesCobroTable(client);
 
     const contrib = await client.query(`
-      SELECT id_contribuyente, codigo_municipal
+      SELECT
+        id_contribuyente,
+        codigo_municipal,
+        nombre_completo,
+        sec_nombre,
+        dni_ruc
       FROM contribuyentes
       WHERE id_contribuyente = $1
       LIMIT 1
@@ -4866,6 +4970,10 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
         ...buildOrdenCobroResponse({
           ...orden,
           id_contribuyente: idContribuyente,
+          nombre_contribuyente: String(contrib.rows[0]?.nombre_completo || "").trim()
+            || String(contrib.rows[0]?.sec_nombre || "").trim()
+            || null,
+          dni_ruc: contrib.rows[0]?.dni_ruc || null,
           observacion,
           usuario_emite: req.user?.username || null,
           nombre_emite: req.user?.nombre || null
@@ -4912,10 +5020,46 @@ app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
         oc.observacion,
         oc.recibos_json,
         oc.id_usuario_emite,
+        COALESCE(
+          NULLIF(TRIM(cdata.nombre_completo), ''),
+          NULLIF(TRIM(cdata.sec_nombre), ''),
+          ''
+        ) AS nombre_contribuyente,
+        COALESCE(cdata.dni_ruc, '') AS dni_ruc,
+        ${buildDireccionSql("ca", "pr")} AS direccion_contribuyente,
         COALESCE(ue.username, '') AS usuario_emite,
         COALESCE(ue.nombre_completo, '') AS nombre_emite
       FROM ordenes_cobro oc
       LEFT JOIN usuarios_sistema ue ON ue.id_usuario = oc.id_usuario_emite
+      LEFT JOIN LATERAL (
+        SELECT
+          c.id_contribuyente,
+          c.codigo_municipal,
+          c.nombre_completo,
+          c.sec_nombre,
+          c.dni_ruc
+        FROM contribuyentes c
+        WHERE (
+          oc.id_contribuyente IS NOT NULL
+          AND c.id_contribuyente = oc.id_contribuyente
+        ) OR (
+          oc.id_contribuyente IS NULL
+          AND NULLIF(TRIM(COALESCE(oc.codigo_municipal, '')), '') IS NOT NULL
+          AND c.codigo_municipal = oc.codigo_municipal
+        )
+        ORDER BY
+          CASE WHEN c.id_contribuyente = oc.id_contribuyente THEN 0 ELSE 1 END ASC,
+          c.id_contribuyente DESC
+        LIMIT 1
+      ) cdata ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion
+        FROM predios
+        WHERE id_contribuyente = COALESCE(oc.id_contribuyente, cdata.id_contribuyente)
+        ORDER BY id_predio ASC
+        LIMIT 1
+      ) pr ON TRUE
+      LEFT JOIN calles ca ON ca.id_calle = pr.id_calle
       WHERE ${where.join(" AND ")}
       ORDER BY oc.creado_en DESC, oc.id_orden DESC
       LIMIT $1
@@ -4964,11 +5108,275 @@ app.get("/caja/ordenes-cobro/resumen-pendientes", async (req, res) => {
   }
 });
 
+app.get("/caja/conteo-efectivo/resumen", async (req, res) => {
+  try {
+    const hoy = toISODate();
+    const fecha = normalizeDateOnly(req.query?.fecha) || hoy;
+    if (fecha > hoy) {
+      return res.status(400).json({ error: "No se permite consultar conteo de efectivo con fecha futura." });
+    }
+    const data = await buildConteoEfectivoResumen(fecha);
+    return res.json(data);
+  } catch (err) {
+    console.error("Error consultando resumen de conteo de efectivo:", err.message);
+    return res.status(500).json({ error: "Error consultando conteo de efectivo." });
+  }
+});
+
+app.post("/caja/conteo-efectivo", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const hoy = toISODate();
+    const fecha = normalizeDateOnly(req.body?.fecha) || hoy;
+    if (fecha !== hoy) {
+      return res.status(400).json({ error: "Solo se permite registrar conteo de efectivo para la fecha actual." });
+    }
+    const montoEfectivoRaw = parseMonto(req.body?.monto_efectivo, Number.NaN);
+    const montoEfectivo = Number.isFinite(montoEfectivoRaw) ? roundMonto2(montoEfectivoRaw) : Number.NaN;
+    if (!Number.isFinite(montoEfectivo) || montoEfectivo < 0) {
+      return res.status(400).json({ error: "Monto de conteo invalido." });
+    }
+    const observacion = normalizeLimitedText(req.body?.observacion, 500) || null;
+    const cerrarCaja = normalizeSN(req.body?.cerrar_caja, "S") === "S";
+
+    await client.query("BEGIN");
+    await ensureCajaCierresTable(client);
+    await ensureCajaConteosEfectivoTable(client);
+
+    if (cerrarCaja) {
+      const cierreActual = await consultarCierreCajaBloqueante(client, fecha);
+      if (cierreActual.cerrada) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: "La caja de agua ya fue cerrada para hoy. No se permiten más cobros hasta el siguiente día."
+        });
+      }
+    }
+
+    await client.query(
+      `UPDATE caja_conteos_efectivo
+       SET estado = $2,
+           actualizado_en = NOW()
+       WHERE fecha_referencia = $1::date
+         AND estado = $3`,
+      [fecha, ESTADOS_CONTEO_EFECTIVO.ANULADO, ESTADOS_CONTEO_EFECTIVO.PENDIENTE]
+    );
+
+    const inserted = await client.query(
+      `INSERT INTO caja_conteos_efectivo (
+        id_usuario,
+        fecha_referencia,
+        monto_efectivo,
+        estado,
+        observacion,
+        id_cierre
+      )
+      VALUES ($1, $2::date, $3, $4, $5, NULL)
+      RETURNING
+        id_conteo,
+        creado_en,
+        actualizado_en,
+        fecha_referencia,
+        monto_efectivo,
+        estado,
+        observacion,
+        id_cierre`,
+      [
+        req.user?.id_usuario || null,
+        fecha,
+        montoEfectivo,
+        ESTADOS_CONTEO_EFECTIVO.PENDIENTE,
+        observacion
+      ]
+    );
+    let row = inserted.rows[0];
+    let cierreRow = null;
+    if (cerrarCaja) {
+      const tipo = "diario";
+      const umbralAlerta = Math.max(0, roundMonto2(parseMonto(req.body?.umbral_alerta, CAJA_CIERRE_ALERTA_UMBRAL)));
+      const resumenSistema = await construirResumenCaja(tipo, fecha);
+      const totalSistema = roundMonto2(parseMonto(resumenSistema?.total, 0));
+      const desviacion = roundMonto2(montoEfectivo - totalSistema);
+      const alerta = Math.abs(desviacion) > umbralAlerta + 0.001;
+      const rango = await obtenerRangoCaja(tipo, fecha);
+      const existente = await client.query(
+        `SELECT id_cierre
+         FROM caja_cierres
+         WHERE tipo = 'diario' AND fecha_referencia = $1::date
+         ORDER BY id_cierre DESC
+         LIMIT 1
+         FOR UPDATE`,
+        [fecha]
+      );
+      const sqlCommonReturning = `
+        RETURNING
+          id_cierre,
+          creado_en,
+          tipo,
+          fecha_referencia,
+          desde,
+          hasta_exclusivo,
+          total_sistema,
+          efectivo_declarado,
+          desviacion,
+          alerta_desviacion_sn,
+          cierre_bloquea_sn,
+          observacion
+      `;
+      if (existente.rows[0]) {
+        const updated = await client.query(
+          `UPDATE caja_cierres
+           SET id_usuario = $2,
+               desde = $3::date,
+               hasta_exclusivo = $4::date,
+               total_sistema = $5,
+               efectivo_declarado = $6,
+               desviacion = $7,
+               alerta_desviacion_sn = $8,
+               cierre_bloquea_sn = 'S',
+               observacion = $9
+           WHERE id_cierre = $1
+           ${sqlCommonReturning}`,
+          [
+            Number(existente.rows[0].id_cierre),
+            req.user?.id_usuario || null,
+            rango?.desde || fecha,
+            rango?.hasta || fecha,
+            totalSistema,
+            montoEfectivo,
+            desviacion,
+            alerta ? "S" : "N",
+            observacion || "CIERRE_DESDE_CONTEO_EFECTIVO"
+          ]
+        );
+        cierreRow = updated.rows[0] || null;
+      } else {
+        const insertedCierre = await client.query(
+          `INSERT INTO caja_cierres (
+            id_usuario,
+            tipo,
+            fecha_referencia,
+            desde,
+            hasta_exclusivo,
+            total_sistema,
+            efectivo_declarado,
+            desviacion,
+            alerta_desviacion_sn,
+            cierre_bloquea_sn,
+            observacion
+          )
+          VALUES ($1, $2, $3::date, $4::date, $5::date, $6, $7, $8, $9, 'S', $10)
+          ${sqlCommonReturning}`,
+          [
+            req.user?.id_usuario || null,
+            tipo,
+            fecha,
+            rango?.desde || fecha,
+            rango?.hasta || fecha,
+            totalSistema,
+            montoEfectivo,
+            desviacion,
+            alerta ? "S" : "N",
+            observacion || "CIERRE_DESDE_CONTEO_EFECTIVO"
+          ]
+        );
+        cierreRow = insertedCierre.rows[0] || null;
+      }
+
+      if (Number(cierreRow?.id_cierre || 0) > 0) {
+        const relink = await client.query(
+          `UPDATE caja_conteos_efectivo
+           SET id_cierre = $2,
+               actualizado_en = NOW()
+           WHERE id_conteo = $1
+           RETURNING
+             id_conteo,
+             creado_en,
+             actualizado_en,
+             fecha_referencia,
+             monto_efectivo,
+             estado,
+             observacion,
+             id_cierre`,
+          [
+            Number(row.id_conteo),
+            Number(cierreRow.id_cierre)
+          ]
+        );
+        row = relink.rows[0] || row;
+      }
+    }
+
+    const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
+    const ip = getRequestIp(req);
+    await registrarAuditoria(
+      client,
+      "CAJA_CONTEO_EFECTIVO_REGISTRADO",
+      `id_conteo=${row.id_conteo}; fecha=${fecha}; monto=${montoEfectivo.toFixed(2)}; cerrar_caja=${cerrarCaja ? "S" : "N"}; ip=${ip}`,
+      usuarioAuditoria
+    );
+
+    await client.query("COMMIT");
+
+    const resumen = await buildConteoEfectivoResumen(fecha);
+    realtimeHub.broadcast("caja", "conteo_efectivo_registrado", {
+      id_conteo: Number(row.id_conteo || 0),
+      fecha_referencia: fecha,
+      monto_efectivo: montoEfectivo,
+      caja_cerrada: cerrarCaja
+    });
+
+    return res.json({
+      mensaje: cerrarCaja
+        ? "Conteo registrado y caja cerrada para hoy. Pendiente de cierre definitivo en reporte."
+        : "Conteo de efectivo enviado.",
+      conteo: {
+        id_conteo: Number(row.id_conteo || 0),
+        creado_en: row.creado_en || null,
+        actualizado_en: row.actualizado_en || null,
+        fecha_referencia: normalizeDateOnly(row.fecha_referencia) || fecha,
+        monto_efectivo: parseMonto(row.monto_efectivo, 0),
+        estado: row.estado || ESTADOS_CONTEO_EFECTIVO.PENDIENTE,
+        observacion: row.observacion || null,
+        id_cierre: row.id_cierre ? Number(row.id_cierre) : null,
+        id_usuario: req.user?.id_usuario ? Number(req.user.id_usuario) : null,
+        username: req.user?.username || null,
+        nombre_usuario: req.user?.nombre || null
+      },
+      cierre: cierreRow ? {
+        id_cierre: Number(cierreRow.id_cierre || 0),
+        creado_en: cierreRow.creado_en || null,
+        tipo: cierreRow.tipo || "diario",
+        fecha_referencia: normalizeDateOnly(cierreRow.fecha_referencia) || fecha,
+        total_sistema: parseMonto(cierreRow.total_sistema, 0),
+        efectivo_declarado: parseMonto(cierreRow.efectivo_declarado, 0),
+        desviacion: parseMonto(cierreRow.desviacion, 0),
+        alerta_desviacion: cierreRow.alerta_desviacion_sn === "S",
+        cierre_bloquea: cierreRow.cierre_bloquea_sn === "S",
+        observacion: cierreRow.observacion || null
+      } : null,
+      resumen
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("Error registrando conteo de efectivo:", err.message);
+    return res.status(500).json({ error: "Error registrando conteo de efectivo." });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
     if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
+    const cierreHoy = await consultarCierreCajaBloqueante(client, toISODate());
+    if (cierreHoy.cerrada) {
+      return res.status(409).json({
+        error: "Caja cerrada para hoy. No se permiten más cobros en agua hasta el siguiente día."
+      });
+    }
 
     await client.query("BEGIN");
     await ensureOrdenesCobroTable(client);
@@ -5264,6 +5672,12 @@ const normalizePagoInputs = (body = {}) => {
 app.post("/pagos", async (req, res) => {
   const client = await pool.connect();
   try {
+    const cierreHoy = await consultarCierreCajaBloqueante(client, toISODate());
+    if (cierreHoy.cerrada) {
+      return res.status(409).json({
+        error: "Caja cerrada para hoy. No se permiten más cobros en agua hasta el siguiente día."
+      });
+    }
     if (!ALLOW_DIRECT_PAYMENTS) {
       return res.status(403).json({
         error: "Pago directo deshabilitado. Use ordenes de cobro pendientes desde caja."
@@ -5666,20 +6080,16 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
   `, [desde, hasta]);
   const cantidadMovimientos = Number(resumenPagos.rows[0]?.cantidad || 0);
   const total = parseFloat(resumenPagos.rows[0]?.total || 0) || 0;
-  const resumenReimpresion = await pool.query(`
-    SELECT COALESCE(SUM(oc.cargo_reimpresion), 0)::numeric AS total_reimpresion
-    FROM ordenes_cobro oc
-    WHERE oc.estado = 'COBRADA'
-      AND oc.cobrado_en >= $1::date
-      AND oc.cobrado_en < $2::date
-  `, [desde, hasta]);
-  const totalReimpresion = parseFloat(resumenReimpresion.rows[0]?.total_reimpresion || 0) || 0;
-  const totalGeneral = roundMonto2(total + totalReimpresion);
+  const totalGeneral = roundMonto2(total);
 
   const topContribuyentes = await pool.query(`
     SELECT
       c.codigo_municipal,
-      c.nombre_completo,
+      COALESCE(
+        NULLIF(TRIM(c.nombre_completo), ''),
+        NULLIF(TRIM(c.sec_nombre), ''),
+        ''
+      ) AS nombre_completo,
       ROUND(SUM(p.monto_pagado)::numeric, 2) AS total
     FROM pagos p
     JOIN recibos r ON p.id_recibo = r.id_recibo
@@ -5688,7 +6098,13 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
     WHERE ${PAGO_OPERATIVO_CAJA_SQL}
       AND p.fecha_pago >= $1::date
       AND p.fecha_pago < $2::date
-    GROUP BY c.codigo_municipal, c.nombre_completo
+    GROUP BY
+      c.codigo_municipal,
+      COALESCE(
+        NULLIF(TRIM(c.nombre_completo), ''),
+        NULLIF(TRIM(c.sec_nombre), ''),
+        ''
+      )
     ORDER BY SUM(p.monto_pagado) DESC
     LIMIT 10
   `, [desde, hasta]);
@@ -5716,7 +6132,7 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
       hasta_exclusivo: hasta
     },
     total: total.toFixed(2),
-    total_reimpresion: totalReimpresion.toFixed(2),
+    total_reimpresion: "0.00",
     total_general: totalGeneral.toFixed(2),
     cantidad_movimientos: cantidadMovimientos,
     graficos: {
@@ -5766,11 +6182,14 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
         to_char(p.fecha_pago, 'YYYY-MM-DD') AS fecha,
         to_char(p.fecha_pago, 'HH24:MI:SS') AS hora,
         p.monto_pagado,
-        c.nombre_completo,
+        COALESCE(
+          NULLIF(TRIM(c.nombre_completo), ''),
+          NULLIF(TRIM(c.sec_nombre), ''),
+          ''
+        ) AS nombre_completo,
         c.codigo_municipal,
         r.mes,
         r.anio,
-        oc.cargo_reimpresion,
         CASE
           WHEN ci.id_codigo IS NOT NULL THEN LPAD(ci.id_codigo::text, 6, '0')
           ELSE NULL
@@ -5806,11 +6225,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       mes,
       anio,
       codigo_impresion,
-      CASE
-        WHEN id_orden_cobro IS NOT NULL AND orden_rank = 1
-          THEN COALESCE(cargo_reimpresion, 0)
-        ELSE 0
-      END AS cargo_reimpresion
+      0::numeric AS cargo_reimpresion
     FROM movimientos_base
     ORDER BY fecha_pago DESC, id_pago DESC
     ${includeAllMovimientos ? "" : "LIMIT $3 OFFSET $4"}
@@ -5842,11 +6257,142 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   };
 };
 
+const buildConteoEfectivoResumen = async (fechaReferencia = toISODate()) => {
+  const fecha = normalizeDateOnly(fechaReferencia) || toISODate();
+  const aggregate = await pool.query(`
+    SELECT
+      COUNT(*) FILTER (WHERE estado = 'PENDIENTE')::int AS total_pendientes,
+      COUNT(*) FILTER (WHERE estado = 'PENDIENTE' AND fecha_referencia = $1::date)::int AS total_pendientes_hoy,
+      COALESCE(SUM(monto_efectivo) FILTER (WHERE estado = 'PENDIENTE' AND fecha_referencia = $1::date), 0)::numeric AS monto_pendiente_hoy
+    FROM caja_conteos_efectivo
+  `, [fecha]);
+  const ultimoPendiente = await pool.query(`
+    SELECT
+      ce.id_conteo,
+      ce.creado_en,
+      ce.actualizado_en,
+      ce.fecha_referencia,
+      ce.monto_efectivo,
+      ce.estado,
+      ce.observacion,
+      ce.id_usuario,
+      COALESCE(u.username, '') AS username,
+      COALESCE(u.nombre_completo, '') AS nombre_usuario
+    FROM caja_conteos_efectivo ce
+    LEFT JOIN usuarios_sistema u ON u.id_usuario = ce.id_usuario
+    WHERE ce.estado = 'PENDIENTE'
+      AND ce.fecha_referencia = $1::date
+    ORDER BY ce.creado_en DESC, ce.id_conteo DESC
+    LIMIT 1
+  `, [fecha]);
+  const ultimoConteoHoy = await pool.query(`
+    SELECT
+      ce.id_conteo,
+      ce.creado_en,
+      ce.actualizado_en,
+      ce.fecha_referencia,
+      ce.monto_efectivo,
+      ce.estado,
+      ce.observacion,
+      ce.id_usuario,
+      COALESCE(u.username, '') AS username,
+      COALESCE(u.nombre_completo, '') AS nombre_usuario
+    FROM caja_conteos_efectivo ce
+    LEFT JOIN usuarios_sistema u ON u.id_usuario = ce.id_usuario
+    WHERE ce.fecha_referencia = $1::date
+    ORDER BY ce.creado_en DESC, ce.id_conteo DESC
+    LIMIT 1
+  `, [fecha]);
+  const cierreCaja = await pool.query(`
+    SELECT
+      id_cierre,
+      creado_en,
+      fecha_referencia,
+      total_sistema,
+      efectivo_declarado,
+      desviacion,
+      observacion
+    FROM caja_cierres
+    WHERE tipo = 'diario'
+      AND fecha_referencia = $1::date
+      AND cierre_bloquea_sn = 'S'
+    ORDER BY id_cierre DESC
+    LIMIT 1
+  `, [fecha]);
+
+  const resumenRow = aggregate.rows[0] || {};
+  const conteo = ultimoPendiente.rows[0] || null;
+  const conteoHoy = ultimoConteoHoy.rows[0] || null;
+  const cierre = cierreCaja.rows[0] || null;
+  const mapConteo = (row) => (row ? {
+    id_conteo: Number(row.id_conteo || 0),
+    creado_en: row.creado_en || null,
+    actualizado_en: row.actualizado_en || null,
+    fecha_referencia: normalizeDateOnly(row.fecha_referencia) || fecha,
+    monto_efectivo: parseMonto(row.monto_efectivo, 0),
+    estado: row.estado || ESTADOS_CONTEO_EFECTIVO.PENDIENTE,
+    observacion: row.observacion || null,
+    id_usuario: row.id_usuario ? Number(row.id_usuario) : null,
+    username: row.username || null,
+    nombre_usuario: row.nombre_usuario || null
+  } : null);
+  return {
+    fecha_referencia: fecha,
+    total_pendientes: Number(resumenRow.total_pendientes || 0),
+    total_pendientes_hoy: Number(resumenRow.total_pendientes_hoy || 0),
+    monto_pendiente_hoy: parseMonto(resumenRow.monto_pendiente_hoy, 0),
+    caja_cerrada_hoy: Boolean(cierre),
+    cierre_hoy: cierre ? {
+      id_cierre: Number(cierre.id_cierre || 0),
+      creado_en: cierre.creado_en || null,
+      fecha_referencia: normalizeDateOnly(cierre.fecha_referencia) || fecha,
+      total_sistema: parseMonto(cierre.total_sistema, 0),
+      efectivo_declarado: parseMonto(cierre.efectivo_declarado, 0),
+      desviacion: parseMonto(cierre.desviacion, 0),
+      observacion: cierre.observacion || null
+    } : null,
+    ultimo_pendiente: mapConteo(conteo),
+    ultimo_hoy: mapConteo(conteoHoy)
+  };
+};
+
+const consultarCierreCajaBloqueante = async (clientOrPool, fechaReferencia = toISODate()) => {
+  const db = clientOrPool || pool;
+  const fecha = normalizeDateOnly(fechaReferencia) || toISODate();
+  const result = await db.query(`
+    SELECT
+      id_cierre,
+      creado_en,
+      fecha_referencia,
+      observacion
+    FROM caja_cierres
+    WHERE tipo = 'diario'
+      AND fecha_referencia = $1::date
+      AND cierre_bloquea_sn = 'S'
+    ORDER BY id_cierre DESC
+    LIMIT 1
+  `, [fecha]);
+  const row = result.rows[0] || null;
+  return {
+    fecha_referencia: fecha,
+    cerrada: Boolean(row),
+    cierre: row ? {
+      id_cierre: Number(row.id_cierre || 0),
+      creado_en: row.creado_en || null,
+      observacion: row.observacion || null
+    } : null
+  };
+};
+
 app.get("/caja/reporte", async (req, res) => {
   try {
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
     const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
-    const fecha = String(req.query.fecha || toISODate());
+    const hoy = toISODate();
+    const fecha = normalizeDateOnly(req.query.fecha) || hoy;
+    if (fecha > hoy) {
+      return res.status(400).json({ error: "No se permite consultar caja con fecha futura." });
+    }
     const page = Number(req.query.page || 1);
     const pageSize = Number(req.query.page_size || 200);
     const mostrarCodigoImpresion = hasMinRole(req.user?.rol, "ADMIN");
@@ -5861,7 +6407,11 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
   try {
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
     const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
-    const fecha = String(req.query.fecha || toISODate());
+    const hoy = toISODate();
+    const fecha = normalizeDateOnly(req.query.fecha) || hoy;
+    if (fecha > hoy) {
+      return res.status(400).json({ error: "No se permite exportar caja con fecha futura." });
+    }
     const mostrarCodigoImpresion = hasMinRole(req.user?.rol, "ADMIN");
     const data = await construirReporteCaja(tipo, fecha, {
       includeAllMovimientos: true,
@@ -5881,8 +6431,6 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
     wsResumen.addRow({ campo: "Rango desde", valor: data.rango?.desde || "" });
     wsResumen.addRow({ campo: "Rango hasta (exclusivo)", valor: data.rango?.hasta_exclusivo || "" });
     wsResumen.addRow({ campo: "Cantidad movimientos", valor: data.cantidad_movimientos || 0 });
-    wsResumen.addRow({ campo: "Total recaudado (pagos)", valor: parseFloat(data.total || 0) });
-    wsResumen.addRow({ campo: "Total reimpresion", valor: parseFloat(data.total_reimpresion || 0) });
     wsResumen.addRow({ campo: "Total caja", valor: parseFloat(data.total_general || 0) });
 
     const wsMov = workbook.addWorksheet("Movimientos");
@@ -5894,8 +6442,7 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
       { header: "CODIGO", key: "codigo_municipal", width: 16 },
       { header: "CONTRIBUYENTE", key: "nombre_completo", width: 36 },
       { header: "PERIODO", key: "periodo", width: 12 },
-      { header: "MONTO", key: "monto_pagado", width: 14 },
-      { header: "REIMPRESION", key: "cargo_reimpresion", width: 14 }
+      { header: "MONTO", key: "monto_pagado", width: 14 }
     ];
     wsMov.getRow(1).font = { bold: true };
     (data.movimientos || []).forEach((m) => {
@@ -5907,8 +6454,7 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
         codigo_municipal: m.codigo_municipal || "",
         nombre_completo: m.nombre_completo || "",
         periodo: `${m.mes || ""}/${m.anio || ""}`,
-        monto_pagado: parseFloat(m.monto_pagado || 0),
-        cargo_reimpresion: parseFloat(m.cargo_reimpresion || 0)
+        monto_pagado: parseFloat(m.monto_pagado || 0)
       });
     });
 
@@ -5963,7 +6509,11 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
 
 app.get("/caja/diaria", async (req, res) => {
   try {
-    const fecha = String(req.query.fecha || toISODate());
+    const hoy = toISODate();
+    const fecha = normalizeDateOnly(req.query.fecha) || hoy;
+    if (fecha > hoy) {
+      return res.status(400).json({ error: "No se permite consultar caja diaria con fecha futura." });
+    }
     const data = await construirReporteCaja("diario", fecha, {
       includeAllMovimientos: true,
       includeCodigoImpresion: hasMinRole(req.user?.rol, "ADMIN")
@@ -5980,39 +6530,83 @@ app.get("/caja/diaria", async (req, res) => {
 app.post("/caja/cierre", async (req, res) => {
   const client = await pool.connect();
   try {
-    const tipoRaw = String(req.body?.tipo || "diario").toLowerCase();
-    const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
+    const tipo = "diario";
     const fecha = normalizeDateOnly(req.body?.fecha) || toISODate();
-    const efectivoDeclarado = roundMonto2(parseMonto(req.body?.efectivo_declarado, Number.NaN));
+    const hoy = toISODate();
+    if (fecha !== hoy) {
+      return res.status(400).json({ error: "Solo se permite registrar cierre para la fecha actual." });
+    }
+    const efectivoDeclaradoRaw = parseMonto(req.body?.efectivo_declarado, Number.NaN);
+    let efectivoDeclarado = Number.isFinite(efectivoDeclaradoRaw) ? roundMonto2(efectivoDeclaradoRaw) : Number.NaN;
     const umbralAlerta = Math.max(0, roundMonto2(parseMonto(req.body?.umbral_alerta, CAJA_CIERRE_ALERTA_UMBRAL)));
     const observacion = normalizeLimitedText(req.body?.observacion, 500) || null;
 
-    if (!Number.isFinite(efectivoDeclarado) || efectivoDeclarado < 0) {
-      return res.status(400).json({ error: "Efectivo declarado invalido." });
+    await client.query("BEGIN");
+    await ensureCajaCierresTable(client);
+    await ensureCajaConteosEfectivoTable(client);
+
+    const conteoPendiente = await client.query(
+      `SELECT
+         id_conteo,
+         creado_en,
+         monto_efectivo,
+         observacion,
+         id_usuario
+       FROM caja_conteos_efectivo
+       WHERE fecha_referencia = $1::date
+         AND estado = $2
+       ORDER BY creado_en DESC, id_conteo DESC
+       LIMIT 1
+       FOR UPDATE`,
+      [fecha, ESTADOS_CONTEO_EFECTIVO.PENDIENTE]
+    );
+    const conteoPendienteRow = conteoPendiente.rows[0] || null;
+    const conteoUltimoHoy = await client.query(
+      `SELECT
+         id_conteo,
+         creado_en,
+         monto_efectivo,
+         observacion,
+         id_usuario,
+         estado
+       FROM caja_conteos_efectivo
+       WHERE fecha_referencia = $1::date
+       ORDER BY creado_en DESC, id_conteo DESC
+       LIMIT 1
+       FOR UPDATE`,
+      [fecha]
+    );
+    const conteoUltimoHoyRow = conteoUltimoHoy.rows[0] || null;
+    if ((!Number.isFinite(efectivoDeclarado) || efectivoDeclarado < 0) && conteoPendienteRow) {
+      efectivoDeclarado = roundMonto2(parseMonto(conteoPendienteRow.monto_efectivo, Number.NaN));
+    }
+    if ((!Number.isFinite(efectivoDeclarado) || efectivoDeclarado < 0) && conteoUltimoHoyRow) {
+      efectivoDeclarado = roundMonto2(parseMonto(conteoUltimoHoyRow.monto_efectivo, Number.NaN));
     }
 
+    const existente = await client.query(
+      `SELECT id_cierre, efectivo_declarado
+       FROM caja_cierres
+       WHERE tipo = 'diario' AND fecha_referencia = $1::date
+       ORDER BY id_cierre DESC
+       LIMIT 1
+       FOR UPDATE`,
+      [fecha]
+    );
+    if ((!Number.isFinite(efectivoDeclarado) || efectivoDeclarado < 0) && existente.rows[0]) {
+      efectivoDeclarado = roundMonto2(parseMonto(existente.rows[0].efectivo_declarado, Number.NaN));
+    }
+    if (!Number.isFinite(efectivoDeclarado) || efectivoDeclarado < 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Efectivo declarado invalido." });
+    }
     const resumen = await construirResumenCaja(tipo, fecha);
     const totalSistema = roundMonto2(parseMonto(resumen?.total, 0));
     const desviacion = roundMonto2(efectivoDeclarado - totalSistema);
     const alerta = Math.abs(desviacion) > umbralAlerta + 0.001;
-
-    await client.query("BEGIN");
-    await ensureCajaCierresTable(client);
     const rango = await obtenerRangoCaja(tipo, fecha);
-    const insert = await client.query(`
-      INSERT INTO caja_cierres (
-        id_usuario,
-        tipo,
-        fecha_referencia,
-        desde,
-        hasta_exclusivo,
-        total_sistema,
-        efectivo_declarado,
-        desviacion,
-        alerta_desviacion_sn,
-        observacion
-      )
-      VALUES ($1, $2, $3::date, $4::date, $5::date, $6, $7, $8, $9, $10)
+
+    const sqlCommonReturning = `
       RETURNING
         id_cierre,
         creado_en,
@@ -6024,21 +6618,86 @@ app.post("/caja/cierre", async (req, res) => {
         efectivo_declarado,
         desviacion,
         alerta_desviacion_sn,
+        cierre_bloquea_sn,
         observacion
-    `, [
-      req.user?.id_usuario || null,
-      tipo,
-      fecha,
-      rango?.desde || fecha,
-      rango?.hasta || fecha,
-      totalSistema,
-      efectivoDeclarado,
-      desviacion,
-      alerta ? "S" : "N",
-      observacion
-    ]);
+    `;
+    let row = null;
+    if (existente.rows[0]) {
+      const updated = await client.query(
+        `UPDATE caja_cierres
+         SET id_usuario = $2,
+             desde = $3::date,
+             hasta_exclusivo = $4::date,
+             total_sistema = $5,
+             efectivo_declarado = $6,
+             desviacion = $7,
+             alerta_desviacion_sn = $8,
+             cierre_bloquea_sn = 'S',
+             observacion = $9
+         WHERE id_cierre = $1
+         ${sqlCommonReturning}`,
+        [
+          Number(existente.rows[0].id_cierre),
+          req.user?.id_usuario || null,
+          rango?.desde || fecha,
+          rango?.hasta || fecha,
+          totalSistema,
+          efectivoDeclarado,
+          desviacion,
+          alerta ? "S" : "N",
+          observacion
+        ]
+      );
+      row = updated.rows[0];
+    } else {
+      const inserted = await client.query(
+        `INSERT INTO caja_cierres (
+          id_usuario,
+          tipo,
+          fecha_referencia,
+          desde,
+          hasta_exclusivo,
+          total_sistema,
+          efectivo_declarado,
+          desviacion,
+          alerta_desviacion_sn,
+          cierre_bloquea_sn,
+          observacion
+        )
+        VALUES ($1, $2, $3::date, $4::date, $5::date, $6, $7, $8, $9, 'S', $10)
+        ${sqlCommonReturning}`,
+        [
+          req.user?.id_usuario || null,
+          tipo,
+          fecha,
+          rango?.desde || fecha,
+          rango?.hasta || fecha,
+          totalSistema,
+          efectivoDeclarado,
+          desviacion,
+          alerta ? "S" : "N",
+          observacion
+        ]
+      );
+      row = inserted.rows[0];
+    }
 
-    const row = insert.rows[0];
+    const conteosAplicados = await client.query(
+      `UPDATE caja_conteos_efectivo
+       SET estado = $2,
+           actualizado_en = NOW(),
+           id_cierre = $3
+       WHERE fecha_referencia = $1::date
+         AND estado = $4
+       RETURNING id_conteo, monto_efectivo, creado_en, observacion, id_usuario`,
+      [
+        fecha,
+        ESTADOS_CONTEO_EFECTIVO.APLICADO,
+        Number(row.id_cierre),
+        ESTADOS_CONTEO_EFECTIVO.PENDIENTE
+      ]
+    );
+
     const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
     const ip = getRequestIp(req);
     await registrarAuditoria(
@@ -6049,13 +6708,34 @@ app.post("/caja/cierre", async (req, res) => {
     );
 
     await client.query("COMMIT");
+    realtimeHub.broadcast("caja", "cierre_registrado", {
+      id_cierre: Number(row.id_cierre || 0),
+      fecha_referencia: fecha
+    });
+
+    const conteoAplicado = conteoPendienteRow
+      ? {
+          id_conteo: Number(conteoPendienteRow.id_conteo || 0),
+          creado_en: conteoPendienteRow.creado_en || null,
+          monto_efectivo: parseMonto(conteoPendienteRow.monto_efectivo, 0),
+          observacion: conteoPendienteRow.observacion || null,
+          id_usuario: conteoPendienteRow.id_usuario ? Number(conteoPendienteRow.id_usuario) : null
+        }
+      : null;
+    let resumenConteo = null;
+    try {
+      resumenConteo = await buildConteoEfectivoResumen(fecha);
+    } catch {
+      resumenConteo = null;
+    }
+
     res.json({
-      mensaje: "Cierre de caja registrado.",
+      mensaje: existente.rows[0] ? "Cierre de caja actualizado." : "Cierre de caja registrado.",
       cierre: {
         id_cierre: Number(row.id_cierre),
         creado_en: row.creado_en,
         tipo: row.tipo,
-        fecha_referencia: row.fecha_referencia,
+        fecha_referencia: normalizeDateOnly(row.fecha_referencia) || fecha,
         rango: {
           desde: row.desde,
           hasta_exclusivo: row.hasta_exclusivo
@@ -6065,8 +6745,12 @@ app.post("/caja/cierre", async (req, res) => {
         desviacion: parseMonto(row.desviacion, 0),
         umbral_alerta: umbralAlerta,
         alerta_desviacion: row.alerta_desviacion_sn === "S",
-        observacion: row.observacion || null
-      }
+        cierre_bloquea: row.cierre_bloquea_sn === "S",
+        observacion: row.observacion || null,
+        conteo_aplicado: conteoAplicado,
+        conteos_aplicados: Number(conteosAplicados.rows.length || 0)
+      },
+      conteo: resumenConteo
     });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
@@ -6155,10 +6839,26 @@ app.get("/caja/alertas-riesgo", async (req, res) => {
       LIMIT 50
     `, [windowHours, CAJA_HORA_INICIO, CAJA_HORA_FIN]);
 
+    const cierresDesviacion = await pool.query(`
+      SELECT
+        cc.id_cierre,
+        cc.fecha_referencia,
+        cc.desviacion,
+        cc.total_sistema,
+        cc.efectivo_declarado,
+        cc.creado_en
+      FROM caja_cierres cc
+      WHERE cc.alerta_desviacion_sn = 'S'
+        AND cc.creado_en >= NOW() - make_interval(hours => $1::int)
+      ORDER BY cc.creado_en DESC
+      LIMIT 30
+    `, [windowHours]);
+
     const totalAlertas =
       anulaciones.rows.length +
       reemisiones.rows.length +
-      cobrosFueraHorario.rows.length;
+      cobrosFueraHorario.rows.length +
+      cierresDesviacion.rows.length;
     const severidad = totalAlertas === 0 ? "NORMAL" : (totalAlertas >= 5 ? "ALTA" : "MEDIA");
 
     res.json({
@@ -6173,7 +6873,8 @@ app.get("/caja/alertas-riesgo", async (req, res) => {
         total_alertas: totalAlertas,
         anulaciones_frecuentes: anulaciones.rows.length,
         reemisiones_recibo: reemisiones.rows.length,
-        cobros_fuera_horario: cobrosFueraHorario.rows.length
+        cobros_fuera_horario: cobrosFueraHorario.rows.length,
+        cierres_desviacion: cierresDesviacion.rows.length
       },
       alertas: {
         anulaciones_frecuentes: anulaciones.rows.map((r) => ({
@@ -6200,6 +6901,14 @@ app.get("/caja/alertas-riesgo", async (req, res) => {
           total_orden: parseMonto(r.total_orden, 0),
           username: r.username || null,
           nombre: r.nombre || null
+        })),
+        cierres_desviacion: cierresDesviacion.rows.map((r) => ({
+          id_cierre: Number(r.id_cierre),
+          fecha_referencia: normalizeDateOnly(r.fecha_referencia) || null,
+          creado_en: r.creado_en,
+          desviacion: parseMonto(r.desviacion, 0),
+          total_sistema: parseMonto(r.total_sistema, 0),
+          efectivo_declarado: parseMonto(r.efectivo_declarado, 0)
         }))
       }
     });
@@ -9267,6 +9976,127 @@ const getFechaLocalPartes = (timeZone = AUTO_DEUDA_TIMEZONE, fecha = new Date())
   return getFechaPartesZona(fecha, timeZone);
 };
 
+let autoCierreCajaEnCurso = false;
+let ultimoDiaAutoCierreCaja = "";
+const getHoraMinuto = (hhmm = "16:00") => {
+  const [hTxt, mTxt] = String(hhmm || "16:00").split(":");
+  const hora = Number(hTxt);
+  const minuto = Number(mTxt);
+  return {
+    hora: Number.isFinite(hora) ? hora : 16,
+    minuto: Number.isFinite(minuto) ? minuto : 0
+  };
+};
+
+const registrarAutoCierreCajaDiario = async () => {
+  if (autoCierreCajaEnCurso) return;
+
+  const partesHoy = getFechaPartesZona(new Date(), APP_TIMEZONE);
+  const meta = getHoraMinuto(CAJA_AUTO_CIERRE_HORA);
+  const yaEsHora = (partesHoy.hora > meta.hora) || (partesHoy.hora === meta.hora && partesHoy.minuto >= meta.minuto);
+  if (!yaEsHora) return;
+
+  const fechaHoy = toISODate();
+  if (ultimoDiaAutoCierreCaja === fechaHoy) return;
+
+  autoCierreCajaEnCurso = true;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await ensureCajaCierresTable(client);
+    await ensureCajaConteosEfectivoTable(client);
+
+    const existe = await client.query(
+      `SELECT id_cierre
+       FROM caja_cierres
+       WHERE tipo = 'diario'
+         AND fecha_referencia = $1::date
+       LIMIT 1
+       FOR UPDATE`,
+      [fechaHoy]
+    );
+    if (existe.rows[0]) {
+      await client.query("COMMIT");
+      ultimoDiaAutoCierreCaja = fechaHoy;
+      return;
+    }
+
+    const resumen = await construirResumenCaja("diario", fechaHoy);
+    const totalSistema = roundMonto2(parseMonto(resumen?.total, 0));
+    const rango = await obtenerRangoCaja("diario", fechaHoy);
+    const insertAuto = await client.query(
+      `INSERT INTO caja_cierres (
+        id_usuario,
+        tipo,
+        fecha_referencia,
+        desde,
+        hasta_exclusivo,
+        total_sistema,
+        efectivo_declarado,
+        desviacion,
+        alerta_desviacion_sn,
+        observacion
+      )
+      VALUES ($1, 'diario', $2::date, $3::date, $4::date, $5, $6, $7, 'N', $8)
+      RETURNING id_cierre`,
+      [
+        null,
+        fechaHoy,
+        rango?.desde || fechaHoy,
+        rango?.hasta || fechaHoy,
+        totalSistema,
+        totalSistema,
+        0,
+        `AUTO_CIERRE_${CAJA_AUTO_CIERRE_HORA}`
+      ]
+    );
+    const idCierreAuto = Number(insertAuto.rows[0]?.id_cierre || 0);
+    await client.query(
+      `UPDATE caja_conteos_efectivo
+       SET estado = $2,
+           actualizado_en = NOW(),
+           id_cierre = $3
+       WHERE fecha_referencia = $1::date
+         AND estado = $4`,
+      [
+        fechaHoy,
+        ESTADOS_CONTEO_EFECTIVO.APLICADO,
+        idCierreAuto || null,
+        ESTADOS_CONTEO_EFECTIVO.PENDIENTE
+      ]
+    );
+    await registrarAuditoria(
+      client,
+      "CAJA_CIERRE_AUTO",
+      `fecha=${fechaHoy}; total_sistema=${totalSistema.toFixed(2)}; hora_programada=${CAJA_AUTO_CIERRE_HORA}`,
+      "SISTEMA"
+    );
+    await client.query("COMMIT");
+    realtimeHub.broadcast("caja", "cierre_auto", {
+      fecha_referencia: fechaHoy,
+      id_cierre: idCierreAuto || null
+    });
+    ultimoDiaAutoCierreCaja = fechaHoy;
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("[CAJA] Error en cierre automatico diario:", err.message);
+  } finally {
+    client.release();
+    autoCierreCajaEnCurso = false;
+  }
+};
+
+const iniciarTareaAutoCierreCaja = () => {
+  registrarAutoCierreCajaDiario().catch((err) => {
+    console.error("[CAJA] Error inicial cierre automatico:", err.message);
+  });
+  setInterval(() => {
+    registrarAutoCierreCajaDiario().catch((err) => {
+      console.error("[CAJA] Error ciclo cierre automatico:", err.message);
+    });
+  }, CAJA_AUTO_CIERRE_CHECK_MS);
+};
+
 const generarDeudaMensualAutomatica = async () => {
   if (!AUTO_DEUDA_ACTIVA || autoDeudaEnCurso) return;
 
@@ -9433,6 +10263,7 @@ const onServerStarted = (label, host, port) => {
     console.error("[RENIEC] Error en limpieza inicial:", err);
   });
   iniciarTareaAutoDeuda();
+  iniciarTareaAutoCierreCaja();
 };
 
 const setupRealtimeWs = (server, serverLabel) => {

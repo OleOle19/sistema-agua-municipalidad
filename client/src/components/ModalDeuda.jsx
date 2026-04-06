@@ -6,6 +6,22 @@ const toNumber = (value, fallback = 0) => {
   const parsed = parseFloat(normalized);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+const validarPeriodoNoFuturo = (anioInput, mesInput) => {
+  const anio = Number.parseInt(String(anioInput ?? ""), 10);
+  const mes = Number.parseInt(String(mesInput ?? ""), 10);
+  if (!Number.isFinite(anio) || anio < 2000 || anio > 9999) {
+    return { ok: false, error: "Año inválido." };
+  }
+  if (!Number.isFinite(mes) || mes < 1 || mes > 12) {
+    return { ok: false, error: "Mes inválido." };
+  }
+  const now = new Date();
+  const periodoActual = (now.getFullYear() * 100) + (now.getMonth() + 1);
+  if ((anio * 100) + mes > periodoActual) {
+    return { ok: false, error: "No se puede registrar deuda en un periodo futuro." };
+  }
+  return { ok: true, anio, mes };
+};
 
 const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
   const [anio, setAnio] = useState(new Date().getFullYear());
@@ -58,6 +74,11 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
   const totalServicios = Object.values(montos).reduce((sum, v) => sum + v, 0);
 
   const guardarDeuda = async () => {
+    const periodo = validarPeriodoNoFuturo(anio, mes);
+    if (!periodo.ok) {
+      alert(periodo.error);
+      return;
+    }
     setCargando(true);
     try {
       if (totalServicios <= 0) {
@@ -67,8 +88,8 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
       }
       await api.post("/recibos", {
         id_contribuyente: usuario.id_contribuyente,
-        anio,
-        mes,
+        anio: periodo.anio,
+        mes: periodo.mes,
         montos
       });
       alert(`Deuda registrada correctamente para ${usuario.nombre_completo}`);
