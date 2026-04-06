@@ -8,6 +8,21 @@ const toNum = (value) => {
 };
 
 const formatMonto = (value) => toNum(value).toFixed(2);
+const splitCompactConcept = (value) => {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  if (!text) return ["", ""];
+
+  const idxDe = text.indexOf(" DE ");
+  if (idxDe > 0) {
+    const line1 = text.slice(0, idxDe).trim();
+    const line2 = text.slice(idxDe + 1).trim(); // mantiene "DE ..."
+    return [line1 || line2, line2];
+  }
+
+  const parts = text.split(" ");
+  if (parts.length <= 1) return [text, ""];
+  return [parts[0], parts.slice(1).join(" ")];
+};
 
 // Formato fisico del anexo: 21.0 cm x 10.6 cm sobre hoja A4.
 const PAGE = {
@@ -25,7 +40,7 @@ const ANEXO_TEXTOS = {
 // Ajustes globales para calibracion.
 // nudgeX/nudgeY mueven todo el anexo.
 const CAL = {
-  nudgeX: 15,
+  nudgeX: 11,
   nudgeY: 5,
   // Coordenadas de los datos de cabecera (solo bloque CONTROL).
   topData: {
@@ -200,42 +215,49 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
             </>
           )}
 
-          {detalleRows.map((row, idx) => (
-            <React.Fragment key={`${block.key}-${idx}`}>
-              <div
-                style={{
-                  ...baseText,
-                  left: x(block.x + block.table.conceptX),
-                  top: y(block.table.topY + (idx * block.table.lineGap)),
-                  fontSize: mm(block.conceptFont),
-                  maxWidth: mm(block.table.conceptMax),
-                  whiteSpace: block.compact ? "normal" : "nowrap",
-                  lineHeight: block.compact ? 1.05 : 1.1,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  display: block.compact ? "-webkit-box" : "block",
-                  WebkitLineClamp: block.compact ? 2 : "unset",
-                  WebkitBoxOrient: block.compact ? "vertical" : "horizontal",
-                  minHeight: block.compact ? mm(block.conceptFont * 2.3) : "auto"
-                }}
-              >
-                {row.concepto}
-              </div>
-              <div
-                style={{
-                  ...baseText,
-                  left: x(block.x + block.table.amountX),
-                  top: y(block.table.topY + (idx * block.table.lineGap)),
-                  width: mm(block.table.amountWidth),
-                  textAlign: "right",
-                  fontSize: mm(block.amountFont),
-                  fontWeight: 700
-                }}
-              >
-                {row.importe}
-              </div>
-            </React.Fragment>
-          ))}
+          {detalleRows.map((row, idx) => {
+            const [line1, line2] = block.compact ? splitCompactConcept(row.concepto) : [row.concepto, ""];
+            return (
+              <React.Fragment key={`${block.key}-${idx}`}>
+                <div
+                  style={{
+                    ...baseText,
+                    left: x(block.x + block.table.conceptX),
+                    top: y(block.table.topY + (idx * block.table.lineGap)),
+                    fontSize: mm(block.conceptFont),
+                    maxWidth: mm(block.table.conceptMax),
+                    whiteSpace: block.compact ? "normal" : "nowrap",
+                    lineHeight: block.compact ? 1.0 : 1.1,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    minHeight: block.compact ? mm(block.conceptFont * 2.3) : "auto"
+                  }}
+                >
+                  {block.compact ? (
+                    <>
+                      <span style={{ display: "block" }}>{line1}</span>
+                      <span style={{ display: "block" }}>{line2}</span>
+                    </>
+                  ) : (
+                    row.concepto
+                  )}
+                </div>
+                <div
+                  style={{
+                    ...baseText,
+                    left: x(block.x + block.table.amountX),
+                    top: y(block.table.topY + (idx * block.table.lineGap)),
+                    width: mm(block.table.amountWidth),
+                    textAlign: "right",
+                    fontSize: mm(block.amountFont),
+                    fontWeight: 700
+                  }}
+                >
+                  {row.importe}
+                </div>
+              </React.Fragment>
+            );
+          })}
 
           <div
             style={{
