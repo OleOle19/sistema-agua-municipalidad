@@ -267,6 +267,9 @@ const ModalPago = ({
       await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`, {
         cargo_reimpresion: 0
       });
+      if (typeof onImprimirAnexo === "function") {
+        onImprimirAnexo(buildDatosAnexoCaja(ordenSeleccionada));
+      }
       alert("Cobro registrado correctamente.");
       alGuardar?.();
       cerrarModal?.();
@@ -323,15 +326,6 @@ const ModalPago = ({
       total: totalOrden,
       detalles
     };
-  };
-
-  const imprimirAnexoCaja = () => {
-    if (!isCaja) return;
-    if (!ordenSeleccionada) return alert("Seleccione una orden pendiente.");
-    if (typeof onImprimirAnexo !== "function") {
-      return alert("No se pudo iniciar la impresion del anexo.");
-    }
-    onImprimirAnexo(buildDatosAnexoCaja(ordenSeleccionada));
   };
 
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
@@ -462,22 +456,13 @@ const ModalPago = ({
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={cerrarModal} disabled={cargando}>Cerrar</button>
             {isCaja ? (
-              <>
-                <button
-                  className="btn btn-outline-primary fw-bold"
-                  onClick={imprimirAnexoCaja}
-                  disabled={cargando || !ordenSeleccionada}
-                >
-                  IMPRIMIR ANEXO A4
-                </button>
-                <button
-                  className="btn btn-primary fw-bold"
-                  onClick={cobrarOrden}
-                  disabled={cargando || !ordenSeleccionada}
-                >
-                  {cargando ? "Procesando..." : "COBRAR ORDEN"}
-                </button>
-              </>
+              <button
+                className="btn btn-primary fw-bold"
+                onClick={cobrarOrden}
+                disabled={cargando || !ordenSeleccionada}
+              >
+                {cargando ? "Procesando..." : "COBRAR E IMPRIMIR"}
+              </button>
             ) : (
               <button
                 className="btn btn-primary fw-bold"

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, useCallback, memo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useReactToPrint } from "react-to-print";
 import { FaPrint, FaMoneyBillWave } from "react-icons/fa";
 import api from "../api";
@@ -9,104 +9,23 @@ const EMPTY_REPORTE = {
   total_general: "0.00",
   cantidad_movimientos: 0,
   paginacion: { pagina: 1, page_size: MOVIMIENTOS_PAGE_SIZE, total_paginas: 1 },
-  movimientos: [],
-  graficos: {
-    recaudacion_temporal: [],
-    top_contribuyentes: [],
-    recaudacion_por_periodo: []
-  }
-};
-const EMPTY_RESUMEN_CONTEO = {
-  fecha_referencia: "",
-  total_pendientes: 0,
-  total_pendientes_hoy: 0,
-  monto_pendiente_hoy: 0,
-  ultimo_pendiente: null,
-  ultimo_hoy: null,
-  cierre_hoy: null,
-  caja_cerrada_hoy: false
+  movimientos: []
 };
 
 const formatMoney = (value) => {
-  const num = parseFloat(value);
+  const num = Number.parseFloat(value);
   return Number.isFinite(num)
     ? num.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     : "0.00";
 };
 
-const formatMoneyCompact = (value) => {
-  const num = Number(value || 0);
-  const abs = Math.abs(num);
-  if (!Number.isFinite(num)) return "0";
-  if (abs >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${(num / 1_000).toFixed(1)}k`;
-  if (abs >= 100) return num.toFixed(0);
-  return num.toFixed(2);
-};
-
-const ChartCard = memo(function ChartCard({ title, data = [], labelKey, valueKey, color = "#0d6efd", emptyText = "Sin datos" }) {
-  const max = data.reduce((m, d) => Math.max(m, Number(d?.[valueKey] || 0)), 0);
-  const dense = data.length >= 10;
-  return (
-    <div className="border rounded p-3 h-100">
-      <div className="fw-bold mb-2">{title}</div>
-      <div className="small text-muted mb-2">Montos en S/.</div>
-      {data.length === 0 ? (
-        <div className="small text-muted">{emptyText}</div>
-      ) : (
-        <div style={{ minHeight: "180px", display: "flex", alignItems: "flex-end", gap: "8px" }}>
-          {data.map((item, idx) => {
-            const val = Number(item?.[valueKey] || 0);
-            const h = max > 0 ? Math.max((val / max) * 140, 6) : 6;
-            return (
-              <div key={`${item?.[labelKey] || idx}-${idx}`} className="d-flex flex-column align-items-center" style={{ flex: 1, minWidth: 0 }}>
-                <div
-                  className="fw-bold mb-1 text-center"
-                  title={`S/. ${formatMoney(val)}`}
-                  style={{
-                    fontSize: dense ? "0.76rem" : "0.83rem",
-                    lineHeight: 1.1,
-                    whiteSpace: "nowrap",
-                    maxWidth: "100%",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis"
-                  }}
-                >
-                  {formatMoneyCompact(val)}
-                </div>
-                <div style={{ width: "100%", maxWidth: "36px", height: `${h}px`, background: color, borderRadius: "4px 4px 0 0" }} />
-                <div className="small text-center mt-1 text-truncate w-100" title={String(item?.[labelKey] || "")}>
-                  {item?.[labelKey]}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-});
-
-const todayIso = () => {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-};
-
-const parseMontoInput = (value) => {
-  const raw = String(value ?? "").replace(",", ".").trim();
-  if (!raw) return Number.NaN;
-  const parsed = Number.parseFloat(raw);
-  return Number.isFinite(parsed) ? parsed : Number.NaN;
-};
 const formatFechaHoraLocal = (value) => {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString("es-PE");
 };
+
 const formatFechaLocal = (value) => {
   if (!value) return "";
   const text = String(value);
@@ -116,22 +35,24 @@ const formatFechaLocal = (value) => {
   return date.toLocaleDateString("es-PE");
 };
 
+const todayIso = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
 const toMonthValue = (isoDate) => String(isoDate || "").slice(0, 7);
 const toYearValue = (isoDate) => String(isoDate || "").slice(0, 4);
 
-const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
+const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
   const [reporteTipo, setReporteTipo] = useState("diario");
   const [fechaConsulta, setFechaConsulta] = useState(todayIso());
   const [cargando, setCargando] = useState(false);
   const [exportandoExcel, setExportandoExcel] = useState(false);
   const [paginaMovimientos, setPaginaMovimientos] = useState(1);
   const [reporte, setReporte] = useState(EMPTY_REPORTE);
-  const [efectivoDeclarado, setEfectivoDeclarado] = useState("");
-  const [observacionCierre, setObservacionCierre] = useState("");
-  const [registrandoCierre, setRegistrandoCierre] = useState(false);
-  const [resultadoCierre, setResultadoCierre] = useState(null);
-  const [resumenConteo, setResumenConteo] = useState(EMPTY_RESUMEN_CONTEO);
-  const [cargandoConteo, setCargandoConteo] = useState(false);
   const [cargandoAlertas, setCargandoAlertas] = useState(false);
   const [alertasRiesgo, setAlertasRiesgo] = useState({
     severidad: "NORMAL",
@@ -151,17 +72,23 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
   });
 
   const componentRef = useRef();
-  const efectivoEditadoRef = useRef(false);
-
+  const printPageStyle = `
+    @media print {
+      .no-print {
+        display: none !important;
+      }
+    }
+  `;
   const handlePrint = useReactToPrint({
     contentRef: componentRef,
-    documentTitle: `Reporte_Caja_${reporteTipo}_${fechaConsulta}`
+    documentTitle: `${origen === "caja" ? "Reporte_Caja" : "Reporte_Ventanilla"}_${reporteTipo}_${fechaConsulta}`,
+    pageStyle: printPageStyle
   });
 
-  const cargarCaja = async (signal) => {
+  const cargarCaja = useCallback(async (signal) => {
     try {
       setCargando(true);
-      const res = await api.get(`/caja/reporte`, {
+      const res = await api.get("/caja/reporte", {
         params: {
           tipo: reporteTipo,
           fecha: fechaConsulta,
@@ -170,7 +97,7 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
         },
         signal
       });
-      setReporte(res.data || {});
+      setReporte(res.data || EMPTY_REPORTE);
     } catch (error) {
       if (error?.code === "ERR_CANCELED" || error?.name === "CanceledError") return;
       console.error(error);
@@ -178,12 +105,12 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
     } finally {
       if (!signal?.aborted) setCargando(false);
     }
-  };
+  }, [fechaConsulta, paginaMovimientos, reporteTipo]);
 
   const exportarExcel = async () => {
     try {
       setExportandoExcel(true);
-      const res = await api.get(`/caja/reporte/excel`, {
+      const res = await api.get("/caja/reporte/excel", {
         params: { tipo: reporteTipo, fecha: fechaConsulta },
         responseType: "blob",
         timeout: 0
@@ -206,7 +133,7 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
     }
   };
 
-  const cargarAlertasRiesgo = async (signal) => {
+  const cargarAlertasRiesgo = useCallback(async (signal) => {
     try {
       setCargandoAlertas(true);
       const res = await api.get("/caja/alertas-riesgo", {
@@ -235,94 +162,7 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
     } finally {
       if (!signal?.aborted) setCargandoAlertas(false);
     }
-  };
-
-  const cargarConteoEfectivo = useCallback(async (signal) => {
-    try {
-      setCargandoConteo(true);
-      const res = await api.get("/caja/conteo-efectivo/resumen", { signal });
-      const data = res?.data || EMPTY_RESUMEN_CONTEO;
-      const resumen = {
-        fecha_referencia: data.fecha_referencia || "",
-        total_pendientes: Number(data.total_pendientes || 0),
-        total_pendientes_hoy: Number(data.total_pendientes_hoy || 0),
-        monto_pendiente_hoy: Number(data.monto_pendiente_hoy || 0),
-        ultimo_pendiente: data.ultimo_pendiente || null,
-        ultimo_hoy: data.ultimo_hoy || null,
-        cierre_hoy: data.cierre_hoy || null,
-        caja_cerrada_hoy: Boolean(data.caja_cerrada_hoy)
-      };
-      setResumenConteo(resumen);
-
-      const montoPendiente = Number(resumen?.ultimo_pendiente?.monto_efectivo);
-      const montoUltimoHoy = Number(resumen?.ultimo_hoy?.monto_efectivo);
-      const montoCierreHoy = Number(resumen?.cierre_hoy?.efectivo_declarado);
-      const montoSugerido = [montoPendiente, montoUltimoHoy, montoCierreHoy].find((v) => Number.isFinite(v) && v >= 0);
-      if (!efectivoEditadoRef.current && Number.isFinite(montoSugerido)) {
-        setEfectivoDeclarado(Number(montoSugerido).toFixed(2));
-      }
-    } catch (error) {
-      if (error?.code === "ERR_CANCELED" || error?.name === "CanceledError") return;
-      console.error(error);
-      setResumenConteo(EMPTY_RESUMEN_CONTEO);
-    } finally {
-      if (!signal?.aborted) setCargandoConteo(false);
-    }
   }, []);
-
-  const registrarCierre = async () => {
-    const fechaCierre = todayIso();
-    let efectivo = parseMontoInput(efectivoDeclarado);
-    if ((!Number.isFinite(efectivo) || efectivo < 0) && resumenConteo?.ultimo_pendiente) {
-      const montoPendiente = Number(resumenConteo.ultimo_pendiente.monto_efectivo);
-      if (Number.isFinite(montoPendiente) && montoPendiente >= 0) {
-        efectivo = montoPendiente;
-        setEfectivoDeclarado(montoPendiente.toFixed(2));
-      }
-    }
-    if ((!Number.isFinite(efectivo) || efectivo < 0) && resumenConteo?.ultimo_hoy) {
-      const montoUltimoHoy = Number(resumenConteo.ultimo_hoy.monto_efectivo);
-      if (Number.isFinite(montoUltimoHoy) && montoUltimoHoy >= 0) {
-        efectivo = montoUltimoHoy;
-        setEfectivoDeclarado(montoUltimoHoy.toFixed(2));
-      }
-    }
-    if ((!Number.isFinite(efectivo) || efectivo < 0) && resumenConteo?.cierre_hoy) {
-      const montoCierreHoy = Number(resumenConteo.cierre_hoy.efectivo_declarado);
-      if (Number.isFinite(montoCierreHoy) && montoCierreHoy >= 0) {
-        efectivo = montoCierreHoy;
-        setEfectivoDeclarado(montoCierreHoy.toFixed(2));
-      }
-    }
-    if (!Number.isFinite(efectivo) || efectivo < 0) {
-      alert("Ingrese un monto valido para efectivo declarado.");
-      return;
-    }
-    setRegistrandoCierre(true);
-    try {
-      const res = await api.post("/caja/cierre", {
-        fecha: fechaCierre,
-        efectivo_declarado: efectivo,
-        observacion: observacionCierre
-      });
-      const cierre = res?.data?.cierre || null;
-      setResultadoCierre(cierre);
-      if (Number.isFinite(Number(cierre?.efectivo_declarado))) {
-        setEfectivoDeclarado(Number(cierre.efectivo_declarado).toFixed(2));
-      }
-      efectivoEditadoRef.current = false;
-      await Promise.all([
-        cargarCaja(),
-        cargarAlertasRiesgo(),
-        cargarConteoEfectivo()
-      ]);
-      if (typeof onCierreRegistrado === "function") onCierreRegistrado();
-    } catch (error) {
-      alert(error?.response?.data?.error || "No se pudo registrar el cierre de caja.");
-    } finally {
-      setRegistrandoCierre(false);
-    }
-  };
 
   useEffect(() => {
     setPaginaMovimientos(1);
@@ -337,7 +177,7 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [fechaConsulta, paginaMovimientos, reporteTipo]);
+  }, [cargarCaja]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -349,19 +189,7 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
       clearInterval(timer);
       controller.abort();
     };
-  }, []);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    cargarConteoEfectivo(controller.signal);
-    const timer = setInterval(() => {
-      cargarConteoEfectivo(controller.signal);
-    }, 20000);
-    return () => {
-      clearInterval(timer);
-      controller.abort();
-    };
-  }, [cargarConteoEfectivo]);
+  }, [cargarAlertasRiesgo]);
 
   const movimientos = Array.isArray(reporte.movimientos) ? reporte.movimientos : [];
   const totalPaginas = Math.max(1, Number(reporte?.paginacion?.total_paginas || 1));
@@ -369,20 +197,8 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
   const pageSizeActual = Math.max(1, Number(reporte?.paginacion?.page_size || MOVIMIENTOS_PAGE_SIZE));
   const inicioIndice = (paginaActual - 1) * pageSizeActual;
   const totalGeneral = formatMoney(reporte.total_general || reporte.total || 0);
-  const chartTemporal = reporte?.graficos?.recaudacion_temporal || [];
-  const chartPeriodo = reporte?.graficos?.recaudacion_por_periodo || [];
-  const chartTopData = useMemo(
-    () => (reporte?.graficos?.top_contribuyentes || []).map((r) => ({
-      label: `${r.codigo_municipal} - ${r.nombre_completo}`,
-      total: r.total
-    })),
-    [reporte?.graficos?.top_contribuyentes]
-  );
   const alertasResumen = alertasRiesgo?.resumen || {};
   const alertasDetalle = alertasRiesgo?.alertas || {};
-  const fechaCierreActual = todayIso();
-  const conteoPendienteHoy = resumenConteo?.ultimo_pendiente || null;
-  const ultimoConteoHoy = resumenConteo?.ultimo_hoy || null;
   const periodoLabel = reporteTipo === "semanal"
     ? "Semanal"
     : reporteTipo === "mensual"
@@ -390,6 +206,14 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
       : reporteTipo === "anual"
         ? "Anual"
         : "Diario";
+  const graficosCaja = reporte?.graficos || {};
+  const recaudacionTemporal = Array.isArray(graficosCaja.recaudacion_temporal) ? graficosCaja.recaudacion_temporal : [];
+  const topContribuyentes = Array.isArray(graficosCaja.top_contribuyentes) ? graficosCaja.top_contribuyentes : [];
+  const recaudacionPeriodo = Array.isArray(graficosCaja.recaudacion_por_periodo) ? graficosCaja.recaudacion_por_periodo : [];
+  const maxTemporal = Math.max(1, ...recaudacionTemporal.map((r) => Number(r?.total || 0)));
+  const maxTop = Math.max(1, ...topContribuyentes.map((r) => Number(r?.total || 0)));
+  const maxPeriodo = Math.max(1, ...recaudacionPeriodo.map((r) => Number(r?.total || 0)));
+
   const yearActual = Number(todayIso().slice(0, 4));
   const yearsDisponibles = useMemo(() => {
     const years = [];
@@ -431,15 +255,21 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
     setFechaConsulta(value);
   }, [reporteTipo]);
 
+  const esCaja = origen === "caja";
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : { backgroundColor: "#fff" };
+  const tituloModal = esCaja ? "Reporte de Caja" : "Reporte de Ventanilla";
+  const subtituloImpresion = esCaja
+    ? "REPORTE DETALLADO DE INGRESOS - CAJA"
+    : "REPORTE DETALLADO DE INGRESOS - VENTANILLA";
+  const colorTotal = esCaja ? "text-success" : "text-primary";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
       <div className="modal-dialog modal-xl">
         <div className="modal-content" style={modalStyle}>
-          <div className="modal-header">
-            <h5 className="modal-title"><FaMoneyBillWave className="me-2" /> Reporte de Cobranza</h5>
-            <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
+          <div className={`modal-header ${esCaja ? "bg-success text-white" : "bg-primary text-white"}`}>
+            <h5 className="modal-title"><FaMoneyBillWave className="me-2" /> {tituloModal}</h5>
+            <button type="button" className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
 
           <div className="modal-body">
@@ -478,81 +308,9 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
                   />
                 )}
               </div>
-              <div className="small text-muted">
-                Cierre permitido solo para hoy: <strong>{fechaCierreActual}</strong>
-              </div>
               <div className="ms-auto d-flex flex-column align-items-end">
-                <div className="fs-5 fw-bold text-primary">Total Caja: S/. {totalGeneral}</div>
+                <div className={`fs-5 fw-bold ${colorTotal}`}>Total Caja: S/. {totalGeneral}</div>
               </div>
-            </div>
-
-            <div className="border rounded p-3 mb-3 no-print">
-              <div className="fw-bold mb-2">Cierre de caja</div>
-              <div className="d-flex flex-wrap gap-2 align-items-end">
-                <div>
-                  <label className="form-label small mb-1">Efectivo declarado</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    value={efectivoDeclarado}
-                    onChange={(e) => {
-                      efectivoEditadoRef.current = true;
-                      setEfectivoDeclarado(e.target.value);
-                    }}
-                    placeholder=""
-                  />
-                </div>
-                <div className="flex-grow-1">
-                  <label className="form-label small mb-1">Observacion (opcional)</label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    value={observacionCierre}
-                    onChange={(e) => setObservacionCierre(e.target.value)}
-                    placeholder="Detalle de cierre"
-                  />
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-outline-primary"
-                  onClick={registrarCierre}
-                  disabled={registrandoCierre || cargando}
-                >
-                  {registrandoCierre ? "Registrando..." : "Registrar cierre definitivo"}
-                </button>
-              </div>
-              <div className="small mt-2">
-                {cargandoConteo && <span className="text-muted">Consultando conteo de efectivo enviado desde caja...</span>}
-                {!cargandoConteo && conteoPendienteHoy && (
-                  <span className="text-info">
-                    Conteo pendiente para cierre definitivo: S/. {formatMoney(conteoPendienteHoy?.monto_efectivo)} ({formatFechaHoraLocal(conteoPendienteHoy?.creado_en) || "sin fecha"})
-                  </span>
-                )}
-                {!cargandoConteo && !conteoPendienteHoy && ultimoConteoHoy && (
-                  <span className="text-success">
-                    Ultimo conteo de hoy: S/. {formatMoney(ultimoConteoHoy?.monto_efectivo)} ({formatFechaHoraLocal(ultimoConteoHoy?.creado_en) || "sin fecha"}) - estado {String(ultimoConteoHoy?.estado || "").toUpperCase() || "N/D"}.
-                  </span>
-                )}
-                {!cargandoConteo && !conteoPendienteHoy && !ultimoConteoHoy && (
-                  <span className="text-muted">No hay conteo de efectivo registrado para hoy.</span>
-                )}
-              </div>
-              {resultadoCierre && (
-                <div className={`mt-3 alert ${resultadoCierre.alerta_desviacion ? "alert-danger" : "alert-success"} mb-0`}>
-                  <div className="fw-bold">Ultimo cierre registrado (ID {resultadoCierre.id_cierre})</div>
-                  <div>
-                    Sistema: S/. {formatMoney(resultadoCierre.total_sistema)} | Declarado: S/. {formatMoney(resultadoCierre.efectivo_declarado)} | Desviacion: S/. {formatMoney(resultadoCierre.desviacion)}
-                  </div>
-                  <div>
-                    Umbral alerta: S/. {formatMoney(resultadoCierre.umbral_alerta)} | Estado: {resultadoCierre.alerta_desviacion ? "ALERTA" : "OK"}
-                  </div>
-                  {Number(resultadoCierre?.conteos_aplicados || 0) > 0 && (
-                    <div>
-                      Conteo aplicado: {Number(resultadoCierre?.conteos_aplicados || 0)} registro(s) pendientes marcados.
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
 
             <div className="border rounded p-3 mb-3 no-print">
@@ -590,6 +348,78 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
               )}
             </div>
 
+            <div className="row g-3 mb-3 no-print">
+              <div className="col-12 col-lg-4">
+                <div className="border rounded p-3 h-100">
+                  <div className="fw-bold mb-2">Recaudacion mensual</div>
+                  {recaudacionTemporal.length === 0 ? (
+                    <div className="small text-muted">Sin datos para el periodo.</div>
+                  ) : (
+                    recaudacionTemporal.slice(0, 8).map((r, idx) => {
+                      const total = Number(r?.total || 0);
+                      return (
+                        <div key={`temp-${idx}`} className="mb-2">
+                          <div className="d-flex justify-content-between small">
+                            <span>{r?.etiqueta || "-"}</span>
+                            <span>S/. {formatMoney(total)}</span>
+                          </div>
+                          <div className="progress" style={{ height: "8px" }}>
+                            <div className="progress-bar" style={{ width: `${Math.max(2, Math.round((total / maxTemporal) * 100))}%` }}></div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+              <div className="col-12 col-lg-4">
+                <div className="border rounded p-3 h-100">
+                  <div className="fw-bold mb-2">Top contribuyentes recaudados</div>
+                  {topContribuyentes.length === 0 ? (
+                    <div className="small text-muted">Sin datos para el periodo.</div>
+                  ) : (
+                    topContribuyentes.slice(0, 8).map((r, idx) => {
+                      const total = Number(r?.total || 0);
+                      return (
+                        <div key={`top-${idx}`} className="mb-2">
+                          <div className="d-flex justify-content-between small">
+                            <span className="text-truncate" style={{ maxWidth: "180px" }}>{r?.nombre_completo || r?.codigo_municipal || "-"}</span>
+                            <span>S/. {formatMoney(total)}</span>
+                          </div>
+                          <div className="progress" style={{ height: "8px" }}>
+                            <div className="progress-bar bg-success" style={{ width: `${Math.max(2, Math.round((total / maxTop) * 100))}%` }}></div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+              <div className="col-12 col-lg-4">
+                <div className="border rounded p-3 h-100">
+                  <div className="fw-bold mb-2">Recaudacion por periodo tributario</div>
+                  {recaudacionPeriodo.length === 0 ? (
+                    <div className="small text-muted">Sin datos para el periodo.</div>
+                  ) : (
+                    recaudacionPeriodo.slice(0, 8).map((r, idx) => {
+                      const total = Number(r?.total || 0);
+                      return (
+                        <div key={`periodo-${idx}`} className="mb-2">
+                          <div className="d-flex justify-content-between small">
+                            <span>{r?.periodo || "-"}</span>
+                            <span>S/. {formatMoney(total)}</span>
+                          </div>
+                          <div className="progress" style={{ height: "8px" }}>
+                            <div className="progress-bar bg-warning" style={{ width: `${Math.max(2, Math.round((total / maxPeriodo) * 100))}%` }}></div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div ref={componentRef} className="p-3" style={{ backgroundColor: "#fff", color: "#000" }}>
               <div className="row mb-3 border-bottom border-2 border-dark pb-2">
                 <div className="col-2 text-center d-flex align-items-center justify-content-center">
@@ -597,31 +427,13 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
                 </div>
                 <div className="col-7 text-center">
                   <h4 className="fw-bold m-0">MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO</h4>
-                  <h5 className="m-0">REPORTE DETALLADO DE INGRESOS DE CAJA</h5>
+                  <h5 className="m-0">{subtituloImpresion}</h5>
                   <p className="small m-0">Area de Administracion Tributaria - Agua Potable</p>
                 </div>
                 <div className="col-3 text-end small">
                   <div><strong>Fecha:</strong> {fechaConsulta}</div>
                   <div><strong>Periodo:</strong> {periodoLabel}</div>
                   <div><strong>Movimientos:</strong> {reporte?.cantidad_movimientos || 0}</div>
-                </div>
-              </div>
-
-              <div className="row g-3 mb-3">
-                <div className="col-md-6">
-                  <ChartCard title={`Recaudacion ${periodoLabel.toLowerCase()}`} data={chartTemporal} labelKey="etiqueta" valueKey="total" color="#0d6efd" />
-                </div>
-                <div className="col-md-6">
-                  <ChartCard
-                    title="Top contribuyentes recaudados"
-                    data={chartTopData}
-                    labelKey="label"
-                    valueKey="total"
-                    color="#198754"
-                  />
-                </div>
-                <div className="col-12">
-                  <ChartCard title="Recaudacion por periodo tributario" data={chartPeriodo} labelKey="periodo" valueKey="total" color="#fd7e14" />
                 </div>
               </div>
 
@@ -661,7 +473,7 @@ const ModalCierre = ({ cerrarModal, darkMode, onCierreRegistrado }) => {
                 <tfoot>
                   <tr className="table-light border-top border-dark fw-bold" style={{ fontSize: "14px" }}>
                     <td colSpan="7" className="text-end pe-3">TOTAL CAJA:</td>
-                    <td className="text-end text-primary">S/. {totalGeneral}</td>
+                    <td className={`text-end ${esCaja ? "text-success" : "text-primary"}`}>S/. {totalGeneral}</td>
                   </tr>
                 </tfoot>
               </table>

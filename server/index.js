@@ -238,7 +238,15 @@ const AUTO_DEUDA_BASE = {
   limpieza: parseMonto(process.env.AUTO_DEUDA_LIMPIEZA, 3.5),
   admin: parseMonto(process.env.AUTO_DEUDA_ADMIN, 0.5)
 };
-const AUDIT_REDACT_KEYS = new Set(["password", "token", "archivo"]);
+const AUDIT_REDACT_KEYS = new Set([
+  "password",
+  "password_actual",
+  "password_nuevo",
+  "password_confirmacion",
+  "password_visible",
+  "token",
+  "archivo"
+]);
 const ESTADOS_CONEXION = {
   CON_CONEXION: "CON_CONEXION",
   SIN_CONEXION: "SIN_CONEXION"
@@ -944,6 +952,7 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/exportar\/auditoria$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/exportar\/padron$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/exportar\/verificacion-campo$/, minRole: "ADMIN_SEC" },
+  { methods: ["GET"], pattern: /^\/exportar\/arbitrios\/\d+$/, minRole: "CONSULTA" },
 
   { methods: ["POST", "PUT"], pattern: /^\/calles(\/|$)/, minRole: "ADMIN_SEC" },
   { methods: ["DELETE"], pattern: /^\/calles(\/|$)/, minRole: "ADMIN" },
@@ -963,7 +972,7 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/caja\/conteo-efectivo\/resumen$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/cierre$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/alertas-riesgo$/, minRole: "CAJERO" },
-  { methods: ["GET"], pattern: /^\/caja\/reporte\/excel$/, minRole: "ADMIN_SEC" },
+  { methods: ["GET"], pattern: /^\/caja\/reporte\/excel$/, minRole: "CAJERO" },
 
   { methods: ["POST"], pattern: /^\/pagos$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/impresiones\/generar-codigo$/, minRole: "CAJERO" },
@@ -1833,6 +1842,10 @@ const ensureDataIntegrityGuards = async (client) => {
 };
 
 const ensurePerformanceIndexes = async (client) => {
+  await client.query(`
+    ALTER TABLE usuarios_sistema
+    ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL
+  `);
   await ensureCodigosImpresionTable(client);
   await ensureOrdenesCobroTable(client);
   await ensureCajaCierresTable(client);
@@ -4774,6 +4787,9 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
 });
 
 app.post("/caja/ordenes-cobro", async (req, res) => {
+  return res.status(410).json({
+    error: "Emisión de orden de cobro desactivada. Caja ahora realiza cobro directo por meses."
+  });
   const client = await pool.connect();
   try {
     const idContribuyente = parsePositiveInt(req.body?.id_contribuyente, 0);
@@ -4991,6 +5007,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
 });
 
 app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
+  return res.json([]);
   try {
     const idContribuyente = parsePositiveInt(req.query?.id_contribuyente, 0);
     const codigoMunicipal = normalizeLimitedText(req.query?.codigo_municipal, 32);
@@ -5087,6 +5104,11 @@ app.get("/caja/ordenes-cobro", async (req, res) => {
 });
 
 app.get("/caja/ordenes-cobro/resumen-pendientes", async (req, res) => {
+  return res.json({
+    total_ordenes: 0,
+    total_monto: 0,
+    total_contribuyentes: 0
+  });
   try {
     const data = await pool.query(`
       SELECT
@@ -5328,7 +5350,7 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
 
     return res.json({
       mensaje: cerrarCaja
-        ? "Conteo registrado y caja cerrada para hoy. Pendiente de cierre definitivo en reporte."
+        ? "Conteo registrado y caja cerrada para hoy."
         : "Conteo de efectivo enviado.",
       conteo: {
         id_conteo: Number(row.id_conteo || 0),
@@ -5367,6 +5389,9 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
 });
 
 app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
+  return res.status(410).json({
+    error: "Cobro por orden desactivado. Use cobro directo desde Caja Municipal."
+  });
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
@@ -5560,6 +5585,9 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
 });
 
 app.post("/caja/ordenes-cobro/:id/anular", async (req, res) => {
+  return res.status(410).json({
+    error: "Anulación de orden desactivada. El flujo de ordenes de cobro fue retirado."
+  });
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
@@ -5678,15 +5706,7 @@ app.post("/pagos", async (req, res) => {
         error: "Caja cerrada para hoy. No se permiten más cobros en agua hasta el siguiente día."
       });
     }
-    if (!ALLOW_DIRECT_PAYMENTS) {
-      return res.status(403).json({
-        error: "Pago directo deshabilitado. Use ordenes de cobro pendientes desde caja."
-      });
-    }
-    if (!hasMinRole(req.user?.rol, "ADMIN")) {
-      return res.status(403).json({ error: "Solo el administrador principal puede registrar pagos directos." });
-    }
-
+    const idContribuyenteSolicitado = parsePositiveInt(req.body?.id_contribuyente, 0);
     const pagosSolicitados = normalizePagoInputs(req.body);
     if (pagosSolicitados.length === 0) {
       return res.status(400).json({ error: "Formato de pago inválido o sin recibos válidos." });
@@ -5704,8 +5724,10 @@ app.post("/pagos", async (req, res) => {
       SELECT
         r.id_recibo,
         r.total_pagar,
-        COALESCE(pp.total_pagado, 0) AS total_pagado
+        COALESCE(pp.total_pagado, 0) AS total_pagado,
+        p.id_contribuyente
       FROM recibos r
+      LEFT JOIN predios p ON p.id_predio = r.id_predio
       LEFT JOIN pagos_prev pp ON pp.id_recibo = r.id_recibo
       WHERE r.id_recibo = ANY($1::int[])
       FOR UPDATE OF r
@@ -5718,7 +5740,8 @@ app.post("/pagos", async (req, res) => {
     const recibosMap = new Map(recibosRows.rows.map((r) => [Number(r.id_recibo), {
       id_recibo: Number(r.id_recibo),
       total_pagar: parseMonto(r.total_pagar, 0),
-      total_pagado: parseMonto(r.total_pagado, 0)
+      total_pagado: parseMonto(r.total_pagado, 0),
+      id_contribuyente: parsePositiveInt(r.id_contribuyente, 0)
     }]));
 
     const pagosAplicados = [];
@@ -5727,6 +5750,12 @@ app.post("/pagos", async (req, res) => {
       if (!recibo) {
         await client.query("ROLLBACK");
         return res.status(404).json({ error: `Recibo ${pagoReq.id_recibo} no encontrado.` });
+      }
+      if (idContribuyenteSolicitado > 0 && Number(recibo.id_contribuyente) !== idContribuyenteSolicitado) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `El recibo ${recibo.id_recibo} no pertenece al contribuyente seleccionado.`
+        });
       }
 
       const saldoPrevio = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado, 0));
@@ -5756,6 +5785,7 @@ app.post("/pagos", async (req, res) => {
       const saldo = roundMonto2(Math.max(recibo.total_pagar - totalPagadoNuevo, 0));
       pagosAplicados.push({
         id_recibo: recibo.id_recibo,
+        id_contribuyente: recibo.id_contribuyente,
         monto_pagado: monto,
         estado: nuevoEstado,
         total_pagado: totalPagadoNuevo,
@@ -5767,8 +5797,16 @@ app.post("/pagos", async (req, res) => {
     await client.query("COMMIT");
     invalidateContribuyentesCache();
     const totalAplicado = roundMonto2(pagosAplicados.reduce((acc, p) => acc + p.monto_pagado, 0));
+    const contribuyentesUnicos = [...new Set(
+      pagosAplicados
+        .map((p) => parsePositiveInt(p.id_contribuyente, 0))
+        .filter((v) => v > 0)
+    )];
+    const contribuyenteEvento = idContribuyenteSolicitado > 0
+      ? idContribuyenteSolicitado
+      : (contribuyentesUnicos.length === 1 ? contribuyentesUnicos[0] : null);
     realtimeHub.broadcast("deuda", "saldo_actualizado", {
-      id_contribuyente: null,
+      id_contribuyente: contribuyenteEvento,
       total_aplicado: Number(totalAplicado || 0),
       recibos: pagosAplicados.map((p) => Number(p.id_recibo || 0))
     });
@@ -5777,7 +5815,7 @@ app.post("/pagos", async (req, res) => {
     await registrarAuditoria(
       null,
       "PAGO_DIRECTO_MANUAL",
-      `recibos=${pagosAplicados.length}; total=${totalAplicado.toFixed(2)}; ip=${ip}`,
+      `contribuyente=${idContribuyenteSolicitado || "N/A"}; recibos=${pagosAplicados.length}; total=${totalAplicado.toFixed(2)}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -6003,6 +6041,150 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     `, filtrarAnio ? [id_contribuyente, anioActual, mesActual, anio] : [id_contribuyente, anioActual, mesActual]);
     res.json(historial.rows);
   } catch (err) { res.status(500).send("Error historial"); }
+});
+
+app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
+  try {
+    const idContribuyente = parsePositiveInt(req.params?.id_contribuyente, 0);
+    if (!idContribuyente) {
+      return res.status(400).json({ error: "ID de contribuyente inválido." });
+    }
+    const anioActual = getCurrentYear();
+    const mesActual = getCurrentMonth();
+    const anioParam = String(req.query?.anio || "all").trim().toLowerCase();
+    const filtrarAnio = anioParam !== "all";
+    const anio = filtrarAnio ? Number(anioParam) : null;
+    if (filtrarAnio && (!Number.isInteger(anio) || anio <= 1900 || anio >= 9999)) {
+      return res.status(400).json({ error: "Año inválido para exportación." });
+    }
+
+    const contribuyenteRs = await pool.query(
+      `SELECT codigo_municipal, nombre_completo
+       FROM contribuyentes
+       WHERE id_contribuyente = $1
+       LIMIT 1`,
+      [idContribuyente]
+    );
+    const contribuyente = contribuyenteRs.rows[0];
+    if (!contribuyente) {
+      return res.status(404).json({ error: "Contribuyente no encontrado." });
+    }
+
+    const historial = await pool.query(`
+      SELECT
+        r.id_recibo,
+        r.mes,
+        r.anio,
+        r.subtotal_agua,
+        r.subtotal_desague,
+        r.subtotal_limpieza,
+        r.subtotal_admin,
+        r.total_pagar,
+        COALESCE(p.total_pagado, 0) AS abono_mes,
+        CASE
+          WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 0
+          ELSE GREATEST(r.total_pagar - COALESCE(p.total_pagado, 0), 0)
+        END AS deuda_mes,
+        CASE
+          WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 'NO_EXIGIBLE'
+          WHEN COALESCE(p.total_pagado, 0) >= r.total_pagar THEN 'PAGADO'
+          WHEN COALESCE(p.total_pagado, 0) > 0 THEN 'PARCIAL'
+          ELSE 'PENDIENTE'
+        END AS estado
+      FROM recibos r
+      LEFT JOIN (
+        SELECT id_recibo, SUM(monto_pagado) AS total_pagado
+        FROM pagos
+        GROUP BY id_recibo
+      ) p ON p.id_recibo = r.id_recibo
+      WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
+      ${filtrarAnio ? "AND r.anio = $4" : ""}
+      ORDER BY r.anio ASC, r.mes ASC, r.id_recibo ASC
+    `, filtrarAnio ? [idContribuyente, anioActual, mesActual, anio] : [idContribuyente, anioActual, mesActual]);
+
+    const monthLabels = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+    const workbook = new ExcelJS.Workbook();
+    const wsResumen = workbook.addWorksheet("Resumen");
+    wsResumen.columns = [
+      { header: "CAMPO", key: "campo", width: 30 },
+      { header: "VALOR", key: "valor", width: 50 }
+    ];
+    wsResumen.getRow(1).font = { bold: true };
+    wsResumen.addRow({ campo: "Codigo municipal", valor: contribuyente.codigo_municipal || "" });
+    wsResumen.addRow({ campo: "Contribuyente", valor: contribuyente.nombre_completo || "" });
+    wsResumen.addRow({ campo: "Filtro año", valor: filtrarAnio ? String(anio) : "Todos" });
+    wsResumen.addRow({ campo: "Total registros", valor: Number(historial.rows.length || 0) });
+
+    const wsDetalle = workbook.addWorksheet("Arbitrios");
+    wsDetalle.columns = [
+      { header: "AÑO", key: "anio", width: 10 },
+      { header: "MES", key: "mes_label", width: 12 },
+      { header: "AGUA", key: "subtotal_agua", width: 14 },
+      { header: "DESAGUE", key: "subtotal_desague", width: 14 },
+      { header: "LIMPIEZA", key: "subtotal_limpieza", width: 14 },
+      { header: "ADMIN", key: "subtotal_admin", width: 14 },
+      { header: "DEUDA", key: "deuda_mes", width: 14 },
+      { header: "ABONO", key: "abono_mes", width: 14 },
+      { header: "ESTADO", key: "estado", width: 14 }
+    ];
+    wsDetalle.getRow(1).font = { bold: true };
+
+    let totalAgua = 0;
+    let totalDesague = 0;
+    let totalLimpieza = 0;
+    let totalAdmin = 0;
+    let totalDeuda = 0;
+    let totalAbono = 0;
+
+    historial.rows.forEach((r) => {
+      const agua = parseMonto(r.subtotal_agua, 0);
+      const desague = parseMonto(r.subtotal_desague, 0);
+      const limpieza = parseMonto(r.subtotal_limpieza, 0);
+      const admin = parseMonto(r.subtotal_admin, 0);
+      const deuda = parseMonto(r.deuda_mes, 0);
+      const abono = parseMonto(r.abono_mes, 0);
+      totalAgua += agua;
+      totalDesague += desague;
+      totalLimpieza += limpieza;
+      totalAdmin += admin;
+      totalDeuda += deuda;
+      totalAbono += abono;
+      wsDetalle.addRow({
+        anio: Number(r.anio || 0),
+        mes_label: monthLabels[Number(r.mes || 0)] || String(r.mes || "-"),
+        subtotal_agua: Number(agua.toFixed(2)),
+        subtotal_desague: Number(desague.toFixed(2)),
+        subtotal_limpieza: Number(limpieza.toFixed(2)),
+        subtotal_admin: Number(admin.toFixed(2)),
+        deuda_mes: Number(deuda.toFixed(2)),
+        abono_mes: Number(abono.toFixed(2)),
+        estado: String(r.estado || "")
+      });
+    });
+
+    const totalRow = wsDetalle.addRow({
+      anio: "",
+      mes_label: "TOTAL",
+      subtotal_agua: Number(totalAgua.toFixed(2)),
+      subtotal_desague: Number(totalDesague.toFixed(2)),
+      subtotal_limpieza: Number(totalLimpieza.toFixed(2)),
+      subtotal_admin: Number(totalAdmin.toFixed(2)),
+      deuda_mes: Number(totalDeuda.toFixed(2)),
+      abono_mes: Number(totalAbono.toFixed(2)),
+      estado: ""
+    });
+    totalRow.font = { bold: true };
+
+    const codigoSafe = String(contribuyente.codigo_municipal || `id_${idContribuyente}`).replace(/[^\w-]/g, "");
+    const filtroSafe = filtrarAnio ? String(anio) : "todos";
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename=arbitrios_${codigoSafe}_${filtroSafe}.xlsx`);
+    await workbook.xlsx.write(res);
+    return res.end();
+  } catch (err) {
+    console.error("Error exportando arbitrios:", err);
+    return res.status(500).json({ error: "Error exportando arbitrios." });
+  }
 });
 
 const TIPOS_REPORTE_CAJA = new Set(["diario", "semanal", "mensual", "anual"]);
@@ -6395,7 +6577,7 @@ app.get("/caja/reporte", async (req, res) => {
     }
     const page = Number(req.query.page || 1);
     const pageSize = Number(req.query.page_size || 200);
-    const mostrarCodigoImpresion = hasMinRole(req.user?.rol, "ADMIN");
+    const mostrarCodigoImpresion = true;
     const data = await construirReporteCaja(tipo, fecha, { page, pageSize, includeCodigoImpresion: mostrarCodigoImpresion });
     res.json(data);
   } catch (err) {
@@ -6403,7 +6585,7 @@ app.get("/caja/reporte", async (req, res) => {
   }
 });
 
-app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res) => {
+app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
   try {
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
     const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
@@ -6412,7 +6594,7 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
     if (fecha > hoy) {
       return res.status(400).json({ error: "No se permite exportar caja con fecha futura." });
     }
-    const mostrarCodigoImpresion = hasMinRole(req.user?.rol, "ADMIN");
+    const mostrarCodigoImpresion = true;
     const data = await construirReporteCaja(tipo, fecha, {
       includeAllMovimientos: true,
       includeCodigoImpresion: mostrarCodigoImpresion
@@ -6458,44 +6640,6 @@ app.get("/caja/reporte/excel", authenticateToken, requireAdmin, async (req, res)
       });
     });
 
-    const wsTemporal = workbook.addWorksheet("Grafico_Temporal");
-    wsTemporal.columns = [
-      { header: "ETIQUETA", key: "etiqueta", width: 22 },
-      { header: "TOTAL", key: "total", width: 14 }
-    ];
-    wsTemporal.getRow(1).font = { bold: true };
-    (data.graficos?.recaudacion_temporal || []).forEach((r) => {
-      wsTemporal.addRow({ etiqueta: r.etiqueta || "", total: parseFloat(r.total || 0) });
-    });
-
-    const wsTop = workbook.addWorksheet("Top_Contribuyentes");
-    wsTop.columns = [
-      { header: "CODIGO", key: "codigo_municipal", width: 16 },
-      { header: "CONTRIBUYENTE", key: "nombre_completo", width: 38 },
-      { header: "TOTAL", key: "total", width: 14 }
-    ];
-    wsTop.getRow(1).font = { bold: true };
-    (data.graficos?.top_contribuyentes || []).forEach((r) => {
-      wsTop.addRow({
-        codigo_municipal: r.codigo_municipal || "",
-        nombre_completo: r.nombre_completo || "",
-        total: parseFloat(r.total || 0)
-      });
-    });
-
-    const wsPeriodo = workbook.addWorksheet("Periodo_Tributario");
-    wsPeriodo.columns = [
-      { header: "PERIODO", key: "periodo", width: 16 },
-      { header: "TOTAL", key: "total", width: 14 }
-    ];
-    wsPeriodo.getRow(1).font = { bold: true };
-    (data.graficos?.recaudacion_por_periodo || []).forEach((r) => {
-      wsPeriodo.addRow({
-        periodo: r.periodo || "",
-        total: parseFloat(r.total || 0)
-      });
-    });
-
     const fechaSafe = String(fecha).replace(/[^\d-]/g, "");
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename=reporte_caja_${tipo}_${fechaSafe}.xlsx`);
@@ -6516,7 +6660,7 @@ app.get("/caja/diaria", async (req, res) => {
     }
     const data = await construirReporteCaja("diario", fecha, {
       includeAllMovimientos: true,
-      includeCodigoImpresion: hasMinRole(req.user?.rol, "ADMIN")
+      includeCodigoImpresion: true
     });
     res.json({
       ...data,
@@ -7664,12 +7808,13 @@ app.get("/exportar/finanzas-completo", authenticateToken, requireSuperAdmin, asy
 app.post("/auth/registro", async (req, res) => {
   try {
     const { username, password, nombre_completo } = req.body;
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const existe = await pool.query("SELECT * FROM usuarios_sistema WHERE username = $1", [username]);
     if (existe.rows.length > 0) return res.status(400).json({ error: "Usuario ya existe" });
     const passwordHash = await bcrypt.hash(password, 10);
     await pool.query(
-      "INSERT INTO usuarios_sistema (username, password, nombre_completo, rol, estado) VALUES ($1, $2, $3, 'BRIGADA', 'PENDIENTE')",
-      [username, passwordHash, nombre_completo]
+      "INSERT INTO usuarios_sistema (username, password, password_visible, nombre_completo, rol, estado) VALUES ($1, $2, $3, $4, 'BRIGADA', 'PENDIENTE')",
+      [username, passwordHash, String(password || "").slice(0, 120), nombre_completo]
     );
     res.json({ mensaje: "Solicitud enviada." });
   } catch (err) { res.status(500).send("Error registro"); }
@@ -7677,6 +7822,7 @@ app.post("/auth/registro", async (req, res) => {
 
 const handleLogin = async (req, res) => {
   try {
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     cleanupLoginSecurityMaps();
     const usernameInput = normalizeLimitedText(req.body?.username, 120);
     const password = String(req.body?.password || "");
@@ -7725,14 +7871,24 @@ const handleLogin = async (req, res) => {
 
     const datos = user.rows[0];
     const storedPassword = datos.password || "";
+    const passwordVisible = String(password || "").slice(0, 120);
     let passwordOk = false;
     if (isBcryptHash(storedPassword)) {
       passwordOk = await bcrypt.compare(password, storedPassword);
+      if (passwordOk && !String(datos.password_visible || "").trim()) {
+        await pool.query(
+          "UPDATE usuarios_sistema SET password_visible = $1 WHERE id_usuario = $2",
+          [passwordVisible, datos.id_usuario]
+        );
+      }
     } else {
       passwordOk = storedPassword === password;
       if (passwordOk) {
         const newHash = await bcrypt.hash(password, 10);
-        await pool.query("UPDATE usuarios_sistema SET password = $1 WHERE id_usuario = $2", [newHash, datos.id_usuario]);
+        await pool.query(
+          "UPDATE usuarios_sistema SET password = $1, password_visible = $2 WHERE id_usuario = $3",
+          [newHash, passwordVisible, datos.id_usuario]
+        );
       }
     }
 
@@ -7761,10 +7917,72 @@ const handleLogin = async (req, res) => {
 app.post("/auth/login", handleLogin);
 app.post("/login", handleLogin);
 
+app.post("/auth/cambiar-password", async (req, res) => {
+  try {
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
+    const usernameInput = normalizeLimitedText(req.body?.username, 120);
+    const passwordActual = String(req.body?.password_actual || "");
+    const passwordNuevo = String(req.body?.password_nuevo || "");
+    if (!usernameInput || !passwordNuevo) {
+      return res.status(400).json({ error: "Usuario y nueva contraseña son obligatorios." });
+    }
+    if (passwordNuevo.length < 8 || passwordNuevo.length > 120) {
+      return res.status(400).json({ error: "Password invalido. Debe tener entre 8 y 120 caracteres." });
+    }
+
+    const user = await pool.query(
+      "SELECT id_usuario, username, nombre_completo, rol, estado, password FROM usuarios_sistema WHERE username = $1 LIMIT 1",
+      [usernameInput]
+    );
+    if (!user.rows[0]) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+    const datos = user.rows[0];
+    if (String(datos.estado || "").toUpperCase() !== "ACTIVO") {
+      return res.status(403).json({ error: "Cuenta no activa." });
+    }
+
+    if (passwordActual) {
+      const storedPassword = String(datos.password || "");
+      let passwordOk = false;
+      if (isBcryptHash(storedPassword)) {
+        passwordOk = await bcrypt.compare(passwordActual, storedPassword);
+      } else {
+        passwordOk = storedPassword === passwordActual;
+      }
+      if (!passwordOk) {
+        return res.status(400).json({ error: "Password actual incorrecta." });
+      }
+      if (passwordActual === passwordNuevo) {
+        return res.status(400).json({ error: "La nueva password debe ser diferente a la actual." });
+      }
+    }
+
+    const newHash = await bcrypt.hash(passwordNuevo, 10);
+    await pool.query(
+      "UPDATE usuarios_sistema SET password = $1, password_visible = $2 WHERE id_usuario = $3",
+      [newHash, String(passwordNuevo).slice(0, 120), Number(datos.id_usuario)]
+    );
+
+    const ip = getRequestIp(req);
+    await registrarAuditoria(
+      null,
+      "AUTH_PASSWORD_CAMBIO",
+      `id_usuario=${Number(datos.id_usuario)}; username=${datos.username}; via=${passwordActual ? "CON_PASSWORD_ACTUAL" : "SIN_PASSWORD_ACTUAL"}; ip=${ip}`,
+      datos.username || "SISTEMA"
+    );
+
+    return res.json({ mensaje: "Password actualizada correctamente." });
+  } catch (err) {
+    return res.status(500).json({ error: "Error cambiando password." });
+  }
+});
+
 
 app.get("/admin/usuarios", authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
-    const usuarios = await pool.query("SELECT id_usuario, username, nombre_completo, rol, estado FROM usuarios_sistema ORDER BY estado DESC");
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
+    const usuarios = await pool.query("SELECT id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible FROM usuarios_sistema ORDER BY estado DESC");
     const rows = usuarios.rows.map((u) => {
       const rol = normalizeRole(u.rol);
       return {
@@ -7779,6 +7997,7 @@ app.get("/admin/usuarios", authenticateToken, requireSuperAdmin, async (req, res
 
 app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const { id } = req.params;
     const targetId = Number(id);
     if (!Number.isInteger(targetId) || targetId <= 0) {
@@ -7818,6 +8037,8 @@ app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req,
       const nuevoPasswordHash = await bcrypt.hash(nuevaPassword, 10);
       updateParts.push(`password = $${paramIndex++}`);
       params.push(nuevoPasswordHash);
+      updateParts.push(`password_visible = $${paramIndex++}`);
+      params.push(String(nuevaPassword).slice(0, 120));
     }
 
     if (updateParts.length === 0) {
@@ -7838,7 +8059,7 @@ app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req,
       `UPDATE usuarios_sistema
        SET ${updateParts.join(", ")}
        WHERE id_usuario = $${paramIndex}
-       RETURNING id_usuario, username, nombre_completo, rol, estado`,
+       RETURNING id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible`,
       params
     );
     if (updated.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });

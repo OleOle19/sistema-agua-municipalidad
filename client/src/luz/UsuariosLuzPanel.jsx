@@ -314,16 +314,17 @@ function UsuariosLuzPanel({ visible, usuarioActivo, canManageUsers, onFlash }) {
                 <th>Nombre</th>
                 <th>Rol</th>
                 <th>Estado</th>
+                <th>Password actual</th>
                 <th>Nueva password</th>
                 <th className="text-center">Accion</th>
               </tr>
             </thead>
             <tbody>
               {cargando && usuarios.length === 0 && (
-                <tr><td colSpan="6" className="text-center py-3">Cargando...</td></tr>
+                <tr><td colSpan="7" className="text-center py-3">Cargando...</td></tr>
               )}
               {!cargando && usuarios.length === 0 && (
-                <tr><td colSpan="6" className="text-center py-3 text-muted">Sin usuarios registrados.</td></tr>
+                <tr><td colSpan="7" className="text-center py-3 text-muted">Sin usuarios registrados.</td></tr>
               )}
               {usuarios.map((u) => {
                 const edit = ediciones[u.id_usuario] || { rol: u.rol, estado: u.estado, password: "" };
@@ -360,6 +361,9 @@ function UsuariosLuzPanel({ visible, usuarioActivo, canManageUsers, onFlash }) {
                           <option key={op.value} value={op.value}>{op.label}</option>
                         ))}
                       </select>
+                    </td>
+                    <td style={{ minWidth: "170px" }}>
+                      <code>{String(u.password_visible || "(no disponible)")}</code>
                     </td>
                     <td style={{ minWidth: "220px" }}>
                       <input

@@ -555,6 +555,19 @@ function LuzApp({ onBackToSelector }) {
   }, [cargarOrdenesPendientes, permisos.canCaja, soloOrdenesDelSeleccionado, selectedSuministroId, tab, usuarioSistema]);
 
   useEffect(() => {
+    if (!usuarioSistema || tab !== "caja" || !permisos.canCaja) return undefined;
+    const timer = setInterval(() => {
+      cargarOrdenesPendientes();
+      cargarReporte();
+      if (selectedSuministroId) {
+        cargarHistorial(selectedSuministroId);
+        cargarPendientes(selectedSuministroId);
+      }
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [cargarHistorial, cargarOrdenesPendientes, cargarPendientes, cargarReporte, permisos.canCaja, selectedSuministroId, tab, usuarioSistema]);
+
+  useEffect(() => {
     if (!usuarioSistema || tab !== "auditoria") return;
     cargarAuditoria();
   }, [cargarAuditoria, tab, usuarioSistema]);
@@ -780,22 +793,6 @@ function LuzApp({ onBackToSelector }) {
       ]);
     } catch (err) {
       handleApiError(err, "No se pudo cobrar orden.");
-    } finally {
-      setOrdenEnProceso(0);
-    }
-  };
-
-  const anularOrden = async (idOrden) => {
-    if (!permisos.canEmitirRecibo) return;
-    const motivo = window.prompt("Motivo de anulacion (min 5 caracteres):", "");
-    if (!motivo) return;
-    setOrdenEnProceso(idOrden);
-    try {
-      const res = await luzApi.post(`/caja/ordenes-cobro/${idOrden}/anular`, { motivo });
-      showFlash("success", res.data?.mensaje || "Orden anulada.");
-      await cargarOrdenesPendientes();
-    } catch (err) {
-      handleApiError(err, "No se pudo anular orden.");
     } finally {
       setOrdenEnProceso(0);
     }
@@ -1398,7 +1395,7 @@ function LuzApp({ onBackToSelector }) {
                       value={historialAnio}
                       onChange={(e) => setHistorialAnio(e.target.value)}
                     >
-                      <option value="all">Todos los anios</option>
+                      <option value="all">Todos los años</option>
                       {yearsHistorial.map((y) => (
                         <option key={y} value={y}>{y}</option>
                       ))}
@@ -1588,13 +1585,6 @@ function LuzApp({ onBackToSelector }) {
                                   onClick={() => cobrarOrden(ord.id_orden)}
                                 >
                                   Cobrar
-                                </button>
-                                <button
-                                  className="btn btn-outline-danger"
-                                  disabled={!permisos.canEmitirRecibo || ordenEnProceso === ord.id_orden}
-                                  onClick={() => anularOrden(ord.id_orden)}
-                                >
-                                  Anular
                                 </button>
                               </div>
                             </td>

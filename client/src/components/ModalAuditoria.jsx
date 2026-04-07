@@ -7,7 +7,8 @@ const ACTION_LABELS = {
   ORDEN_COBRO_EMITIDA: "Orden de cobro emitida",
   ORDEN_COBRO_ANULADA: "Orden de cobro anulada",
   CAJA_CIERRE_REGISTRADO: "Cierre de caja registrado",
-  COBRO_DIRECTO_REGISTRADO: "Cobro directo registrado"
+  COBRO_DIRECTO_REGISTRADO: "Cobro directo registrado",
+  AUTH_PASSWORD_CAMBIO: "Cambio de password"
 };
 
 const SIMPLE_ROUTE_RULES = [

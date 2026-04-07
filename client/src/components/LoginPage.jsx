@@ -1,6 +1,8 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import api from "../api";
 import { FaUserShield, FaKey } from "react-icons/fa";
+
+const MIN_PASSWORD_LEN = 8;
 
 const LoginPage = ({
   onLoginSuccess,
@@ -10,18 +12,45 @@ const LoginPage = ({
   subtitulo = "Municipalidad Distrital de Pueblo Nuevo",
   loginPath = "/auth/login",
   registerPath = "/auth/registro",
+  changePasswordPath = "/auth/cambiar-password",
   onBackToSelector = null
 }) => {
-  const [modo, setModo] = useState("LOGIN"); // 'LOGIN' o 'REGISTRO'
-  const [form, setForm] = useState({ username: "", password: "", nombre_completo: "" });
+  const [modo, setModo] = useState("LOGIN"); // LOGIN | REGISTRO | CAMBIO
+  const [form, setForm] = useState({
+    username: "",
+    password: "",
+    nombre_completo: "",
+    password_nuevo: "",
+    password_confirmacion: ""
+  });
   const [error, setError] = useState("");
   const [mensaje, setMensaje] = useState("");
 
   const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
+  const limpiarMensajes = () => {
+    setError("");
+    setMensaje("");
+  };
+
+  const limpiarFormulario = () => {
+    setForm({
+      username: "",
+      password: "",
+      nombre_completo: "",
+      password_nuevo: "",
+      password_confirmacion: ""
+    });
+  };
+
+  const switchModo = (nextModo) => {
+    setModo(nextModo);
+    limpiarMensajes();
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError(""); setMensaje("");
+    limpiarMensajes();
 
     try {
       if (modo === "LOGIN") {
@@ -32,14 +61,53 @@ const LoginPage = ({
         if (res.data?.token) {
           localStorage.setItem(tokenStorageKey, res.data.token);
         }
-        // Si el login es exitoso, pasamos los datos del usuario al componente Padre (App)
         onLoginSuccess(res.data);
-      } else {
-        const res = await apiClient.post(registerPath, form);
-        setMensaje(res.data.mensaje);
-        setModo("LOGIN"); // Volver al login para que espere
-        setForm({ username: "", password: "", nombre_completo: "" });
+        return;
       }
+
+      if (modo === "REGISTRO") {
+        const res = await apiClient.post(registerPath, {
+          username: form.username,
+          password: form.password,
+          nombre_completo: form.nombre_completo
+        });
+        setMensaje(res.data?.mensaje || "Solicitud enviada.");
+        setModo("LOGIN");
+        setError("");
+        limpiarFormulario();
+        return;
+      }
+
+      const username = String(form.username || "").trim();
+      const passwordNuevo = String(form.password_nuevo || "");
+      const passwordConfirmacion = String(form.password_confirmacion || "");
+      if (!username || !passwordNuevo || !passwordConfirmacion) {
+        setError("Complete todos los campos para cambiar la contraseña.");
+        return;
+      }
+      if (passwordNuevo.length < MIN_PASSWORD_LEN) {
+        setError(`La nueva contraseña debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
+        return;
+      }
+      if (passwordNuevo !== passwordConfirmacion) {
+        setError("La confirmación de la nueva contraseña no coincide.");
+        return;
+      }
+
+      await apiClient.post(changePasswordPath, {
+        username,
+        password_nuevo: passwordNuevo
+      });
+
+      setMensaje("Contraseña actualizada. Ya puede iniciar sesión.");
+      setModo("LOGIN");
+      setError("");
+      setForm((prev) => ({
+        ...prev,
+        password: "",
+        password_nuevo: "",
+        password_confirmacion: ""
+      }));
     } catch (err) {
       setError(err.response?.data?.error || "Error de conexión");
     }
@@ -47,11 +115,11 @@ const LoginPage = ({
 
   return (
     <div className="d-flex justify-content-center align-items-center vh-100 bg-light">
-      <div className="card shadow-lg p-4" style={{ width: "400px" }}>
+      <div className="card shadow-lg p-4" style={{ width: "420px" }}>
         {typeof onBackToSelector === "function" && (
           <div className="d-flex justify-content-end mb-2">
             <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onBackToSelector}>
-              Cambiar modulo
+              Cambiar módulo
             </button>
           </div>
         )}
@@ -69,37 +137,104 @@ const LoginPage = ({
         <form onSubmit={handleSubmit}>
           {modo === "REGISTRO" && (
             <div className="mb-3">
-              <label className="form-label">Nombre Completo</label>
+              <label className="form-label">Nombre completo</label>
               <input type="text" className="form-control" name="nombre_completo" value={form.nombre_completo} onChange={handleChange} required />
             </div>
           )}
-          
+
           <div className="mb-3">
             <label className="form-label">Usuario</label>
             <input type="text" className="form-control" name="username" value={form.username} onChange={handleChange} required />
           </div>
-          
-          <div className="mb-3">
-            <label className="form-label">Contraseña</label>
-            <div className="input-group">
-              <span className="input-group-text"><FaKey/></span>
-              <input type="password" className="form-control" name="password" value={form.password} onChange={handleChange} required />
+
+          {modo === "LOGIN" && (
+            <div className="mb-3">
+              <label className="form-label">Contraseña</label>
+              <div className="input-group">
+                <span className="input-group-text"><FaKey /></span>
+                <input type="password" className="form-control" name="password" value={form.password} onChange={handleChange} required />
+              </div>
             </div>
-          </div>
+          )}
+
+          {modo === "REGISTRO" && (
+            <div className="mb-3">
+              <label className="form-label">Contraseña inicial</label>
+              <div className="input-group">
+                <span className="input-group-text"><FaKey /></span>
+                <input type="password" className="form-control" name="password" value={form.password} onChange={handleChange} required />
+              </div>
+              <div className="form-text">Mínimo {MIN_PASSWORD_LEN} caracteres.</div>
+            </div>
+          )}
+
+          {modo === "CAMBIO" && (
+            <>
+              <div className="alert alert-warning small py-2">
+                Por seguridad operativa, el cambio se realiza con usuario + nueva contraseña.
+              </div>
+              <div className="mb-3">
+                <label className="form-label">Nueva contraseña</label>
+                <div className="input-group">
+                  <span className="input-group-text"><FaKey /></span>
+                  <input
+                    type="password"
+                    className="form-control"
+                    name="password_nuevo"
+                    value={form.password_nuevo}
+                    onChange={handleChange}
+                    required
+                  />
+                </div>
+                <div className="form-text">Mínimo {MIN_PASSWORD_LEN} caracteres.</div>
+              </div>
+              <div className="mb-3">
+                <label className="form-label">Confirmar nueva contraseña</label>
+                <div className="input-group">
+                  <span className="input-group-text"><FaKey /></span>
+                  <input
+                    type="password"
+                    className="form-control"
+                    name="password_confirmacion"
+                    value={form.password_confirmacion}
+                    onChange={handleChange}
+                    required
+                  />
+                </div>
+              </div>
+            </>
+          )}
 
           <button type="submit" className="btn btn-primary w-100 py-2 fw-bold shadow-sm">
-            {modo === "LOGIN" ? "INGRESAR AL SISTEMA" : "ENVIAR SOLICITUD"}
+            {modo === "LOGIN" ? "INGRESAR AL SISTEMA" : modo === "REGISTRO" ? "ENVIAR SOLICITUD" : "CAMBIAR CONTRASEÑA"}
           </button>
         </form>
 
         <div className="text-center mt-3 pt-3 border-top">
           {modo === "LOGIN" ? (
             <small>
-              ¿No tienes cuenta? <a href="#" onClick={(e) => {e.preventDefault(); setModo("REGISTRO"); setError("");}}>Solicitar acceso</a>
+              ¿No tienes cuenta?{" "}
+              <a href="#" onClick={(e) => { e.preventDefault(); switchModo("REGISTRO"); }}>
+                Solicitar acceso
+              </a>
+              {" | "}
+              <a href="#" onClick={(e) => { e.preventDefault(); switchModo("CAMBIO"); }}>
+                Cambiar contraseña
+              </a>
+            </small>
+          ) : modo === "REGISTRO" ? (
+            <small>
+              ¿Ya tienes cuenta?{" "}
+              <a href="#" onClick={(e) => { e.preventDefault(); switchModo("LOGIN"); }}>
+                Iniciar sesión
+              </a>
             </small>
           ) : (
-             <small>
-              ¿Ya tienes cuenta? <a href="#" onClick={(e) => {e.preventDefault(); setModo("LOGIN"); setError("");}}>Iniciar Sesión</a>
+            <small>
+              Volver a{" "}
+              <a href="#" onClick={(e) => { e.preventDefault(); switchModo("LOGIN"); }}>
+                Iniciar sesión
+              </a>
             </small>
           )}
         </div>

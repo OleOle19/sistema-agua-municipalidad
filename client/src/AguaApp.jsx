@@ -68,7 +68,7 @@ const ESTADO_CONEXION_LABELS = {
 };
 
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-const SHOW_LEGACY_CAJA_MENU = true;
+const SHOW_LEGACY_CAJA_MENU = false;
 const getLocalCampoAppUrl = () => `${API_BASE_URL}/campo-app/`;
 const normalizeCampoAppUrl = (value) => {
   const raw = String(value || "").trim();
@@ -120,6 +120,7 @@ const Sidebar = memo(({
 }) => {
   const isSoloCobrosCajero = permisos.role === "CAJERO";
   const showReportesSection = !isSoloCobrosCajero && (permisos.canReportesCaja || permisos.canExportPadron);
+  const showConteoYCierreMenu = false;
 
   return (
   <div className={`d-flex flex-column flex-shrink-0 p-2 text-white ${darkMode ? 'bg-black' : 'bg-dark'}`} style={{ width: "240px", height: "100vh", maxHeight: "100vh", transition: '0.3s' }}>
@@ -165,10 +166,10 @@ const Sidebar = memo(({
               </div>
             )}
           </li>
-          {permisos.canConteoEfectivo && (
+          {showConteoYCierreMenu && permisos.canConteoEfectivo && (
             <li>
               <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={onRegistrarConteoEfectivo}>
-                <FaMoneyBillWave/> <span>Conteo Efectivo</span>
+                <FaMoneyBillWave/> <span>Conteo y cierre</span>
                 {Number(resumenConteoEfectivo?.total_pendientes_hoy || 0) > 0 && (
                   <span className="badge bg-warning text-dark ms-auto">{Number(resumenConteoEfectivo?.total_pendientes_hoy || 0)}</span>
                 )}
@@ -190,15 +191,7 @@ const Sidebar = memo(({
             <li>
               <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => setMostrarModalCierre(true)}>
                 <FaFileInvoiceDollar/> <span>Ver Cobranzas (F9)</span>
-                {Number(resumenConteoEfectivo?.total_pendientes_hoy || 0) > 0 && (
-                  <span className="badge bg-warning text-dark ms-auto">{Number(resumenConteoEfectivo?.total_pendientes_hoy || 0)}</span>
-                )}
               </button>
-              {Number(resumenConteoEfectivo?.total_pendientes_hoy || 0) > 0 && (
-                <div className="small text-info mt-1 ms-4">
-                  Conteo pendiente: S/. {Number(resumenConteoEfectivo?.monto_pendiente_hoy || 0).toFixed(2)}
-                </div>
-              )}
             </li>
           )}
           {permisos.canExportPadron && (
@@ -384,11 +377,12 @@ const readStoredUser = () => {
   };
 };
 
-const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, rowHeight }) => (
+const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, onDoubleClick, rowHeight }) => (
   <tr
     data-id={c.id_contribuyente}
     onMouseDown={onMouseDown}
     onClick={onClick}
+    onDoubleClick={onDoubleClick}
     className={className}
     style={{ cursor: "pointer", height: rowHeight }}
   >
@@ -427,6 +421,75 @@ const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, rowHeight }
   </tr>
 ));
 
+const ModalArbitriosDetalle = ({
+  cerrarModal,
+  darkMode,
+  usuarioSeleccionado,
+  historialYear,
+  yearsForSelect,
+  onYearChange,
+  historialBodyRows,
+  onExportarExcel,
+  exportandoExcel
+}) => (
+  <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
+    <div className="modal-dialog modal-xl modal-dialog-scrollable">
+      <div className="modal-content">
+        <div className={`modal-header ${darkMode ? "bg-dark text-white" : "bg-primary text-white"}`}>
+          <h5 className="modal-title">Arbitrios municipales - detalle</h5>
+          <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
+        </div>
+        <div className="modal-body">
+          <div className="d-flex justify-content-between align-items-center mb-3 no-print">
+            <div className="fw-semibold">{usuarioSeleccionado?.nombre_completo || "-"}</div>
+            <div className="d-flex gap-2 align-items-center">
+              <select
+                className={`form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
+                style={{ width: "110px" }}
+                value={historialYear}
+                onChange={onYearChange}
+              >
+                <option value="all">Año</option>
+                {yearsForSelect.map((y) => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+              <button type="button" className="btn btn-outline-success btn-sm" onClick={onExportarExcel} disabled={exportandoExcel}>
+                <FaPrint className="me-1" />
+                {exportandoExcel ? "Exportando..." : "Exportar Excel"}
+              </button>
+            </div>
+          </div>
+          <div>
+            <div className="text-center mb-2">
+              <div className="fw-bold">REPORTE DE ARBITRIOS MUNICIPALES</div>
+              <div className="small">
+                {historialYear === "all" ? "Todos los años" : `Año ${historialYear}`} - {usuarioSeleccionado?.nombre_completo || "-"}
+              </div>
+            </div>
+            <div className="table-responsive border rounded">
+              <table className={`table table-sm table-bordered mb-0 ${darkMode ? "table-dark" : ""}`}>
+                <thead className="text-center">
+                  <tr>
+                    {["Mes", "Agua", "Desague", "Limpieza", "Admin"].map((title) => (
+                      <th key={title}>{title}</th>
+                    ))}
+                    <th className="text-danger">Deuda</th>
+                    <th className="text-success">Abono</th>
+                  </tr>
+                </thead>
+                <tbody className="text-center">
+                  {historialBodyRows}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
 const areSetsEqual = (a, b) => {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -460,6 +523,8 @@ function AguaApp({ onBackToSelector = null }) {
   const [mostrarModalDeudaMasiva, setMostrarModalDeudaMasiva] = useState(false);
   const [mostrarModalExportaciones, setMostrarModalExportaciones] = useState(false);
   const [mostrarModalCampo, setMostrarModalCampo] = useState(false);
+  const [mostrarModalArbitrios, setMostrarModalArbitrios] = useState(false);
+  const [exportandoArbitriosExcel, setExportandoArbitriosExcel] = useState(false);
   const [generandoActaCorte, setGenerandoActaCorte] = useState(false);
   const [mostrarModalReporteCortes, setMostrarModalReporteCortes] = useState(false);
   const [mostrarModalActaCorte, setMostrarModalActaCorte] = useState(false);
@@ -692,8 +757,8 @@ const actaPageStyle = `
 
 const anexoCajaPageStyle = `
   @page {
-    /* Anexo en horizontal (paisaje). */
-    size: A4 landscape;
+    /* Anexo en vertical. */
+    size: A4 portrait;
     margin: 0;
   }
   @media print {
@@ -1130,7 +1195,7 @@ const anexoCajaPageStyle = `
   const recargarTodo = () => {
     historialCacheRef.current.clear();
     cargarContribuyentes();
-    if (permisos.canCaja) cargarResumenPendientesCaja();
+    if (SHOW_LEGACY_CAJA_MENU && permisos.canCaja) cargarResumenPendientesCaja();
     if (permisos.canCaja) cargarResumenConteoEfectivo();
     if (usuarioSeleccionado) cargarHistorial(usuarioSeleccionado.id_contribuyente, "all", true);
     setRefreshDashboard(prev => prev + 1);
@@ -1152,7 +1217,8 @@ const anexoCajaPageStyle = `
     try {
       const res = await api.post("/caja/conteo-efectivo", {
         monto_efectivo: monto,
-        observacion: observacionRaw
+        observacion: observacionRaw,
+        cerrar_caja: true
       });
       alert(res?.data?.mensaje || "Conteo de efectivo enviado.");
       await cargarResumenConteoEfectivo();
@@ -1172,7 +1238,7 @@ const anexoCajaPageStyle = `
   useEffect(() => {
     realtimeOpsRef.current = {
       cargarContribuyentes,
-      cargarResumen: cargarResumenPendientesCaja,
+      cargarResumen: SHOW_LEGACY_CAJA_MENU ? cargarResumenPendientesCaja : () => {},
       cargarConteo: cargarResumenConteoEfectivo,
       cargarHistorial
     };
@@ -1248,14 +1314,20 @@ const anexoCajaPageStyle = `
       });
       return undefined;
     }
-    cargarResumenPendientesCaja();
+    if (SHOW_LEGACY_CAJA_MENU) cargarResumenPendientesCaja();
     cargarResumenConteoEfectivo();
     const timer = setInterval(() => {
-      cargarResumenPendientesCaja();
+      if (SHOW_LEGACY_CAJA_MENU) cargarResumenPendientesCaja();
       cargarResumenConteoEfectivo();
+      if (realtimeStatus !== "connected") {
+        cargarContribuyentes();
+        if (usuarioSeleccionado?.id_contribuyente) {
+          cargarHistorial(usuarioSeleccionado.id_contribuyente, historialYear, true);
+        }
+      }
     }, 10000);
     return () => clearInterval(timer);
-  }, [usuarioSistema, permisos.canCaja, cargarResumenPendientesCaja, cargarResumenConteoEfectivo]);
+  }, [usuarioSistema, permisos.canCaja, cargarResumenPendientesCaja, cargarResumenConteoEfectivo, realtimeStatus, usuarioSeleccionado, historialYear]);
   useEffect(() => {
     if (usuarioSeleccionado) {
       setHistorialYear("all");
@@ -1637,6 +1709,48 @@ const anexoCajaPageStyle = `
     e.stopPropagation();
   }, []);
 
+  const handleRowDoubleClick = useCallback((e) => {
+    e.stopPropagation();
+    const id = Number(e.currentTarget.dataset.id);
+    if (Number.isNaN(id)) return;
+    const usuario = contribuyenteById.get(id);
+    if (!usuario) return;
+    setUsuarioSeleccionado(usuario);
+    setHistorialYear("all");
+    cargarHistorial(usuario.id_contribuyente, "all", true);
+    setMostrarModalArbitrios(true);
+  }, [contribuyenteById, cargarHistorial]);
+
+  const exportarArbitriosExcel = useCallback(async () => {
+    const idContribuyente = Number(usuarioSeleccionado?.id_contribuyente || 0);
+    if (!idContribuyente) return;
+    try {
+      setExportandoArbitriosExcel(true);
+      const res = await api.get(`/exportar/arbitrios/${idContribuyente}`, {
+        params: { anio: historialYear },
+        responseType: "blob",
+        timeout: 0
+      });
+      const blob = new Blob([res.data], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const codigo = String(usuarioSeleccionado?.codigo_municipal || `id_${idContribuyente}`).trim();
+      const filtro = historialYear === "all" ? "todos" : historialYear;
+      link.setAttribute("download", `arbitrios_${codigo}_${filtro}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      alert(error?.response?.data?.error || "No se pudo exportar arbitrios.");
+    } finally {
+      setExportandoArbitriosExcel(false);
+    }
+  }, [historialYear, usuarioSeleccionado]);
+
   useEffect(() => {
     return () => {
       if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
@@ -1821,7 +1935,7 @@ const anexoCajaPageStyle = `
                 <span>RELACION DE CONTRIBUYENTES</span>
                 <div className="d-flex align-items-center gap-3">
                   <span className="text-warning fw-normal">* no verificado en campo</span>
-                  <span className="text-info fw-normal">* deuda/abono incluye orden pendiente de caja</span>
+                  <span className="text-info fw-normal">* deuda/abono actualizado con cobros directos de caja</span>
                 </div>
               </div>
               <div
@@ -1862,6 +1976,7 @@ const anexoCajaPageStyle = `
                             className={getRowClass(c)}
                             onMouseDown={handleRowMouseDown}
                             onClick={handleRowClick}
+                            onDoubleClick={handleRowDoubleClick}
                             rowHeight={rowHeight}
                           />
                         ))}
@@ -1877,51 +1992,13 @@ const anexoCajaPageStyle = `
               </div>
             </div>
 
-            {/* TABLA HISTORIAL */}
-            <div className={`flex-grow-1 mx-3 mb-3 shadow-sm d-flex flex-column ${bgCard}`} style={{ flexBasis: "50%", borderTop: "4px solid #0d6efd", overflow: "hidden", ...cardStyle }} onClick={(e) => e.stopPropagation()}>
-              <div className="bg-secondary text-white p-2 small fw-bold flex-shrink-0 d-flex justify-content-between align-items-center">
-                  <span>ARBITRIOS MUNICIPALES - DETALLE {historialYear === "all" ? "TODOS" : historialYear}</span>
-                  <div className="d-flex align-items-center gap-2">
-                    <select
-                      className={`form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
-                      style={{ width: "110px" }}
-                      value={historialYear}
-                      onChange={handleHistorialYearChange}
-                      disabled={!usuarioSeleccionado}
-                    >
-                      <option value="all">Todos</option>
-                      {yearsForSelect.map((y) => (
-                        <option key={y} value={y}>{y}</option>
-                      ))}
-                    </select>
-                    <span>{usuarioSeleccionado?.nombre_completo}</span>
-                  </div>
-              </div>
-              <div className="flex-grow-1 table-responsive" style={{ overflowY: "auto" }}>
-                <table className={tableClass}>
-                  <thead className="text-center sticky-top" style={{ top: "0", zIndex: 5 }}>
-                    {/* CAMBIO: Encabezados con la nueva paleta oscura (#343a40) y borde correcto */}
-                    <tr>
-                        {["Mes", "Agua", "Desague", "Limpieza", "Admin"].map(title => (
-                            <th key={title} style={{backgroundColor: darkMode ? "#343a40" : "#e2e3e5", color: darkMode ? "#fff" : "#000", boxShadow: `inset 0 -1px 0 ${darkMode ? "#495057" : "#dee2e6"}`}}>{title}</th>
-                        ))}
-                        <th className={`text-danger`} style={{backgroundColor: darkMode ? "#343a40" : "#e2e3e5", boxShadow: `inset 0 -1px 0 ${darkMode ? "#495057" : "#dee2e6"}`}}>Deuda</th>
-                        <th className={`text-success`} style={{backgroundColor: darkMode ? "#343a40" : "#e2e3e5", boxShadow: `inset 0 -1px 0 ${darkMode ? "#495057" : "#dee2e6"}`}}>Abono</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-center">
-                    {historialBodyRows}
-                  </tbody>
-                </table>
-              </div>
-            </div>
           </div>
         )}
       </div>
 
       {/* CAMBIO: Se pasa el prop darkMode a TODOS los modales */}
       {mostrarModalDeuda && usuarioSeleccionado && (<ModalDeuda usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalDeuda(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
-      {mostrarModalPago && usuarioSeleccionado && (
+      {SHOW_LEGACY_CAJA_MENU && mostrarModalPago && usuarioSeleccionado && (
         <ModalPago
           usuario={{...usuarioSeleccionado, recibos: historial}} // Pasamos el historial actual como recibos
           usuarioSistema={usuarioSistema}
@@ -1933,12 +2010,25 @@ const anexoCajaPageStyle = `
           onImprimirAnexo={(datos) => setDatosAnexoCajaImprimir(datos)}
         />
       )}
+      {mostrarModalArbitrios && usuarioSeleccionado && (
+        <ModalArbitriosDetalle
+          cerrarModal={() => setMostrarModalArbitrios(false)}
+          darkMode={darkMode}
+          usuarioSeleccionado={usuarioSeleccionado}
+          historialYear={historialYear}
+          yearsForSelect={yearsForSelect}
+          onYearChange={handleHistorialYearChange}
+          historialBodyRows={historialBodyRows}
+          onExportarExcel={exportarArbitriosExcel}
+          exportandoExcel={exportandoArbitriosExcel}
+        />
+      )}
       {mostrarModalEliminar && usuarioSeleccionado && (<ModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
       {mostrarModalCierre && (
         <ModalCierre
           cerrarModal={() => setMostrarModalCierre(false)}
           darkMode={darkMode}
-          onCierreRegistrado={cargarResumenConteoEfectivo}
+          origen="ventanilla"
         />
       )}
       {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}

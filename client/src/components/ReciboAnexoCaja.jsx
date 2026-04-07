@@ -24,10 +24,22 @@ const splitCompactConcept = (value) => {
   return [parts[0], parts.slice(1).join(" ")];
 };
 
-// Formato fisico del anexo: 21.0 cm x 10.6 cm sobre hoja A4.
+// Formato fisico del anexo:
+// - Ancho A4 completo (21.0 cm)
+// - Largo aproximado del recibo: 9.8 cm
 const PAGE = {
   width: 210,
-  height: 106
+  height: 98
+};
+
+// Calibracion solicitada:
+// - Margen izquierdo/derecho: 0.9 cm (9 mm)
+// - Primer texto alrededor de 1.6 cm desde el borde superior
+const LAYOUT = {
+  sideMarginX: 9,
+  firstLineTopY: 16,
+  baseWidth: 210,
+  baseHeight: 106
 };
 
 // Textos editables del anexo.
@@ -37,11 +49,7 @@ const ANEXO_TEXTOS = {
   prefijoRuc: "RUC:"
 };
 
-// Ajustes globales para calibracion.
-// nudgeX/nudgeY mueven todo el anexo.
 const CAL = {
-  nudgeX: 11,
-  nudgeY: 5,
   // Coordenadas de los datos de cabecera (solo bloque CONTROL).
   topData: {
     yLine1: 10.2,
@@ -128,9 +136,17 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
     .slice(0, 5);
   const total = formatMonto(datos?.total);
 
-  // Helpers para aplicar calibracion global a cada coordenada.
-  const x = (value) => mm(value + CAL.nudgeX);
-  const y = (value) => mm(value + CAL.nudgeY);
+  // Escalado/calibracion a medidas fisicas solicitadas.
+  const scaleX = (LAYOUT.baseWidth - (LAYOUT.sideMarginX * 2)) / LAYOUT.baseWidth;
+  const scaleY = PAGE.height / LAYOUT.baseHeight;
+  const offsetY = LAYOUT.firstLineTopY - (CAL.topData.yLine1 * scaleY);
+  const fontScale = Math.min(scaleX, scaleY);
+
+  const x = (value) => mm((value * scaleX) + LAYOUT.sideMarginX);
+  const y = (value) => mm((value * scaleY) + offsetY);
+  const w = (value) => mm(value * scaleX);
+  const h = (value) => mm(value * scaleY);
+  const fs = (value) => mm(value * fontScale);
 
   const baseText = {
     position: "absolute",
@@ -160,8 +176,8 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                   ...baseText,
                   left: x(block.x + CAL.topData.xCalle),
                   top: y(CAL.topData.yLine1),
-                  fontSize: "2.6mm",
-                  maxWidth: mm(34),
+                  fontSize: fs(2.6),
+                  maxWidth: w(34),
                   whiteSpace: "nowrap",
                   overflow: "hidden",
                   textOverflow: "ellipsis"
@@ -174,8 +190,8 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                   ...baseText,
                   left: x(block.x + CAL.topData.xRuc),
                   top: y(CAL.topData.yLine1),
-                  fontSize: "2.6mm",
-                  maxWidth: mm(31),
+                  fontSize: fs(2.6),
+                  maxWidth: w(31),
                   whiteSpace: "nowrap",
                   overflow: "hidden",
                   textOverflow: "ellipsis"
@@ -188,9 +204,9 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                   ...baseText,
                   left: x(block.x + CAL.topData.xCodigo),
                   top: y(CAL.topData.yCode),
-                  fontSize: "3.1mm",
+                  fontSize: fs(3.1),
                   fontWeight: 700,
-                  maxWidth: mm(26),
+                  maxWidth: w(26),
                   whiteSpace: "nowrap",
                   overflow: "hidden",
                   textOverflow: "ellipsis"
@@ -203,8 +219,8 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                   ...baseText,
                   left: x(block.x + CAL.topData.xNombre),
                   top: y(CAL.topData.yName),
-                  fontSize: "2.8mm",
-                  maxWidth: mm(62),
+                  fontSize: fs(2.8),
+                  maxWidth: w(62),
                   whiteSpace: "nowrap",
                   overflow: "hidden",
                   textOverflow: "ellipsis"
@@ -224,13 +240,13 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                     ...baseText,
                     left: x(block.x + block.table.conceptX),
                     top: y(block.table.topY + (idx * block.table.lineGap)),
-                    fontSize: mm(block.conceptFont),
-                    maxWidth: mm(block.table.conceptMax),
+                    fontSize: fs(block.conceptFont),
+                    maxWidth: w(block.table.conceptMax),
                     whiteSpace: block.compact ? "normal" : "nowrap",
                     lineHeight: block.compact ? 1.0 : 1.1,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
-                    minHeight: block.compact ? mm(block.conceptFont * 2.3) : "auto"
+                    minHeight: block.compact ? h(block.conceptFont * 2.3) : "auto"
                   }}
                 >
                   {block.compact ? (
@@ -247,9 +263,9 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                     ...baseText,
                     left: x(block.x + block.table.amountX),
                     top: y(block.table.topY + (idx * block.table.lineGap)),
-                    width: mm(block.table.amountWidth),
+                    width: w(block.table.amountWidth),
                     textAlign: "right",
-                    fontSize: mm(block.amountFont),
+                    fontSize: fs(block.amountFont),
                     fontWeight: 700
                   }}
                 >
@@ -264,9 +280,9 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
               ...baseText,
               left: x(block.x + block.table.amountX),
               top: y(block.table.totalY),
-              width: mm(block.table.amountWidth),
+              width: w(block.table.amountWidth),
               textAlign: "right",
-              fontSize: mm(block.totalFont),
+              fontSize: fs(block.totalFont),
               fontWeight: 700
             }}
           >

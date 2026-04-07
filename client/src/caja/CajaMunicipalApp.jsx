@@ -1,20 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useReactToPrint } from "react-to-print";
-import { FaBolt, FaCashRegister, FaPrint, FaSignOutAlt, FaSyncAlt, FaTint } from "react-icons/fa";
+import { FaBolt, FaCashRegister, FaSignOutAlt, FaSyncAlt, FaTint } from "react-icons/fa";
 import api from "../api";
 import LoginPage from "../components/LoginPage";
 import ReciboAnexoCaja from "../components/ReciboAnexoCaja";
+import ModalCierre from "../components/ModalCierre";
 import cajaLuzApi from "./apiCajaLuz";
+import realtime from "../realtime";
 
 const AGUA_TOKEN_KEY = "token_agua";
-
-const ROLE_ORDER = {
-  BRIGADA: 1,
-  CONSULTA: 2,
-  CAJERO: 3,
-  ADMIN_SEC: 4,
-  ADMIN: 5
-};
 
 const ROLE_LABELS = {
   ADMIN: "Nivel 1 - Admin principal",
@@ -26,7 +20,7 @@ const ROLE_LABELS = {
 
 const ANEXO_PAGE_STYLE = `
   @page {
-    size: A4 landscape;
+    size: A4 portrait;
     margin: 0;
   }
   @media print {
@@ -52,12 +46,6 @@ const normalizeRole = (role) => {
 const canEnterCajaModuleByRole = (role) => {
   const normalized = normalizeRole(role);
   return normalized === "ADMIN" || normalized === "CAJERO";
-};
-
-const hasMinRole = (role, requiredRole) => {
-  const currentLevel = ROLE_ORDER[normalizeRole(role)] || 0;
-  const requiredLevel = ROLE_ORDER[normalizeRole(requiredRole)] || 0;
-  return currentLevel >= requiredLevel;
 };
 
 const parseJwtPayload = (token) => {
@@ -103,7 +91,19 @@ const parseMonto = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-const normalizeCodigoMunicipal = (value) => String(value || "").trim().toUpperCase();
+const normalizeSearchText = (value) => String(value || "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLowerCase()
+  .replace(/\s+/g, " ")
+  .trim();
+
+const normalizeDigits = (value) => String(value || "").replace(/\D/g, "");
+
+const normalizeCodigo = (value) => String(value || "")
+  .toUpperCase()
+  .replace(/\s+/g, "")
+  .trim();
 
 const formatMoney = (value) => `S/. ${parseMonto(value).toFixed(2)}`;
 
@@ -124,73 +124,81 @@ const pickFirstText = (...values) => {
   return "";
 };
 
-const buildAnexoDataFromOrden = (orden) => {
-  const items = Array.isArray(orden?.items) ? orden.items : [];
+const buildDetalleProrrateadoRecibo = (recibo, montoCobro) => {
+  const agua = parseMonto(recibo?.subtotal_agua);
+  const desague = parseMonto(recibo?.subtotal_desague);
+  const limpieza = parseMonto(recibo?.subtotal_limpieza);
+  const admin = parseMonto(recibo?.subtotal_admin);
+  const base = round2(agua + desague + limpieza + admin);
+  if (base <= 0) {
+    return {
+      subtotal_agua: round2(montoCobro),
+      subtotal_desague: 0,
+      subtotal_limpieza: 0,
+      subtotal_admin: 0
+    };
+  }
+  const factor = round2(parseMonto(montoCobro) / base);
+  let pAgua = round2(agua * factor);
+  let pDesague = round2(desague * factor);
+  let pLimpieza = round2(limpieza * factor);
+  let pAdmin = round2(admin * factor);
+  const ajuste = round2(parseMonto(montoCobro) - (pAgua + pDesague + pLimpieza + pAdmin));
+  pAdmin = round2(pAdmin + ajuste);
+  return {
+    subtotal_agua: pAgua,
+    subtotal_desague: pDesague,
+    subtotal_limpieza: pLimpieza,
+    subtotal_admin: pAdmin
+  };
+};
+
+const buildAnexoDataFromPagoDirecto = (contribuyente, pagos) => {
+  const items = Array.isArray(pagos) ? pagos : [];
   const resumenServicios = items.reduce((acc, it) => ({
     agua: round2(acc.agua + parseMonto(it?.subtotal_agua)),
     desague: round2(acc.desague + parseMonto(it?.subtotal_desague)),
     limpieza: round2(acc.limpieza + parseMonto(it?.subtotal_limpieza)),
     admin: round2(acc.admin + parseMonto(it?.subtotal_admin))
-  }), {
-    agua: 0,
-    desague: 0,
-    limpieza: 0,
-    admin: 0
-  });
-
+  }), { agua: 0, desague: 0, limpieza: 0, admin: 0 });
+  const totalCobrado = round2(items.reduce((acc, it) => acc + parseMonto(it?.monto_pagado), 0));
   const detalles = [
     { concepto: "SERVICIO DE AGUA", importe: resumenServicios.agua },
     { concepto: "SERVICIO DE DESAGUE", importe: resumenServicios.desague },
     { concepto: "LIMPIEZA PUBLICA", importe: resumenServicios.limpieza },
     { concepto: "SERVICIO ADMIN", importe: resumenServicios.admin }
   ].filter((row) => row.importe > 0);
-
-  const totalOrden = round2(parseMonto(orden?.total_orden));
-  if (detalles.length === 0 && totalOrden > 0) {
-    detalles.push({ concepto: "SERVICIOS", importe: totalOrden });
+  if (detalles.length === 0 && totalCobrado > 0) {
+    detalles.push({ concepto: "SERVICIOS", importe: totalCobrado });
   } else if (detalles.length > 0) {
     const totalDetalle = round2(detalles.reduce((acc, row) => acc + parseMonto(row.importe), 0));
-    const diferencia = round2(totalOrden - totalDetalle);
+    const diferencia = round2(totalCobrado - totalDetalle);
     if (Math.abs(diferencia) >= 0.01) {
-      const lastIdx = detalles.length - 1;
-      detalles[lastIdx] = {
-        ...detalles[lastIdx],
-        importe: round2(parseMonto(detalles[lastIdx].importe) + diferencia)
-      };
+      const idx = detalles.length - 1;
+      detalles[idx] = { ...detalles[idx], importe: round2(parseMonto(detalles[idx].importe) + diferencia) };
     }
   }
 
-  const contribuyente = orden?.contribuyente || {};
   return {
     entidad: "MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO",
     entidad_detalle: "ARCO 301  RUC. 20192401004",
     contribuyente: {
-      codigo_municipal: pickFirstText(contribuyente.codigo_municipal, orden?.codigo_municipal),
-      nombre_completo: pickFirstText(contribuyente.nombre_completo, orden?.nombre_contribuyente, orden?.nombre_completo),
-      calle: pickFirstText(contribuyente.direccion, orden?.direccion_contribuyente),
-      ruc: pickFirstText(contribuyente.dni_ruc, orden?.dni_ruc)
+      codigo_municipal: pickFirstText(contribuyente?.codigo_municipal, contribuyente?.sec_cod),
+      nombre_completo: pickFirstText(contribuyente?.nombre_completo, contribuyente?.sec_nombre),
+      calle: pickFirstText(contribuyente?.direccion_completa, contribuyente?.direccion),
+      ruc: pickFirstText(contribuyente?.dni_ruc)
     },
-    total: totalOrden,
+    total: totalCobrado,
     detalles
   };
 };
-
-const getNombreContribuyenteOrden = (orden) => (
-  pickFirstText(
-    orden?.contribuyente?.nombre_completo,
-    orden?.nombre_contribuyente,
-    orden?.nombre_completo
-  ) || "-"
-);
 
 function CajaMunicipalApp({ onBackToSelector }) {
   const [usuarioSistema, setUsuarioSistema] = useState(readStoredAguaUser);
   const [tab, setTab] = useState("agua");
   const [flash, setFlash] = useState(null);
 
-  const [ordenesAgua, setOrdenesAgua] = useState([]);
   const [loadingAgua, setLoadingAgua] = useState(false);
-  const [procesoAgua, setProcesoAgua] = useState(0);
   const [reporteAgua, setReporteAgua] = useState(null);
   const [loadingReporteAgua, setLoadingReporteAgua] = useState(false);
   const [resumenConteoAgua, setResumenConteoAgua] = useState({
@@ -203,7 +211,18 @@ function CajaMunicipalApp({ onBackToSelector }) {
   });
   const [loadingConteoAgua, setLoadingConteoAgua] = useState(false);
   const [enviandoConteoAgua, setEnviandoConteoAgua] = useState(false);
-  const [indiceContribuyentes, setIndiceContribuyentes] = useState({ byId: new Map(), byCodigo: new Map() });
+  const [padronContribuyentesAgua, setPadronContribuyentesAgua] = useState([]);
+  const [busquedaContribuyenteAgua, setBusquedaContribuyenteAgua] = useState("");
+  const [buscandoContribuyenteAgua, setBuscandoContribuyenteAgua] = useState(false);
+  const [busquedaContribuyenteRealizada, setBusquedaContribuyenteRealizada] = useState(false);
+  const [contribuyentesFiltradosAgua, setContribuyentesFiltradosAgua] = useState([]);
+  const [selectedContribuyenteAgua, setSelectedContribuyenteAgua] = useState(null);
+  const [mostrarModalCobroAgua, setMostrarModalCobroAgua] = useState(false);
+  const [loadingPendientesCobroAgua, setLoadingPendientesCobroAgua] = useState(false);
+  const [cobrandoDirectoAgua, setCobrandoDirectoAgua] = useState(false);
+  const [recibosPendientesCobroAgua, setRecibosPendientesCobroAgua] = useState([]);
+  const [seleccionCobroAgua, setSeleccionCobroAgua] = useState({});
+  const [mostrarReporteCajaAgua, setMostrarReporteCajaAgua] = useState(false);
   const cajaCerradaAguaHoy = Boolean(resumenConteoAgua?.caja_cerrada_hoy);
 
   const [ordenesLuz, setOrdenesLuz] = useState([]);
@@ -221,8 +240,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const permisos = useMemo(() => ({
     role: rolActual,
     roleLabel: ROLE_LABELS[rolActual] || ROLE_LABELS.CONSULTA,
-    canCaja: accesoCajaPermitido,
-    canAnular: accesoCajaPermitido && hasMinRole(rolActual, "ADMIN_SEC")
+    canCaja: accesoCajaPermitido
   }), [accesoCajaPermitido, rolActual]);
 
   const showFlash = useCallback((type, text) => {
@@ -251,7 +269,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
     localStorage.removeItem(AGUA_TOKEN_KEY);
     localStorage.removeItem("token");
     setUsuarioSistema(null);
-    setOrdenesAgua([]);
     setOrdenesLuz([]);
     setReporteAgua(null);
     setReporteLuz(null);
@@ -263,39 +280,18 @@ function CajaMunicipalApp({ onBackToSelector }) {
       caja_cerrada_hoy: false,
       cierre_hoy: null
     });
-    setIndiceContribuyentes({ byId: new Map(), byCodigo: new Map() });
-  }, []);
-
-  const cargarOrdenesAgua = useCallback(async () => {
-    if (!permisos.canCaja) return;
-    setLoadingAgua(true);
-    try {
-      const res = await api.get("/caja/ordenes-cobro/pendientes");
-      setOrdenesAgua(Array.isArray(res.data) ? res.data : []);
-    } catch (err) {
-      handleApiError(err, "No se pudo cargar ordenes de agua.");
-    } finally {
-      setLoadingAgua(false);
-    }
-  }, [handleApiError, permisos.canCaja]);
-
-  const cargarIndiceContribuyentesAgua = useCallback(async () => {
-    try {
-      const res = await api.get("/contribuyentes");
-      const rows = Array.isArray(res.data) ? res.data : [];
-      const byId = new Map();
-      const byCodigo = new Map();
-      rows.forEach((row) => {
-        const id = Number(row?.id_contribuyente || 0);
-        const nombre = pickFirstText(row?.nombre_completo, row?.sec_nombre);
-        const codigo = normalizeCodigoMunicipal(row?.codigo_municipal);
-        if (id > 0 && nombre) byId.set(id, nombre);
-        if (codigo && nombre && !byCodigo.has(codigo)) byCodigo.set(codigo, nombre);
-      });
-      setIndiceContribuyentes({ byId, byCodigo });
-    } catch {
-      setIndiceContribuyentes({ byId: new Map(), byCodigo: new Map() });
-    }
+    setPadronContribuyentesAgua([]);
+    setContribuyentesFiltradosAgua([]);
+    setBusquedaContribuyenteAgua("");
+    setBuscandoContribuyenteAgua(false);
+    setBusquedaContribuyenteRealizada(false);
+    setSelectedContribuyenteAgua(null);
+    setMostrarModalCobroAgua(false);
+    setLoadingPendientesCobroAgua(false);
+    setCobrandoDirectoAgua(false);
+    setRecibosPendientesCobroAgua([]);
+    setSeleccionCobroAgua({});
+    setMostrarReporteCajaAgua(false);
   }, []);
 
   const cargarOrdenesLuz = useCallback(async () => {
@@ -323,6 +319,16 @@ function CajaMunicipalApp({ onBackToSelector }) {
       setLoadingReporteAgua(false);
     }
   }, [handleApiError, permisos.canCaja]);
+
+  const cargarResumenAgua = useCallback(async () => {
+    if (!permisos.canCaja) return;
+    setLoadingAgua(true);
+    try {
+      await cargarReporteAgua();
+    } finally {
+      setLoadingAgua(false);
+    }
+  }, [cargarReporteAgua, permisos.canCaja]);
 
   const cargarConteoAgua = useCallback(async () => {
     if (!permisos.canCaja) return;
@@ -366,8 +372,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }, [handleApiError, permisos.canCaja]);
 
   const recargarAgua = useCallback(async () => {
-    await Promise.all([cargarOrdenesAgua(), cargarReporteAgua(), cargarConteoAgua()]);
-  }, [cargarOrdenesAgua, cargarReporteAgua, cargarConteoAgua]);
+    await Promise.all([cargarResumenAgua(), cargarConteoAgua()]);
+  }, [cargarResumenAgua, cargarConteoAgua]);
 
   const recargarLuz = useCallback(async () => {
     await Promise.all([cargarOrdenesLuz(), cargarReporteLuz()]);
@@ -383,11 +389,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }, [recargarAgua, recargarLuz, tab, usuarioSistema]);
 
   useEffect(() => {
-    if (!usuarioSistema || !permisos.canCaja) return;
-    cargarIndiceContribuyentesAgua();
-  }, [cargarIndiceContribuyentesAgua, permisos.canCaja, usuarioSistema]);
-
-  useEffect(() => {
     if (!usuarioSistema || !permisos.canCaja || tab !== "agua") return undefined;
     const timer = setInterval(() => {
       cargarConteoAgua();
@@ -395,23 +396,82 @@ function CajaMunicipalApp({ onBackToSelector }) {
     return () => clearInterval(timer);
   }, [cargarConteoAgua, permisos.canCaja, tab, usuarioSistema]);
 
-  const resolverNombreContribuyenteAgua = useCallback((orden) => {
-    const nombreDirecto = getNombreContribuyenteOrden(orden);
-    if (nombreDirecto !== "-") return nombreDirecto;
-    const idContribuyente = Number(
-      orden?.contribuyente?.id_contribuyente
-      || orden?.id_contribuyente
-      || 0
-    );
-    if (idContribuyente > 0 && indiceContribuyentes.byId.has(idContribuyente)) {
-      return String(indiceContribuyentes.byId.get(idContribuyente));
+  useEffect(() => {
+    if (!usuarioSistema || !permisos.canCaja) return undefined;
+    const timer = setInterval(() => {
+      if (tab === "agua") {
+        recargarAgua();
+      } else {
+        recargarLuz();
+      }
+    }, 12000);
+    return () => clearInterval(timer);
+  }, [permisos.canCaja, recargarAgua, recargarLuz, tab, usuarioSistema]);
+
+  useEffect(() => {
+    const unsubscribeEvent = realtime.onEvent((event) => {
+      if (!event || event.type !== "event" || event.channel !== "caja") return;
+      if (tab === "agua") {
+        recargarAgua();
+      } else {
+        recargarLuz();
+      }
+    });
+    return () => {
+      unsubscribeEvent();
+    };
+  }, [recargarAgua, recargarLuz, tab]);
+
+  useEffect(() => {
+    if (!usuarioSistema) {
+      realtime.disconnect(true);
+      return;
     }
-    const codigo = normalizeCodigoMunicipal(orden?.contribuyente?.codigo_municipal || orden?.codigo_municipal);
-    if (codigo && indiceContribuyentes.byCodigo.has(codigo)) {
-      return String(indiceContribuyentes.byCodigo.get(codigo));
+    const token = localStorage.getItem(AGUA_TOKEN_KEY) || localStorage.getItem("token") || "";
+    realtime.connect(token);
+    return () => {
+      realtime.disconnect(true);
+    };
+  }, [usuarioSistema]);
+
+  const buscarContribuyentesAgua = useCallback(async () => {
+    const qRaw = String(busquedaContribuyenteAgua || "").trim();
+    if (!qRaw) {
+      setBusquedaContribuyenteRealizada(true);
+      setContribuyentesFiltradosAgua([]);
+      setSelectedContribuyenteAgua(null);
+      showFlash("warning", "Digite nombre completo, DNI o código completo para buscar.");
+      return;
     }
-    return "-";
-  }, [indiceContribuyentes]);
+    const qNombre = normalizeSearchText(qRaw);
+    const qDni = normalizeDigits(qRaw);
+    const qCodigo = normalizeCodigo(qRaw);
+
+    setBuscandoContribuyenteAgua(true);
+    try {
+      let base = padronContribuyentesAgua;
+      if (!Array.isArray(base) || base.length === 0) {
+        const res = await api.get("/contribuyentes");
+        base = Array.isArray(res.data) ? res.data : [];
+        setPadronContribuyentesAgua(base);
+      }
+      const filtrados = base.filter((row) => {
+        const nombre = normalizeSearchText(row?.nombre_completo || row?.sec_nombre);
+        const dni = normalizeDigits(row?.dni_ruc);
+        const codigo = normalizeCodigo(row?.codigo_municipal || row?.sec_cod);
+        return (qNombre && nombre === qNombre)
+          || (qDni && dni === qDni)
+          || (qCodigo && codigo === qCodigo);
+      }).slice(0, 200);
+      setContribuyentesFiltradosAgua(filtrados);
+      setSelectedContribuyenteAgua(null);
+      setBusquedaContribuyenteRealizada(true);
+    } catch (err) {
+      handleApiError(err, "No se pudo buscar contribuyentes.");
+    } finally {
+      setBuscandoContribuyenteAgua(false);
+    }
+  }, [busquedaContribuyenteAgua, handleApiError, padronContribuyentesAgua, showFlash]);
 
   const registrarConteoEfectivoAgua = useCallback(async () => {
     if (!permisos.canCaja) return;
@@ -449,40 +509,138 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
   }, [cajaCerradaAguaHoy, cargarConteoAgua, cargarReporteAgua, handleApiError, permisos.canCaja, resumenConteoAgua?.ultimo_pendiente?.monto_efectivo, showFlash]);
 
-  const cobrarAgua = async (idOrden) => {
-    if (!permisos.canCaja) return;
+  const abrirCobroDirectoAgua = async () => {
+    const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
+    if (!idContribuyente) {
+      showFlash("warning", "Seleccione un contribuyente para cobrar.");
+      return;
+    }
     if (cajaCerradaAguaHoy) {
       showFlash("warning", "Caja cerrada para hoy. No se permiten más cobros.");
       return;
     }
-    if (!window.confirm(`Cobrar orden de agua #${idOrden}?`)) return;
-    setProcesoAgua(idOrden);
+    setLoadingPendientesCobroAgua(true);
     try {
-      const res = await api.post(`/caja/ordenes-cobro/${idOrden}/cobrar`);
-      showFlash("success", res.data?.mensaje || "Cobro registrado.");
-      await recargarAgua();
+      const res = await api.get(`/recibos/pendientes/${idContribuyente}`);
+      const pendientes = Array.isArray(res.data) ? res.data : [];
+      if (pendientes.length === 0) {
+        showFlash("warning", "El contribuyente no tiene meses pendientes para cobrar.");
+        return;
+      }
+      const initial = {};
+      pendientes.forEach((row) => {
+        const idRecibo = Number(row?.id_recibo || 0);
+        if (!idRecibo) return;
+        initial[idRecibo] = {
+          checked: false,
+          monto: round2(parseMonto(row?.deuda_mes || row?.total_pagar || 0)).toFixed(2)
+        };
+      });
+      setRecibosPendientesCobroAgua(pendientes);
+      setSeleccionCobroAgua(initial);
+      setMostrarModalCobroAgua(true);
     } catch (err) {
-      handleApiError(err, "No se pudo cobrar orden de agua.");
+      handleApiError(err, "No se pudo cargar la deuda pendiente del contribuyente.");
     } finally {
-      setProcesoAgua(0);
+      setLoadingPendientesCobroAgua(false);
     }
   };
 
-  const anularAgua = async (idOrden) => {
-    if (!permisos.canAnular) return;
-    const motivo = window.prompt("Motivo de anulacion (min 5 caracteres):", "");
-    if (!motivo) return;
-    setProcesoAgua(idOrden);
-    try {
-      const res = await api.post(`/caja/ordenes-cobro/${idOrden}/anular`, { motivo });
-      showFlash("success", res.data?.mensaje || "Orden anulada.");
-      await recargarAgua();
-    } catch (err) {
-      handleApiError(err, "No se pudo anular orden de agua.");
-    } finally {
-      setProcesoAgua(0);
+  const setMontoCobroAgua = useCallback((idRecibo, value, maxSaldo) => {
+    const raw = String(value || "").replace(",", ".");
+    if (raw && !/^\d*(\.\d{0,2})?$/.test(raw)) return;
+    const parsed = parseMonto(raw);
+    const clamped = raw === ""
+      ? ""
+      : round2(Math.min(Math.max(parsed, 0), round2(maxSaldo))).toFixed(2);
+    setSeleccionCobroAgua((prev) => ({
+      ...prev,
+      [idRecibo]: {
+        ...(prev[idRecibo] || {}),
+        monto: clamped
+      }
+    }));
+  }, []);
+
+  const toggleCobroAgua = useCallback((idRecibo) => {
+    setSeleccionCobroAgua((prev) => ({
+      ...prev,
+      [idRecibo]: {
+        ...(prev[idRecibo] || {}),
+        checked: !prev[idRecibo]?.checked
+      }
+    }));
+  }, []);
+
+  const totalCobroDirectoAgua = useMemo(() => round2(
+    recibosPendientesCobroAgua.reduce((acc, row) => {
+      const idRecibo = Number(row?.id_recibo || 0);
+      if (!idRecibo) return acc;
+      const selected = seleccionCobroAgua[idRecibo];
+      if (!selected?.checked) return acc;
+      return acc + parseMonto(selected?.monto);
+    }, 0)
+  ), [recibosPendientesCobroAgua, seleccionCobroAgua]);
+
+  const cobrarDirectoAgua = useCallback(async () => {
+    if (!permisos.canCaja) return;
+    const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
+    if (!idContribuyente) {
+      showFlash("warning", "Seleccione un contribuyente para cobrar.");
+      return;
     }
-  };
+    const pagos = [];
+    const anexoItems = [];
+    for (const row of recibosPendientesCobroAgua) {
+      const idRecibo = Number(row?.id_recibo || 0);
+      if (!idRecibo) continue;
+      const sel = seleccionCobroAgua[idRecibo];
+      if (!sel?.checked) continue;
+      const saldo = round2(parseMonto(row?.deuda_mes || row?.total_pagar || 0));
+      const monto = round2(parseMonto(sel?.monto));
+      if (monto <= 0) continue;
+      if (monto > saldo + 0.001) {
+        showFlash("warning", `El monto ingresado excede el saldo del periodo ${row?.mes}/${row?.anio}.`);
+        return;
+      }
+      pagos.push({ id_recibo: idRecibo, monto_pagado: monto });
+      anexoItems.push({
+        ...buildDetalleProrrateadoRecibo(row, monto),
+        monto_pagado: monto
+      });
+    }
+    if (pagos.length === 0) {
+      showFlash("warning", "Seleccione al menos un mes con monto válido para cobrar.");
+      return;
+    }
+    const confirm = window.confirm(`Registrar cobro por ${formatMoney(totalCobroDirectoAgua)} y abrir impresión?`);
+    if (!confirm) return;
+    setCobrandoDirectoAgua(true);
+    try {
+      const res = await api.post("/pagos", {
+        id_contribuyente: idContribuyente,
+        pagos
+      });
+      showFlash("success", res?.data?.mensaje || "Cobro registrado correctamente.");
+      setDatosAnexoCajaImprimir(buildAnexoDataFromPagoDirecto(selectedContribuyenteAgua, anexoItems));
+      setMostrarModalCobroAgua(false);
+      await Promise.all([recargarAgua(), buscarContribuyentesAgua()]);
+    } catch (err) {
+      handleApiError(err, "No se pudo registrar el cobro directo.");
+    } finally {
+      setCobrandoDirectoAgua(false);
+    }
+  }, [
+    buscarContribuyentesAgua,
+    handleApiError,
+    permisos.canCaja,
+    recibosPendientesCobroAgua,
+    recargarAgua,
+    selectedContribuyenteAgua,
+    seleccionCobroAgua,
+    showFlash,
+    totalCobroDirectoAgua
+  ]);
 
   const cobrarLuz = async (idOrden) => {
     if (!permisos.canCaja) return;
@@ -494,22 +652,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
       await recargarLuz();
     } catch (err) {
       handleApiError(err, "No se pudo cobrar orden de luz.");
-    } finally {
-      setProcesoLuz(0);
-    }
-  };
-
-  const anularLuz = async (idOrden) => {
-    if (!permisos.canAnular) return;
-    const motivo = window.prompt("Motivo de anulacion (min 5 caracteres):", "");
-    if (!motivo) return;
-    setProcesoLuz(idOrden);
-    try {
-      const res = await cajaLuzApi.post(`/caja/ordenes-cobro/${idOrden}/anular`, { motivo });
-      showFlash("success", res.data?.mensaje || "Orden anulada.");
-      await recargarLuz();
-    } catch (err) {
-      handleApiError(err, "No se pudo anular orden de luz.");
     } finally {
       setProcesoLuz(0);
     }
@@ -540,8 +682,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }, [datosAnexoCajaImprimir, handlePrintAnexoCaja]);
 
   const totalPendienteAgua = useMemo(
-    () => ordenesAgua.reduce((acc, item) => acc + parseMonto(item.total_orden), 0),
-    [ordenesAgua]
+    () => contribuyentesFiltradosAgua.reduce((acc, item) => acc + parseMonto(item.deuda_anio), 0),
+    [contribuyentesFiltradosAgua]
   );
 
   const totalPendienteLuz = useMemo(
@@ -561,7 +703,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       className: "bg-primary text-white"
     },
     {
-      label: "PENDIENTE EN CAJA",
+      label: "DEUDA EN BÚSQUEDA",
       value: formatMoney(totalPendienteAgua),
       className: "bg-danger text-white"
     }
@@ -686,22 +828,30 @@ function CajaMunicipalApp({ onBackToSelector }) {
               {tab === "agua" ? (
                 <>
                   <button
+                    className="btn btn-outline-secondary d-flex align-items-center gap-2"
+                    onClick={() => setMostrarReporteCajaAgua(true)}
+                  >
+                    Ver reporte
+                  </button>
+                  <button
                     className="btn btn-outline-success d-flex align-items-center gap-2"
                     onClick={registrarConteoEfectivoAgua}
                     disabled={enviandoConteoAgua || cajaCerradaAguaHoy}
                     title={cajaCerradaAguaHoy ? "Caja cerrada para hoy" : "Enviar conteo de efectivo y cerrar caja de hoy"}
                   >
-                    {enviandoConteoAgua ? "Enviando conteo..." : (cajaCerradaAguaHoy ? "Caja cerrada hoy" : "Conteo efectivo")}
-                  </button>
-                  <button className="btn btn-outline-primary d-flex align-items-center gap-2" onClick={recargarAgua} disabled={loadingAgua || loadingReporteAgua || loadingConteoAgua}>
-                    <FaSyncAlt />
-                    {(loadingAgua || loadingReporteAgua || loadingConteoAgua) ? "Actualizando..." : "Recargar agua"}
+                    {enviandoConteoAgua ? "Enviando conteo..." : (cajaCerradaAguaHoy ? "Caja cerrada hoy" : "Conteo y cierre")}
                   </button>
                 </>
               ) : (
-                <button className="btn btn-outline-primary d-flex align-items-center gap-2" onClick={recargarLuz} disabled={loadingLuz || loadingReporteLuz}>
+                <button
+                  className="btn btn-outline-primary d-flex align-items-center justify-content-center"
+                  onClick={recargarLuz}
+                  disabled={loadingLuz || loadingReporteLuz}
+                  title={(loadingLuz || loadingReporteLuz) ? "Actualizando..." : "Recargar luz"}
+                  aria-label="Recargar luz"
+                  style={{ width: "42px", height: "38px" }}
+                >
                   <FaSyncAlt />
-                  {(loadingLuz || loadingReporteLuz) ? "Actualizando..." : "Recargar luz"}
                 </button>
               )}
             </div>
@@ -719,6 +869,87 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   ))}
                 </div>
 
+                <div className="border rounded p-3 mb-3">
+                  <div className="fw-semibold mb-2">Buscar contribuyente para caja</div>
+                  <div className="d-flex flex-wrap gap-2 align-items-center mb-2">
+                    <input
+                      type="text"
+                      className="form-control"
+                      style={{ maxWidth: "420px" }}
+                      placeholder="Digite nombre completo, DNI o código completo"
+                      value={busquedaContribuyenteAgua}
+                      onChange={(e) => setBusquedaContribuyenteAgua(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          buscarContribuyentesAgua();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-outline-primary"
+                      onClick={buscarContribuyentesAgua}
+                      disabled={buscandoContribuyenteAgua}
+                    >
+                      {buscandoContribuyenteAgua ? "Buscando..." : "Buscar"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-success"
+                      onClick={abrirCobroDirectoAgua}
+                      disabled={!selectedContribuyenteAgua || loadingPendientesCobroAgua || cobrandoDirectoAgua || cajaCerradaAguaHoy}
+                      title={!selectedContribuyenteAgua ? "Seleccione un contribuyente de la tabla" : "Seleccionar meses y cobrar"}
+                    >
+                      {loadingPendientesCobroAgua ? "Cargando deuda..." : (cobrandoDirectoAgua ? "Cobrando..." : "Cobrar")}
+                    </button>
+                  </div>
+                  <div className="table-responsive border rounded" style={{ maxHeight: "240px" }}>
+                    <table className="table table-sm table-hover mb-0">
+                      <thead className="table-light sticky-top">
+                        <tr>
+                          <th>Codigo</th>
+                          <th>Nombre</th>
+                          <th>Direccion</th>
+                          <th className="text-center">Meses deuda</th>
+                          <th className="text-end">Deuda total</th>
+                          <th className="text-end">Abono total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {!busquedaContribuyenteRealizada && (
+                          <tr>
+                            <td colSpan="6" className="text-center py-3 text-muted">
+                              La lista inicia vacía. Digite nombre completo, DNI o código completo y presione Buscar.
+                            </td>
+                          </tr>
+                        )}
+                        {busquedaContribuyenteRealizada && buscandoContribuyenteAgua && (
+                          <tr><td colSpan="6" className="text-center py-3">Buscando...</td></tr>
+                        )}
+                        {busquedaContribuyenteRealizada && !buscandoContribuyenteAgua && contribuyentesFiltradosAgua.length === 0 && (
+                          <tr><td colSpan="6" className="text-center py-3 text-muted">Sin resultados para la busqueda.</td></tr>
+                        )}
+                        {busquedaContribuyenteRealizada && !buscandoContribuyenteAgua && contribuyentesFiltradosAgua.map((c) => (
+                          <tr
+                            key={`${c.id_contribuyente}-${c.id_predio || 0}`}
+                            className={Number(selectedContribuyenteAgua?.id_contribuyente || 0) === Number(c.id_contribuyente || 0) ? "table-primary" : ""}
+                            onClick={() => setSelectedContribuyenteAgua(c)}
+                            style={{ cursor: "pointer" }}
+                          >
+                            <td className="fw-semibold">{c.codigo_municipal || `ID ${c.id_contribuyente}`}</td>
+                            <td>{c.nombre_completo || c.sec_nombre || "-"}</td>
+                            <td>{c.direccion_completa || "-"}</td>
+                            <td className="text-center">{Number(c.meses_deuda || 0)}</td>
+                            <td className="text-end">{formatMoney(c.deuda_anio)}</td>
+                            <td className="text-end">{formatMoney(c.abono_anio)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
                 <div className="small mb-2">
                   {cajaCerradaAguaHoy ? (
                     <span className="text-danger fw-semibold">
@@ -733,58 +964,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   )}
                 </div>
 
-                <div className="table-responsive border rounded" style={{ maxHeight: "58vh" }}>
-                  <table className="table table-sm table-hover align-middle mb-0">
-                    <thead className="table-light sticky-top">
-                      <tr>
-                        <th>Orden</th>
-                        <th>Fecha</th>
-                        <th>Codigo</th>
-                        <th>Contribuyente</th>
-                        <th>Recibo ref.</th>
-                        <th className="text-end">Total</th>
-                        <th className="text-center">Items</th>
-                        <th className="text-center">Acciones</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {loadingAgua && ordenesAgua.length === 0 && <tr><td colSpan="8" className="text-center py-3">Cargando...</td></tr>}
-                      {!loadingAgua && ordenesAgua.length === 0 && (
-                        <tr><td colSpan="8" className="text-center py-3 text-muted">Sin ordenes pendientes.</td></tr>
-                      )}
-                      {ordenesAgua.map((ord) => (
-                        <tr key={ord.id_orden}>
-                          <td>#{ord.id_orden}</td>
-                          <td>{formatFechaHora(ord.creado_en)}</td>
-                          <td>{ord.codigo_municipal || `ID ${ord.id_contribuyente}`}</td>
-                          <td>{resolverNombreContribuyenteAgua(ord)}</td>
-                          <td>{ord.codigo_recibo || "-"}</td>
-                          <td className="text-end">{formatMoney(ord.total_orden)}</td>
-                          <td className="text-center">{Array.isArray(ord.items) ? ord.items.length : 0}</td>
-                          <td className="text-center">
-                            <div className="btn-group btn-group-sm">
-                              <button
-                                className="btn btn-outline-secondary d-flex align-items-center gap-1"
-                                disabled={procesoAgua === ord.id_orden}
-                                onClick={() => setDatosAnexoCajaImprimir(buildAnexoDataFromOrden(ord))}
-                                title="Imprimir anexo"
-                              >
-                                <FaPrint />
-                                Anexo
-                              </button>
-                              <button className="btn btn-success" disabled={!permisos.canCaja || procesoAgua === ord.id_orden || cajaCerradaAguaHoy} onClick={() => cobrarAgua(ord.id_orden)}>
-                                Cobrar
-                              </button>
-                              <button className="btn btn-outline-danger" disabled={!permisos.canAnular || procesoAgua === ord.id_orden} onClick={() => anularAgua(ord.id_orden)}>
-                                Anular
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
               </>
             )}
 
@@ -834,9 +1013,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
                               <button className="btn btn-success" disabled={!permisos.canCaja || procesoLuz === ord.id_orden} onClick={() => cobrarLuz(ord.id_orden)}>
                                 Cobrar
                               </button>
-                              <button className="btn btn-outline-danger" disabled={!permisos.canAnular || procesoLuz === ord.id_orden} onClick={() => anularLuz(ord.id_orden)}>
-                                Anular
-                              </button>
                             </div>
                           </td>
                         </tr>
@@ -850,6 +1026,109 @@ function CajaMunicipalApp({ onBackToSelector }) {
         </div>
       </div>
 
+      {mostrarModalCobroAgua && (
+        <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.45)" }}>
+          <div className="modal-dialog modal-lg modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">
+                  Cobrar - {selectedContribuyenteAgua?.nombre_completo || selectedContribuyenteAgua?.sec_nombre || "Contribuyente"}
+                </h5>
+                <button
+                  type="button"
+                  className="btn-close"
+                  onClick={() => setMostrarModalCobroAgua(false)}
+                  disabled={cobrandoDirectoAgua}
+                ></button>
+              </div>
+              <div className="modal-body">
+                <div className="small text-muted mb-3">
+                  Seleccione el mes de deuda y el monto a pagar.
+                </div>
+                <div className="table-responsive border rounded">
+                  <table className="table table-sm align-middle mb-0">
+                    <thead className="table-light">
+                      <tr>
+                        <th style={{ width: "36px" }}></th>
+                        <th>Periodo</th>
+                        <th className="text-end">Saldo</th>
+                        <th className="text-end">Monto a cobrar</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recibosPendientesCobroAgua.length === 0 && (
+                        <tr>
+                          <td colSpan="4" className="text-center text-muted py-3">Sin recibos pendientes.</td>
+                        </tr>
+                      )}
+                      {recibosPendientesCobroAgua.map((row) => {
+                        const idRecibo = Number(row?.id_recibo || 0);
+                        const saldo = round2(parseMonto(row?.deuda_mes || row?.total_pagar || 0));
+                        const sel = seleccionCobroAgua[idRecibo] || { checked: false, monto: saldo.toFixed(2) };
+                        return (
+                          <tr key={idRecibo}>
+                            <td className="text-center">
+                              <input
+                                type="checkbox"
+                                className="form-check-input"
+                                checked={Boolean(sel?.checked)}
+                                onChange={() => toggleCobroAgua(idRecibo)}
+                                disabled={cobrandoDirectoAgua}
+                              />
+                            </td>
+                            <td>{String(row?.mes || "").padStart(2, "0")}/{row?.anio || "-"}</td>
+                            <td className="text-end">{formatMoney(saldo)}</td>
+                            <td className="text-end">
+                              <div className="input-group input-group-sm ms-auto" style={{ maxWidth: "170px" }}>
+                                <span className="input-group-text">S/.</span>
+                                <input
+                                  type="text"
+                                  className="form-control text-end"
+                                  value={sel?.monto ?? ""}
+                                  onChange={(e) => setMontoCobroAgua(idRecibo, e.target.value, saldo)}
+                                  disabled={!sel?.checked || cobrandoDirectoAgua}
+                                />
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="alert alert-info mt-3 mb-0 text-center fw-semibold">
+                  Total seleccionado: {formatMoney(totalCobroDirectoAgua)}
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setMostrarModalCobroAgua(false)}
+                  disabled={cobrandoDirectoAgua}
+                >
+                  Cancelar
+                </button>
+                <button
+                  className="btn btn-success"
+                  onClick={cobrarDirectoAgua}
+                  disabled={cobrandoDirectoAgua}
+                >
+                  {cobrandoDirectoAgua ? "Procesando..." : "Cobrar"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mostrarReporteCajaAgua && (
+        <ModalCierre
+          cerrarModal={() => setMostrarReporteCajaAgua(false)}
+          darkMode={false}
+          origen="caja"
+        />
+      )}
+
       <div style={{ position: "fixed", left: "-9999px", top: 0 }}>
         <ReciboAnexoCaja ref={anexoCajaRef} datos={datosAnexoCajaImprimir} />
       </div>
@@ -858,3 +1137,4 @@ function CajaMunicipalApp({ onBackToSelector }) {
 }
 
 export default CajaMunicipalApp;
+

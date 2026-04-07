@@ -395,6 +395,7 @@ const registrarAuditoria = async (clientOrPool, usuario, accion, detalle) => {
 };
 
 const ensureDefaults = async () => {
+  await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
   await pool.query(
     `INSERT INTO config_fechas (id_config, dias_vencimiento, dias_corte)
      VALUES (1, $1, $2)
@@ -643,6 +644,7 @@ router.get("/health", (req, res) => {
 });
 router.post("/auth/registro", async (req, res) => {
   try {
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const username = normalizeText(req.body?.username, 120);
     const password = String(req.body?.password || "");
     const nombre = normalizeText(req.body?.nombre_completo, 180);
@@ -655,8 +657,8 @@ router.post("/auth/registro", async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
     await pool.query(
-      "INSERT INTO usuarios_sistema (username, password, nombre_completo, rol, estado) VALUES ($1, $2, $3, 'CONSULTA', 'PENDIENTE')",
-      [username, hash, nombre]
+      "INSERT INTO usuarios_sistema (username, password, password_visible, nombre_completo, rol, estado) VALUES ($1, $2, $3, $4, 'CONSULTA', 'PENDIENTE')",
+      [username, hash, String(password || "").slice(0, 120), nombre]
     );
     await registrarAuditoria(null, username, "AUTH_REGISTRO", "Registro de usuario en sistema de luz (estado=PENDIENTE)");
     return res.json({ mensaje: "Solicitud enviada. Espera activación del administrador." });
@@ -668,6 +670,7 @@ router.post("/auth/registro", async (req, res) => {
 
 router.post("/auth/login", async (req, res) => {
   try {
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     cleanupLoginSecurityMaps();
     const username = normalizeText(req.body?.username, 120);
     const password = String(req.body?.password || "");
@@ -714,14 +717,24 @@ router.post("/auth/login", async (req, res) => {
     }
 
     const user = result.rows[0];
+    const passwordVisible = String(password || "").slice(0, 120);
     let ok = false;
     if (String(user.password || "").startsWith("$2")) {
       ok = await bcrypt.compare(password, user.password);
+      if (ok && !String(user.password_visible || "").trim()) {
+        await pool.query(
+          "UPDATE usuarios_sistema SET password_visible = $1 WHERE id_usuario = $2",
+          [passwordVisible, user.id_usuario]
+        );
+      }
     } else {
       ok = String(user.password || "") === password;
       if (ok) {
         const nextHash = await bcrypt.hash(password, 10);
-        await pool.query("UPDATE usuarios_sistema SET password = $1 WHERE id_usuario = $2", [nextHash, user.id_usuario]);
+        await pool.query(
+          "UPDATE usuarios_sistema SET password = $1, password_visible = $2 WHERE id_usuario = $3",
+          [nextHash, passwordVisible, user.id_usuario]
+        );
       }
     }
     if (!ok) {
@@ -748,10 +761,67 @@ router.post("/auth/login", async (req, res) => {
   }
 });
 
+router.post("/auth/cambiar-password", async (req, res) => {
+  try {
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
+    const username = normalizeText(req.body?.username, 120);
+    const passwordActual = String(req.body?.password_actual || "");
+    const passwordNuevo = String(req.body?.password_nuevo || "");
+    if (!username || !passwordNuevo) {
+      return res.status(400).json({ error: "Usuario y nueva contraseña son obligatorios." });
+    }
+    if (passwordNuevo.length < 8 || passwordNuevo.length > 120) {
+      return res.status(400).json({ error: "Password invalido. Debe tener entre 8 y 120 caracteres." });
+    }
+
+    const userRs = await pool.query(
+      "SELECT id_usuario, username, estado, password FROM usuarios_sistema WHERE username = $1 LIMIT 1",
+      [username]
+    );
+    const user = userRs.rows[0];
+    if (!user) return res.status(404).json({ error: "Usuario no encontrado." });
+    if (String(user.estado || "").toUpperCase() !== "ACTIVO") {
+      return res.status(403).json({ error: "Cuenta no activa." });
+    }
+
+    if (passwordActual) {
+      let ok = false;
+      if (String(user.password || "").startsWith("$2")) {
+        ok = await bcrypt.compare(passwordActual, String(user.password || ""));
+      } else {
+        ok = String(user.password || "") === passwordActual;
+      }
+      if (!ok) {
+        return res.status(400).json({ error: "Password actual incorrecta." });
+      }
+      if (passwordActual === passwordNuevo) {
+        return res.status(400).json({ error: "La nueva password debe ser diferente a la actual." });
+      }
+    }
+
+    const nextHash = await bcrypt.hash(passwordNuevo, 10);
+    await pool.query(
+      "UPDATE usuarios_sistema SET password = $1, password_visible = $2 WHERE id_usuario = $3",
+      [nextHash, String(passwordNuevo).slice(0, 120), Number(user.id_usuario)]
+    );
+    await registrarAuditoria(
+      null,
+      user.username,
+      "AUTH_PASSWORD_CAMBIO",
+      `id_usuario=${Number(user.id_usuario)}; username=${user.username}; via=${passwordActual ? "CON_PASSWORD_ACTUAL" : "SIN_PASSWORD_ACTUAL"}; ip=${getRequestIp(req)}`
+    );
+    return res.json({ mensaje: "Password actualizada correctamente." });
+  } catch (err) {
+    console.error("[LUZ] Error cambio password:", err.message);
+    return res.status(500).json({ error: "Error cambiando password." });
+  }
+});
+
 router.get("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
   try {
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const usuarios = await pool.query(
-      `SELECT id_usuario, username, nombre_completo, rol, estado
+      `SELECT id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible
        FROM usuarios_sistema
        ORDER BY
          CASE UPPER(TRIM(rol))
@@ -783,7 +853,8 @@ router.get("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async 
         nombre_completo: u.nombre_completo,
         rol,
         rol_label: ROLE_LABELS[rol] || rol,
-        estado
+        estado,
+        password_visible: String(u.password_visible || "")
       };
     }));
   } catch (err) {
@@ -794,6 +865,7 @@ router.get("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async 
 
 router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
   try {
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const username = normalizeText(req.body?.username, 120);
     const nombreCompleto = normalizeText(req.body?.nombre_completo, 180);
     const password = String(req.body?.password || "");
@@ -823,10 +895,10 @@ router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async
 
     const passwordHash = await bcrypt.hash(password, 10);
     const created = await pool.query(
-      `INSERT INTO usuarios_sistema (username, password, nombre_completo, rol, estado)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id_usuario, username, nombre_completo, rol, estado`,
-      [username, passwordHash, nombreCompleto, rol, estado]
+      `INSERT INTO usuarios_sistema (username, password, password_visible, nombre_completo, rol, estado)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible`,
+      [username, passwordHash, String(password || "").slice(0, 120), nombreCompleto, rol, estado]
     );
     const usuario = created.rows[0];
     const rolNormalizado = normalizeRole(usuario.rol);
@@ -845,7 +917,8 @@ router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async
         nombre_completo: usuario.nombre_completo,
         rol: rolNormalizado,
         rol_label: ROLE_LABELS[rolNormalizado] || rolNormalizado,
-        estado: normalizeEstadoUsuario(usuario.estado) || "PENDIENTE"
+        estado: normalizeEstadoUsuario(usuario.estado) || "PENDIENTE",
+        password_visible: String(usuario.password_visible || "")
       }
     });
   } catch (err) {
@@ -856,6 +929,7 @@ router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async
 
 router.put("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
   try {
+    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const targetId = parsePositiveInt(req.params?.id, 0);
     if (!targetId) return res.status(400).json({ error: "ID inválido." });
 
@@ -891,6 +965,8 @@ router.put("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), as
       const hash = await bcrypt.hash(nuevaPassword, 10);
       updateParts.push(`password = $${index++}`);
       params.push(hash);
+      updateParts.push(`password_visible = $${index++}`);
+      params.push(String(nuevaPassword).slice(0, 120));
     }
 
     if (updateParts.length === 0) {
@@ -911,7 +987,7 @@ router.put("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), as
       `UPDATE usuarios_sistema
        SET ${updateParts.join(", ")}
        WHERE id_usuario = $${index}
-       RETURNING id_usuario, username, nombre_completo, rol, estado`,
+       RETURNING id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible`,
       params
     );
     if (!updated.rows[0]) return res.status(404).json({ error: "Usuario no encontrado." });
@@ -932,7 +1008,8 @@ router.put("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), as
         nombre_completo: user.nombre_completo,
         rol: rolNormalizado,
         rol_label: ROLE_LABELS[rolNormalizado] || rolNormalizado,
-        estado: normalizeEstadoUsuario(user.estado) || "PENDIENTE"
+        estado: normalizeEstadoUsuario(user.estado) || "PENDIENTE",
+        password_visible: String(user.password_visible || "")
       }
     });
   } catch (err) {

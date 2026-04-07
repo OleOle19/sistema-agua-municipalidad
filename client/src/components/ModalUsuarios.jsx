@@ -143,7 +143,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
       <div className="modal-dialog modal-xl">
         <div className="modal-content">
           <div className="modal-header bg-dark text-white">
-            <h5 className="modal-title"><FaUserShield className="me-2"/> Separacion de poderes - Usuarios</h5>
+            <h5 className="modal-title"><FaUserShield className="me-2" /> Separacion de poderes - Usuarios</h5>
             <button type="button" className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
           <div className="modal-body bg-light">
@@ -161,6 +161,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
                     <th>Nuevo rol</th>
                     <th>Estado actual</th>
                     <th>Nuevo estado</th>
+                    <th>Password actual</th>
                     <th>Nueva contraseña</th>
                     <th>Accion</th>
                   </tr>
@@ -203,6 +204,9 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
                             ))}
                           </select>
                         </td>
+                        <td style={{ minWidth: "170px" }}>
+                          <code>{String(u.password_visible || "(no disponible)")}</code>
+                        </td>
                         <td style={{ minWidth: "220px" }}>
                           <input
                             type="password"
@@ -221,7 +225,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
                             disabled={!tieneCambios || guardandoId === u.id_usuario}
                             title="Guardar cambios"
                           >
-                            <FaSave/> Guardar
+                            <FaSave /> Guardar
                           </button>
                         </td>
                       </tr>
