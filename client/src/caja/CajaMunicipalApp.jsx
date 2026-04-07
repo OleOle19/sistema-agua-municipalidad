@@ -98,6 +98,11 @@ const normalizeSearchText = (value) => String(value || "")
   .replace(/\s+/g, " ")
   .trim();
 
+const tokenizeSearchText = (value) => normalizeSearchText(value)
+  .split(" ")
+  .map((t) => t.trim())
+  .filter(Boolean);
+
 const normalizeDigits = (value) => String(value || "").replace(/\D/g, "");
 
 const normalizeCodigo = (value) => String(value || "")
@@ -440,12 +445,14 @@ function CajaMunicipalApp({ onBackToSelector }) {
       setBusquedaContribuyenteRealizada(true);
       setContribuyentesFiltradosAgua([]);
       setSelectedContribuyenteAgua(null);
-      showFlash("warning", "Digite nombre completo, DNI o código completo para buscar.");
+      showFlash("warning", "Digite apellidos completos, nombre y apellido, DNI o código completo.");
       return;
     }
     const qNombre = normalizeSearchText(qRaw);
+    const qNombreTokens = tokenizeSearchText(qRaw);
     const qDni = normalizeDigits(qRaw);
     const qCodigo = normalizeCodigo(qRaw);
+    const usarBusquedaNombrePorTokens = qNombreTokens.length >= 2;
 
     setBuscandoContribuyenteAgua(true);
     try {
@@ -457,9 +464,13 @@ function CajaMunicipalApp({ onBackToSelector }) {
       }
       const filtrados = base.filter((row) => {
         const nombre = normalizeSearchText(row?.nombre_completo || row?.sec_nombre);
+        const nombreTokens = tokenizeSearchText(nombre);
         const dni = normalizeDigits(row?.dni_ruc);
         const codigo = normalizeCodigo(row?.codigo_municipal || row?.sec_cod);
-        return (qNombre && nombre === qNombre)
+        const coincideNombre = usarBusquedaNombrePorTokens
+          ? qNombreTokens.every((tok) => nombreTokens.includes(tok))
+          : (qNombre && nombre === qNombre);
+        return coincideNombre
           || (qDni && dni === qDni)
           || (qCodigo && codigo === qCodigo);
       }).slice(0, 200);
@@ -876,7 +887,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       type="text"
                       className="form-control"
                       style={{ maxWidth: "420px" }}
-                      placeholder="Digite nombre completo, DNI o código completo"
+                      placeholder="Digite apellidos completos, nombre y apellido, DNI o código"
                       value={busquedaContribuyenteAgua}
                       onChange={(e) => setBusquedaContribuyenteAgua(e.target.value)}
                       onKeyDown={(e) => {
@@ -920,7 +931,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         {!busquedaContribuyenteRealizada && (
                           <tr>
                             <td colSpan="6" className="text-center py-3 text-muted">
-                              La lista inicia vacía. Digite nombre completo, DNI o código completo y presione Buscar.
+                              La lista inicia vacía. Digite apellidos completos, nombre y apellido, DNI o código y presione Buscar.
                             </td>
                           </tr>
                         )}
