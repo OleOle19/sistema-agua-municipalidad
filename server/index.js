@@ -273,6 +273,10 @@ const ESTADOS_ORDEN_COBRO = {
   COBRADA: "COBRADA",
   ANULADA: "ANULADA"
 };
+const TIPOS_ORDEN_COBRO = {
+  NORMAL: "NORMAL",
+  ADELANTADO: "ADELANTADO"
+};
 const ESTADOS_CONTEO_EFECTIVO = {
   PENDIENTE: "PENDIENTE",
   APLICADO: "APLICADO",
@@ -458,6 +462,28 @@ const validateReciboPeriodoNoFuturo = (anioInput, mesInput) => {
   return { ok: true, anio, mes };
 };
 const normalizeCodigoReciboInput = (value) => parsePositiveInt(value, 0);
+const normalizeTipoOrdenCobro = (value, fallback = TIPOS_ORDEN_COBRO.NORMAL) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (raw === TIPOS_ORDEN_COBRO.ADELANTADO) return TIPOS_ORDEN_COBRO.ADELANTADO;
+  if (raw === TIPOS_ORDEN_COBRO.NORMAL) return TIPOS_ORDEN_COBRO.NORMAL;
+  return fallback;
+};
+const sanitizePeriodosAdelantados = (rowsRaw = []) => {
+  const rows = clampArray(rowsRaw, 36);
+  const seen = new Set();
+  const out = [];
+  for (const raw of rows) {
+    const anio = parsePositiveInt(raw?.anio, 0);
+    const mes = parsePositiveInt(raw?.mes, 0);
+    if (!anio || mes < 1 || mes > 12) continue;
+    const key = `${anio}-${mes}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ anio, mes, periodo_num: (anio * 100) + mes });
+  }
+  out.sort((a, b) => a.periodo_num - b.periodo_num);
+  return out;
+};
 const roundMonto2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 const parsePositiveMonto = (value) => {
   const parsed = roundMonto2(parseMonto(value, 0));
@@ -1149,6 +1175,10 @@ const ensureOrdenesCobroTable = async (client) => {
   `);
   await client.query(`
     ALTER TABLE ordenes_cobro
+    ADD COLUMN IF NOT EXISTS tipo_orden VARCHAR(20) NOT NULL DEFAULT 'NORMAL'
+  `);
+  await client.query(`
+    ALTER TABLE ordenes_cobro
     ADD COLUMN IF NOT EXISTS codigo_recibo INTEGER NULL
   `);
   await client.query(`
@@ -1196,12 +1226,28 @@ const ensureOrdenesCobroTable = async (client) => {
     END $$;
   `);
   await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_ordenes_cobro_tipo_orden'
+      ) THEN
+        ALTER TABLE ordenes_cobro
+        ADD CONSTRAINT chk_ordenes_cobro_tipo_orden
+        CHECK (tipo_orden IN ('NORMAL', 'ADELANTADO'));
+      END IF;
+    END $$;
+  `);
+  await client.query(`
     CREATE INDEX IF NOT EXISTS idx_ordenes_cobro_estado_creado
     ON ordenes_cobro (estado, creado_en DESC)
   `);
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_ordenes_cobro_contribuyente_estado
     ON ordenes_cobro (id_contribuyente, estado, creado_en DESC)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_ordenes_cobro_tipo_estado
+    ON ordenes_cobro (tipo_orden, estado, creado_en DESC)
   `);
 };
 
@@ -4583,6 +4629,7 @@ const buildOrdenCobroResponse = (row) => {
     creado_en: row?.creado_en || null,
     actualizado_en: row?.actualizado_en || null,
     estado: row?.estado || ESTADOS_ORDEN_COBRO.PENDIENTE,
+    tipo_orden: normalizeTipoOrdenCobro(row?.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL),
     id_contribuyente: Number(row?.id_contribuyente || 0),
     codigo_municipal: row?.codigo_municipal || null,
     total_orden: parseMonto(row?.total_orden, 0),
@@ -4787,20 +4834,27 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
 });
 
 app.post("/caja/ordenes-cobro", async (req, res) => {
-  return res.status(410).json({
-    error: "Emisión de orden de cobro desactivada. Caja ahora realiza cobro directo por meses."
-  });
   const client = await pool.connect();
   try {
     const idContribuyente = parsePositiveInt(req.body?.id_contribuyente, 0);
     const codigoReciboDigitado = normalizeCodigoReciboInput(req.body?.codigo_recibo);
     const observacion = normalizeLimitedText(req.body?.observacion, 500) || null;
-    const items = sanitizeOrdenCobroItems(req.body?.items);
+    const tipoOrden = normalizeTipoOrdenCobro(req.body?.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL);
+    const periodosAdelantados = sanitizePeriodosAdelantados(
+      req.body?.periodos
+      || req.body?.meses_adelantados
+      || req.body?.meses
+      || []
+    );
+    let items = sanitizeOrdenCobroItems(req.body?.items);
     if (!idContribuyente) {
       return res.status(400).json({ error: "Contribuyente invalido." });
     }
-    if (items.length === 0) {
+    if (tipoOrden === TIPOS_ORDEN_COBRO.NORMAL && items.length === 0) {
       return res.status(400).json({ error: "Debe incluir al menos un recibo con monto autorizado." });
+    }
+    if (tipoOrden === TIPOS_ORDEN_COBRO.ADELANTADO && periodosAdelantados.length === 0) {
+      return res.status(400).json({ error: "Seleccione al menos un periodo para el pago adelantado." });
     }
 
     await client.query("BEGIN");
@@ -4820,6 +4874,172 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     if (contrib.rows.length === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Contribuyente no encontrado." });
+    }
+
+    if (tipoOrden === TIPOS_ORDEN_COBRO.ADELANTADO) {
+      const periodoActualNum = getCurrentPeriodoNum();
+      const periodoInvalido = periodosAdelantados.find((p) => Number(p.periodo_num || 0) <= periodoActualNum);
+      if (periodoInvalido) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `El periodo ${periodoInvalido.mes}/${periodoInvalido.anio} no es futuro para pago adelantado.`
+        });
+      }
+
+      const predioInfo = await client.query(`
+        SELECT
+          p.id_predio,
+          COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+          COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+          COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+          COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+          p.tarifa_agua,
+          p.tarifa_desague,
+          p.tarifa_limpieza,
+          p.tarifa_admin,
+          p.tarifa_extra,
+          COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
+        FROM predios p
+        JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
+        WHERE p.id_contribuyente = $1
+        ORDER BY p.id_predio ASC
+        LIMIT 1
+      `, [idContribuyente]);
+      if (predioInfo.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "El contribuyente no tiene predio para generar pago adelantado." });
+      }
+      if (predioInfo.rows[0].estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "El contribuyente no tiene conexion activa para generar pago adelantado." });
+      }
+
+      const idPredio = Number(predioInfo.rows[0].id_predio || 0);
+      const activoSN = normalizeSN(predioInfo.rows[0].activo_sn, "S");
+      const aguaHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].agua_sn, "S") === "S";
+      const desagueHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].desague_sn, "S") === "S";
+      const limpiezaHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].limpieza_sn, "S") === "S";
+      const subtotalBase = {
+        agua: aguaHabilitado ? parseMonto(predioInfo.rows[0].tarifa_agua, AUTO_DEUDA_BASE.agua) : 0,
+        desague: desagueHabilitado ? parseMonto(predioInfo.rows[0].tarifa_desague, AUTO_DEUDA_BASE.desague) : 0,
+        limpieza: limpiezaHabilitado ? parseMonto(predioInfo.rows[0].tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0,
+        admin: activoSN === "S"
+          ? parseMonto(predioInfo.rows[0].tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(predioInfo.rows[0].tarifa_extra, 0)
+          : 0
+      };
+      const totalBase = roundMonto2(subtotalBase.agua + subtotalBase.desague + subtotalBase.limpieza + subtotalBase.admin);
+      if (totalBase <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "No se pudo determinar tarifa base para pago adelantado." });
+      }
+
+      const periodosNum = periodosAdelantados.map((p) => Number(p.periodo_num || 0));
+      const recibosExistentes = await client.query(`
+        WITH pagos_agg AS (
+          SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+          FROM pagos
+          GROUP BY id_recibo
+        )
+        SELECT
+          r.id_recibo,
+          r.anio,
+          r.mes,
+          r.total_pagar,
+          r.subtotal_agua,
+          r.subtotal_desague,
+          r.subtotal_limpieza,
+          r.subtotal_admin,
+          COALESCE(pa.total_pagado, 0) AS total_pagado
+        FROM recibos r
+        LEFT JOIN pagos_agg pa ON pa.id_recibo = r.id_recibo
+        WHERE r.id_predio = $1
+          AND ((r.anio * 100) + r.mes) = ANY($2::int[])
+        FOR UPDATE OF r
+      `, [idPredio, periodosNum]);
+      const reciboPorPeriodo = new Map(recibosExistentes.rows.map((r) => [Number(r.anio) * 100 + Number(r.mes), r]));
+
+      for (const periodo of periodosAdelantados) {
+        const key = Number(periodo.periodo_num || 0);
+        if (reciboPorPeriodo.has(key)) continue;
+        try {
+          const insertedRecibo = await client.query(`
+            INSERT INTO recibos (
+              id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, total_pagar, estado
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'PENDIENTE')
+            RETURNING id_recibo, anio, mes, total_pagar, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin
+          `, [
+            idPredio,
+            periodo.anio,
+            periodo.mes,
+            subtotalBase.agua,
+            subtotalBase.desague,
+            subtotalBase.limpieza,
+            subtotalBase.admin,
+            totalBase
+          ]);
+          const rec = insertedRecibo.rows[0];
+          if (rec) {
+            reciboPorPeriodo.set(key, {
+              ...rec,
+              total_pagado: 0
+            });
+          }
+        } catch (insertErr) {
+          if (insertErr?.code !== "23505") throw insertErr;
+          const existente = await client.query(`
+            WITH pagos_agg AS (
+              SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+              FROM pagos
+              GROUP BY id_recibo
+            )
+            SELECT
+              r.id_recibo,
+              r.anio,
+              r.mes,
+              r.total_pagar,
+              r.subtotal_agua,
+              r.subtotal_desague,
+              r.subtotal_limpieza,
+              r.subtotal_admin,
+              COALESCE(pa.total_pagado, 0) AS total_pagado
+            FROM recibos r
+            LEFT JOIN pagos_agg pa ON pa.id_recibo = r.id_recibo
+            WHERE r.id_predio = $1
+              AND r.anio = $2
+              AND r.mes = $3
+            FOR UPDATE OF r
+            LIMIT 1
+          `, [idPredio, periodo.anio, periodo.mes]);
+          if (existente.rows[0]) {
+            reciboPorPeriodo.set(key, existente.rows[0]);
+          }
+        }
+      }
+
+      items = periodosAdelantados.map((periodo) => {
+        const key = Number(periodo.periodo_num || 0);
+        const row = reciboPorPeriodo.get(key);
+        if (!row) return null;
+        const totalPagar = parseMonto(row.total_pagar, 0);
+        const totalPagado = parseMonto(row.total_pagado, 0);
+        const saldo = roundMonto2(Math.max(totalPagar - totalPagado, 0));
+        if (saldo <= 0.001) return null;
+        return {
+          id_recibo: Number(row.id_recibo),
+          mes: Number(periodo.mes),
+          anio: Number(periodo.anio),
+          monto_autorizado: saldo,
+          subtotal_agua: parseMonto(row.subtotal_agua, 0),
+          subtotal_desague: parseMonto(row.subtotal_desague, 0),
+          subtotal_limpieza: parseMonto(row.subtotal_limpieza, 0),
+          subtotal_admin: parseMonto(row.subtotal_admin, 0)
+        };
+      }).filter(Boolean);
+      if (items.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "Los periodos adelantados seleccionados ya se encuentran cancelados." });
+      }
     }
 
     const idsRecibos = items.map((r) => r.id_recibo);
@@ -4941,6 +5161,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     const insertOrden = await client.query(`
       INSERT INTO ordenes_cobro (
         estado,
+        tipo_orden,
         id_usuario_emite,
         id_contribuyente,
         codigo_municipal,
@@ -4951,9 +5172,10 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
         cargo_reimpresion,
         motivo_cargo_reimpresion
       )
-      VALUES ('PENDIENTE', $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
-      RETURNING id_orden, creado_en, actualizado_en, estado, total_orden, codigo_municipal, codigo_recibo, cargo_reimpresion, recibos_json, id_usuario_emite
+      VALUES ('PENDIENTE', $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+      RETURNING id_orden, creado_en, actualizado_en, estado, tipo_orden, total_orden, codigo_municipal, codigo_recibo, cargo_reimpresion, recibos_json, id_usuario_emite
     `, [
+      tipoOrden,
       req.user?.id_usuario || null,
       idContribuyente,
       contrib.rows[0].codigo_municipal || null,
@@ -4971,7 +5193,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_EMITIDA",
-      `orden=${orden.id_orden}; codigo_recibo=${codigoRecibo}; contribuyente=${idContribuyente}; total=${totalOrden.toFixed(2)}; cargo_reimpresion=0.00; recibos=${detalleOrden.length}; ip=${ip}`,
+      `orden=${orden.id_orden}; tipo=${tipoOrden}; codigo_recibo=${codigoRecibo}; contribuyente=${idContribuyente}; total=${totalOrden.toFixed(2)}; cargo_reimpresion=0.00; recibos=${detalleOrden.length}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -5007,10 +5229,10 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
 });
 
 app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
-  return res.json([]);
   try {
     const idContribuyente = parsePositiveInt(req.query?.id_contribuyente, 0);
     const codigoMunicipal = normalizeLimitedText(req.query?.codigo_municipal, 32);
+    const tipoOrdenFiltro = normalizeTipoOrdenCobro(req.query?.tipo_orden, "");
     const limit = Math.min(200, Math.max(10, parsePositiveInt(req.query?.limit, 50)));
     const params = [limit];
     const where = [`oc.estado = 'PENDIENTE'`];
@@ -5022,6 +5244,10 @@ app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
       params.push(codigoMunicipal);
       where.push(`oc.codigo_municipal = $${params.length}`);
     }
+    if (tipoOrdenFiltro === TIPOS_ORDEN_COBRO.NORMAL || tipoOrdenFiltro === TIPOS_ORDEN_COBRO.ADELANTADO) {
+      params.push(tipoOrdenFiltro);
+      where.push(`oc.tipo_orden = $${params.length}`);
+    }
 
     const resultado = await pool.query(`
       SELECT
@@ -5029,6 +5255,7 @@ app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
         oc.creado_en,
         oc.actualizado_en,
         oc.estado,
+        oc.tipo_orden,
         oc.id_contribuyente,
         oc.codigo_municipal,
         oc.codigo_recibo,
@@ -5104,20 +5331,22 @@ app.get("/caja/ordenes-cobro", async (req, res) => {
 });
 
 app.get("/caja/ordenes-cobro/resumen-pendientes", async (req, res) => {
-  return res.json({
-    total_ordenes: 0,
-    total_monto: 0,
-    total_contribuyentes: 0
-  });
   try {
+    const tipoOrdenFiltro = normalizeTipoOrdenCobro(req.query?.tipo_orden, "");
+    const params = [];
+    const where = [`estado = 'PENDIENTE'`];
+    if (tipoOrdenFiltro === TIPOS_ORDEN_COBRO.NORMAL || tipoOrdenFiltro === TIPOS_ORDEN_COBRO.ADELANTADO) {
+      params.push(tipoOrdenFiltro);
+      where.push(`tipo_orden = $${params.length}`);
+    }
     const data = await pool.query(`
       SELECT
         COUNT(*)::int AS total_ordenes,
         COALESCE(SUM(total_orden), 0) AS total_monto,
         COUNT(DISTINCT id_contribuyente)::int AS total_contribuyentes
       FROM ordenes_cobro
-      WHERE estado = 'PENDIENTE'
-    `);
+      WHERE ${where.join(" AND ")}
+    `, params);
     const row = data.rows[0] || {};
     res.json({
       total_ordenes: Number(row.total_ordenes || 0),
@@ -5389,9 +5618,6 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
 });
 
 app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
-  return res.status(410).json({
-    error: "Cobro por orden desactivado. Use cobro directo desde Caja Municipal."
-  });
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
@@ -5545,7 +5771,7 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_COBRADA",
-      `orden=${idOrden}; codigo_recibo=${codigoReciboOrden}; contribuyente=${orden.id_contribuyente}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=0.00; recibos=${pagosAplicados.length}; detalle_recibos=${recibosDetalle}; ip=${ip}`,
+      `orden=${idOrden}; tipo=${normalizeTipoOrdenCobro(orden.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL)}; codigo_recibo=${codigoReciboOrden}; contribuyente=${orden.id_contribuyente}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=0.00; recibos=${pagosAplicados.length}; detalle_recibos=${recibosDetalle}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -5566,6 +5792,7 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       orden: {
         id_orden: idOrden,
         estado: ESTADOS_ORDEN_COBRO.COBRADA,
+        tipo_orden: normalizeTipoOrdenCobro(orden.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL),
         id_contribuyente: Number(orden.id_contribuyente),
         codigo_municipal: orden.codigo_municipal || null,
         codigo_recibo: codigoReciboOrden,
@@ -5585,9 +5812,6 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
 });
 
 app.post("/caja/ordenes-cobro/:id/anular", async (req, res) => {
-  return res.status(410).json({
-    error: "Anulación de orden desactivada. El flujo de ordenes de cobro fue retirado."
-  });
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
@@ -5601,7 +5825,7 @@ app.post("/caja/ordenes-cobro/:id/anular", async (req, res) => {
     await ensureOrdenesCobroTable(client);
 
     const orden = await client.query(`
-      SELECT id_orden, id_contribuyente, estado
+      SELECT id_orden, id_contribuyente, estado, tipo_orden
       FROM ordenes_cobro
       WHERE id_orden = $1
       FOR UPDATE
@@ -5631,7 +5855,7 @@ app.post("/caja/ordenes-cobro/:id/anular", async (req, res) => {
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_ANULADA",
-      `orden=${idOrden}; contribuyente=${orden.rows[0].id_contribuyente}; motivo=${motivo}; ip=${ip}`,
+      `orden=${idOrden}; tipo=${normalizeTipoOrdenCobro(orden.rows[0]?.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL)}; contribuyente=${orden.rows[0].id_contribuyente}; motivo=${motivo}; ip=${ip}`,
       usuarioAuditoria
     );
 
