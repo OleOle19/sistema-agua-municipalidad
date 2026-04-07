@@ -1044,15 +1044,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
                     >
                       {loadingHistorialReimpresionAgua ? "Cargando historial..." : "Reimprimir mes pagado"}
                     </button>
-                    <button
-                      type="button"
-                      className="btn btn-outline-secondary"
-                      onClick={reimprimirUltimoAnexoCaja}
-                      disabled={!ultimoAnexoCaja || imprimiendoAnexoCaja}
-                      title={!ultimoAnexoCaja ? "Aún no hay anexo generado para reimprimir" : "Volver a imprimir el último anexo"}
-                    >
-                      {imprimiendoAnexoCaja ? "Imprimiendo..." : "Reimprimir anexo"}
-                    </button>
                   </div>
                   <div className="table-responsive border rounded" style={{ maxHeight: "240px" }}>
                     <table className="table table-sm table-hover mb-0">
