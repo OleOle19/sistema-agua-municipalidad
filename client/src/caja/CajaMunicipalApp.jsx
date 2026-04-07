@@ -237,6 +237,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const [loadingReporteLuz, setLoadingReporteLuz] = useState(false);
 
   const [datosAnexoCajaImprimir, setDatosAnexoCajaImprimir] = useState(null);
+  const [ultimoAnexoCaja, setUltimoAnexoCaja] = useState(null);
+  const [imprimiendoAnexoCaja, setImprimiendoAnexoCaja] = useState(false);
   const anexoCajaRef = useRef(null);
   const isPrintingAnexoCajaRef = useRef(false);
 
@@ -297,6 +299,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setRecibosPendientesCobroAgua([]);
     setSeleccionCobroAgua({});
     setMostrarReporteCajaAgua(false);
+    setUltimoAnexoCaja(null);
+    setImprimiendoAnexoCaja(false);
   }, []);
 
   const cargarOrdenesLuz = useCallback(async () => {
@@ -633,7 +637,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
         pagos
       });
       showFlash("success", res?.data?.mensaje || "Cobro registrado correctamente.");
-      setDatosAnexoCajaImprimir(buildAnexoDataFromPagoDirecto(selectedContribuyenteAgua, anexoItems));
+      const anexoData = buildAnexoDataFromPagoDirecto(selectedContribuyenteAgua, anexoItems);
+      setUltimoAnexoCaja(anexoData);
+      setDatosAnexoCajaImprimir(anexoData);
       setMostrarModalCobroAgua(false);
       await Promise.all([recargarAgua(), buscarContribuyentesAgua()]);
     } catch (err) {
@@ -674,6 +680,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     pageStyle: ANEXO_PAGE_STYLE,
     onAfterPrint: () => {
       isPrintingAnexoCajaRef.current = false;
+      setImprimiendoAnexoCaja(false);
       setDatosAnexoCajaImprimir(null);
     }
   });
@@ -682,15 +689,26 @@ function CajaMunicipalApp({ onBackToSelector }) {
     if (!datosAnexoCajaImprimir) return;
     if (isPrintingAnexoCajaRef.current) return;
     isPrintingAnexoCajaRef.current = true;
+    setImprimiendoAnexoCaja(true);
     const raf = requestAnimationFrame(() => {
       if (anexoCajaRef.current) {
         handlePrintAnexoCaja();
       } else {
         isPrintingAnexoCajaRef.current = false;
+        setImprimiendoAnexoCaja(false);
       }
     });
     return () => cancelAnimationFrame(raf);
   }, [datosAnexoCajaImprimir, handlePrintAnexoCaja]);
+
+  const reimprimirUltimoAnexoCaja = useCallback(() => {
+    if (!ultimoAnexoCaja) {
+      showFlash("warning", "No hay un anexo reciente para reimprimir.");
+      return;
+    }
+    if (imprimiendoAnexoCaja || isPrintingAnexoCajaRef.current) return;
+    setDatosAnexoCajaImprimir(ultimoAnexoCaja);
+  }, [imprimiendoAnexoCaja, ultimoAnexoCaja, showFlash]);
 
   const totalPendienteAgua = useMemo(
     () => contribuyentesFiltradosAgua.reduce((acc, item) => acc + parseMonto(item.deuda_anio), 0),
@@ -913,6 +931,15 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       title={!selectedContribuyenteAgua ? "Seleccione un contribuyente de la tabla" : "Seleccionar meses y cobrar"}
                     >
                       {loadingPendientesCobroAgua ? "Cargando deuda..." : (cobrandoDirectoAgua ? "Cobrando..." : "Cobrar")}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline-secondary"
+                      onClick={reimprimirUltimoAnexoCaja}
+                      disabled={!ultimoAnexoCaja || imprimiendoAnexoCaja}
+                      title={!ultimoAnexoCaja ? "Aún no hay anexo generado para reimprimir" : "Volver a imprimir el último anexo"}
+                    >
+                      {imprimiendoAnexoCaja ? "Imprimiendo..." : "Reimprimir anexo"}
                     </button>
                   </div>
                   <div className="table-responsive border rounded" style={{ maxHeight: "240px" }}>

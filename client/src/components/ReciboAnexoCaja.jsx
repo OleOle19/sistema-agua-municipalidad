@@ -79,7 +79,8 @@ const CAL = {
         totalY: 91.2,
         yOffsetMm: 5,
         conceptOffsetMm: 0,
-        amountOffsetMm: -4
+        amountOffsetMm: -4,
+        totalOffsetMm: -10
       }
     },
     {
@@ -100,8 +101,9 @@ const CAL = {
         lineGap: 8.0,
         totalY: 91.0,
         yOffsetMm: 5,
-        conceptOffsetMm: 15,
-        amountOffsetMm: 10
+        conceptOffsetMm: 11,
+        amountOffsetMm: 10,
+        totalOffsetMm: -10
       }
     },
     {
@@ -122,8 +124,9 @@ const CAL = {
         lineGap: 8.0,
         totalY: 91.0,
         yOffsetMm: 5,
-        conceptOffsetMm: 18,
-        amountOffsetMm: 18
+        conceptOffsetMm: 14,
+        amountOffsetMm: 18,
+        totalOffsetMm: -10
       }
     }
   ]
@@ -290,7 +293,10 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
             style={{
               ...baseText,
               left: xWithOffset(block.x + block.table.amountX, block.table.amountOffsetMm || 0),
-              top: yWithOffset(block.table.totalY, block.table.yOffsetMm || 0),
+              top: yWithOffset(
+                block.table.totalY,
+                (block.table.yOffsetMm || 0) + (block.table.totalOffsetMm || 0)
+              ),
               width: w(block.table.amountWidth),
               textAlign: "right",
               fontSize: fs(block.totalFont),
