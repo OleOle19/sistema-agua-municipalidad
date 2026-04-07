@@ -179,7 +179,8 @@ const Recibo = forwardRef(({ datos }, ref) => {
         height: mm(RECIBO_SIZE_MM.height),
         margin: "0 auto",
         overflow: "hidden",
-        background: "transparent"
+        background: "transparent",
+        textTransform: "uppercase"
       }}
     >
       <div style={{ ...baseText, left: x(CAL.top.xMes), top: y(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
