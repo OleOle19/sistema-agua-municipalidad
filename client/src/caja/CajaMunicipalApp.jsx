@@ -111,6 +111,7 @@ const normalizeCodigo = (value) => String(value || "")
   .trim();
 
 const formatMoney = (value) => `S/. ${parseMonto(value).toFixed(2)}`;
+const MESES_ES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 
 const formatFechaHora = (value) => {
   if (!value) return "-";
@@ -198,6 +199,43 @@ const buildAnexoDataFromPagoDirecto = (contribuyente, pagos) => {
   };
 };
 
+const buildAnexoDataFromReciboPagado = (contribuyente, reciboPagado) => {
+  const subtotalAgua = round2(parseMonto(reciboPagado?.subtotal_agua));
+  const subtotalDesague = round2(parseMonto(reciboPagado?.subtotal_desague));
+  const subtotalLimpieza = round2(parseMonto(reciboPagado?.subtotal_limpieza));
+  const subtotalAdmin = round2(parseMonto(reciboPagado?.subtotal_admin));
+  const totalPagado = round2(parseMonto(reciboPagado?.abono_mes || reciboPagado?.total_pagar));
+  const detalles = [
+    { concepto: "SERVICIO DE AGUA", importe: subtotalAgua },
+    { concepto: "SERVICIO DE DESAGUE", importe: subtotalDesague },
+    { concepto: "LIMPIEZA PUBLICA", importe: subtotalLimpieza },
+    { concepto: "SERVICIO ADMIN", importe: subtotalAdmin }
+  ].filter((row) => row.importe > 0);
+  if (detalles.length === 0 && totalPagado > 0) {
+    detalles.push({ concepto: "SERVICIOS", importe: totalPagado });
+  } else if (detalles.length > 0) {
+    const totalDetalle = round2(detalles.reduce((acc, row) => acc + parseMonto(row.importe), 0));
+    const diferencia = round2(totalPagado - totalDetalle);
+    if (Math.abs(diferencia) >= 0.01) {
+      const idx = detalles.length - 1;
+      detalles[idx] = { ...detalles[idx], importe: round2(parseMonto(detalles[idx].importe) + diferencia) };
+    }
+  }
+
+  return {
+    entidad: "MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO",
+    entidad_detalle: "ARCO 301  RUC. 20192401004",
+    contribuyente: {
+      codigo_municipal: pickFirstText(contribuyente?.codigo_municipal, contribuyente?.sec_cod),
+      nombre_completo: pickFirstText(contribuyente?.nombre_completo, contribuyente?.sec_nombre),
+      calle: pickFirstText(contribuyente?.direccion_completa, contribuyente?.direccion),
+      ruc: pickFirstText(contribuyente?.dni_ruc)
+    },
+    total: totalPagado,
+    detalles
+  };
+};
+
 function CajaMunicipalApp({ onBackToSelector }) {
   const [usuarioSistema, setUsuarioSistema] = useState(readStoredAguaUser);
   const [tab, setTab] = useState("agua");
@@ -227,6 +265,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const [cobrandoDirectoAgua, setCobrandoDirectoAgua] = useState(false);
   const [recibosPendientesCobroAgua, setRecibosPendientesCobroAgua] = useState([]);
   const [seleccionCobroAgua, setSeleccionCobroAgua] = useState({});
+  const [mostrarModalReimpresionAgua, setMostrarModalReimpresionAgua] = useState(false);
+  const [loadingHistorialReimpresionAgua, setLoadingHistorialReimpresionAgua] = useState(false);
+  const [recibosPagadosReimpresionAgua, setRecibosPagadosReimpresionAgua] = useState([]);
+  const [idReciboReimpresionAgua, setIdReciboReimpresionAgua] = useState(0);
   const [mostrarReporteCajaAgua, setMostrarReporteCajaAgua] = useState(false);
   const cajaCerradaAguaHoy = Boolean(resumenConteoAgua?.caja_cerrada_hoy);
 
@@ -298,6 +340,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setCobrandoDirectoAgua(false);
     setRecibosPendientesCobroAgua([]);
     setSeleccionCobroAgua({});
+    setMostrarModalReimpresionAgua(false);
+    setLoadingHistorialReimpresionAgua(false);
+    setRecibosPagadosReimpresionAgua([]);
+    setIdReciboReimpresionAgua(0);
     setMostrarReporteCajaAgua(false);
     setUltimoAnexoCaja(null);
     setImprimiendoAnexoCaja(false);
@@ -710,6 +756,63 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setDatosAnexoCajaImprimir(ultimoAnexoCaja);
   }, [imprimiendoAnexoCaja, ultimoAnexoCaja, showFlash]);
 
+  const abrirReimpresionAgua = useCallback(async () => {
+    const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
+    if (!idContribuyente) {
+      showFlash("warning", "Seleccione un contribuyente antes de reimprimir.");
+      return;
+    }
+    setLoadingHistorialReimpresionAgua(true);
+    try {
+      const res = await api.get(`/recibos/historial/${idContribuyente}`, { params: { anio: "all" } });
+      const historial = Array.isArray(res.data) ? res.data : [];
+      const pagados = historial
+        .filter((row) => String(row?.estado || "").toUpperCase() === "PAGADO")
+        .map((row) => ({
+          ...row,
+          id_recibo: Number(row?.id_recibo || 0),
+          mes: Number(row?.mes || 0),
+          anio: Number(row?.anio || 0)
+        }))
+        .filter((row) => row.id_recibo > 0 && row.mes >= 1 && row.mes <= 12 && row.anio >= 1900)
+        .sort((a, b) => {
+          if (a.anio !== b.anio) return b.anio - a.anio;
+          if (a.mes !== b.mes) return b.mes - a.mes;
+          return b.id_recibo - a.id_recibo;
+        });
+      if (pagados.length === 0) {
+        showFlash("warning", "El contribuyente no tiene meses pagados para reimprimir.");
+        setRecibosPagadosReimpresionAgua([]);
+        setIdReciboReimpresionAgua(0);
+        return;
+      }
+      setRecibosPagadosReimpresionAgua(pagados);
+      setIdReciboReimpresionAgua(Number(pagados[0]?.id_recibo || 0));
+      setMostrarModalReimpresionAgua(true);
+    } catch (err) {
+      handleApiError(err, "No se pudo cargar el historial pagado para reimpresion.");
+    } finally {
+      setLoadingHistorialReimpresionAgua(false);
+    }
+  }, [handleApiError, selectedContribuyenteAgua?.id_contribuyente, showFlash]);
+
+  const confirmarReimpresionAgua = useCallback(() => {
+    const idRecibo = Number(idReciboReimpresionAgua || 0);
+    if (!idRecibo) {
+      showFlash("warning", "Seleccione un mes pagado para reimprimir.");
+      return;
+    }
+    const recibo = recibosPagadosReimpresionAgua.find((row) => Number(row?.id_recibo || 0) === idRecibo);
+    if (!recibo) {
+      showFlash("warning", "No se encontro el periodo seleccionado para reimpresion.");
+      return;
+    }
+    const anexoData = buildAnexoDataFromReciboPagado(selectedContribuyenteAgua, recibo);
+    setUltimoAnexoCaja(anexoData);
+    setDatosAnexoCajaImprimir(anexoData);
+    setMostrarModalReimpresionAgua(false);
+  }, [idReciboReimpresionAgua, recibosPagadosReimpresionAgua, selectedContribuyenteAgua, showFlash]);
+
   const totalPendienteAgua = useMemo(
     () => contribuyentesFiltradosAgua.reduce((acc, item) => acc + parseMonto(item.deuda_anio), 0),
     [contribuyentesFiltradosAgua]
@@ -935,6 +1038,15 @@ function CajaMunicipalApp({ onBackToSelector }) {
                     <button
                       type="button"
                       className="btn btn-outline-secondary"
+                      onClick={abrirReimpresionAgua}
+                      disabled={!selectedContribuyenteAgua || loadingHistorialReimpresionAgua || imprimiendoAnexoCaja}
+                      title={!selectedContribuyenteAgua ? "Seleccione un contribuyente de la tabla" : "Elegir mes pagado y reimprimir"}
+                    >
+                      {loadingHistorialReimpresionAgua ? "Cargando historial..." : "Reimprimir mes pagado"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline-secondary"
                       onClick={reimprimirUltimoAnexoCaja}
                       disabled={!ultimoAnexoCaja || imprimiendoAnexoCaja}
                       title={!ultimoAnexoCaja ? "Aún no hay anexo generado para reimprimir" : "Volver a imprimir el último anexo"}
@@ -1152,6 +1264,90 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   disabled={cobrandoDirectoAgua}
                 >
                   {cobrandoDirectoAgua ? "Procesando..." : "Cobrar"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mostrarModalReimpresionAgua && (
+        <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.45)" }}>
+          <div className="modal-dialog modal-lg modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">
+                  Reimprimir mes pagado - {selectedContribuyenteAgua?.nombre_completo || selectedContribuyenteAgua?.sec_nombre || "Contribuyente"}
+                </h5>
+                <button
+                  type="button"
+                  className="btn-close"
+                  onClick={() => setMostrarModalReimpresionAgua(false)}
+                  disabled={imprimiendoAnexoCaja}
+                ></button>
+              </div>
+              <div className="modal-body">
+                <div className="small text-muted mb-3">
+                  Seleccione el mes que ya fue pagado para reimprimir su anexo.
+                </div>
+                <div className="table-responsive border rounded">
+                  <table className="table table-sm align-middle mb-0">
+                    <thead className="table-light">
+                      <tr>
+                        <th style={{ width: "36px" }}></th>
+                        <th>Periodo</th>
+                        <th className="text-end">Total pagado</th>
+                        <th className="text-end">Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recibosPagadosReimpresionAgua.length === 0 && (
+                        <tr>
+                          <td colSpan="4" className="text-center text-muted py-3">Sin meses pagados para reimpresion.</td>
+                        </tr>
+                      )}
+                      {recibosPagadosReimpresionAgua.map((row) => {
+                        const idRecibo = Number(row?.id_recibo || 0);
+                        const mes = Number(row?.mes || 0);
+                        const anio = Number(row?.anio || 0);
+                        const mesNombre = MESES_ES[mes] || String(mes).padStart(2, "0");
+                        const totalPagado = round2(parseMonto(row?.abono_mes || row?.total_pagar));
+                        return (
+                          <tr key={idRecibo}>
+                            <td className="text-center">
+                              <input
+                                type="radio"
+                                className="form-check-input"
+                                name="recibo_reimpresion_agua"
+                                checked={Number(idReciboReimpresionAgua) === idRecibo}
+                                onChange={() => setIdReciboReimpresionAgua(idRecibo)}
+                                disabled={imprimiendoAnexoCaja}
+                              />
+                            </td>
+                            <td>{mesNombre} {anio}</td>
+                            <td className="text-end">{formatMoney(totalPagado)}</td>
+                            <td className="text-end"><span className="badge text-bg-success">PAGADO</span></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setMostrarModalReimpresionAgua(false)}
+                  disabled={imprimiendoAnexoCaja}
+                >
+                  Cancelar
+                </button>
+                <button
+                  className="btn btn-outline-primary"
+                  onClick={confirmarReimpresionAgua}
+                  disabled={imprimiendoAnexoCaja || !idReciboReimpresionAgua}
+                >
+                  {imprimiendoAnexoCaja ? "Imprimiendo..." : "Reimprimir"}
                 </button>
               </div>
             </div>
