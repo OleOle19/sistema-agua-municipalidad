@@ -76,7 +76,10 @@ const CAL = {
         amountWidth: 8.8,
         topY: 35.2,
         lineGap: 6.0,
-        totalY: 91.2
+        totalY: 91.2,
+        yOffsetMm: 5,
+        conceptOffsetMm: 0,
+        amountOffsetMm: -4
       }
     },
     {
@@ -95,7 +98,10 @@ const CAL = {
         amountWidth: 6.2,
         topY: 35.0,
         lineGap: 8.0,
-        totalY: 91.0
+        totalY: 91.0,
+        yOffsetMm: 5,
+        conceptOffsetMm: 15,
+        amountOffsetMm: 10
       }
     },
     {
@@ -114,7 +120,10 @@ const CAL = {
         amountWidth: 6.2,
         topY: 35.0,
         lineGap: 8.0,
-        totalY: 91.0
+        totalY: 91.0,
+        yOffsetMm: 5,
+        conceptOffsetMm: 18,
+        amountOffsetMm: 18
       }
     }
   ]
@@ -144,6 +153,8 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
 
   const x = (value) => mm((value * scaleX) + LAYOUT.sideMarginX);
   const y = (value) => mm((value * scaleY) + offsetY);
+  const xWithOffset = (value, offsetMm = 0) => mm((value * scaleX) + LAYOUT.sideMarginX + offsetMm);
+  const yWithOffset = (value, offsetMm = 0) => mm((value * scaleY) + offsetY + offsetMm);
   const w = (value) => mm(value * scaleX);
   const h = (value) => mm(value * scaleY);
   const fs = (value) => mm(value * fontScale);
@@ -238,8 +249,8 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                 <div
                   style={{
                     ...baseText,
-                    left: x(block.x + block.table.conceptX),
-                    top: y(block.table.topY + (idx * block.table.lineGap)),
+                    left: xWithOffset(block.x + block.table.conceptX, block.table.conceptOffsetMm || 0),
+                    top: yWithOffset(block.table.topY + (idx * block.table.lineGap), block.table.yOffsetMm || 0),
                     fontSize: fs(block.conceptFont),
                     maxWidth: w(block.table.conceptMax),
                     whiteSpace: block.compact ? "normal" : "nowrap",
@@ -261,8 +272,8 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
                 <div
                   style={{
                     ...baseText,
-                    left: x(block.x + block.table.amountX),
-                    top: y(block.table.topY + (idx * block.table.lineGap)),
+                    left: xWithOffset(block.x + block.table.amountX, block.table.amountOffsetMm || 0),
+                    top: yWithOffset(block.table.topY + (idx * block.table.lineGap), block.table.yOffsetMm || 0),
                     width: w(block.table.amountWidth),
                     textAlign: "right",
                     fontSize: fs(block.amountFont),
@@ -278,8 +289,8 @@ const ReciboAnexoCaja = forwardRef(({ datos }, ref) => {
           <div
             style={{
               ...baseText,
-              left: x(block.x + block.table.amountX),
-              top: y(block.table.totalY),
+              left: xWithOffset(block.x + block.table.amountX, block.table.amountOffsetMm || 0),
+              top: yWithOffset(block.table.totalY, block.table.yOffsetMm || 0),
               width: w(block.table.amountWidth),
               textAlign: "right",
               fontSize: fs(block.totalFont),
