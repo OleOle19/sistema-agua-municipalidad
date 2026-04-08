@@ -4805,9 +4805,24 @@ app.post("/recibos/generar-masivo", async (req, res) => {
 
 app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
   try {
-    const { id_contribuyente } = req.params;
+    const idContribuyente = parsePositiveInt(req.params?.id_contribuyente, 0);
+    if (!idContribuyente) {
+      return res.status(400).json({ error: "ID de contribuyente inválido." });
+    }
+    const incluirAdelantados = normalizeSN(req.query?.incluir_adelantados, "N") === "S";
+    const adelantadoMeses = Math.min(24, Math.max(1, parsePositiveInt(req.query?.adelantado_meses, 12)));
     const anioActual = getCurrentYear();
     const mesActual = getCurrentMonth();
+    const periodoActual = (anioActual * 100) + mesActual;
+    const whereParts = [
+      "r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)",
+      "(r.total_pagar - COALESCE(p.total_pagado, 0)) > 0"
+    ];
+    const params = [idContribuyente];
+    if (!incluirAdelantados) {
+      params.push(anioActual, mesActual);
+      whereParts.push("((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))");
+    }
     const pendientes = await pool.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
         r.total_pagar,
@@ -4824,12 +4839,87 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
         FROM pagos
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
-      WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
-      AND (r.total_pagar - COALESCE(p.total_pagado, 0)) > 0
-      AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))
+      WHERE ${whereParts.join(" AND ")}
       ORDER BY r.anio, r.mes
-    `, [id_contribuyente, anioActual, mesActual]);
-    res.json(pendientes.rows);
+    `, params);
+    if (!incluirAdelantados) {
+      return res.json(pendientes.rows);
+    }
+
+    const predio = await pool.query(`
+      SELECT
+        p.id_predio,
+        COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+        COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+        COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+        COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+        p.tarifa_agua,
+        p.tarifa_desague,
+        p.tarifa_limpieza,
+        p.tarifa_admin,
+        p.tarifa_extra,
+        COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
+      FROM predios p
+      JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
+      WHERE p.id_contribuyente = $1
+      ORDER BY p.id_predio ASC
+      LIMIT 1
+    `, [idContribuyente]);
+    if (predio.rows.length === 0 || predio.rows[0].estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) {
+      return res.json(pendientes.rows.map((row) => ({
+        ...row,
+        es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoActual
+      })));
+    }
+
+    const activoSN = normalizeSN(predio.rows[0].activo_sn, "S");
+    const aguaHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].agua_sn, "S") === "S";
+    const desagueHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].desague_sn, "S") === "S";
+    const limpiezaHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].limpieza_sn, "S") === "S";
+    const subtotalBase = {
+      agua: aguaHabilitado ? parseMonto(predio.rows[0].tarifa_agua, AUTO_DEUDA_BASE.agua) : 0,
+      desague: desagueHabilitado ? parseMonto(predio.rows[0].tarifa_desague, AUTO_DEUDA_BASE.desague) : 0,
+      limpieza: limpiezaHabilitado ? parseMonto(predio.rows[0].tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0,
+      admin: activoSN === "S"
+        ? parseMonto(predio.rows[0].tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(predio.rows[0].tarifa_extra, 0)
+        : 0
+    };
+    const totalBase = roundMonto2(subtotalBase.agua + subtotalBase.desague + subtotalBase.limpieza + subtotalBase.admin);
+    const rows = pendientes.rows.map((row) => ({
+      ...row,
+      es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoActual
+    }));
+    if (totalBase <= 0) {
+      return res.json(rows);
+    }
+
+    const existing = new Set(
+      rows.map((row) => `${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`)
+    );
+    const nextPeriodo = getNextPeriod();
+    for (let i = 0; i < adelantadoMeses; i += 1) {
+      const dt = new Date(nextPeriodo.anio, (nextPeriodo.mes - 1) + i, 1);
+      const anio = dt.getFullYear();
+      const mes = dt.getMonth() + 1;
+      const key = `${anio}-${mes}`;
+      if (existing.has(key)) continue;
+      rows.push({
+        id_recibo: null,
+        mes,
+        anio,
+        subtotal_agua: subtotalBase.agua,
+        subtotal_desague: subtotalBase.desague,
+        subtotal_limpieza: subtotalBase.limpieza,
+        subtotal_admin: subtotalBase.admin,
+        total_pagar: totalBase,
+        abono_mes: 0,
+        deuda_mes: totalBase,
+        estado: "ADELANTADO",
+        es_adelantado: true
+      });
+    }
+    rows.sort((a, b) => ((Number(a.anio || 0) * 100 + Number(a.mes || 0)) - (Number(b.anio || 0) * 100 + Number(b.mes || 0))));
+    return res.json(rows);
   } catch (err) { res.status(500).send("Error"); }
 });
 
@@ -5881,21 +5971,29 @@ const normalizePagoInputs = (body = {}) => {
       if (typeof raw === "number" || typeof raw === "string") {
         const idRecibo = parsePositiveInt(raw, 0);
         if (idRecibo <= 0) return null;
-        return { id_recibo: idRecibo, monto_pagado: null };
+        return { id_recibo: idRecibo, anio: null, mes: null, monto_pagado: null };
       }
       const idRecibo = parsePositiveInt(raw.id_recibo ?? raw.idRecibo ?? raw.recibo_id ?? raw.id, 0);
-      if (idRecibo <= 0) return null;
+      const anio = parsePositiveInt(raw.anio ?? raw.year, 0);
+      const mes = parsePositiveInt(raw.mes ?? raw.month, 0);
+      const periodoValido = anio > 0 && mes >= 1 && mes <= 12;
       const monto = parsePositiveMonto(
         raw.monto_pagado ?? raw.monto ?? raw.monto_autorizado ?? raw.importe ?? raw.total ?? raw.saldo
       );
-      return { id_recibo: idRecibo, monto_pagado: monto > 0 ? monto : null };
+      if (idRecibo <= 0 && !periodoValido) return null;
+      return {
+        id_recibo: idRecibo > 0 ? idRecibo : null,
+        anio: periodoValido ? anio : null,
+        mes: periodoValido ? mes : null,
+        monto_pagado: monto > 0 ? monto : null
+      };
     })
     .filter(Boolean);
 
   const singleId = parsePositiveInt(body.id_recibo, 0);
   if (singleId > 0) {
     const singleMonto = parsePositiveMonto(body.monto_pagado ?? body.monto);
-    return [{ id_recibo: singleId, monto_pagado: singleMonto > 0 ? singleMonto : null }];
+    return [{ id_recibo: singleId, anio: null, mes: null, monto_pagado: singleMonto > 0 ? singleMonto : null }];
   }
 
   const arraySources = [body.pagos, body.recibos, body.items, body.detalle];
@@ -5914,7 +6012,7 @@ const normalizePagoInputs = (body = {}) => {
         const monto = parsePositiveMonto(
           montosMap[idRecibo] ?? montosMap[String(idRecibo)] ?? body.monto_pagado ?? body.monto
         );
-        return { id_recibo: idRecibo, monto_pagado: monto > 0 ? monto : null };
+        return { id_recibo: idRecibo, anio: null, mes: null, monto_pagado: monto > 0 ? monto : null };
       });
   }
 
@@ -5931,13 +6029,158 @@ app.post("/pagos", async (req, res) => {
       });
     }
     const idContribuyenteSolicitado = parsePositiveInt(req.body?.id_contribuyente, 0);
-    const pagosSolicitados = normalizePagoInputs(req.body);
-    if (pagosSolicitados.length === 0) {
+    const pagosSolicitadosRaw = normalizePagoInputs(req.body);
+    if (pagosSolicitadosRaw.length === 0) {
       return res.status(400).json({ error: "Formato de pago inválido o sin recibos válidos." });
     }
+    const pagosSolicitados = pagosSolicitadosRaw.map((p) => ({ ...p }));
 
     await client.query("BEGIN");
+    const pagosSinRecibo = pagosSolicitados.filter((p) => parsePositiveInt(p?.id_recibo, 0) <= 0);
+    if (pagosSinRecibo.length > 0) {
+      if (idContribuyenteSolicitado <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "Para cobro por periodo (mes/año) debe indicar id_contribuyente."
+        });
+      }
+
+      const predioInfo = await client.query(`
+        SELECT
+          p.id_predio,
+          COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+          COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+          COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+          COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+          p.tarifa_agua,
+          p.tarifa_desague,
+          p.tarifa_limpieza,
+          p.tarifa_admin,
+          p.tarifa_extra,
+          COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
+        FROM predios p
+        JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
+        WHERE p.id_contribuyente = $1
+        ORDER BY p.id_predio ASC
+        LIMIT 1
+      `, [idContribuyenteSolicitado]);
+      if (predioInfo.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "El contribuyente no tiene predio para cobrar periodos." });
+      }
+      if (predioInfo.rows[0].estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "El contribuyente no tiene conexion activa para cobrar periodos adelantados." });
+      }
+      const idPredio = Number(predioInfo.rows[0].id_predio || 0);
+      const activoSN = normalizeSN(predioInfo.rows[0].activo_sn, "S");
+      const aguaHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].agua_sn, "S") === "S";
+      const desagueHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].desague_sn, "S") === "S";
+      const limpiezaHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].limpieza_sn, "S") === "S";
+      const subtotalBase = {
+        agua: aguaHabilitado ? parseMonto(predioInfo.rows[0].tarifa_agua, AUTO_DEUDA_BASE.agua) : 0,
+        desague: desagueHabilitado ? parseMonto(predioInfo.rows[0].tarifa_desague, AUTO_DEUDA_BASE.desague) : 0,
+        limpieza: limpiezaHabilitado ? parseMonto(predioInfo.rows[0].tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0,
+        admin: activoSN === "S"
+          ? parseMonto(predioInfo.rows[0].tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(predioInfo.rows[0].tarifa_extra, 0)
+          : 0
+      };
+      const totalBase = roundMonto2(subtotalBase.agua + subtotalBase.desague + subtotalBase.limpieza + subtotalBase.admin);
+      if (totalBase <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "No se pudo determinar la tarifa base del contribuyente." });
+      }
+
+      const periodoActualNum = getCurrentPeriodoNum();
+      const periodosMap = new Map();
+      for (const pago of pagosSinRecibo) {
+        const anio = parsePositiveInt(pago?.anio, 0);
+        const mes = parsePositiveInt(pago?.mes, 0);
+        if (!anio || mes < 1 || mes > 12) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({ error: "Periodo inválido en uno de los pagos solicitados." });
+        }
+        const key = `${anio}-${mes}`;
+        periodosMap.set(key, { anio, mes, periodo_num: (anio * 100) + mes, id_recibo: 0 });
+      }
+
+      for (const periodo of periodosMap.values()) {
+        let idRecibo = 0;
+        const existente = await client.query(`
+          SELECT r.id_recibo
+          FROM recibos r
+          WHERE r.id_predio = $1
+            AND r.anio = $2
+            AND r.mes = $3
+          FOR UPDATE OF r
+          LIMIT 1
+        `, [idPredio, periodo.anio, periodo.mes]);
+        if (existente.rows[0]?.id_recibo) {
+          idRecibo = Number(existente.rows[0].id_recibo || 0);
+        } else {
+          if (periodo.periodo_num < periodoActualNum) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({
+              error: `No existe recibo para el periodo ${periodo.mes}/${periodo.anio}.`
+            });
+          }
+          try {
+            const inserted = await client.query(`
+              INSERT INTO recibos (
+                id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, total_pagar, estado
+              )
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'PENDIENTE')
+              RETURNING id_recibo
+            `, [
+              idPredio,
+              periodo.anio,
+              periodo.mes,
+              subtotalBase.agua,
+              subtotalBase.desague,
+              subtotalBase.limpieza,
+              subtotalBase.admin,
+              totalBase
+            ]);
+            idRecibo = Number(inserted.rows?.[0]?.id_recibo || 0);
+          } catch (insertErr) {
+            if (insertErr?.code !== "23505") throw insertErr;
+            const recuperado = await client.query(`
+              SELECT r.id_recibo
+              FROM recibos r
+              WHERE r.id_predio = $1
+                AND r.anio = $2
+                AND r.mes = $3
+              FOR UPDATE OF r
+              LIMIT 1
+            `, [idPredio, periodo.anio, periodo.mes]);
+            idRecibo = Number(recuperado.rows?.[0]?.id_recibo || 0);
+          }
+        }
+        if (!idRecibo) {
+          await client.query("ROLLBACK");
+          return res.status(500).json({ error: `No se pudo resolver el recibo del periodo ${periodo.mes}/${periodo.anio}.` });
+        }
+        periodosMap.set(`${periodo.anio}-${periodo.mes}`, { ...periodo, id_recibo: idRecibo });
+      }
+
+      for (const pago of pagosSolicitados) {
+        if (parsePositiveInt(pago?.id_recibo, 0) > 0) continue;
+        const anio = parsePositiveInt(pago?.anio, 0);
+        const mes = parsePositiveInt(pago?.mes, 0);
+        const periodo = periodosMap.get(`${anio}-${mes}`);
+        if (!periodo?.id_recibo) {
+          await client.query("ROLLBACK");
+          return res.status(500).json({ error: `No se pudo preparar el periodo ${mes}/${anio} para cobro.` });
+        }
+        pago.id_recibo = Number(periodo.id_recibo);
+      }
+    }
+
     const idsRecibos = [...new Set(pagosSolicitados.map((p) => Number(p.id_recibo)).filter((v) => Number.isInteger(v) && v > 0))];
+    if (idsRecibos.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "No se encontraron recibos válidos para procesar el cobro." });
+    }
     const recibosRows = await client.query(`
       WITH pagos_prev AS (
         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
@@ -5947,6 +6190,12 @@ app.post("/pagos", async (req, res) => {
       )
       SELECT
         r.id_recibo,
+        r.mes,
+        r.anio,
+        r.subtotal_agua,
+        r.subtotal_desague,
+        r.subtotal_limpieza,
+        r.subtotal_admin,
         r.total_pagar,
         COALESCE(pp.total_pagado, 0) AS total_pagado,
         p.id_contribuyente
@@ -5963,6 +6212,12 @@ app.post("/pagos", async (req, res) => {
 
     const recibosMap = new Map(recibosRows.rows.map((r) => [Number(r.id_recibo), {
       id_recibo: Number(r.id_recibo),
+      mes: parsePositiveInt(r.mes, 0),
+      anio: parsePositiveInt(r.anio, 0),
+      subtotal_agua: parseMonto(r.subtotal_agua, 0),
+      subtotal_desague: parseMonto(r.subtotal_desague, 0),
+      subtotal_limpieza: parseMonto(r.subtotal_limpieza, 0),
+      subtotal_admin: parseMonto(r.subtotal_admin, 0),
       total_pagar: parseMonto(r.total_pagar, 0),
       total_pagado: parseMonto(r.total_pagado, 0),
       id_contribuyente: parsePositiveInt(r.id_contribuyente, 0)
@@ -6009,10 +6264,16 @@ app.post("/pagos", async (req, res) => {
       const saldo = roundMonto2(Math.max(recibo.total_pagar - totalPagadoNuevo, 0));
       pagosAplicados.push({
         id_recibo: recibo.id_recibo,
+        mes: recibo.mes,
+        anio: recibo.anio,
         id_contribuyente: recibo.id_contribuyente,
         monto_pagado: monto,
         estado: nuevoEstado,
         total_pagado: totalPagadoNuevo,
+        subtotal_agua: recibo.subtotal_agua,
+        subtotal_desague: recibo.subtotal_desague,
+        subtotal_limpieza: recibo.subtotal_limpieza,
+        subtotal_admin: recibo.subtotal_admin,
         saldo
       });
       recibo.total_pagado = totalPagadoNuevo;
