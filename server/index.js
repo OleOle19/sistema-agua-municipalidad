@@ -297,6 +297,7 @@ const LOGIN_LOCK_DURATION_MS = Number(process.env.LOGIN_LOCK_DURATION_MS || (15 
 const CAJA_CIERRE_ALERTA_UMBRAL = parseMonto(process.env.CAJA_CIERRE_ALERTA_UMBRAL, 2);
 const CAJA_RIESGO_WINDOW_HOURS = Math.min(168, Math.max(1, Number(process.env.CAJA_RIESGO_WINDOW_HOURS || 24)));
 const CAJA_RIESGO_ANULACIONES_UMBRAL = Math.min(20, Math.max(1, Number(process.env.CAJA_RIESGO_ANULACIONES_UMBRAL || 3)));
+const MAX_RETROACTIVE_COBRO_YEARS = Math.min(5, Math.max(0, Number(process.env.MAX_RETROACTIVE_COBRO_YEARS || 1)));
 const PAGO_OPERATIVO_CAJA_SQL = "(p.id_orden_cobro IS NOT NULL OR COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '')";
 const normalizeHoraHM = (value, fallback) => {
   const raw = String(value || "").trim();
@@ -432,6 +433,62 @@ const normalizeDateOnly = (value) => {
   }
 
   return null;
+};
+const getRetroactiveCobroMinDate = (baseDateIso = toISODate(), yearsBack = MAX_RETROACTIVE_COBRO_YEARS) => {
+  const base = normalizeDateOnly(baseDateIso);
+  if (!base) return null;
+  const safeYearsBack = Math.max(0, Number.isFinite(Number(yearsBack)) ? Number(yearsBack) : 0);
+  if (safeYearsBack <= 0) return base;
+  const [baseYear, baseMonth, baseDay] = base.split("-").map((v) => Number(v));
+  const targetYear = baseYear - safeYearsBack;
+  const monthText = String(baseMonth).padStart(2, "0");
+  for (let day = baseDay; day >= 1; day -= 1) {
+    const candidate = `${String(targetYear).padStart(4, "0")}-${monthText}-${String(day).padStart(2, "0")}`;
+    if (normalizeDateOnly(candidate)) return candidate;
+  }
+  return `${String(targetYear).padStart(4, "0")}-${monthText}-01`;
+};
+const validateCobroDateWindow = (requestedDateRaw, hoyIso = toISODate()) => {
+  const hoy = normalizeDateOnly(hoyIso) || toISODate();
+  const fechaSolicitada = normalizeDateOnly(requestedDateRaw) || hoy;
+  if (fechaSolicitada > hoy) {
+    return {
+      ok: false,
+      fecha: fechaSolicitada,
+      hoy,
+      minPermitida: getRetroactiveCobroMinDate(hoy),
+      error: "No se permite registrar cobros con fecha futura."
+    };
+  }
+  const minPermitida = getRetroactiveCobroMinDate(hoy);
+  if (minPermitida && fechaSolicitada < minPermitida) {
+    return {
+      ok: false,
+      fecha: fechaSolicitada,
+      hoy,
+      minPermitida,
+      error: `Solo se permite registrar cobros con antiguedad maxima de ${MAX_RETROACTIVE_COBRO_YEARS} año(s). Fecha minima permitida: ${minPermitida}.`
+    };
+  }
+  return { ok: true, fecha: fechaSolicitada, hoy, minPermitida };
+};
+const parseDateYearMonth = (isoDateRaw, fallback = {}) => {
+  const normalized = normalizeDateOnly(isoDateRaw);
+  if (!normalized) {
+    return {
+      iso: null,
+      anio: Number(fallback.anio || 0),
+      mes: Number(fallback.mes || 0),
+      periodoNum: (Number(fallback.anio || 0) * 100) + Number(fallback.mes || 0)
+    };
+  }
+  const [anio, mes] = normalized.split("-").map((v) => Number(v));
+  return {
+    iso: normalized,
+    anio,
+    mes,
+    periodoNum: (anio * 100) + mes
+  };
 };
 
 const normalizeLimitedText = (value, maxLen = 250) => {
@@ -959,6 +1016,7 @@ const ACCESS_RULES = [
   { methods: ["PUT"], pattern: /^\/admin\/usuarios\/\d+$/, minRole: "ADMIN" },
   { methods: ["DELETE"], pattern: /^\/admin\/usuarios\/\d+$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/admin\/backup$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/admin\/pagos-anulados$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/admin\/campo-remoto\/estado$/, minRole: "ADMIN_SEC" },
 
   { methods: ["POST"], pattern: /^\/importar\/padron$/, minRole: "ADMIN" },
@@ -1001,6 +1059,7 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/caja\/reporte\/excel$/, minRole: "CAJERO" },
 
   { methods: ["POST"], pattern: /^\/pagos$/, minRole: "CAJERO" },
+  { methods: ["POST"], pattern: /^\/pagos\/\d+\/anular$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/impresiones\/generar-codigo$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/recibos\/masivos$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/reporte$/, minRole: "CAJERO" },
@@ -1887,6 +1946,42 @@ const ensureDataIntegrityGuards = async (client) => {
   `);
 };
 
+const ensurePagosAnuladosTable = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS pagos_anulados (
+      id_anulacion BIGSERIAL PRIMARY KEY,
+      id_pago_original BIGINT NOT NULL,
+      id_recibo INTEGER NOT NULL,
+      id_contribuyente INTEGER NULL,
+      id_orden_cobro_original BIGINT NULL,
+      monto_pagado NUMERIC(12,2) NOT NULL,
+      fecha_pago_original TIMESTAMP NOT NULL,
+      usuario_cajero_original VARCHAR(120) NULL,
+      anulado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      id_usuario_anula INTEGER NULL,
+      username_anula VARCHAR(120) NULL,
+      motivo_anulacion VARCHAR(500) NOT NULL,
+      payload_json JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+  await client.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_pagos_anulados_pago_original
+    ON pagos_anulados (id_pago_original)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pagos_anulados_anulado_en
+    ON pagos_anulados (anulado_en DESC)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pagos_anulados_id_recibo
+    ON pagos_anulados (id_recibo)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_pagos_anulados_id_contribuyente
+    ON pagos_anulados (id_contribuyente, anulado_en DESC)
+  `);
+};
+
 const ensurePerformanceIndexes = async (client) => {
   await client.query(`
     ALTER TABLE usuarios_sistema
@@ -1902,6 +1997,7 @@ const ensurePerformanceIndexes = async (client) => {
   await ensureCampoSolicitudesTable(client);
   await ensureComparacionesLegacyTables(client);
   await ensureDataIntegrityGuards(client);
+  await ensurePagosAnuladosTable(client);
   const statements = [
     "CREATE INDEX IF NOT EXISTS idx_pagos_fecha_pago ON pagos (fecha_pago DESC)",
     "CREATE INDEX IF NOT EXISTS idx_pagos_id_recibo ON pagos (id_recibo)",
@@ -4809,19 +4905,25 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     if (!idContribuyente) {
       return res.status(400).json({ error: "ID de contribuyente inválido." });
     }
+    const hoyIso = toISODate();
+    const fechaCorte = normalizeDateOnly(req.query?.fecha_corte || req.query?.fecha || req.query?.fecha_pago) || hoyIso;
+    if (fechaCorte > hoyIso) {
+      return res.status(400).json({ error: "No se permite usar fecha de corte futura." });
+    }
+    const fechaBase = parseDateYearMonth(fechaCorte, parseDateYearMonth(hoyIso));
     const incluirAdelantados = normalizeSN(req.query?.incluir_adelantados, "N") === "S";
     const adelantadoMeses = Math.min(24, Math.max(1, parsePositiveInt(req.query?.adelantado_meses, 12)));
-    const anioActual = getCurrentYear();
-    const mesActual = getCurrentMonth();
+    const anioActual = Number(fechaBase.anio || getCurrentYear());
+    const mesActual = Number(fechaBase.mes || getCurrentMonth());
     const periodoActual = (anioActual * 100) + mesActual;
     const whereParts = [
       "r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)",
       "(r.total_pagar - COALESCE(p.total_pagado, 0)) > 0"
     ];
-    const params = [idContribuyente];
+    const params = [idContribuyente, fechaCorte];
     if (!incluirAdelantados) {
       params.push(anioActual, mesActual);
-      whereParts.push("((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))");
+      whereParts.push("((r.anio < $3) OR (r.anio = $3 AND r.mes <= $4))");
     }
     const pendientes = await pool.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
@@ -4837,6 +4939,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       LEFT JOIN (
         SELECT id_recibo, SUM(monto_pagado) as total_pagado
         FROM pagos
+        WHERE DATE(fecha_pago) <= $2::date
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       WHERE ${whereParts.join(" AND ")}
@@ -4896,7 +4999,11 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     const existing = new Set(
       rows.map((row) => `${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`)
     );
-    const nextPeriodo = getNextPeriod();
+    const nextPeriodoDate = new Date(Date.UTC(anioActual, mesActual, 1));
+    const nextPeriodo = {
+      anio: nextPeriodoDate.getUTCFullYear(),
+      mes: nextPeriodoDate.getUTCMonth() + 1
+    };
     for (let i = 0; i < adelantadoMeses; i += 1) {
       const dt = new Date(nextPeriodo.anio, (nextPeriodo.mes - 1) + i, 1);
       const anio = dt.getFullYear();
@@ -5712,13 +5819,18 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
     if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
-    const hoy = toISODate();
-    const fechaPagoSolicitada = normalizeDateOnly(
+    const validacionFecha = validateCobroDateWindow(
       req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha
-    ) || hoy;
-    if (fechaPagoSolicitada > hoy) {
-      return res.status(400).json({ error: "No se permite registrar cobros con fecha futura." });
+    );
+    if (!validacionFecha.ok) {
+      return res.status(400).json({
+        error: validacionFecha.error,
+        fecha_minima_permitida: validacionFecha.minPermitida || null,
+        fecha_maxima_permitida: validacionFecha.hoy || null
+      });
     }
+    const hoy = validacionFecha.hoy;
+    const fechaPagoSolicitada = validacionFecha.fecha || hoy;
     const cierreHoy = await consultarCierreCajaBloqueante(client, hoy);
     if (cierreHoy.cerrada && fechaPagoSolicitada === hoy) {
       return res.status(409).json({
@@ -6029,13 +6141,18 @@ const normalizePagoInputs = (body = {}) => {
 app.post("/pagos", async (req, res) => {
   const client = await pool.connect();
   try {
-    const hoy = toISODate();
-    const fechaPagoSolicitada = normalizeDateOnly(
+    const validacionFecha = validateCobroDateWindow(
       req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha
-    ) || hoy;
-    if (fechaPagoSolicitada > hoy) {
-      return res.status(400).json({ error: "No se permite registrar cobros con fecha futura." });
+    );
+    if (!validacionFecha.ok) {
+      return res.status(400).json({
+        error: validacionFecha.error,
+        fecha_minima_permitida: validacionFecha.minPermitida || null,
+        fecha_maxima_permitida: validacionFecha.hoy || null
+      });
     }
+    const hoy = validacionFecha.hoy;
+    const fechaPagoSolicitada = validacionFecha.fecha || hoy;
     const cierreHoy = await consultarCierreCajaBloqueante(client, hoy);
     if (cierreHoy.cerrada && fechaPagoSolicitada === hoy) {
       return res.status(409).json({
@@ -6342,6 +6459,219 @@ app.post("/pagos", async (req, res) => {
   }
 });
 
+app.post("/pagos/:id/anular", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const idPago = parsePositiveInt(req.params?.id, 0);
+    const motivo = normalizeLimitedText(req.body?.motivo, 500);
+    if (!idPago) return res.status(400).json({ error: "Pago invalido." });
+    if (!motivo || motivo.length < 5) {
+      return res.status(400).json({ error: "Motivo de anulacion obligatorio (minimo 5 caracteres)." });
+    }
+
+    await client.query("BEGIN");
+    await ensurePagosAnuladosTable(client);
+
+    const pagoRs = await client.query(`
+      SELECT
+        p.id_pago,
+        p.id_recibo,
+        p.id_orden_cobro,
+        p.monto_pagado,
+        p.fecha_pago,
+        p.usuario_cajero,
+        r.total_pagar,
+        r.mes,
+        r.anio,
+        pr.id_contribuyente
+      FROM pagos p
+      JOIN recibos r ON r.id_recibo = p.id_recibo
+      LEFT JOIN predios pr ON pr.id_predio = r.id_predio
+      WHERE p.id_pago = $1
+      FOR UPDATE OF p, r
+      LIMIT 1
+    `, [idPago]);
+
+    if (pagoRs.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Pago no encontrado o ya fue anulado." });
+    }
+
+    const pago = pagoRs.rows[0];
+    const idRecibo = Number(pago.id_recibo || 0);
+    const idOrdenCobro = parsePositiveInt(pago.id_orden_cobro, 0) || null;
+    const idContribuyente = parsePositiveInt(pago.id_contribuyente, 0) || null;
+    const montoPagado = roundMonto2(parseMonto(pago.monto_pagado, 0));
+
+    await client.query(`
+      INSERT INTO pagos_anulados (
+        id_pago_original,
+        id_recibo,
+        id_contribuyente,
+        id_orden_cobro_original,
+        monto_pagado,
+        fecha_pago_original,
+        usuario_cajero_original,
+        id_usuario_anula,
+        username_anula,
+        motivo_anulacion,
+        payload_json
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+    `, [
+      Number(pago.id_pago),
+      idRecibo,
+      idContribuyente,
+      idOrdenCobro,
+      montoPagado,
+      pago.fecha_pago,
+      pago.usuario_cajero || null,
+      req.user?.id_usuario || null,
+      req.user?.username || req.user?.nombre || null,
+      motivo,
+      JSON.stringify({
+        origen: "CAJA_CORRECCION",
+        ip: getRequestIp(req),
+        fecha_servidor: toISODate()
+      })
+    ]);
+
+    await client.query("DELETE FROM pagos WHERE id_pago = $1", [Number(pago.id_pago)]);
+
+    const totalPagadoRs = await client.query(`
+      SELECT COALESCE(SUM(monto_pagado), 0) AS total_pagado
+      FROM pagos
+      WHERE id_recibo = $1
+    `, [idRecibo]);
+    const totalPagadoActivo = roundMonto2(parseMonto(totalPagadoRs.rows[0]?.total_pagado, 0));
+    const totalRecibo = roundMonto2(parseMonto(pago.total_pagar, 0));
+    const nuevoEstado = totalPagadoActivo >= totalRecibo - 0.001
+      ? "PAGADO"
+      : (totalPagadoActivo > 0.001 ? "PARCIAL" : "PENDIENTE");
+    await client.query("UPDATE recibos SET estado = $1 WHERE id_recibo = $2", [nuevoEstado, idRecibo]);
+
+    if (idOrdenCobro) {
+      const ordenPagosActivos = await client.query(`
+        SELECT COUNT(*)::int AS cantidad
+        FROM pagos
+        WHERE id_orden_cobro = $1
+      `, [idOrdenCobro]);
+      const cantidadPagosOrden = Number(ordenPagosActivos.rows[0]?.cantidad || 0);
+      if (cantidadPagosOrden === 0) {
+        await client.query(`
+          UPDATE ordenes_cobro
+          SET
+            estado = 'PENDIENTE',
+            cobrado_en = NULL,
+            id_usuario_cobra = NULL,
+            actualizado_en = NOW()
+          WHERE id_orden = $1
+            AND estado = 'COBRADA'
+        `, [idOrdenCobro]);
+      }
+    }
+
+    const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
+    const ip = getRequestIp(req);
+    await registrarAuditoria(
+      client,
+      "PAGO_ANULADO_LOGICO",
+      `id_pago=${Number(pago.id_pago)}; recibo=${idRecibo}; contribuyente=${idContribuyente || "N/A"}; monto=${montoPagado.toFixed(2)}; fecha_pago=${normalizeDateOnly(pago.fecha_pago) || ""}; motivo=${motivo}; ip=${ip}`,
+      usuarioAuditoria
+    );
+
+    await client.query("COMMIT");
+    invalidateContribuyentesCache();
+    invalidateReportesCajaCache();
+    realtimeHub.broadcast("deuda", "saldo_actualizado", {
+      id_contribuyente: idContribuyente,
+      id_recibo: idRecibo,
+      id_pago_anulado: Number(pago.id_pago)
+    });
+    realtimeHub.broadcast("caja", "pago_anulado", {
+      id_pago: Number(pago.id_pago),
+      id_contribuyente: idContribuyente,
+      id_recibo: idRecibo
+    });
+
+    return res.json({
+      mensaje: "Pago anulado correctamente. El movimiento fue archivado para administracion.",
+      pago: {
+        id_pago: Number(pago.id_pago),
+        id_recibo: idRecibo,
+        id_contribuyente: idContribuyente,
+        mes: Number(pago.mes || 0),
+        anio: Number(pago.anio || 0),
+        monto_pagado: montoPagado,
+        estado_recibo: nuevoEstado,
+        total_pagado_activo: totalPagadoActivo,
+        saldo: roundMonto2(Math.max(totalRecibo - totalPagadoActivo, 0))
+      }
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    if (err?.code === "23505") {
+      return res.status(409).json({ error: "El pago ya fue anulado previamente." });
+    }
+    console.error("Error anulando pago:", err.message);
+    return res.status(500).json({ error: "Error anulando pago." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/admin/pagos-anulados", async (req, res) => {
+  try {
+    const hoy = toISODate();
+    const fechaHasta = normalizeDateOnly(req.query?.fecha_hasta || req.query?.fecha || hoy) || hoy;
+    if (fechaHasta > hoy) {
+      return res.status(400).json({ error: "No se permite consultar con fecha futura." });
+    }
+    const fechaDesde = normalizeDateOnly(req.query?.fecha_desde) || getRetroactiveCobroMinDate(fechaHasta, 1) || fechaHasta;
+    if (fechaDesde > fechaHasta) {
+      return res.status(400).json({ error: "La fecha desde no puede ser mayor que la fecha hasta." });
+    }
+    const limite = Math.min(1000, Math.max(1, parsePositiveInt(req.query?.limit, 200)));
+
+    const rows = await pool.query(`
+      SELECT
+        pa.id_anulacion,
+        pa.id_pago_original,
+        pa.id_recibo,
+        pa.id_contribuyente,
+        pa.id_orden_cobro_original,
+        pa.monto_pagado,
+        pa.fecha_pago_original,
+        pa.usuario_cajero_original,
+        pa.anulado_en,
+        pa.id_usuario_anula,
+        pa.username_anula,
+        pa.motivo_anulacion,
+        pa.payload_json,
+        c.codigo_municipal,
+        COALESCE(NULLIF(TRIM(c.nombre_completo), ''), NULLIF(TRIM(c.sec_nombre), ''), '') AS nombre_completo
+      FROM pagos_anulados pa
+      LEFT JOIN contribuyentes c ON c.id_contribuyente = pa.id_contribuyente
+      WHERE DATE(pa.anulado_en) >= $1::date
+        AND DATE(pa.anulado_en) <= $2::date
+      ORDER BY pa.anulado_en DESC, pa.id_anulacion DESC
+      LIMIT $3
+    `, [fechaDesde, fechaHasta, limite]);
+
+    return res.json({
+      rango: {
+        desde: fechaDesde,
+        hasta: fechaHasta
+      },
+      cantidad: Number(rows.rowCount || 0),
+      movimientos: rows.rows
+    });
+  } catch (err) {
+    console.error("Error listando pagos anulados:", err.message);
+    return res.status(500).json({ error: "Error consultando pagos anulados." });
+  }
+});
+
 app.post("/impresiones/generar-codigo", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -6508,8 +6838,14 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
 app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
   try {
     const { id_contribuyente } = req.params;
-    const anioActual = getCurrentYear();
-    const mesActual = getCurrentMonth();
+    const hoyIso = toISODate();
+    const fechaCorte = normalizeDateOnly(req.query?.fecha_corte || req.query?.fecha || req.query?.fecha_pago) || hoyIso;
+    if (fechaCorte > hoyIso) {
+      return res.status(400).json({ error: "No se permite usar fecha de corte futura." });
+    }
+    const fechaBase = parseDateYearMonth(fechaCorte, parseDateYearMonth(hoyIso));
+    const anioActual = Number(fechaBase.anio || getCurrentYear());
+    const mesActual = Number(fechaBase.mes || getCurrentMonth());
     const anioParam = req.query.anio;
     const filtrarAnio = anioParam !== 'all';
     const anio = filtrarAnio ? (Number(anioParam) || getCurrentYear()) : null;
@@ -6532,12 +6868,15 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
       LEFT JOIN (
         SELECT id_recibo, SUM(monto_pagado) as total_pagado
         FROM pagos
+        WHERE DATE(fecha_pago) <= $4::date
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
-      ${filtrarAnio ? 'AND r.anio = $4' : ''}
+      ${filtrarAnio ? 'AND r.anio = $5' : ''}
       ORDER BY r.anio ASC, r.mes ASC
-    `, filtrarAnio ? [id_contribuyente, anioActual, mesActual, anio] : [id_contribuyente, anioActual, mesActual]);
+    `, filtrarAnio
+      ? [id_contribuyente, anioActual, mesActual, fechaCorte, anio]
+      : [id_contribuyente, anioActual, mesActual, fechaCorte]);
     res.json(historial.rows);
   } catch (err) { res.status(500).send("Error historial"); }
 });

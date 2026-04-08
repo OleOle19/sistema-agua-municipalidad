@@ -6,6 +6,7 @@ const ACTION_LABELS = {
   ORDEN_COBRO_COBRADA: "Orden de cobro cobrada",
   ORDEN_COBRO_EMITIDA: "Orden de cobro emitida",
   ORDEN_COBRO_ANULADA: "Orden de cobro anulada",
+  PAGO_ANULADO_LOGICO: "Pago anulado (archivo admin)",
   CAJA_CIERRE_REGISTRADO: "Cierre de caja registrado",
   COBRO_DIRECTO_REGISTRADO: "Cobro directo registrado",
   AUTH_PASSWORD_CAMBIO: "Cambio de password"
@@ -15,6 +16,7 @@ const SIMPLE_ROUTE_RULES = [
   { method: "POST", pattern: /^\/caja\/ordenes-cobro$/i, label: "Emitir orden de cobro" },
   { method: "POST", pattern: /^\/caja\/ordenes-cobro\/\d+\/cobrar$/i, label: "Cobrar orden de cobro" },
   { method: "POST", pattern: /^\/caja\/ordenes-cobro\/\d+\/anular$/i, label: "Anular orden de cobro" },
+  { method: "POST", pattern: /^\/pagos\/\d+\/anular$/i, label: "Anular pago" },
   { method: "POST", pattern: /^\/caja\/cierre$/i, label: "Registrar cierre de caja" },
   { method: "GET", pattern: /^\/exportar\/auditoria$/i, label: "Exportar auditoria" },
   { method: "GET", pattern: /^\/caja\/reporte\/excel$/i, label: "Exportar reporte de caja (Excel)" },
@@ -27,6 +29,7 @@ const LABEL_TRANSLATIONS = {
   body: "Datos enviados",
   id: "ID",
   id_cierre: "ID cierre",
+  id_pago: "ID pago",
   id_orden: "ID orden",
   id_contribuyente: "ID contribuyente",
   orden: "Orden",

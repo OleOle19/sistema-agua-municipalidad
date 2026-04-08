@@ -85,6 +85,26 @@ const toIsoDate = (date = new Date()) => {
   const d = String(date.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 };
+const isValidIsoDate = (isoDate) => {
+  const text = String(isoDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const [year, month, day] = text.split("-").map((v) => Number(v));
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  return probe.getUTCFullYear() === year
+    && (probe.getUTCMonth() + 1) === month
+    && probe.getUTCDate() === day;
+};
+const shiftIsoDateByYears = (isoDate, deltaYears) => {
+  const text = String(isoDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return toIsoDate();
+  const [year, month, day] = text.split("-").map((v) => Number(v));
+  const targetYear = year + Number(deltaYears || 0);
+  for (let currentDay = day; currentDay >= 1; currentDay -= 1) {
+    const candidate = `${String(targetYear).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(currentDay).padStart(2, "0")}`;
+    if (isValidIsoDate(candidate)) return candidate;
+  }
+  return `${String(targetYear).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`;
+};
 
 const parseMonto = (value) => {
   const parsed = Number.parseFloat(value);
@@ -128,8 +148,9 @@ const getCobroAguaRowKey = (row = {}) => {
   const mes = Number(row?.mes || 0);
   return `p-${anio}-${mes}`;
 };
+const getCobroAguaRowSaldo = (row = {}) => round2(parseMonto(row?.deuda_mes ?? row?.total_pagar ?? 0));
 const canSelectCobroAguaRow = (row = {}) => {
-  const saldo = round2(parseMonto(row?.deuda_mes || row?.total_pagar || 0));
+  const saldo = getCobroAguaRowSaldo(row);
   const estado = String(row?.estado || "").trim().toUpperCase();
   if (saldo <= 0.001) return false;
   if (estado === "PAGADO") return false;
@@ -625,6 +646,105 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
   }, [cajaCerradaAguaHoy, cargarConteoAgua, cargarReporteAgua, handleApiError, permisos.canCaja, resumenConteoAgua?.ultimo_pendiente?.monto_efectivo, showFlash]);
 
+  const cargarPeriodosCobroAgua = useCallback(async (idContribuyente, fechaCorte, { avisarVacio = false } = {}) => {
+    const fecha = String(fechaCorte || "").trim();
+    if (!isValidIsoDate(fecha)) return;
+    const [resPendientes, resHistorial] = await Promise.all([
+      api.get(`/recibos/pendientes/${idContribuyente}`, {
+        params: {
+          incluir_adelantados: "S",
+          adelantado_meses: 12,
+          fecha_corte: fecha
+        }
+      }),
+      api.get(`/recibos/historial/${idContribuyente}`, {
+        params: {
+          anio: "all",
+          fecha_corte: fecha
+        }
+      })
+    ]);
+    const pendientes = Array.isArray(resPendientes.data) ? resPendientes.data : [];
+    const historial = Array.isArray(resHistorial.data) ? resHistorial.data : [];
+    const byPeriodo = new Map();
+    historial.forEach((row) => {
+      const mes = Number(row?.mes || 0);
+      const anio = Number(row?.anio || 0);
+      if (mes < 1 || mes > 12 || anio < 1900) return;
+      const key = `${anio}-${mes}`;
+      byPeriodo.set(key, {
+        ...row,
+        id_recibo: Number(row?.id_recibo || 0) || null,
+        mes,
+        anio,
+        subtotal_agua: round2(parseMonto(row?.subtotal_agua)),
+        subtotal_desague: round2(parseMonto(row?.subtotal_desague)),
+        subtotal_limpieza: round2(parseMonto(row?.subtotal_limpieza)),
+        subtotal_admin: round2(parseMonto(row?.subtotal_admin)),
+        total_pagar: round2(parseMonto(row?.total_pagar ?? 0)),
+        abono_mes: round2(parseMonto(row?.abono_mes ?? 0)),
+        deuda_mes: round2(parseMonto(row?.deuda_mes ?? 0)),
+        estado: String(row?.estado || ""),
+        es_adelantado: false
+      });
+    });
+    pendientes.forEach((row) => {
+      const mes = Number(row?.mes || 0);
+      const anio = Number(row?.anio || 0);
+      if (mes < 1 || mes > 12 || anio < 1900) return;
+      const key = `${anio}-${mes}`;
+      const prev = byPeriodo.get(key);
+      const deudaMes = round2(parseMonto(row?.deuda_mes ?? row?.total_pagar ?? 0));
+      byPeriodo.set(key, {
+        ...(prev || {}),
+        ...row,
+        id_recibo: Number(row?.id_recibo ?? prev?.id_recibo ?? 0) || null,
+        mes,
+        anio,
+        subtotal_agua: round2(parseMonto(row?.subtotal_agua ?? prev?.subtotal_agua)),
+        subtotal_desague: round2(parseMonto(row?.subtotal_desague ?? prev?.subtotal_desague)),
+        subtotal_limpieza: round2(parseMonto(row?.subtotal_limpieza ?? prev?.subtotal_limpieza)),
+        subtotal_admin: round2(parseMonto(row?.subtotal_admin ?? prev?.subtotal_admin)),
+        total_pagar: round2(parseMonto(row?.total_pagar ?? prev?.total_pagar ?? deudaMes)),
+        abono_mes: round2(parseMonto(row?.abono_mes ?? prev?.abono_mes ?? 0)),
+        deuda_mes: deudaMes,
+        estado: String(row?.estado || prev?.estado || ""),
+        es_adelantado: Boolean(row?.es_adelantado) || (Number(row?.id_recibo ?? 0) <= 0 && deudaMes > 0)
+      });
+    });
+    const rows = Array.from(byPeriodo.values()).sort((a, b) => {
+      const pa = (Number(a?.anio || 0) * 100) + Number(a?.mes || 0);
+      const pb = (Number(b?.anio || 0) * 100) + Number(b?.mes || 0);
+      return pa - pb;
+    });
+    const fechaBase = new Date(`${fecha}T00:00:00`);
+    const fechaMinima = new Date(fechaBase);
+    fechaMinima.setMonth(fechaMinima.getMonth() - 12);
+    const periodoMinimoNum = (fechaMinima.getFullYear() * 100) + (fechaMinima.getMonth() + 1);
+    const rowsFiltradas = rows.filter((row) => {
+      const anio = Number(row?.anio || 0);
+      const mes = Number(row?.mes || 0);
+      const periodoNum = (anio * 100) + mes;
+      const saldo = getCobroAguaRowSaldo(row);
+      if (saldo > 0.001) return true;
+      return periodoNum >= periodoMinimoNum;
+    });
+    const initial = {};
+    rowsFiltradas.forEach((row) => {
+      const rowKey = getCobroAguaRowKey(row);
+      const saldo = getCobroAguaRowSaldo(row);
+      initial[rowKey] = {
+        checked: false,
+        monto: saldo.toFixed(2)
+      };
+    });
+    setRecibosPendientesCobroAgua(rowsFiltradas);
+    setSeleccionCobroAgua(initial);
+    if (avisarVacio && rowsFiltradas.length === 0) {
+      showFlash("warning", "No hay periodos disponibles para mostrar en cobro.");
+    }
+  }, [showFlash]);
+
   const abrirCobroDirectoAgua = async () => {
     const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
     if (!idContribuyente) {
@@ -635,104 +755,40 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash("warning", "Caja cerrada para hoy. No se permiten más cobros.");
       return;
     }
+    const hoy = toIsoDate();
+    setFechaCobroAgua(hoy);
+    setRecibosPendientesCobroAgua([]);
+    setSeleccionCobroAgua({});
+    setMostrarModalCobroAgua(true);
     setLoadingPendientesCobroAgua(true);
     try {
-      const [resPendientes, resHistorial] = await Promise.all([
-        api.get(`/recibos/pendientes/${idContribuyente}`, {
-          params: {
-            incluir_adelantados: "S",
-            adelantado_meses: 12
-          }
-        }),
-        api.get(`/recibos/historial/${idContribuyente}`, { params: { anio: "all" } })
-      ]);
-      const pendientes = Array.isArray(resPendientes.data) ? resPendientes.data : [];
-      const historial = Array.isArray(resHistorial.data) ? resHistorial.data : [];
-      const byPeriodo = new Map();
-      historial.forEach((row) => {
-        const mes = Number(row?.mes || 0);
-        const anio = Number(row?.anio || 0);
-        if (mes < 1 || mes > 12 || anio < 1900) return;
-        const key = `${anio}-${mes}`;
-        byPeriodo.set(key, {
-          ...row,
-          id_recibo: Number(row?.id_recibo || 0) || null,
-          mes,
-          anio,
-          subtotal_agua: round2(parseMonto(row?.subtotal_agua)),
-          subtotal_desague: round2(parseMonto(row?.subtotal_desague)),
-          subtotal_limpieza: round2(parseMonto(row?.subtotal_limpieza)),
-          subtotal_admin: round2(parseMonto(row?.subtotal_admin)),
-          total_pagar: round2(parseMonto(row?.total_pagar || 0)),
-          abono_mes: round2(parseMonto(row?.abono_mes || 0)),
-          deuda_mes: round2(parseMonto(row?.deuda_mes || 0)),
-          estado: String(row?.estado || ""),
-          es_adelantado: false
-        });
-      });
-      pendientes.forEach((row) => {
-        const mes = Number(row?.mes || 0);
-        const anio = Number(row?.anio || 0);
-        if (mes < 1 || mes > 12 || anio < 1900) return;
-        const key = `${anio}-${mes}`;
-        const prev = byPeriodo.get(key);
-        const deudaMes = round2(parseMonto(row?.deuda_mes || row?.total_pagar || 0));
-        byPeriodo.set(key, {
-          ...(prev || {}),
-          ...row,
-          id_recibo: Number(row?.id_recibo || prev?.id_recibo || 0) || null,
-          mes,
-          anio,
-          subtotal_agua: round2(parseMonto(row?.subtotal_agua ?? prev?.subtotal_agua)),
-          subtotal_desague: round2(parseMonto(row?.subtotal_desague ?? prev?.subtotal_desague)),
-          subtotal_limpieza: round2(parseMonto(row?.subtotal_limpieza ?? prev?.subtotal_limpieza)),
-          subtotal_admin: round2(parseMonto(row?.subtotal_admin ?? prev?.subtotal_admin)),
-          total_pagar: round2(parseMonto(row?.total_pagar ?? prev?.total_pagar ?? deudaMes)),
-          abono_mes: round2(parseMonto(row?.abono_mes ?? prev?.abono_mes ?? 0)),
-          deuda_mes: deudaMes,
-          estado: String(row?.estado || prev?.estado || ""),
-          es_adelantado: Boolean(row?.es_adelantado) || (Number(row?.id_recibo || 0) <= 0 && deudaMes > 0)
-        });
-      });
-      const rows = Array.from(byPeriodo.values()).sort((a, b) => {
-        const pa = (Number(a?.anio || 0) * 100) + Number(a?.mes || 0);
-        const pb = (Number(b?.anio || 0) * 100) + Number(b?.mes || 0);
-        return pa - pb;
-      });
-      const periodoActualNum = (() => {
-        const now = new Date();
-        return (now.getFullYear() * 100) + (now.getMonth() + 1);
-      })();
-      const rowsFiltradas = rows.filter((row) => {
-        const anio = Number(row?.anio || 0);
-        const mes = Number(row?.mes || 0);
-        const periodoNum = (anio * 100) + mes;
-        const saldo = round2(parseMonto(row?.deuda_mes || row?.total_pagar || 0));
-        if (saldo > 0.001) return true;
-        return periodoNum >= periodoActualNum;
-      });
-      const initial = {};
-      rowsFiltradas.forEach((row) => {
-        const rowKey = getCobroAguaRowKey(row);
-        const saldo = round2(parseMonto(row?.deuda_mes || row?.total_pagar || 0));
-        initial[rowKey] = {
-          checked: false,
-          monto: saldo.toFixed(2)
-        };
-      });
-      setRecibosPendientesCobroAgua(rowsFiltradas);
-      setSeleccionCobroAgua(initial);
-      setFechaCobroAgua(toIsoDate());
-      setMostrarModalCobroAgua(true);
-      if (rowsFiltradas.length === 0) {
-        showFlash("warning", "No hay periodos disponibles para mostrar en cobro.");
-      }
+      await cargarPeriodosCobroAgua(idContribuyente, hoy, { avisarVacio: true });
     } catch (err) {
+      setMostrarModalCobroAgua(false);
       handleApiError(err, "No se pudo cargar los periodos de cobro del contribuyente.");
     } finally {
       setLoadingPendientesCobroAgua(false);
     }
   };
+
+  const onChangeFechaCobroAgua = useCallback(async (nextFecha) => {
+    const fecha = String(nextFecha || "").trim();
+    setFechaCobroAgua(fecha);
+    if (!mostrarModalCobroAgua) return;
+    const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
+    if (!idContribuyente || !isValidIsoDate(fecha)) return;
+    const hoy = toIsoDate();
+    const fechaMinima = shiftIsoDateByYears(hoy, -1);
+    if (fecha > hoy || fecha < fechaMinima) return;
+    setLoadingPendientesCobroAgua(true);
+    try {
+      await cargarPeriodosCobroAgua(idContribuyente, fecha);
+    } catch (err) {
+      handleApiError(err, "No se pudo actualizar los periodos para la fecha seleccionada.");
+    } finally {
+      setLoadingPendientesCobroAgua(false);
+    }
+  }, [cargarPeriodosCobroAgua, handleApiError, mostrarModalCobroAgua, selectedContribuyenteAgua]);
 
   const setMontoCobroAgua = useCallback((rowKey, value, maxSaldo) => {
     const raw = String(value || "").replace(",", ".");
@@ -778,12 +834,17 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
     const fechaPago = String(fechaCobroAgua || "").trim();
     const hoy = toIsoDate();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaPago)) {
+    const fechaMinima = shiftIsoDateByYears(hoy, -1);
+    if (!isValidIsoDate(fechaPago)) {
       showFlash("warning", "Seleccione una fecha valida para registrar el cobro.");
       return;
     }
     if (fechaPago > hoy) {
       showFlash("warning", "No se permite registrar cobros con fecha futura.");
+      return;
+    }
+    if (fechaPago < fechaMinima) {
+      showFlash("warning", `Solo se permite registrar cobros hasta un anio atras. Fecha minima: ${fechaMinima}.`);
       return;
     }
     const pagos = [];
@@ -795,7 +856,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const rowKey = getCobroAguaRowKey(row);
       const sel = seleccionCobroAgua[rowKey];
       if (!sel?.checked) continue;
-      const saldo = round2(parseMonto(row?.deuda_mes || row?.total_pagar || 0));
+      const saldo = getCobroAguaRowSaldo(row);
       const monto = round2(parseMonto(sel?.monto));
       if (monto <= 0) continue;
       if (monto > saldo + 0.001) {
@@ -1333,7 +1394,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
               </div>
               <div className="modal-body">
                 <div className="small text-muted mb-3">
-                  Se muestran solo meses con deuda, el mes actual y los futuros. Luego confirme monto y fecha del cobro.
+                  Se muestran deudas pendientes y periodos de los ultimos 12 meses segun la fecha de cobro seleccionada.
                 </div>
                 <div className="row g-2 align-items-end mb-3">
                   <div className="col-sm-4 col-md-3">
@@ -1342,14 +1403,15 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       type="date"
                       className="form-control form-control-sm"
                       value={fechaCobroAgua}
+                      min={shiftIsoDateByYears(toIsoDate(), -1)}
                       max={toIsoDate()}
-                      onChange={(e) => setFechaCobroAgua(e.target.value)}
-                      disabled={cobrandoDirectoAgua}
+                      onChange={(e) => onChangeFechaCobroAgua(e.target.value)}
+                      disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua}
                     />
                   </div>
                   <div className="col-sm-8 col-md-9">
                     <div className="small text-muted">
-                      El cobro se registrara en el reporte de la fecha seleccionada.
+                      El cobro se registrara en el reporte de la fecha seleccionada. Retroactivo maximo: 1 anio.
                     </div>
                   </div>
                 </div>
@@ -1364,7 +1426,12 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {recibosPendientesCobroAgua.length === 0 && (
+                      {loadingPendientesCobroAgua && (
+                        <tr>
+                          <td colSpan="4" className="text-center text-muted py-3">Actualizando periodos...</td>
+                        </tr>
+                      )}
+                      {!loadingPendientesCobroAgua && recibosPendientesCobroAgua.length === 0 && (
                         <tr>
                           <td colSpan="4" className="text-center text-muted py-3">Sin meses disponibles para cobro.</td>
                         </tr>
@@ -1372,7 +1439,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       {recibosPendientesCobroAgua.map((row) => {
                         const idRecibo = Number(row?.id_recibo || 0);
                         const rowKey = getCobroAguaRowKey(row);
-                        const saldo = round2(parseMonto(row?.deuda_mes || row?.total_pagar || 0));
+                        const saldo = getCobroAguaRowSaldo(row);
                         const sel = seleccionCobroAgua[rowKey] || { checked: false, monto: saldo.toFixed(2) };
                         const esAdelantado = Boolean(row?.es_adelantado) || idRecibo <= 0;
                         const puedeCobrar = canSelectCobroAguaRow(row);
@@ -1538,4 +1605,5 @@ function CajaMunicipalApp({ onBackToSelector }) {
 }
 
 export default CajaMunicipalApp;
+
 

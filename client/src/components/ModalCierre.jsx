@@ -53,6 +53,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
   const [exportandoExcel, setExportandoExcel] = useState(false);
   const [paginaMovimientos, setPaginaMovimientos] = useState(1);
   const [reporte, setReporte] = useState(EMPTY_REPORTE);
+  const [anulandoPagoId, setAnulandoPagoId] = useState(0);
   const [cargandoAlertas, setCargandoAlertas] = useState(false);
   const [alertasRiesgo, setAlertasRiesgo] = useState({
     severidad: "NORMAL",
@@ -164,6 +165,31 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
     }
   }, []);
 
+  const anularPago = useCallback(async (mov) => {
+    if (!mov?.id_pago) return;
+    const idPago = Number(mov.id_pago);
+    const monto = Number(mov?.monto_pagado || 0);
+    const periodo = `${String(mov?.mes || "").padStart(2, "0")}/${mov?.anio || "-"}`;
+    const confirmar = window.confirm(`Anular pago #${idPago} de S/. ${formatMoney(monto)} (${periodo})?`);
+    if (!confirmar) return;
+    const motivo = String(window.prompt("Motivo de anulacion (minimo 5 caracteres):", "") || "").trim();
+    if (motivo.length < 5) {
+      window.alert("Debe ingresar un motivo valido (minimo 5 caracteres).");
+      return;
+    }
+    setAnulandoPagoId(idPago);
+    try {
+      const res = await api.post(`/pagos/${idPago}/anular`, { motivo });
+      window.alert(res?.data?.mensaje || "Pago anulado correctamente.");
+      await Promise.all([cargarCaja(), cargarAlertasRiesgo()]);
+    } catch (error) {
+      const msg = error?.response?.data?.error || "No se pudo anular el pago.";
+      window.alert(msg);
+    } finally {
+      setAnulandoPagoId(0);
+    }
+  }, [cargarAlertasRiesgo, cargarCaja]);
+
   useEffect(() => {
     setPaginaMovimientos(1);
   }, [reporteTipo, fechaConsulta]);
@@ -262,6 +288,8 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
     ? "REPORTE DETALLADO DE INGRESOS - CAJA"
     : "REPORTE DETALLADO DE INGRESOS - VENTANILLA";
   const colorTotal = esCaja ? "text-success" : "text-primary";
+  const columnasTabla = esCaja ? 9 : 8;
+  const colSpanTotal = 7;
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -448,12 +476,13 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
                     <th>CONTRIBUYENTE</th>
                     <th className="text-center">PERIODO</th>
                     <th className="text-end">MONTO (S/.)</th>
+                    {esCaja && <th className="text-center no-print">ACCIONES</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {movimientos.length === 0 ? (
                     <tr>
-                      <td colSpan="8" className="text-center p-3">No hay movimientos para el dia.</td>
+                      <td colSpan={columnasTabla} className="text-center p-3">No hay movimientos para el dia.</td>
                     </tr>
                   ) : (
                     movimientos.map((m, i) => (
@@ -466,14 +495,27 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
                         <td>{m.nombre_completo}</td>
                         <td className="text-center">{m.mes}/{m.anio}</td>
                         <td className="text-end fw-bold">{formatMoney(m.monto_pagado)}</td>
+                        {esCaja && (
+                          <td className="text-center no-print">
+                            <button
+                              type="button"
+                              className="btn btn-outline-danger btn-sm"
+                              onClick={() => anularPago(m)}
+                              disabled={cargando || anulandoPagoId === Number(m.id_pago || 0)}
+                            >
+                              {anulandoPagoId === Number(m.id_pago || 0) ? "Anulando..." : "Anular"}
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     ))
                   )}
                 </tbody>
                 <tfoot>
                   <tr className="table-light border-top border-dark fw-bold" style={{ fontSize: "14px" }}>
-                    <td colSpan="7" className="text-end pe-3">TOTAL CAJA:</td>
+                    <td colSpan={colSpanTotal} className="text-end pe-3">TOTAL CAJA:</td>
                     <td className={`text-end ${esCaja ? "text-success" : "text-primary"}`}>S/. {totalGeneral}</td>
+                    {esCaja && <td className="no-print"></td>}
                   </tr>
                 </tfoot>
               </table>
