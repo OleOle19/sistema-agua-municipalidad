@@ -801,16 +801,11 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const periodo = `${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"}`;
     const confirmado = window.confirm(`Anular el ultimo pago del periodo ${periodo} para corregirlo?`);
     if (!confirmado) return;
-    const motivo = String(window.prompt("Motivo de anulacion (minimo 5 caracteres):", "CORRECCION DE COBRO") || "").trim();
-    if (motivo.length < 5) {
-      showFlash("warning", "Debe ingresar un motivo valido (minimo 5 caracteres).");
-      return;
-    }
     const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
     const fecha = String(fechaCobroAgua || "").trim();
     setAnulandoReciboCobroAguaId(idRecibo);
     try {
-      const res = await api.post(`/pagos/recibo/${idRecibo}/anular-ultimo`, { motivo });
+      const res = await api.post(`/pagos/recibo/${idRecibo}/anular-ultimo`);
       showFlash("success", res?.data?.mensaje || "Pago anulado para correccion.");
       await Promise.all([
         cargarPeriodosCobroAgua(idContribuyente, fecha || toIsoDate()),

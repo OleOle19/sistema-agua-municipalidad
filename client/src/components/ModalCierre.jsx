@@ -172,14 +172,9 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
     const periodo = `${String(mov?.mes || "").padStart(2, "0")}/${mov?.anio || "-"}`;
     const confirmar = window.confirm(`Anular pago #${idPago} de S/. ${formatMoney(monto)} (${periodo})?`);
     if (!confirmar) return;
-    const motivo = String(window.prompt("Motivo de anulacion (minimo 5 caracteres):", "") || "").trim();
-    if (motivo.length < 5) {
-      window.alert("Debe ingresar un motivo valido (minimo 5 caracteres).");
-      return;
-    }
     setAnulandoPagoId(idPago);
     try {
-      const res = await api.post(`/pagos/${idPago}/anular`, { motivo });
+      const res = await api.post(`/pagos/${idPago}/anular`);
       window.alert(res?.data?.mensaje || "Pago anulado correctamente.");
       await Promise.all([cargarCaja(), cargarAlertasRiesgo()]);
     } catch (error) {

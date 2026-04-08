@@ -6464,11 +6464,8 @@ app.post("/pagos/:id/anular", async (req, res) => {
   const client = await pool.connect();
   try {
     const idPago = parsePositiveInt(req.params?.id, 0);
-    const motivo = normalizeLimitedText(req.body?.motivo, 500);
+    const motivo = normalizeLimitedText(req.body?.motivo, 500) || "SIN_MOTIVO";
     if (!idPago) return res.status(400).json({ error: "Pago invalido." });
-    if (!motivo || motivo.length < 5) {
-      return res.status(400).json({ error: "Motivo de anulacion obligatorio (minimo 5 caracteres)." });
-    }
 
     await client.query("BEGIN");
     await ensurePagosAnuladosTable(client);
@@ -6625,11 +6622,8 @@ app.post("/pagos/recibo/:id_recibo/anular-ultimo", async (req, res) => {
   const client = await pool.connect();
   try {
     const idRecibo = parsePositiveInt(req.params?.id_recibo, 0);
-    const motivo = normalizeLimitedText(req.body?.motivo, 500);
+    const motivo = normalizeLimitedText(req.body?.motivo, 500) || "SIN_MOTIVO";
     if (!idRecibo) return res.status(400).json({ error: "Recibo invalido." });
-    if (!motivo || motivo.length < 5) {
-      return res.status(400).json({ error: "Motivo de anulacion obligatorio (minimo 5 caracteres)." });
-    }
 
     await client.query("BEGIN");
     await ensurePagosAnuladosTable(client);
