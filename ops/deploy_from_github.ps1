@@ -34,11 +34,11 @@ function Run-OrFail {
 function Invoke-OrFail {
   param(
     [string]$Cmd,
-    [string[]]$Args
+    [string[]]$CommandArgs
   )
-  & $Cmd @Args
+  & $Cmd @CommandArgs
   if ($LASTEXITCODE -ne 0) {
-    $argText = ($Args -join " ")
+    $argText = ($CommandArgs -join " ")
     throw "Fallo comando: $Cmd $argText"
   }
 }
@@ -86,8 +86,8 @@ try {
     }
 
     Run-OrFail "Git fetch/pull ($Remote/$Branch)" {
-      Invoke-OrFail -Cmd "git" -Args @("fetch", $Remote, $Branch)
-      Invoke-OrFail -Cmd "git" -Args @("pull", "--ff-only", $Remote, $Branch)
+      Invoke-OrFail -Cmd "git" -CommandArgs @("fetch", $Remote, $Branch)
+      Invoke-OrFail -Cmd "git" -CommandArgs @("pull", "--ff-only", $Remote, $Branch)
     }
   } else {
     Write-Host ">> Omitiendo git pull por -SkipPull."
@@ -95,10 +95,10 @@ try {
 
   if ($InstallDependencies) {
     Run-OrFail "Instalando dependencias backend" {
-      Invoke-OrFail -Cmd "npm" -Args @("--prefix", "server", "install", "--no-audit", "--no-fund")
+      Invoke-OrFail -Cmd "npm" -CommandArgs @("--prefix", "server", "install", "--no-audit", "--no-fund")
     }
     Run-OrFail "Instalando dependencias frontend" {
-      Invoke-OrFail -Cmd "npm" -Args @("--prefix", "client", "install", "--no-audit", "--no-fund")
+      Invoke-OrFail -Cmd "npm" -CommandArgs @("--prefix", "client", "install", "--no-audit", "--no-fund")
     }
   } else {
     Write-Host ">> Omitiendo instalacion de dependencias (usa -InstallDependencies para incluirla)."
@@ -106,7 +106,7 @@ try {
 
   if (-not $SkipBuild) {
     Run-OrFail "Build frontend" {
-      Invoke-OrFail -Cmd "npm" -Args @("--prefix", "client", "run", "build")
+      Invoke-OrFail -Cmd "npm" -CommandArgs @("--prefix", "client", "run", "build")
     }
   } else {
     Write-Host ">> Omitiendo build por -SkipBuild."
@@ -120,10 +120,10 @@ try {
       throw "No se encontro script: $startBackendScript"
     }
     Run-OrFail "Deteniendo backend" {
-      Invoke-OrFail -Cmd "powershell" -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $stopBackendScript, "-Force")
+      Invoke-OrFail -Cmd "powershell" -CommandArgs @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $stopBackendScript, "-Force")
     }
     Run-OrFail "Iniciando backend" {
-      Invoke-OrFail -Cmd "powershell" -Args @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $startBackendScript)
+      Invoke-OrFail -Cmd "powershell" -CommandArgs @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $startBackendScript)
     }
     Run-OrFail "Verificando healthcheck backend" {
       $ok = Wait-BackendHealth -Url $healthUrl -Retries 24
@@ -145,4 +145,3 @@ try {
 } finally {
   Pop-Location
 }
-
