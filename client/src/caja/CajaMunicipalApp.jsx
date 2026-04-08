@@ -1489,7 +1489,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                           || loadingPendientesCobroAgua
                           || (!puedeCobrar && !puedeAnularPagoPeriodo);
                         const checkboxChecked = puedeCobrar ? Boolean(sel?.checked) : false;
-                        const anulandoEstaFila = anulandoReciboCobroAguaId === idRecibo;
+                        const anulandoEstaFila = idRecibo > 0 && anulandoReciboCobroAguaId === idRecibo;
                         return (
                           <tr key={rowKey}>
                             <td className="text-center">
