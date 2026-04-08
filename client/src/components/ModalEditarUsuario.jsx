@@ -24,6 +24,7 @@ const MOTIVOS_CAMBIO_RAZON_SOCIAL = [
 ];
 
 const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
+  const idContribuyente = Number(usuario?.id_contribuyente || 0);
   const [formData, setFormData] = useState({
     nombre_completo: "",
     codigo_municipal: "",
@@ -51,13 +52,17 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
   const [nombreOriginal, setNombreOriginal] = useState("");
 
   useEffect(() => {
+    if (!idContribuyente) return;
+    let cancelled = false;
     const cargarDatos = async () => {
       try {
+        setCargando(true);
         const [resCalles, resSectores, resDetalle] = await Promise.all([
           api.get("/calles"),
           api.get("/sectores"),
-          api.get(`/contribuyentes/detalle/${usuario.id_contribuyente}`)
+          api.get(`/contribuyentes/detalle/${idContribuyente}`)
         ]);
+        if (cancelled) return;
         setCalles(resCalles.data);
         setSectores(Array.isArray(resSectores.data) ? resSectores.data : []);
         const u = resDetalle.data;
@@ -84,19 +89,20 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
         setNombreOriginal(String(u.nombre_completo || ""));
         setCargando(false);
       } catch {
-        cerrarModal();
+        if (!cancelled) cerrarModal();
       }
     };
     cargarDatos();
-  }, [usuario]);
+    return () => { cancelled = true; };
+  }, [idContribuyente, cerrarModal]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     if (name === "codigo_municipal") {
-      setFormData({ ...formData, codigo_municipal: normalizeCodigoMunicipalInput(value) });
+      setFormData((prev) => ({ ...prev, codigo_municipal: normalizeCodigoMunicipalInput(value) }));
       return;
     }
-    setFormData({ ...formData, [name]: value });
+    setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
   const handleSubmit = async (e) => {
@@ -111,7 +117,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
       return;
     }
     try {
-      const res = await api.put(`/contribuyentes/${usuario.id_contribuyente}`, {
+      const res = await api.put(`/contribuyentes/${idContribuyente}`, {
         ...formData,
         motivo_cambio_razon_social: cambioRazonSocial ? formData.motivo_cambio_razon_social : null,
         detalle_motivo_cambio_razon_social: cambioRazonSocial
@@ -150,7 +156,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
               <form onSubmit={handleSubmit}>
                 <h6 className={`border-bottom pb-2 mb-3 ${darkMode ? "border-secondary" : "text-primary"}`}>Informacion Personal</h6>
                 <div className="row g-3 mb-3">
-                  <div className="col-md-3"><label className="form-label small fw-bold">ID Contribuyente</label><input type="text" className={inputClass} value={usuario.id_contribuyente} readOnly disabled /></div>
+                  <div className="col-md-3"><label className="form-label small fw-bold">ID Contribuyente</label><input type="text" className={inputClass} value={idContribuyente} readOnly disabled /></div>
                   <div className="col-md-3">
                     <label className="form-label small fw-bold">Codigo Municipal</label>
                     <input

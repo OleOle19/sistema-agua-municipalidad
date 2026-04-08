@@ -528,6 +528,7 @@ function AguaApp({ onBackToSelector = null }) {
   const [generandoActaCorte, setGenerandoActaCorte] = useState(false);
   const [mostrarModalReporteCortes, setMostrarModalReporteCortes] = useState(false);
   const [mostrarModalActaCorte, setMostrarModalActaCorte] = useState(false);
+  const freezeContribuyenteRefresh = mostrarModalEditarUsuario;
   
   const [selectedIds, setSelectedIds] = useState(new Set()); 
   const [scrollSelect, setScrollSelect] = useState({
@@ -555,7 +556,7 @@ function AguaApp({ onBackToSelector = null }) {
   const [realtimeTick, setRealtimeTick] = useState(0);
   const realtimeRefreshTimerRef = useRef(0);
   const realtimeNeedsCajaRef = useRef(false);
-  const realtimeContextRef = useRef({ canCaja: false, selectedId: null, historialYear: "all" });
+  const realtimeContextRef = useRef({ canCaja: false, selectedId: null, historialYear: "all", freezeContribuyenteRefresh: false });
   const realtimeOpsRef = useRef({
     cargarContribuyentes: () => {},
     cargarResumen: () => {},
@@ -1231,9 +1232,10 @@ const anexoCajaPageStyle = `
     realtimeContextRef.current = {
       canCaja: permisos.canCaja,
       selectedId: usuarioSeleccionado?.id_contribuyente || null,
-      historialYear
+      historialYear,
+      freezeContribuyenteRefresh
     };
-  }, [permisos.canCaja, usuarioSeleccionado, historialYear]);
+  }, [permisos.canCaja, usuarioSeleccionado, historialYear, freezeContribuyenteRefresh]);
 
   useEffect(() => {
     realtimeOpsRef.current = {
@@ -1260,9 +1262,11 @@ const anexoCajaPageStyle = `
         realtimeRefreshTimerRef.current = 0;
         const ops = realtimeOpsRef.current;
         const context = realtimeContextRef.current;
-        ops.cargarContribuyentes();
-        if (context.selectedId) {
-          ops.cargarHistorial(context.selectedId, context.historialYear || "all", true);
+        if (!context.freezeContribuyenteRefresh) {
+          ops.cargarContribuyentes();
+          if (context.selectedId) {
+            ops.cargarHistorial(context.selectedId, context.historialYear || "all", true);
+          }
         }
         if (realtimeNeedsCajaRef.current && context.canCaja) {
           ops.cargarResumen();
@@ -1319,7 +1323,7 @@ const anexoCajaPageStyle = `
     const timer = setInterval(() => {
       if (SHOW_LEGACY_CAJA_MENU) cargarResumenPendientesCaja();
       cargarResumenConteoEfectivo();
-      if (realtimeStatus !== "connected") {
+      if (realtimeStatus !== "connected" && !freezeContribuyenteRefresh) {
         cargarContribuyentes();
         if (usuarioSeleccionado?.id_contribuyente) {
           cargarHistorial(usuarioSeleccionado.id_contribuyente, historialYear, true);
@@ -1327,7 +1331,7 @@ const anexoCajaPageStyle = `
       }
     }, 10000);
     return () => clearInterval(timer);
-  }, [usuarioSistema, permisos.canCaja, cargarResumenPendientesCaja, cargarResumenConteoEfectivo, realtimeStatus, usuarioSeleccionado, historialYear]);
+  }, [usuarioSistema, permisos.canCaja, cargarResumenPendientesCaja, cargarResumenConteoEfectivo, realtimeStatus, usuarioSeleccionado, historialYear, freezeContribuyenteRefresh]);
   useEffect(() => {
     if (usuarioSeleccionado) {
       setHistorialYear("all");
@@ -1338,11 +1342,12 @@ const anexoCajaPageStyle = `
     }
   }, [usuarioSeleccionado]);
   useEffect(() => {
+    if (freezeContribuyenteRefresh) return;
     if (usuarioSeleccionado) {
       const usuarioActualizado = contribuyentes.find(c => c.id_contribuyente === usuarioSeleccionado.id_contribuyente);
       if (usuarioActualizado) setUsuarioSeleccionado(usuarioActualizado);
     }
-  }, [contribuyentes]);
+  }, [contribuyentes, freezeContribuyenteRefresh, usuarioSeleccionado]);
 
   useEffect(() => {
     const el = tableScrollRef.current;
