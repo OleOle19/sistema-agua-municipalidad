@@ -5000,13 +5000,15 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     const existing = new Set(
       rows.map((row) => `${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`)
     );
-    const nextPeriodoDate = new Date(Date.UTC(anioActual, mesActual, 1));
-    const nextPeriodo = {
-      anio: nextPeriodoDate.getUTCFullYear(),
-      mes: nextPeriodoDate.getUTCMonth() + 1
+    // Incluir tambien el mes de la fecha de corte (no solo el siguiente),
+    // para que periodos faltantes del mes actual se puedan cobrar/corregir.
+    const startPeriodoDate = new Date(Date.UTC(anioActual, mesActual - 1, 1));
+    const startPeriodo = {
+      anio: startPeriodoDate.getUTCFullYear(),
+      mes: startPeriodoDate.getUTCMonth() + 1
     };
     for (let i = 0; i < adelantadoMeses; i += 1) {
-      const dt = new Date(nextPeriodo.anio, (nextPeriodo.mes - 1) + i, 1);
+      const dt = new Date(startPeriodo.anio, (startPeriodo.mes - 1) + i, 1);
       const anio = dt.getFullYear();
       const mes = dt.getMonth() + 1;
       const key = `${anio}-${mes}`;
