@@ -1060,6 +1060,7 @@ const ACCESS_RULES = [
 
   { methods: ["POST"], pattern: /^\/pagos$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/pagos\/\d+\/anular$/, minRole: "CAJERO" },
+  { methods: ["POST"], pattern: /^\/pagos\/recibo\/\d+\/anular-ultimo$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/impresiones\/generar-codigo$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/recibos\/masivos$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/reporte$/, minRole: "CAJERO" },
@@ -6615,6 +6616,188 @@ app.post("/pagos/:id/anular", async (req, res) => {
     }
     console.error("Error anulando pago:", err.message);
     return res.status(500).json({ error: "Error anulando pago." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/pagos/recibo/:id_recibo/anular-ultimo", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const idRecibo = parsePositiveInt(req.params?.id_recibo, 0);
+    const motivo = normalizeLimitedText(req.body?.motivo, 500);
+    if (!idRecibo) return res.status(400).json({ error: "Recibo invalido." });
+    if (!motivo || motivo.length < 5) {
+      return res.status(400).json({ error: "Motivo de anulacion obligatorio (minimo 5 caracteres)." });
+    }
+
+    await client.query("BEGIN");
+    await ensurePagosAnuladosTable(client);
+
+    const pagoTarget = await client.query(`
+      SELECT p.id_pago
+      FROM pagos p
+      WHERE p.id_recibo = $1
+      ORDER BY p.fecha_pago DESC, p.id_pago DESC
+      LIMIT 1
+      FOR UPDATE OF p
+    `, [idRecibo]);
+
+    if (pagoTarget.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "No hay pagos activos para este periodo." });
+    }
+
+    const idPago = Number(pagoTarget.rows[0].id_pago || 0);
+    if (!idPago) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "No se pudo identificar el pago a anular." });
+    }
+
+    const pagoRs = await client.query(`
+      SELECT
+        p.id_pago,
+        p.id_recibo,
+        p.id_orden_cobro,
+        p.monto_pagado,
+        p.fecha_pago,
+        p.usuario_cajero,
+        r.total_pagar,
+        r.mes,
+        r.anio,
+        pr.id_contribuyente
+      FROM pagos p
+      JOIN recibos r ON r.id_recibo = p.id_recibo
+      LEFT JOIN predios pr ON pr.id_predio = r.id_predio
+      WHERE p.id_pago = $1
+      FOR UPDATE OF p, r
+      LIMIT 1
+    `, [idPago]);
+
+    if (pagoRs.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Pago no encontrado o ya fue anulado." });
+    }
+
+    const pago = pagoRs.rows[0];
+    const idReciboPago = Number(pago.id_recibo || 0);
+    const idOrdenCobro = parsePositiveInt(pago.id_orden_cobro, 0) || null;
+    const idContribuyente = parsePositiveInt(pago.id_contribuyente, 0) || null;
+    const montoPagado = roundMonto2(parseMonto(pago.monto_pagado, 0));
+
+    await client.query(`
+      INSERT INTO pagos_anulados (
+        id_pago_original,
+        id_recibo,
+        id_contribuyente,
+        id_orden_cobro_original,
+        monto_pagado,
+        fecha_pago_original,
+        usuario_cajero_original,
+        id_usuario_anula,
+        username_anula,
+        motivo_anulacion,
+        payload_json
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+    `, [
+      Number(pago.id_pago),
+      idReciboPago,
+      idContribuyente,
+      idOrdenCobro,
+      montoPagado,
+      pago.fecha_pago,
+      pago.usuario_cajero || null,
+      req.user?.id_usuario || null,
+      req.user?.username || req.user?.nombre || null,
+      motivo,
+      JSON.stringify({
+        origen: "CAJA_CORRECCION",
+        ip: getRequestIp(req),
+        fecha_servidor: toISODate(),
+        via: "anular_ultimo_por_recibo"
+      })
+    ]);
+
+    await client.query("DELETE FROM pagos WHERE id_pago = $1", [Number(pago.id_pago)]);
+
+    const totalPagadoRs = await client.query(`
+      SELECT COALESCE(SUM(monto_pagado), 0) AS total_pagado
+      FROM pagos
+      WHERE id_recibo = $1
+    `, [idReciboPago]);
+    const totalPagadoActivo = roundMonto2(parseMonto(totalPagadoRs.rows[0]?.total_pagado, 0));
+    const totalRecibo = roundMonto2(parseMonto(pago.total_pagar, 0));
+    const nuevoEstado = totalPagadoActivo >= totalRecibo - 0.001
+      ? "PAGADO"
+      : (totalPagadoActivo > 0.001 ? "PARCIAL" : "PENDIENTE");
+    await client.query("UPDATE recibos SET estado = $1 WHERE id_recibo = $2", [nuevoEstado, idReciboPago]);
+
+    if (idOrdenCobro) {
+      const ordenPagosActivos = await client.query(`
+        SELECT COUNT(*)::int AS cantidad
+        FROM pagos
+        WHERE id_orden_cobro = $1
+      `, [idOrdenCobro]);
+      const cantidadPagosOrden = Number(ordenPagosActivos.rows[0]?.cantidad || 0);
+      if (cantidadPagosOrden === 0) {
+        await client.query(`
+          UPDATE ordenes_cobro
+          SET
+            estado = 'PENDIENTE',
+            cobrado_en = NULL,
+            id_usuario_cobra = NULL,
+            actualizado_en = NOW()
+          WHERE id_orden = $1
+            AND estado = 'COBRADA'
+        `, [idOrdenCobro]);
+      }
+    }
+
+    const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
+    const ip = getRequestIp(req);
+    await registrarAuditoria(
+      client,
+      "PAGO_ANULADO_LOGICO",
+      `id_pago=${Number(pago.id_pago)}; recibo=${idReciboPago}; contribuyente=${idContribuyente || "N/A"}; monto=${montoPagado.toFixed(2)}; fecha_pago=${normalizeDateOnly(pago.fecha_pago) || ""}; motivo=${motivo}; via=anular_ultimo_por_recibo; ip=${ip}`,
+      usuarioAuditoria
+    );
+
+    await client.query("COMMIT");
+    invalidateContribuyentesCache();
+    invalidateReportesCajaCache();
+    realtimeHub.broadcast("deuda", "saldo_actualizado", {
+      id_contribuyente: idContribuyente,
+      id_recibo: idReciboPago,
+      id_pago_anulado: Number(pago.id_pago)
+    });
+    realtimeHub.broadcast("caja", "pago_anulado", {
+      id_pago: Number(pago.id_pago),
+      id_contribuyente: idContribuyente,
+      id_recibo: idReciboPago
+    });
+
+    return res.json({
+      mensaje: "Pago del periodo anulado correctamente. Ya puede registrar el monto corregido.",
+      pago: {
+        id_pago: Number(pago.id_pago),
+        id_recibo: idReciboPago,
+        id_contribuyente: idContribuyente,
+        mes: Number(pago.mes || 0),
+        anio: Number(pago.anio || 0),
+        monto_pagado: montoPagado,
+        estado_recibo: nuevoEstado,
+        total_pagado_activo: totalPagadoActivo,
+        saldo: roundMonto2(Math.max(totalRecibo - totalPagadoActivo, 0))
+      }
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    if (err?.code === "23505") {
+      return res.status(409).json({ error: "El pago ya fue anulado previamente." });
+    }
+    console.error("Error anulando ultimo pago por recibo:", err.message);
+    return res.status(500).json({ error: "Error anulando el pago del periodo." });
   } finally {
     client.release();
   }

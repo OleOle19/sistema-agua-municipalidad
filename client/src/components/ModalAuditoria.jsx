@@ -17,6 +17,7 @@ const SIMPLE_ROUTE_RULES = [
   { method: "POST", pattern: /^\/caja\/ordenes-cobro\/\d+\/cobrar$/i, label: "Cobrar orden de cobro" },
   { method: "POST", pattern: /^\/caja\/ordenes-cobro\/\d+\/anular$/i, label: "Anular orden de cobro" },
   { method: "POST", pattern: /^\/pagos\/\d+\/anular$/i, label: "Anular pago" },
+  { method: "POST", pattern: /^\/pagos\/recibo\/\d+\/anular-ultimo$/i, label: "Anular ultimo pago por periodo" },
   { method: "POST", pattern: /^\/caja\/cierre$/i, label: "Registrar cierre de caja" },
   { method: "GET", pattern: /^\/exportar\/auditoria$/i, label: "Exportar auditoria" },
   { method: "GET", pattern: /^\/caja\/reporte\/excel$/i, label: "Exportar reporte de caja (Excel)" },
