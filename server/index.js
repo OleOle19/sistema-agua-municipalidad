@@ -5712,8 +5712,15 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
     if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
-    const cierreHoy = await consultarCierreCajaBloqueante(client, toISODate());
-    if (cierreHoy.cerrada) {
+    const hoy = toISODate();
+    const fechaPagoSolicitada = normalizeDateOnly(
+      req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha
+    ) || hoy;
+    if (fechaPagoSolicitada > hoy) {
+      return res.status(400).json({ error: "No se permite registrar cobros con fecha futura." });
+    }
+    const cierreHoy = await consultarCierreCajaBloqueante(client, hoy);
+    if (cierreHoy.cerrada && fechaPagoSolicitada === hoy) {
       return res.status(409).json({
         error: "Caja cerrada para hoy. No se permiten más cobros en agua hasta el siguiente día."
       });
@@ -5805,8 +5812,8 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       }
 
       await client.query(
-        "INSERT INTO pagos (id_recibo, monto_pagado, usuario_cajero, id_orden_cobro) VALUES ($1, $2, $3, $4)",
-        [item.id_recibo, monto, req.user?.username || req.user?.nombre || null, idOrden]
+        "INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero, id_orden_cobro) VALUES ($1, $2, ($3::date + LOCALTIME), $4, $5)",
+        [item.id_recibo, monto, fechaPagoSolicitada, req.user?.username || req.user?.nombre || null, idOrden]
       );
 
       const totalPagadoNuevo = roundMonto2(recibo.total_pagado + monto);
@@ -5861,7 +5868,7 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_COBRADA",
-      `orden=${idOrden}; tipo=${normalizeTipoOrdenCobro(orden.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL)}; codigo_recibo=${codigoReciboOrden}; contribuyente=${orden.id_contribuyente}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=0.00; recibos=${pagosAplicados.length}; detalle_recibos=${recibosDetalle}; ip=${ip}`,
+      `orden=${idOrden}; tipo=${normalizeTipoOrdenCobro(orden.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL)}; codigo_recibo=${codigoReciboOrden}; contribuyente=${orden.id_contribuyente}; fecha_pago=${fechaPagoSolicitada}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=0.00; recibos=${pagosAplicados.length}; detalle_recibos=${recibosDetalle}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -6022,8 +6029,15 @@ const normalizePagoInputs = (body = {}) => {
 app.post("/pagos", async (req, res) => {
   const client = await pool.connect();
   try {
-    const cierreHoy = await consultarCierreCajaBloqueante(client, toISODate());
-    if (cierreHoy.cerrada) {
+    const hoy = toISODate();
+    const fechaPagoSolicitada = normalizeDateOnly(
+      req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha
+    ) || hoy;
+    if (fechaPagoSolicitada > hoy) {
+      return res.status(400).json({ error: "No se permite registrar cobros con fecha futura." });
+    }
+    const cierreHoy = await consultarCierreCajaBloqueante(client, hoy);
+    if (cierreHoy.cerrada && fechaPagoSolicitada === hoy) {
       return res.status(409).json({
         error: "Caja cerrada para hoy. No se permiten más cobros en agua hasta el siguiente día."
       });
@@ -6250,8 +6264,8 @@ app.post("/pagos", async (req, res) => {
       }
 
       await client.query(
-        "INSERT INTO pagos (id_recibo, monto_pagado, usuario_cajero) VALUES ($1, $2, $3)",
-        [recibo.id_recibo, monto, req.user?.username || req.user?.nombre || null]
+        "INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero) VALUES ($1, $2, ($3::date + LOCALTIME), $4)",
+        [recibo.id_recibo, monto, fechaPagoSolicitada, req.user?.username || req.user?.nombre || null]
       );
 
       const totalPagadoNuevo = roundMonto2(recibo.total_pagado + monto);
@@ -6300,7 +6314,7 @@ app.post("/pagos", async (req, res) => {
     await registrarAuditoria(
       null,
       "PAGO_DIRECTO_MANUAL",
-      `contribuyente=${idContribuyenteSolicitado || "N/A"}; recibos=${pagosAplicados.length}; total=${totalAplicado.toFixed(2)}; ip=${ip}`,
+      `contribuyente=${idContribuyenteSolicitado || "N/A"}; fecha_pago=${fechaPagoSolicitada}; recibos=${pagosAplicados.length}; total=${totalAplicado.toFixed(2)}; ip=${ip}`,
       usuarioAuditoria
     );
 
