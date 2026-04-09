@@ -745,6 +745,14 @@ const parseOptionalTarifaMonto = (value) => {
   if (!Number.isFinite(parsed) || parsed < 0) return "__INVALID__";
   return parsed;
 };
+const parseOptionalServicioSN = (value) => {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const normalized = normalizeSN(raw, "__INVALID__");
+  if (normalized !== "S" && normalized !== "N") return "__INVALID__";
+  return normalized;
+};
 const clampArray = (rows, max = 200) => {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, Math.max(1, Math.min(1000, max)));
@@ -4677,7 +4685,10 @@ app.get("/contribuyentes/detalle/:id", async (req, res) => {
     const { id } = req.params;
     const data = await pool.query(`
       SELECT c.*, p.id_calle, p.numero_casa, p.manzana, p.lote, p.referencia_direccion,
-             p.tarifa_agua, p.tarifa_desague, p.tarifa_limpieza, p.tarifa_admin, p.tarifa_extra
+             p.tarifa_agua, p.tarifa_desague, p.tarifa_limpieza, p.tarifa_admin, p.tarifa_extra,
+             COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+             COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+             COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn
       FROM contribuyentes c
       LEFT JOIN predios p ON c.id_contribuyente = p.id_contribuyente
       WHERE c.id_contribuyente = $1
@@ -4747,7 +4758,8 @@ app.put("/contribuyentes/:id", async (req, res) => {
       nombre_completo, codigo_municipal, sec_cod, sec_nombre,
       dni_ruc, email, telefono, id_calle, numero_casa, manzana, lote, estado_conexion,
       motivo_cambio_razon_social, detalle_motivo_cambio_razon_social,
-      tarifa_agua, tarifa_desague, tarifa_limpieza, tarifa_admin, tarifa_extra
+      tarifa_agua, tarifa_desague, tarifa_limpieza, tarifa_admin, tarifa_extra,
+      agua_sn, desague_sn, limpieza_sn
     } = req.body;
     const codigoMunicipal = normalizeCodigoMunicipal(codigo_municipal);
     const codigoSistema = sec_cod ? String(sec_cod).trim() : null;
@@ -4762,8 +4774,14 @@ app.put("/contribuyentes/:id", async (req, res) => {
     const tarifaLimpieza = parseOptionalTarifaMonto(tarifa_limpieza);
     const tarifaAdmin = parseOptionalTarifaMonto(tarifa_admin);
     const tarifaExtra = parseOptionalTarifaMonto(tarifa_extra);
+    const aguaSN = parseOptionalServicioSN(agua_sn);
+    const desagueSN = parseOptionalServicioSN(desague_sn);
+    const limpiezaSN = parseOptionalServicioSN(limpieza_sn);
     if ([tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin, tarifaExtra].includes("__INVALID__")) {
       return res.status(400).json({ error: "Tarifas inválidas. Deben ser números mayores o iguales a 0." });
+    }
+    if ([aguaSN, desagueSN, limpiezaSN].includes("__INVALID__")) {
+      return res.status(400).json({ error: "Servicios inválidos. Use S/N o true/false." });
     }
 
     await client.query('BEGIN');
@@ -4859,9 +4877,16 @@ app.put("/contribuyentes/:id", async (req, res) => {
            tarifa_desague = $9,
            tarifa_limpieza = $10,
            tarifa_admin = $11,
-           tarifa_extra = $12
+           tarifa_extra = $12,
+           agua_sn = COALESCE($13, agua_sn),
+           desague_sn = COALESCE($14, desague_sn),
+           limpieza_sn = COALESCE($15, limpieza_sn)
        WHERE id_contribuyente = $7`,
-      [id_calle, numero_casa, manzana, lote, predioEstado.activo_sn, predioEstado.estado_servicio, idContribuyente, tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin, tarifaExtra]
+      [
+        id_calle, numero_casa, manzana, lote, predioEstado.activo_sn, predioEstado.estado_servicio,
+        idContribuyente, tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin, tarifaExtra,
+        aguaSN, desagueSN, limpiezaSN
+      ]
     );
     const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
       incluirPendientesHistoricos: true,
@@ -7839,6 +7864,7 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     const anioParam = req.query.anio;
     const filtrarAnio = anioParam !== 'all';
     const anio = filtrarAnio ? (Number(anioParam) || getCurrentYear()) : null;
+    const incluirFuturos = normalizeSN(req.query?.incluir_futuros, "N") === "S";
 
     const historial = await pool.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
@@ -7868,6 +7894,7 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
+      ${incluirFuturos ? '' : 'AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))'}
       ${filtrarAnio ? 'AND r.anio = $5' : ''}
       ORDER BY r.anio ASC, r.mes ASC
     `, filtrarAnio
@@ -7932,6 +7959,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
+        AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))
       ${filtrarAnio ? "AND r.anio = $4" : ""}
       ORDER BY r.anio ASC, r.mes ASC, r.id_recibo ASC
     `, filtrarAnio ? [idContribuyente, anioActual, mesActual, anio] : [idContribuyente, anioActual, mesActual]);

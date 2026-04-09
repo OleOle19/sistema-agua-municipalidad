@@ -8,6 +8,12 @@ const normalizeEstadoConexion = (value) => {
   if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return "CORTADO";
   return "CON_CONEXION";
 };
+const normalizeServicioSN = (value, fallback = "S") => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (["S", "1", "SI", "TRUE", "Y", "YES"].includes(raw)) return "S";
+  if (["N", "0", "NO", "FALSE"].includes(raw)) return "N";
+  return fallback;
+};
 const normalizeCodigoMunicipalInput = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -37,6 +43,9 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
     numero_casa: "",
     manzana: "",
     lote: "",
+    agua_sn: "S",
+    desague_sn: "S",
+    limpieza_sn: "S",
     tarifa_agua: "",
     tarifa_desague: "",
     tarifa_limpieza: "",
@@ -78,6 +87,9 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
           numero_casa: u.numero_casa || "",
           manzana: u.manzana || "",
           lote: u.lote || "",
+          agua_sn: normalizeServicioSN(u.agua_sn, "S"),
+          desague_sn: normalizeServicioSN(u.desague_sn, "S"),
+          limpieza_sn: normalizeServicioSN(u.limpieza_sn, "S"),
           tarifa_agua: u.tarifa_agua ?? "",
           tarifa_desague: u.tarifa_desague ?? "",
           tarifa_limpieza: u.tarifa_limpieza ?? "",
@@ -228,6 +240,36 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                   </div>
                   <div className="col-md-12">
                     <div className={`border rounded p-2 ${darkMode ? "border-secondary" : "border-info"}`}>
+                      <div className="small fw-bold mb-2">Servicios activos del predio</div>
+                      <div className="d-flex flex-wrap gap-3 mb-2">
+                        <label className="form-check-label d-flex align-items-center gap-2">
+                          <input
+                            type="checkbox"
+                            className="form-check-input"
+                            checked={formData.agua_sn === "S"}
+                            onChange={(e) => setFormData((prev) => ({ ...prev, agua_sn: e.target.checked ? "S" : "N" }))}
+                          />
+                          Agua
+                        </label>
+                        <label className="form-check-label d-flex align-items-center gap-2">
+                          <input
+                            type="checkbox"
+                            className="form-check-input"
+                            checked={formData.desague_sn === "S"}
+                            onChange={(e) => setFormData((prev) => ({ ...prev, desague_sn: e.target.checked ? "S" : "N" }))}
+                          />
+                          Desague
+                        </label>
+                        <label className="form-check-label d-flex align-items-center gap-2">
+                          <input
+                            type="checkbox"
+                            className="form-check-input"
+                            checked={formData.limpieza_sn === "S"}
+                            onChange={(e) => setFormData((prev) => ({ ...prev, limpieza_sn: e.target.checked ? "S" : "N" }))}
+                          />
+                          Limpieza
+                        </label>
+                      </div>
                       <div className="small fw-bold mb-2">Tarifa personalizada por servicio (S/.)</div>
                       <div className="row g-2">
                         <div className="col-md-3">
