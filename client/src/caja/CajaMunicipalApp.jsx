@@ -1506,10 +1506,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         const rowKey = getCobroAguaRowKey(row);
                         const saldo = getCobroAguaRowSaldo(row);
                         const montoPagado = round2(parseMonto(row?.abono_mes ?? 0));
-                        const fechaUltimoPagoLabel = formatFechaHora(row?.fecha_ultimo_pago);
-                        const mostrarFechaUltimoPago = montoPagado > 0.001
-                          && fechaUltimoPagoLabel
-                          && fechaUltimoPagoLabel !== "-";
                         const sel = seleccionCobroAgua[rowKey] || { checked: false, monto: saldo.toFixed(2) };
                         const esAdelantado = Boolean(row?.es_adelantado) || idRecibo <= 0;
                         const puedeCobrar = canSelectCobroAguaRow(row);
@@ -1567,12 +1563,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                             <td className="text-end">{formatMoney(saldo)}</td>
                             <td className="text-end">
                               {montoPagado > 0.001 ? (
-                                <>
-                                  <div className="fw-semibold">{formatMoney(montoPagado)}</div>
-                                  {mostrarFechaUltimoPago && (
-                                    <div className="small text-muted">{fechaUltimoPagoLabel}</div>
-                                  )}
-                                </>
+                                <span className="fw-semibold">{formatMoney(montoPagado)}</span>
                               ) : (
                                 <span className="text-muted">-</span>
                               )}
