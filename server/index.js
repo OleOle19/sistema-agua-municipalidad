@@ -483,6 +483,14 @@ const normalizeSN = (value, fallback = "N") => {
   if (["N", "0", "NO", "FALSE"].includes(raw)) return "N";
   return fallback;
 };
+const SQL_SN_POSITIVOS = "('S', '1', 'SI', 'TRUE', 'Y', 'YES')";
+const SQL_SN_NEGATIVOS = "('N', '0', 'NO', 'FALSE')";
+const sqlSnEsSi = (sqlExpr, fallback = "S") => {
+  const fallbackSN = normalizeSN(fallback, "N");
+  const normalizado = `UPPER(COALESCE(NULLIF(TRIM(CAST(${sqlExpr} AS text)), ''), '${fallbackSN}'))`;
+  if (fallbackSN === "S") return `${normalizado} NOT IN ${SQL_SN_NEGATIVOS}`;
+  return `${normalizado} IN ${SQL_SN_POSITIVOS}`;
+};
 const normalizeMotivoCambioRazonSocial = (value) => {
   const raw = String(value || "").trim().toUpperCase();
   if (!raw) return "";
@@ -771,22 +779,22 @@ const recalcularRecibosFuturosPorServicios = async (
       SELECT
         r.id_recibo,
         CASE
-          WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.agua_sn, 'S')) = 'S'
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")}
             THEN COALESCE(p.tarifa_agua, $2::numeric)
           ELSE 0::numeric
         END AS nuevo_agua,
         CASE
-          WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.desague_sn, 'S')) = 'S'
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")}
             THEN COALESCE(p.tarifa_desague, $3::numeric)
           ELSE 0::numeric
         END AS nuevo_desague,
         CASE
-          WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S'
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")}
             THEN COALESCE(p.tarifa_limpieza, $4::numeric)
           ELSE 0::numeric
         END AS nuevo_limpieza,
         CASE
-          WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S'
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")}
             THEN COALESCE(p.tarifa_admin, $5::numeric) + COALESCE(p.tarifa_extra, 0::numeric)
           ELSE 0::numeric
         END AS nuevo_admin
@@ -1646,7 +1654,7 @@ const ensureEstadoConexionContribuyentes = async (client) => {
         SELECT 1
         FROM predios p
         WHERE p.id_contribuyente = c.id_contribuyente
-          AND UPPER(COALESCE(p.activo_sn, 'S')) = 'S'
+          AND ${sqlSnEsSi("p.activo_sn", "S")}
       ) THEN 'CON_CONEXION'
       ELSE 'SIN_CONEXION'
     END
@@ -1845,6 +1853,23 @@ const ensurePrediosDireccionAlterna = async (client) => {
       (tarifa_admin IS NULL OR tarifa_admin >= 0) AND
       (tarifa_extra IS NULL OR tarifa_extra >= 0)
     )
+  `);
+  await client.query(`
+    UPDATE predios
+    SET
+      agua_sn = CASE WHEN ${sqlSnEsSi("agua_sn", "S")} THEN 'S' ELSE 'N' END,
+      desague_sn = CASE WHEN ${sqlSnEsSi("desague_sn", "S")} THEN 'S' ELSE 'N' END,
+      limpieza_sn = CASE WHEN ${sqlSnEsSi("limpieza_sn", "S")} THEN 'S' ELSE 'N' END,
+      activo_sn = CASE WHEN ${sqlSnEsSi("activo_sn", "S")} THEN 'S' ELSE 'N' END
+    WHERE
+      agua_sn IS NULL
+      OR desague_sn IS NULL
+      OR limpieza_sn IS NULL
+      OR activo_sn IS NULL
+      OR COALESCE(NULLIF(UPPER(TRIM(CAST(agua_sn AS text))), ''), 'S') NOT IN ('S', 'N')
+      OR COALESCE(NULLIF(UPPER(TRIM(CAST(desague_sn AS text))), ''), 'S') NOT IN ('S', 'N')
+      OR COALESCE(NULLIF(UPPER(TRIM(CAST(limpieza_sn AS text))), ''), 'S') NOT IN ('S', 'N')
+      OR COALESCE(NULLIF(UPPER(TRIM(CAST(activo_sn AS text))), ''), 'S') NOT IN ('S', 'N')
   `);
   await client.query(`
     CREATE TABLE IF NOT EXISTS predios_direcciones_alternas (
@@ -5373,15 +5398,15 @@ app.post("/recibos/generar-masivo", async (req, res) => {
         p.id_predio,
         $1,
         $2,
-        CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_agua, $3) ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_desague, $4) ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_limpieza, $5) ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN (COALESCE(p.tarifa_admin, $6) + COALESCE(p.tarifa_extra, 0)) ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, $3) ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, $4) ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, $5) ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN (COALESCE(p.tarifa_admin, $6) + COALESCE(p.tarifa_extra, 0)) ELSE 0 END,
         (
-          CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_agua, $3) ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_desague, $4) ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_limpieza, $5) ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN (COALESCE(p.tarifa_admin, $6) + COALESCE(p.tarifa_extra, 0)) ELSE 0 END
+          CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, $3) ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, $4) ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, $5) ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN (COALESCE(p.tarifa_admin, $6) + COALESCE(p.tarifa_extra, 0)) ELSE 0 END
         ),
         'PENDIENTE'
       FROM predios p
@@ -5389,7 +5414,7 @@ app.post("/recibos/generar-masivo", async (req, res) => {
     `;
     const params = [periodo.anio, periodo.mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin];
     const whereParts = [
-      "UPPER(COALESCE(p.activo_sn, 'S')) = 'S'",
+      `${sqlSnEsSi("p.activo_sn", "S")}`,
       "COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'"
     ];
 
@@ -8047,6 +8072,8 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       SELECT
         p.id_pago,
         p.id_orden_cobro,
+        r.id_recibo,
+        oc.codigo_recibo,
         p.fecha_pago,
         to_char(p.fecha_pago, 'YYYY-MM-DD') AS fecha,
         to_char(p.fecha_pago, 'HH24:MI:SS') AS hora,
@@ -8091,6 +8118,8 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     )
     SELECT
       id_pago,
+      id_recibo,
+      codigo_recibo,
       fecha_pago,
       fecha,
       hora,
@@ -8139,9 +8168,18 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   };
   const movimientosSanitizados = movimientos.rows.map((row) => {
     const montos = prorratearPagoComponentes(row);
+    const codigoImpresion = includeCodigoImpresion ? (row.codigo_impresion || null) : null;
+    const codigoRecibo = parsePositiveInt(row?.codigo_recibo, 0);
+    const idRecibo = parsePositiveInt(row?.id_recibo, 0);
+    const numeroRecibo = codigoImpresion
+      || (codigoRecibo > 0 ? String(codigoRecibo).padStart(6, "0") : null)
+      || (idRecibo > 0 ? String(idRecibo).padStart(6, "0") : null);
     return {
       ...row,
-      codigo_impresion: includeCodigoImpresion ? (row.codigo_impresion || null) : null,
+      codigo_impresion: codigoImpresion,
+      codigo_recibo: codigoRecibo > 0 ? codigoRecibo : null,
+      id_recibo: idRecibo > 0 ? idRecibo : null,
+      numero_recibo: numeroRecibo || null,
       monto_agua: montos.agua,
       monto_desague: montos.desague,
       monto_limpieza: montos.limpieza,
@@ -8348,7 +8386,7 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
       { header: "ID PAGO", key: "id_pago", width: 12 },
       { header: "FECHA", key: "fecha", width: 14 },
       { header: "HORA", key: "hora", width: 12 },
-      { header: "COD. IMP.", key: "codigo_impresion", width: 14 },
+      { header: "RECIBO", key: "numero_recibo", width: 14 },
       { header: "CODIGO", key: "codigo_municipal", width: 16 },
       { header: "CONTRIBUYENTE", key: "nombre_completo", width: 36 },
       { header: "PERIODO", key: "periodo", width: 12 },
@@ -8360,7 +8398,7 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
         id_pago: m.id_pago,
         fecha: m.fecha || "",
         hora: m.hora || "",
-        codigo_impresion: m.codigo_impresion || "",
+        numero_recibo: m.numero_recibo || m.codigo_impresion || "",
         codigo_municipal: m.codigo_municipal || "",
         nombre_completo: m.nombre_completo || "",
         periodo: `${m.mes || ""}/${m.anio || ""}`,
@@ -12097,22 +12135,22 @@ const generarDeudaMensualAutomatica = async () => {
         p.id_predio,
         $1::int,
         $2::int,
-        CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_agua, $3::numeric) ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_desague, $4::numeric) ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_limpieza, $5::numeric) ELSE 0 END,
-        CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN (COALESCE(p.tarifa_admin, $6::numeric) + COALESCE(p.tarifa_extra, 0::numeric)) ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, $3::numeric) ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, $4::numeric) ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, $5::numeric) ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN (COALESCE(p.tarifa_admin, $6::numeric) + COALESCE(p.tarifa_extra, 0::numeric)) ELSE 0 END,
         (
-          CASE WHEN UPPER(COALESCE(p.agua_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_agua, $3::numeric) ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.desague_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_desague, $4::numeric) ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S' THEN COALESCE(p.tarifa_limpieza, $5::numeric) ELSE 0 END +
-          CASE WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' THEN (COALESCE(p.tarifa_admin, $6::numeric) + COALESCE(p.tarifa_extra, 0::numeric)) ELSE 0 END
+          CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, $3::numeric) ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, $4::numeric) ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, $5::numeric) ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN (COALESCE(p.tarifa_admin, $6::numeric) + COALESCE(p.tarifa_extra, 0::numeric)) ELSE 0 END
         ) AS total_pagar,
         'PENDIENTE',
         make_date($1::int, $2::int, 1),
         (make_date($1::int, $2::int, 1) + INTERVAL '1 month')::date
       FROM predios p
       JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
-      WHERE UPPER(COALESCE(p.activo_sn, 'S')) = 'S'
+      WHERE ${sqlSnEsSi("p.activo_sn", "S")}
         AND COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'
       ON CONFLICT DO NOTHING
       RETURNING id_recibo
