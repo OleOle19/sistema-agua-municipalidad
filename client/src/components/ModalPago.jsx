@@ -36,7 +36,6 @@ const ModalPago = ({
   alGuardar,
   onImprimirAnexo,
   darkMode,
-  realtimeConnected = false,
   realtimeTick = 0
 }) => {
   const rol = normalizeRole(usuarioSistema?.rol);
@@ -140,15 +139,6 @@ const ModalPago = ({
   useEffect(() => {
     cargarOrdenes().catch(() => {});
   }, [cargarOrdenes]);
-
-  useEffect(() => {
-    if (!usuario?.id_contribuyente) return undefined;
-    const fallbackMs = realtimeConnected ? 30000 : 10000;
-    const timer = setInterval(() => {
-      cargarOrdenes().catch(() => {});
-    }, fallbackMs);
-    return () => clearInterval(timer);
-  }, [usuario?.id_contribuyente, realtimeConnected, cargarOrdenes]);
 
   useEffect(() => {
     if (!realtimeTick || !usuario?.id_contribuyente) return;
@@ -352,6 +342,16 @@ const ModalPago = ({
                     </button>
                   </div>
                 )}
+                <div className="d-flex justify-content-end mb-2">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-secondary"
+                    onClick={() => cargarOrdenes().catch(() => {})}
+                    disabled={cargandoOrdenes || cargando}
+                  >
+                    {cargandoOrdenes ? "Actualizando..." : "Actualizar ordenes"}
+                  </button>
+                </div>
                 {cargandoOrdenes && <p className="text-muted">Cargando ordenes...</p>}
                 {!cargandoOrdenes && ordenes.length === 0 && (
                   <p className="text-muted text-center p-3">No hay ordenes pendientes para este contribuyente.</p>

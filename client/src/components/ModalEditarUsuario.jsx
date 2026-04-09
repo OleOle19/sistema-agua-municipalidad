@@ -5,7 +5,7 @@ const normalizeEstadoConexion = (value) => {
   const raw = String(value || "").trim().toUpperCase();
   if (["CON_CONEXION", "CONEXION", "CONECTADO", "ACTIVO"].includes(raw)) return "CON_CONEXION";
   if (["SIN_CONEXION", "SIN CONEXION", "SIN_SERVICIO", "NO_CONECTADO", "INACTIVO"].includes(raw)) return "SIN_CONEXION";
-  if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return "SIN_CONEXION";
+  if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return "CORTADO";
   return "CON_CONEXION";
 };
 const normalizeCodigoMunicipalInput = (value) => {
@@ -223,7 +223,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                     <select className={selectClass} name="estado_conexion" value={formData.estado_conexion} onChange={handleChange}>
                       <option value="CON_CONEXION">Con conexion</option>
                       <option value="SIN_CONEXION">Sin conexion</option>
-                      
+                      <option value="CORTADO">Cortado</option>
                     </select>
                   </div>
                   <div className="col-md-12">

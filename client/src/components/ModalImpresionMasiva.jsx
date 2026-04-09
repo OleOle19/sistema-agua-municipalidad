@@ -17,10 +17,17 @@ const MONTH_OPTIONS = [
   { value: 12, label: "Dic" }
 ];
 
-const ModalImpresionMasiva = ({ cerrarModal, alConfirmar, idsSeleccionados = [], darkMode }) => {
+const ModalImpresionMasiva = ({
+  cerrarModal,
+  alConfirmar,
+  idsSeleccionados = [],
+  modoOperacion = "mensual",
+  darkMode
+}) => {
   const [calles, setCalles] = useState([]);
   const [cargando, setCargando] = useState(false);
-  const [modo, setModo] = useState(idsSeleccionados.length > 0 ? "seleccion" : "calle");
+  const soloSeleccion = modoOperacion === "reimpresion";
+  const [modo, setModo] = useState(soloSeleccion ? "seleccion" : (idsSeleccionados.length > 0 ? "seleccion" : "calle"));
   const currentYear = new Date().getFullYear();
   const [seleccion, setSeleccion] = useState({
     id_calle: "",
@@ -31,6 +38,12 @@ const ModalImpresionMasiva = ({ cerrarModal, alConfirmar, idsSeleccionados = [],
   useEffect(() => {
     api.get("/calles").then((res) => setCalles(res.data)).catch((err) => console.error(err));
   }, []);
+
+  useEffect(() => {
+    if (soloSeleccion) {
+      setModo("seleccion");
+    }
+  }, [soloSeleccion]);
 
   const toggleMes = (mes) => {
     setSeleccion((prev) => {
@@ -46,6 +59,9 @@ const ModalImpresionMasiva = ({ cerrarModal, alConfirmar, idsSeleccionados = [],
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (soloSeleccion && (!Array.isArray(idsSeleccionados) || idsSeleccionados.length === 0)) {
+      return alert("Seleccione un contribuyente para reimprimir.");
+    }
     if (modo === "calle" && !seleccion.id_calle) return alert("Seleccione una calle");
     if (!seleccion.meses || seleccion.meses.length === 0) return alert("Seleccione al menos un mes");
 
@@ -55,7 +71,8 @@ const ModalImpresionMasiva = ({ cerrarModal, alConfirmar, idsSeleccionados = [],
         ...seleccion,
         meses: (seleccion.meses || []).map((m) => Number(m)).filter((m) => Number.isFinite(m)),
         tipo_seleccion: modo,
-        ids_usuarios: idsSeleccionados
+        ids_usuarios: idsSeleccionados,
+        incluir_pagados: soloSeleccion ? "S" : "N"
       };
       const res = await api.post("/recibos/masivos", payload);
       const datosImpresion = (Array.isArray(res.data) ? res.data : []).map((row) => ({
@@ -82,22 +99,33 @@ const ModalImpresionMasiva = ({ cerrarModal, alConfirmar, idsSeleccionados = [],
       <div className="modal-dialog">
         <div className="modal-content" style={modalStyle}>
           <div className={headerClass}>
-            <h5 className="modal-title"><FaPrint className="me-2"/> Impresion Masiva</h5>
+            <h5 className="modal-title">
+              <FaPrint className="me-2"/>
+              {soloSeleccion ? "Reimpresion de Recibos" : "Impresion Mensual"}
+            </h5>
             <button className={`btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`} onClick={cerrarModal}></button>
           </div>
           <div className="modal-body">
             <form onSubmit={handleSubmit}>
-              <div className={`d-flex justify-content-around mb-4 border-bottom pb-3 ${darkMode ? "border-secondary" : ""}`}>
-                <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "seleccion")}`} onClick={() => setModo("seleccion")} disabled={idsSeleccionados.length === 0}>
-                  <FaUsers className="mb-1 d-block mx-auto"/> Seleccion
-                </button>
-                <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "calle")}`} onClick={() => setModo("calle")}>
-                  <FaBuilding className="mb-1 d-block mx-auto"/> Por Calle
-                </button>
-                <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "todos")}`} onClick={() => setModo("todos")}>
-                  <FaLayerGroup className="mb-1 d-block mx-auto"/> Todos
-                </button>
-              </div>
+              {!soloSeleccion && (
+                <div className={`d-flex justify-content-around mb-4 border-bottom pb-3 ${darkMode ? "border-secondary" : ""}`}>
+                  <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "seleccion")}`} onClick={() => setModo("seleccion")} disabled={idsSeleccionados.length === 0}>
+                    <FaUsers className="mb-1 d-block mx-auto"/> Seleccion
+                  </button>
+                  <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "calle")}`} onClick={() => setModo("calle")}>
+                    <FaBuilding className="mb-1 d-block mx-auto"/> Por Calle
+                  </button>
+                  <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "todos")}`} onClick={() => setModo("todos")}>
+                    <FaLayerGroup className="mb-1 d-block mx-auto"/> Todos
+                  </button>
+                </div>
+              )}
+
+              {soloSeleccion && (
+                <div className={`alert alert-info ${darkMode ? "bg-dark text-white border-secondary" : ""}`}>
+                  Reimpresión para el contribuyente seleccionado en pantalla.
+                </div>
+              )}
 
               {modo === "calle" && (
                 <div className="mb-3">
@@ -137,7 +165,7 @@ const ModalImpresionMasiva = ({ cerrarModal, alConfirmar, idsSeleccionados = [],
               <div className="d-flex justify-content-end gap-2">
                 <button type="button" className="btn btn-secondary" onClick={cerrarModal}>Cancelar</button>
                 <button type="submit" className="btn btn-primary" disabled={cargando}>
-                  {cargando ? "Procesando..." : "Imprimir"}
+                  {cargando ? "Procesando..." : (soloSeleccion ? "Reimprimir" : "Imprimir")}
                 </button>
               </div>
             </form>

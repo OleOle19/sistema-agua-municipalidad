@@ -23,7 +23,8 @@ import ModalExportaciones from "./components/ModalExportaciones";
 import ModalReporteCortes from "./components/ModalReporteCortes";
 import ModalActaCorteSelector from "./components/ModalActaCorteSelector";
 import ModalCampoSolicitudes from "./components/ModalCampoSolicitudes";
-import realtime from "./realtime";
+import ModalCorteConexion from "./components/ModalCorteConexion";
+import { buildReporteEstadoConexionPdf } from "./utils/simplePdf";
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -59,12 +60,14 @@ const hasMinRole = (role, requiredRole) => {
 
 const ESTADOS_CONEXION = {
   CON_CONEXION: "CON_CONEXION",
-  SIN_CONEXION: "SIN_CONEXION"
+  SIN_CONEXION: "SIN_CONEXION",
+  CORTADO: "CORTADO"
 };
 
 const ESTADO_CONEXION_LABELS = {
   CON_CONEXION: "Con conexion",
-  SIN_CONEXION: "Sin conexion"
+  SIN_CONEXION: "Sin conexion",
+  CORTADO: "Cortado"
 };
 
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
@@ -76,17 +79,25 @@ const normalizeCampoAppUrl = (value) => {
   if (/\/campo-app\/?$/i.test(raw)) return `${raw.replace(/\/+$/g, "")}/`;
   return `${raw.replace(/\/+$/g, "")}/campo-app/`;
 };
+const normalizeSearchText = (value) => String(value || "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLowerCase()
+  .replace(/[^\p{L}\p{N}\s]/gu, " ")
+  .replace(/\s+/g, " ")
+  .trim();
 
 const normalizeEstadoConexion = (value) => {
   const raw = String(value || "").trim().toUpperCase();
   if (["CON_CONEXION", "CONEXION", "CONECTADO", "ACTIVO"].includes(raw)) return ESTADOS_CONEXION.CON_CONEXION;
   if (["SIN_CONEXION", "SIN CONEXION", "SIN_SERVICIO", "NO_CONECTADO", "INACTIVO"].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
-  if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
+  if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return ESTADOS_CONEXION.CORTADO;
   return ESTADOS_CONEXION.CON_CONEXION;
 };
 
 const badgeEstadoConexionClass = (estado) => {
   const n = normalizeEstadoConexion(estado);
+  if (n === ESTADOS_CONEXION.CORTADO) return "bg-danger";
   if (n === ESTADOS_CONEXION.SIN_CONEXION) return "bg-secondary";
   return "bg-success";
 };
@@ -96,7 +107,7 @@ import {
   FaUserPlus, FaMoneyBillWave, FaFileInvoiceDollar, 
   FaPrint, FaTrashAlt, FaSearch, FaUserEdit, FaUserTimes, 
   FaSort, FaCut, FaShieldAlt, FaFileExcel, FaSignOutAlt, 
-  FaUserShield, FaDatabase, FaPlug, FaLink,
+  FaUserShield, FaDatabase, FaPlug, FaLink, FaSyncAlt,
   FaCloudUploadAlt, FaClipboardCheck
 } from "react-icons/fa";
 
@@ -112,6 +123,8 @@ const Sidebar = memo(({
   setMostrarImportar,
   setMostrarModalExportaciones,
   setMostrarModalCampo,
+  abrirModalImpresionMensual,
+  abrirModalReimpresion,
   permisos,
   resumenPendientesCaja,
   resumenConteoEfectivo,
@@ -119,7 +132,12 @@ const Sidebar = memo(({
   showLegacyCajaMenu
 }) => {
   const isSoloCobrosCajero = permisos.role === "CAJERO";
-  const showReportesSection = !isSoloCobrosCajero && (permisos.canReportesCaja || permisos.canExportPadron);
+  const showReportesSection = !isSoloCobrosCajero && (
+    permisos.canReportesCaja
+    || permisos.canExportPadron
+    || permisos.canImpresionMensual
+    || permisos.canReimpresionRecibo
+  );
   const showConteoYCierreMenu = false;
 
   return (
@@ -201,6 +219,20 @@ const Sidebar = memo(({
               </button>
             </li>
           )}
+          {permisos.canImpresionMensual && (
+            <li>
+              <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={abrirModalImpresionMensual}>
+                <FaPrint/> <span>Impresion Mensual</span>
+              </button>
+            </li>
+          )}
+          {permisos.canReimpresionRecibo && (
+            <li>
+              <button className="nav-link py-2 text-warning w-100 text-start d-flex align-items-center gap-2" onClick={abrirModalReimpresion}>
+                <FaPrint/> <span>Reimpresion Recibo</span>
+              </button>
+            </li>
+          )}
         </>
       )}
       
@@ -251,14 +283,14 @@ const Sidebar = memo(({
 const Toolbar = memo(({ 
   busqueda, setBusqueda, usuarioSeleccionado, setMostrarModalDeuda, 
   setMostrarModalEliminar, setMostrarModalEditarUsuario, eliminarUsuarioCompleto, 
-  handlePrintCortes, abrirModalActaCorte, generandoActaCorte, darkMode, setMostrarModalMasivo,
+  abrirModalActaCorte, generandoActaCorte, darkMode,
   selectedIds, setMostrarModalDeudaMasiva, permisos, filtroEstadoConexion, setFiltroEstadoConexion,
-  aplicarCorteSeleccionado, reconectarSeleccionado
+  abrirModalCorteConexion, registrandoCorteConexion, reconectarSeleccionado, abrirReporteEstadoConexion
 }) => {
   const usuarioConConexion = normalizeEstadoConexion(usuarioSeleccionado?.estado_conexion) === ESTADOS_CONEXION.CON_CONEXION;
   const estadoSeleccionado = normalizeEstadoConexion(usuarioSeleccionado?.estado_conexion);
-  const puedeCortar = Boolean(usuarioSeleccionado) && estadoSeleccionado === ESTADOS_CONEXION.CON_CONEXION;
-  const puedeReconectar = Boolean(usuarioSeleccionado) && estadoSeleccionado === ESTADOS_CONEXION.SIN_CONEXION;
+  const puedeReconectar = Boolean(usuarioSeleccionado)
+    && (estadoSeleccionado === ESTADOS_CONEXION.SIN_CONEXION || estadoSeleccionado === ESTADOS_CONEXION.CORTADO);
   return (
   <div className={`${darkMode ? 'bg-secondary border-secondary text-white' : 'bg-light border-bottom'} p-2 d-flex gap-2 align-items-center sticky-top shadow-sm`} style={{ flexWrap: "nowrap", overflowX: "hidden" }} onClick={(e) => e.stopPropagation()}>
     
@@ -277,6 +309,7 @@ const Toolbar = memo(({
         <option value="TODOS">Todos</option>
         <option value="CON_CONEXION">Con conexion</option>
         <option value="SIN_CONEXION">Sin conexion</option>
+        <option value="CORTADO">Cortado</option>
       </select>
     </div>
     
@@ -311,7 +344,7 @@ const Toolbar = memo(({
 
         {permisos.canCambiarEstadoConexion && (
           <>
-            <button className="btn btn-outline-danger btn-sm shadow-sm d-flex align-items-center justify-content-center" disabled={!puedeCortar} onClick={aplicarCorteSeleccionado} title="Aplicar Corte de Conexion"><FaPlug/></button>
+            <button className="btn btn-outline-danger btn-sm shadow-sm d-flex align-items-center justify-content-center" disabled={registrandoCorteConexion} onClick={abrirModalCorteConexion} title="Registrar Corte con Evidencia"><FaPlug/></button>
             <button className="btn btn-outline-success btn-sm shadow-sm d-flex align-items-center justify-content-center" disabled={!puedeReconectar} onClick={reconectarSeleccionado} title="Reconectar Servicio"><FaLink/></button>
           </>
         )}
@@ -319,13 +352,11 @@ const Toolbar = memo(({
           <button className="btn btn-warning btn-sm shadow-sm d-flex align-items-center justify-content-center" disabled={generandoActaCorte} onClick={abrirModalActaCorte} title="Acta de Corte"><FaFileInvoiceDollar/></button>
         )}
         {permisos.canReporteCortes && (
-          <button className="btn btn-danger btn-sm shadow-sm d-flex align-items-center justify-content-center" onClick={handlePrintCortes} title="Cortes"><FaCut/></button>
-        )}
-        
-        {permisos.canImpresionMasiva && (
-          <button className="btn btn-dark btn-sm shadow-sm d-flex align-items-center gap-1" onClick={() => setMostrarModalMasivo(true)} title="Imprimir Recibos">
-              <FaPrint/> <span>Impresion</span>
-          </button>
+          <div className="btn-group shadow-sm">
+            <button className="btn btn-danger btn-sm d-flex align-items-center justify-content-center" onClick={() => abrirReporteEstadoConexion(ESTADOS_CONEXION.CORTADO)} title="Reporte Cortados"><FaCut/></button>
+            <button className="btn btn-success btn-sm d-flex align-items-center justify-content-center" onClick={() => abrirReporteEstadoConexion(ESTADOS_CONEXION.CON_CONEXION)} title="Reporte Con Conexion"><FaPlug/></button>
+            <button className="btn btn-secondary btn-sm d-flex align-items-center justify-content-center" onClick={() => abrirReporteEstadoConexion(ESTADOS_CONEXION.SIN_CONEXION)} title="Reporte Sin Conexion"><FaLink/></button>
+          </div>
         )}
     </div>
 
@@ -519,6 +550,7 @@ function AguaApp({ onBackToSelector = null }) {
   const [mostrarModalAuditoria, setMostrarModalAuditoria] = useState(false);
   const [mostrarModalUsuarios, setMostrarModalUsuarios] = useState(false);
   const [mostrarModalMasivo, setMostrarModalMasivo] = useState(false);
+  const [modalImpresionModo, setModalImpresionModo] = useState("mensual");
   const [mostrarImportar, setMostrarImportar] = useState(false);
   const [mostrarModalDeudaMasiva, setMostrarModalDeudaMasiva] = useState(false);
   const [mostrarModalExportaciones, setMostrarModalExportaciones] = useState(false);
@@ -528,7 +560,19 @@ function AguaApp({ onBackToSelector = null }) {
   const [generandoActaCorte, setGenerandoActaCorte] = useState(false);
   const [mostrarModalReporteCortes, setMostrarModalReporteCortes] = useState(false);
   const [mostrarModalActaCorte, setMostrarModalActaCorte] = useState(false);
-  const freezeContribuyenteRefresh = mostrarModalEditarUsuario;
+  const [mostrarModalCorteConexion, setMostrarModalCorteConexion] = useState(false);
+  const [registrandoCorteConexion, setRegistrandoCorteConexion] = useState(false);
+  const [reporteEstadoConexion, setReporteEstadoConexion] = useState(ESTADOS_CONEXION.CORTADO);
+  const freezeContribuyenteRefresh =
+    mostrarModalEditarUsuario
+    || mostrarModalDeuda
+    || mostrarModalEliminar
+    || mostrarModalArbitrios
+    || mostrarModalCorteConexion
+    || mostrarModalReporteCortes
+    || mostrarModalActaCorte
+    || generandoActaCorte
+    || registrandoCorteConexion;
   
   const [selectedIds, setSelectedIds] = useState(new Set()); 
   const [scrollSelect, setScrollSelect] = useState({
@@ -552,17 +596,6 @@ function AguaApp({ onBackToSelector = null }) {
 
   const darkMode = false;
   const [refreshDashboard, setRefreshDashboard] = useState(0);
-  const [realtimeStatus, setRealtimeStatus] = useState("disabled");
-  const [realtimeTick, setRealtimeTick] = useState(0);
-  const realtimeRefreshTimerRef = useRef(0);
-  const realtimeNeedsCajaRef = useRef(false);
-  const realtimeContextRef = useRef({ canCaja: false, selectedId: null, historialYear: "all", freezeContribuyenteRefresh: false });
-  const realtimeOpsRef = useRef({
-    cargarContribuyentes: () => {},
-    cargarResumen: () => {},
-    cargarConteo: () => {},
-    cargarHistorial: () => {}
-  });
   const [resumenPendientesCaja, setResumenPendientesCaja] = useState({
     total_ordenes: 0,
     total_monto: 0,
@@ -598,7 +631,8 @@ function AguaApp({ onBackToSelector = null }) {
     canDeleteCalles: hasMinRole(rolActual, "ADMIN"),
     canCambiarEstadoConexion: hasMinRole(rolActual, "ADMIN_SEC"),
     canGenerarActaCorte: hasMinRole(rolActual, "ADMIN_SEC"),
-    canImpresionMasiva: hasMinRole(rolActual, "ADMIN_SEC"),
+    canImpresionMensual: hasMinRole(rolActual, "ADMIN"),
+    canReimpresionRecibo: hasMinRole(rolActual, "ADMIN_SEC"),
     canReporteCortes: hasMinRole(rolActual, "ADMIN_SEC"),
     canGestionCampo: hasMinRole(rolActual, "ADMIN")
   }), [rolActual]);
@@ -807,6 +841,7 @@ const anexoCajaPageStyle = `
   const [datosAnexoCajaImprimir, setDatosAnexoCajaImprimir] = useState(null);
   const [datosActaCorteImprimir, setDatosActaCorteImprimir] = useState([]);
   const [datosCortesImprimir, setDatosCortesImprimir] = useState(null);
+  const [cortesDocumentTitle, setCortesDocumentTitle] = useState("Reporte_Estado_Conexion");
   const isPrintingActaRef = useRef(false);
   const isPrintingCortesRef = useRef(false);
 
@@ -820,7 +855,7 @@ const anexoCajaPageStyle = `
 
   const handlePrintCortes = useReactToPrint({
     contentRef: cortesRef,
-    documentTitle: "Orden_Cortes",
+    documentTitle: cortesDocumentTitle,
     onAfterPrint: () => {
       isPrintingCortesRef.current = false;
       setDatosCortesImprimir(null);
@@ -854,12 +889,35 @@ const anexoCajaPageStyle = `
     }
   });
 
-  const abrirModalReporteCortes = () => {
+  const abrirModalReporteCortes = (estadoObjetivo = ESTADOS_CONEXION.CORTADO) => {
     if (!permisos.canReporteCortes) {
       alert("Tu nivel no tiene permiso para reporte de cortes.");
       return;
     }
+    setReporteEstadoConexion(estadoObjetivo);
     setMostrarModalReporteCortes(true);
+  };
+
+  const abrirModalImpresionMensual = () => {
+    if (!permisos.canImpresionMensual) {
+      alert("Solo el administrador puede usar la impresión mensual.");
+      return;
+    }
+    setModalImpresionModo("mensual");
+    setMostrarModalMasivo(true);
+  };
+
+  const abrirModalReimpresion = () => {
+    if (!permisos.canReimpresionRecibo) {
+      alert("Tu nivel no tiene permiso para reimpresión.");
+      return;
+    }
+    if (!usuarioSeleccionado?.id_contribuyente) {
+      alert("Seleccione un contribuyente para reimprimir recibos.");
+      return;
+    }
+    setModalImpresionModo("reimpresion");
+    setMostrarModalMasivo(true);
   };
 
   const abrirModalActaCorte = () => {
@@ -894,62 +952,114 @@ const anexoCajaPageStyle = `
       const c = contribuyenteById.get(id);
       if (!c) return false;
       const meses = Number(c.meses_deuda || 0);
-      const deuda = parseFloat(c.deuda_anio || 0) || 0;
-      return meses > 0 || deuda > 0;
+      return meses >= 4;
     });
 
     if (objetivosConDeuda.length === 0) {
-      return alert("Los contribuyentes seleccionados no tienen deuda pendiente.");
+      return alert("Los contribuyentes seleccionados deben tener 4 o más meses de deuda.");
     }
 
     try {
       setGenerandoActaCorte(true);
-      const actasGeneradas = [];
-      const errores = [];
+      let generadas = [];
+      let omitidas = [];
+      try {
+        const respuestaLote = await api.post("/actas-corte/generar-lote", {
+          ids_contribuyentes: objetivosConDeuda
+        });
+        generadas = Array.isArray(respuestaLote?.data?.generadas) ? respuestaLote.data.generadas : [];
+        omitidas = Array.isArray(respuestaLote?.data?.omitidas) ? respuestaLote.data.omitidas : [];
+      } catch (errorLote) {
+        const status = Number(errorLote?.response?.status || 0);
+        const msg = String(errorLote?.response?.data?.error || "");
+        const routeMissing = status === 404 || /ruta api no encontrada/i.test(msg);
+        if (!routeMissing) throw errorLote;
 
-      for (const idContribuyente of objetivosConDeuda) {
-        const base = contribuyenteById.get(idContribuyente);
-        if (!base) continue;
-
-        try {
-          const [resActa, resHistorial] = await Promise.all([
-            api.post("/actas-corte/generar", {
-              id_contribuyente: idContribuyente
-            }),
-            api.get(`/recibos/historial/${idContribuyente}?anio=all`)
-          ]);
-          const data = resActa.data || {};
-          const detalle_deuda = construirDetalleDeudaActa(
-            Array.isArray(resHistorial?.data) ? resHistorial.data : [],
-            parseFloat(data.deuda_total ?? base.deuda_anio ?? 0) || 0
-          );
-          actasGeneradas.push({
-            numero_acta: data.numero_acta || "",
-            fecha_emision: data.fecha_emision || new Date().toISOString(),
-            usuario_notificador: usuarioSistema?.nombre || "",
-            detalle_deuda,
-            contribuyente: {
-              codigo_municipal: base.codigo_municipal,
-              nombre_completo: base.nombre_completo,
-              dni_ruc: base.dni_ruc,
-              direccion_completa: base.direccion_completa,
-              meses_deuda: Number(data.meses_deuda ?? base.meses_deuda ?? 0),
-              deuda_total: parseFloat(data.deuda_total ?? base.deuda_anio ?? 0) || 0
+        const resultados = await Promise.all(
+          objetivosConDeuda.map(async (idContribuyente) => {
+            try {
+              const resActa = await api.post("/actas-corte/generar", {
+                id_contribuyente: idContribuyente
+              });
+              return { ok: true, item: { ...(resActa?.data || {}), id_contribuyente: idContribuyente } };
+            } catch (errItem) {
+              return {
+                ok: false,
+                omitida: {
+                  id_contribuyente: idContribuyente,
+                  codigo_municipal: contribuyenteById.get(idContribuyente)?.codigo_municipal || "",
+                  motivo: errItem?.response?.data?.error || "No se pudo generar acta."
+                }
+              };
             }
-          });
-        } catch {
-          errores.push(base?.codigo_municipal || String(idContribuyente));
-        }
+          })
+        );
+        generadas = resultados.filter((r) => r.ok).map((r) => r.item);
+        omitidas = resultados.filter((r) => !r.ok).map((r) => r.omitida);
       }
+
+      if (generadas.length === 0) {
+        return alert("No se pudo generar ninguna acta para la seleccion.");
+      }
+
+      const obtenerHistorialConRetry = async (idContribuyente, intentos = 2) => {
+        for (let intento = 1; intento <= intentos; intento += 1) {
+          try {
+            const res = await api.get(`/recibos/historial/${Number(idContribuyente)}?anio=all`);
+            return res;
+          } catch {
+            if (intento >= intentos) return null;
+            await new Promise((resolve) => setTimeout(resolve, 180));
+          }
+        }
+        return null;
+      };
+
+      // Siempre cargamos detalle real para evitar actas "resumidas" sin desglose.
+      const historiales = [];
+      const concurrencia = 8;
+      for (let i = 0; i < generadas.length; i += concurrencia) {
+        const bloque = generadas.slice(i, i + concurrencia);
+        const respuestas = await Promise.all(
+          bloque.map((item) => obtenerHistorialConRetry(item.id_contribuyente, 2))
+        );
+        historiales.push(...respuestas);
+      }
+
+      const actasGeneradas = generadas.map((item, idx) => {
+        const idContribuyente = Number(item.id_contribuyente);
+        const base = contribuyenteById.get(idContribuyente) || {};
+        const historialRows = Array.isArray(historiales[idx]?.data)
+          ? historiales[idx].data
+          : [];
+        const deudaFallback = parseFloat(item.deuda_total ?? base.deuda_anio ?? 0) || 0;
+        return {
+          numero_acta: item.numero_acta || "",
+          fecha_emision: item.fecha_emision || new Date().toISOString(),
+          usuario_notificador: usuarioSistema?.nombre || "",
+          detalle_deuda: construirDetalleDeudaActa(historialRows, deudaFallback),
+          contribuyente: {
+            codigo_municipal: base.codigo_municipal || item.codigo_municipal || "",
+            nombre_completo: base.nombre_completo || "",
+            dni_ruc: base.dni_ruc || "",
+            direccion_completa: base.direccion_completa || "",
+            meses_deuda: Number(item.meses_deuda ?? base.meses_deuda ?? 0),
+            deuda_total: deudaFallback
+          }
+        };
+      });
 
       if (actasGeneradas.length === 0) {
         return alert("No se pudo generar ninguna acta para la seleccion.");
       }
 
       setDatosActaCorteImprimir(actasGeneradas);
-
-      if (errores.length > 0) {
-        alert(`Se generaron ${actasGeneradas.length} acta(s). Omitidos: ${errores.join(", ")}`);
+      if (omitidas.length > 0) {
+        const codigos = omitidas
+          .map((x) => String(x.codigo_municipal || x.id_contribuyente || "").trim())
+          .filter(Boolean)
+          .slice(0, 30);
+        alert(`Se generaron ${actasGeneradas.length} acta(s). Omitidos: ${codigos.join(", ")}${omitidas.length > 30 ? "..." : ""}`);
       }
     } catch (error) {
       const msg = error?.response?.data?.error || "No se pudo generar el acta de corte.";
@@ -1229,79 +1339,10 @@ const anexoCajaPageStyle = `
   };
 
   useEffect(() => {
-    realtimeContextRef.current = {
-      canCaja: permisos.canCaja,
-      selectedId: usuarioSeleccionado?.id_contribuyente || null,
-      historialYear,
-      freezeContribuyenteRefresh
-    };
-  }, [permisos.canCaja, usuarioSeleccionado, historialYear, freezeContribuyenteRefresh]);
-
-  useEffect(() => {
-    realtimeOpsRef.current = {
-      cargarContribuyentes,
-      cargarResumen: SHOW_LEGACY_CAJA_MENU ? cargarResumenPendientesCaja : () => {},
-      cargarConteo: cargarResumenConteoEfectivo,
-      cargarHistorial
-    };
-  }, [cargarContribuyentes, cargarResumenPendientesCaja, cargarResumenConteoEfectivo, cargarHistorial]);
-
-  useEffect(() => {
-    const unsubscribeStatus = realtime.onStatus((status) => {
-      setRealtimeStatus(status);
-    });
-
-    const unsubscribeEvent = realtime.onEvent((event) => {
-      if (!event || event.type !== "event") return;
-      if (event.channel === "caja") {
-        realtimeNeedsCajaRef.current = true;
-      }
-      setRealtimeTick((prev) => prev + 1);
-      if (realtimeRefreshTimerRef.current) return;
-      realtimeRefreshTimerRef.current = setTimeout(() => {
-        realtimeRefreshTimerRef.current = 0;
-        const ops = realtimeOpsRef.current;
-        const context = realtimeContextRef.current;
-        if (!context.freezeContribuyenteRefresh) {
-          ops.cargarContribuyentes();
-          if (context.selectedId) {
-            ops.cargarHistorial(context.selectedId, context.historialYear || "all", true);
-          }
-        }
-        if (realtimeNeedsCajaRef.current && context.canCaja) {
-          ops.cargarResumen();
-          ops.cargarConteo();
-        }
-        realtimeNeedsCajaRef.current = false;
-        setRefreshDashboard((prev) => prev + 1);
-      }, 180);
-    });
-
-    return () => {
-      unsubscribeStatus();
-      unsubscribeEvent();
-      if (realtimeRefreshTimerRef.current) {
-        clearTimeout(realtimeRefreshTimerRef.current);
-        realtimeRefreshTimerRef.current = 0;
-      }
-      realtimeNeedsCajaRef.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!usuarioSistema) {
-      realtime.disconnect(true);
-      setRealtimeStatus(realtime.enabled ? "fallback" : "disabled");
-      return;
-    }
-    const token = localStorage.getItem(AGUA_TOKEN_KEY) || "";
-    realtime.connect(token);
-  }, [usuarioSistema]);
-
-  useEffect(() => {
     if (!usuarioSistema) return;
     cargarContribuyentes();
   }, [usuarioSistema]);
+
   useEffect(() => {
     if (!usuarioSistema || !permisos.canCaja) {
       setResumenPendientesCaja({
@@ -1320,18 +1361,8 @@ const anexoCajaPageStyle = `
     }
     if (SHOW_LEGACY_CAJA_MENU) cargarResumenPendientesCaja();
     cargarResumenConteoEfectivo();
-    const timer = setInterval(() => {
-      if (SHOW_LEGACY_CAJA_MENU) cargarResumenPendientesCaja();
-      cargarResumenConteoEfectivo();
-      if (realtimeStatus !== "connected" && !freezeContribuyenteRefresh) {
-        cargarContribuyentes();
-        if (usuarioSeleccionado?.id_contribuyente) {
-          cargarHistorial(usuarioSeleccionado.id_contribuyente, historialYear, true);
-        }
-      }
-    }, 10000);
-    return () => clearInterval(timer);
-  }, [usuarioSistema, permisos.canCaja, cargarResumenPendientesCaja, cargarResumenConteoEfectivo, realtimeStatus, usuarioSeleccionado, historialYear, freezeContribuyenteRefresh]);
+    return undefined;
+  }, [usuarioSistema, permisos.canCaja, cargarResumenPendientesCaja, cargarResumenConteoEfectivo]);
   useEffect(() => {
     if (usuarioSeleccionado) {
       setHistorialYear("all");
@@ -1362,11 +1393,50 @@ const anexoCajaPageStyle = `
 
   const handleLogout = () => {
     if (window.confirm("Cerrar sesion?")) {
-      realtime.disconnect(true);
       localStorage.removeItem(AGUA_TOKEN_KEY);
       localStorage.removeItem(LEGACY_TOKEN_KEY);
       setUsuarioSistema(null);
       setUsuarioSeleccionado(null);
+    }
+  };
+
+  const abrirModalCorteConexion = () => {
+    if (!permisos.canCambiarEstadoConexion) {
+      alert("Tu nivel no tiene permiso para cambiar estado de conexion.");
+      return;
+    }
+    setMostrarModalCorteConexion(true);
+  };
+
+  const registrarCorteConEvidencia = async ({ id_contribuyente, motivo, evidencias }) => {
+    if (!permisos.canCambiarEstadoConexion) return;
+    const idContribuyente = Number(id_contribuyente);
+    if (!Number.isInteger(idContribuyente) || idContribuyente <= 0) {
+      alert("Seleccione un contribuyente válido.");
+      return;
+    }
+    try {
+      setRegistrandoCorteConexion(true);
+      const formData = new FormData();
+      formData.append("id_contribuyente", String(idContribuyente));
+      formData.append("motivo", String(motivo || "").trim());
+      (Array.isArray(evidencias) ? evidencias : []).forEach((file) => {
+        formData.append("evidencias", file);
+      });
+
+      const res = await api.post("/contribuyentes/cortes/registrar", formData, {
+        headers: { "Content-Type": "multipart/form-data" }
+      });
+      const fechaEvento = res?.data?.fecha_evento ? new Date(res.data.fecha_evento).toLocaleString() : null;
+      const recalc = Number(res?.data?.recibos_recalculados || 0);
+      const totalEvidencias = Number(res?.data?.evidencias?.length || 0);
+      alert(`${res?.data?.mensaje || "Corte registrado."}${fechaEvento ? `\nFecha: ${fechaEvento}` : ""}\nEvidencias: ${totalEvidencias}\nRecibos futuros recalculados: ${recalc}`);
+      setMostrarModalCorteConexion(false);
+      recargarTodo();
+    } catch (error) {
+      alert(error?.response?.data?.error || "No se pudo registrar el corte.");
+    } finally {
+      setRegistrandoCorteConexion(false);
     }
   };
 
@@ -1385,15 +1455,15 @@ const anexoCajaPageStyle = `
       alert("El contribuyente ya tiene ese estado.");
       return;
     }
-    if (estadoDestino === ESTADOS_CONEXION.SIN_CONEXION && estadoActual !== ESTADOS_CONEXION.CON_CONEXION) {
-      alert("Solo se puede pasar a sin conexion desde estado con conexion.");
+    if (estadoDestino === ESTADOS_CONEXION.CON_CONEXION && estadoActual === ESTADOS_CONEXION.CON_CONEXION) {
+      alert("El contribuyente ya tiene conexion activa.");
       return;
     }
 
-    const accion = estadoDestino === ESTADOS_CONEXION.SIN_CONEXION ? "pasar a sin conexion" : "reconectar";
-    const motivoDefault = estadoDestino === ESTADOS_CONEXION.SIN_CONEXION
-      ? "Suspension por morosidad."
-      : "Reconexion por regularizacion de pago.";
+    const accion = estadoDestino === ESTADOS_CONEXION.CON_CONEXION ? "reconectar" : "actualizar estado";
+    const motivoDefault = estadoDestino === ESTADOS_CONEXION.CON_CONEXION
+      ? "Reconexion por regularizacion de pago."
+      : "Actualizacion de estado desde oficina.";
     const motivo = window.prompt(`Motivo para ${accion}:`, motivoDefault);
     if (motivo === null) return;
     const motivoFinal = String(motivo || "").trim();
@@ -1417,7 +1487,6 @@ const anexoCajaPageStyle = `
     }
   };
 
-  const aplicarCorteSeleccionado = () => cambiarEstadoConexionSeleccionado(ESTADOS_CONEXION.SIN_CONEXION);
   const reconectarSeleccionado = () => cambiarEstadoConexionSeleccionado(ESTADOS_CONEXION.CON_CONEXION);
 
   const eliminarUsuarioCompleto = async () => {
@@ -1532,13 +1601,18 @@ const anexoCajaPageStyle = `
       const pendienteCajaNum = Number.parseFloat(c.pendiente_caja_monto) || 0;
       const deudaVisibleNum = Math.max(deudaNum - pendienteCajaNum, 0);
       const abonoVisibleNum = abonoNum + pendienteCajaNum;
+      const nombreSearch = normalizeSearchText(c.nombre_completo || "");
+      const codigoSearch = normalizeSearchText(c.codigo_municipal || "");
+      const direccionSearch = normalizeSearchText(c.direccion_completa || "");
+      const estadoSearch = normalizeSearchText(estadoLabel);
       return {
         ...c,
         _estadoNorm: estadoNorm,
-        _nombreLc: String(c.nombre_completo || "").toLowerCase(),
-        _codigoLc: String(c.codigo_municipal || "").toLowerCase(),
-        _direccionLc: String(c.direccion_completa || "").toLowerCase(),
-        _estadoLabelLc: estadoLabel.toLowerCase(),
+        _nombreLc: nombreSearch,
+        _codigoLc: codigoSearch,
+        _direccionLc: direccionSearch,
+        _estadoLabelLc: estadoSearch,
+        _searchBlob: `${nombreSearch} ${codigoSearch} ${direccionSearch} ${estadoSearch}`.trim(),
         _deudaNum: deudaNum,
         _abonoNum: abonoNum,
         _deudaVisibleNum: deudaVisibleNum,
@@ -1551,16 +1625,15 @@ const anexoCajaPageStyle = `
   }, [contribuyentes]);
 
   const datosProcesados = useMemo(() => {
-    const needle = busquedaDeferred.trim().toLowerCase();
+    const needle = normalizeSearchText(busquedaDeferred);
+    const terms = needle ? needle.split(" ").filter(Boolean) : [];
     const filtrados = contribuyentesIndexados.filter((c) => {
       if (filtroEstadoConexion !== "TODOS" && c._estadoNorm !== filtroEstadoConexion) {
         return false;
       }
-      if (!needle) return true;
-      return c._nombreLc.includes(needle)
-        || c._codigoLc.includes(needle)
-        || c._direccionLc.includes(needle)
-        || c._estadoLabelLc.includes(needle);
+      if (terms.length === 0) return true;
+      const blob = c._searchBlob || "";
+      return terms.every((term) => blob.includes(term));
     });
 
     const numericSortMap = {
@@ -1786,6 +1859,7 @@ const anexoCajaPageStyle = `
       const estadoConexion = c._estadoNorm || normalizeEstadoConexion(c.estado_conexion);
       if (selectedIds.has(c.id_contribuyente)) return "table-active border border-primary border-2";
       if (usuarioSeleccionado?.id_contribuyente === c.id_contribuyente) return "table-primary border-primary"; 
+      if (estadoConexion === ESTADOS_CONEXION.CORTADO) return "table-danger";
       if (estadoConexion === ESTADOS_CONEXION.SIN_CONEXION) return "table-secondary";
       if (meses >= 3) return "table-danger"; 
       if (meses === 2) return "table-warning"; 
@@ -1825,12 +1899,7 @@ const anexoCajaPageStyle = `
   const bgCard = darkMode ? 'text-white' : 'bg-white border text-dark';
   const cardStyle = darkMode ? { backgroundColor: "#2b3035", borderTop: "1px solid #495057", borderRight: "1px solid #495057", borderBottom: "1px solid #495057", borderLeft: "1px solid #495057" } : {};
   const tableClass = darkMode ? 'table table-dark table-hover mb-0 table-sm small' : 'table table-hover table-bordered mb-0 table-sm small';
-  const realtimeBadge = useMemo(() => {
-    if (realtimeStatus === "connected") return { label: "Tiempo real: Conectado", className: "bg-success" };
-    if (realtimeStatus === "connecting" || realtimeStatus === "reconnecting") return { label: "Tiempo real: Reconectando", className: "bg-warning text-dark" };
-    if (realtimeStatus === "disabled") return { label: "Tiempo real: Desactivado", className: "bg-secondary" };
-    return { label: "Sin tiempo real (modo respaldo)", className: "bg-dark" };
-  }, [realtimeStatus]);
+  const realtimeBadge = useMemo(() => ({ label: "Actualizacion: Manual", className: "bg-secondary" }), []);
 
   if (!usuarioSistema) {
     return (
@@ -1883,6 +1952,8 @@ const anexoCajaPageStyle = `
         setMostrarImportar={setMostrarImportar}
         setMostrarModalExportaciones={setMostrarModalExportaciones}
         setMostrarModalCampo={setMostrarModalCampo}
+        abrirModalImpresionMensual={abrirModalImpresionMensual}
+        abrirModalReimpresion={abrirModalReimpresion}
         permisos={permisos}
         resumenPendientesCaja={resumenPendientesCaja}
         resumenConteoEfectivo={resumenConteoEfectivo}
@@ -1895,6 +1966,13 @@ const anexoCajaPageStyle = `
           <h5 className="m-0">Area de Administracion Tributaria - Agua</h5>
           <div className="d-flex align-items-center gap-2">
             <span className={`badge ${realtimeBadge.className}`}>{realtimeBadge.label}</span>
+            <button
+              className="btn btn-sm btn-outline-light d-flex align-items-center gap-2"
+              onClick={recargarTodo}
+              title="Recargar manualmente"
+            >
+              <FaSyncAlt /> Recargar
+            </button>
             {typeof onBackToSelector === "function" && (
               <button className="btn btn-sm btn-outline-light" onClick={onBackToSelector}>
                 Cambiar modulo
@@ -1917,18 +1995,18 @@ const anexoCajaPageStyle = `
                 setMostrarModalEliminar={setMostrarModalEliminar} 
                 setMostrarModalEditarUsuario={setMostrarModalEditarUsuario} 
                 eliminarUsuarioCompleto={eliminarUsuarioCompleto} 
-                handlePrintCortes={abrirModalReporteCortes} 
                 abrirModalActaCorte={abrirModalActaCorte}
                 generandoActaCorte={generandoActaCorte}
                 darkMode={darkMode} 
-                setMostrarModalMasivo={setMostrarModalMasivo}
                 selectedIds={selectedIds}
                 setMostrarModalDeudaMasiva={setMostrarModalDeudaMasiva}
                 permisos={permisos}
                 filtroEstadoConexion={filtroEstadoConexion}
                 setFiltroEstadoConexion={setFiltroEstadoConexion}
-                aplicarCorteSeleccionado={aplicarCorteSeleccionado}
+                abrirModalCorteConexion={abrirModalCorteConexion}
+                registrandoCorteConexion={registrandoCorteConexion}
                 reconectarSeleccionado={reconectarSeleccionado}
+                abrirReporteEstadoConexion={abrirModalReporteCortes}
               />
             </div>
             
@@ -2010,8 +2088,6 @@ const anexoCajaPageStyle = `
           cerrarModal={() => setMostrarModalPago(false)}
           alGuardar={recargarTodo}
           darkMode={darkMode}
-          realtimeConnected={realtimeStatus === "connected"}
-          realtimeTick={realtimeTick}
           onImprimirAnexo={(datos) => setDatosAnexoCajaImprimir(datos)}
         />
       )}
@@ -2034,6 +2110,7 @@ const anexoCajaPageStyle = `
           cerrarModal={() => setMostrarModalCierre(false)}
           darkMode={darkMode}
           origen="ventanilla"
+          usuarioSistema={usuarioSistema}
         />
       )}
       {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
@@ -2047,15 +2124,51 @@ const anexoCajaPageStyle = `
           campoAppUrl={campoAppUrl}
         />
       )}
+      {mostrarModalCorteConexion && (
+        <ModalCorteConexion
+          cerrarModal={() => setMostrarModalCorteConexion(false)}
+          contribuyentes={contribuyentes}
+          loading={registrandoCorteConexion}
+          onConfirmar={registrarCorteConEvidencia}
+          darkMode={darkMode}
+        />
+      )}
       {mostrarModalReporteCortes && (
         <ModalReporteCortes
           cerrarModal={() => setMostrarModalReporteCortes(false)}
           contribuyentes={contribuyentes}
           selectedIds={Array.from(selectedIds)}
           onImprimir={(payload) => {
+            const formato = String(payload?.formato || "print").toLowerCase();
+            if (formato === "pdf") {
+              try {
+                const estadoTxt = String(payload?.criterio?.estado_objetivo || "ESTADO").toUpperCase();
+                const fechaTag = new Date().toISOString().slice(0, 10);
+                const fileName = `REPORTE_${estadoTxt}_PDF_${fechaTag}.pdf`;
+                const blob = buildReporteEstadoConexionPdf(payload);
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.setAttribute("download", fileName);
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+              } catch (error) {
+                console.error("Error al exportar PDF:", error);
+                alert("No se pudo exportar el PDF.");
+              } finally {
+                setMostrarModalReporteCortes(false);
+              }
+              return;
+            }
+            const sufijo = "IMPRESION";
+            const estadoTxt = String(payload?.criterio?.estado_objetivo || "ESTADO").toUpperCase();
+            setCortesDocumentTitle(`REPORTE_${estadoTxt}_${sufijo}`);
             setDatosCortesImprimir(payload);
             setMostrarModalReporteCortes(false);
           }}
+          estadoObjetivo={reporteEstadoConexion}
           darkMode={darkMode}
         />
       )}
@@ -2081,7 +2194,19 @@ const anexoCajaPageStyle = `
       )}
       
       {/* Modales Masivos */}
-      {mostrarModalMasivo && (<ModalImpresionMasiva cerrarModal={() => setMostrarModalMasivo(false)} alConfirmar={(datos) => {setDatosMasivos(datos);}} idsSeleccionados={Array.from(selectedIds)} darkMode={darkMode} />)}
+      {mostrarModalMasivo && (
+        <ModalImpresionMasiva
+          cerrarModal={() => setMostrarModalMasivo(false)}
+          alConfirmar={(datos) => { setDatosMasivos(datos); }}
+          idsSeleccionados={
+            modalImpresionModo === "reimpresion"
+              ? (usuarioSeleccionado?.id_contribuyente ? [Number(usuarioSeleccionado.id_contribuyente)] : [])
+              : Array.from(selectedIds)
+          }
+          modoOperacion={modalImpresionModo}
+          darkMode={darkMode}
+        />
+      )}
       {mostrarImportar && (<ModalImportar cerrarModal={() => setMostrarImportar(false)} alTerminar={recargarTodo} darkMode={darkMode} />)}
       {mostrarModalDeudaMasiva && (
         <ModalDeudaMasiva 

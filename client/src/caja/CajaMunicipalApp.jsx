@@ -130,6 +130,8 @@ const normalizeCodigo = (value) => String(value || "")
   .replace(/\s+/g, "")
   .trim();
 
+const MAX_DIAS_CORRECCION_PAGO = 7;
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const formatMoney = (value) => `S/. ${parseMonto(value).toFixed(2)}`;
 const MESES_ES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 
@@ -149,6 +151,31 @@ const getCobroAguaRowKey = (row = {}) => {
   return `p-${anio}-${mes}`;
 };
 const getCobroAguaRowSaldo = (row = {}) => round2(parseMonto(row?.deuda_mes ?? row?.total_pagar ?? 0));
+const normalizeDateOnlyText = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+    const iso = raw.slice(0, 10);
+    return isValidIsoDate(iso) ? iso : "";
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return toIsoDate(parsed);
+};
+const diffDaysBetweenIsoDates = (fromIso, toIso) => {
+  if (!isValidIsoDate(fromIso) || !isValidIsoDate(toIso)) return Number.NaN;
+  const [fromYear, fromMonth, fromDay] = fromIso.split("-").map((v) => Number(v));
+  const [toYear, toMonth, toDay] = toIso.split("-").map((v) => Number(v));
+  const fromMs = Date.UTC(fromYear, fromMonth - 1, fromDay);
+  const toMs = Date.UTC(toYear, toMonth - 1, toDay);
+  return Math.floor((toMs - fromMs) / DAY_IN_MS);
+};
+const canEditarAnularPagoPeriodo = (row = {}, hoyIso = toIsoDate()) => {
+  const fechaUltimoPago = normalizeDateOnlyText(row?.fecha_ultimo_pago);
+  const dias = diffDaysBetweenIsoDates(fechaUltimoPago, hoyIso);
+  if (!Number.isFinite(dias)) return false;
+  return dias >= 0 && dias <= MAX_DIAS_CORRECCION_PAGO;
+};
 const canSelectCobroAguaRow = (row = {}) => {
   const saldo = getCobroAguaRowSaldo(row);
   const estado = String(row?.estado || "").trim().toUpperCase();
@@ -521,40 +548,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }, [recargarAgua, recargarLuz, tab, usuarioSistema]);
 
   useEffect(() => {
-    if (!usuarioSistema || !permisos.canCaja || tab !== "agua") return undefined;
-    const timer = setInterval(() => {
-      cargarConteoAgua();
-    }, 10000);
-    return () => clearInterval(timer);
-  }, [cargarConteoAgua, permisos.canCaja, tab, usuarioSistema]);
-
-  useEffect(() => {
-    if (!usuarioSistema || !permisos.canCaja) return undefined;
-    const timer = setInterval(() => {
-      if (tab === "agua") {
-        recargarAgua();
-      } else {
-        recargarLuz();
-      }
-    }, 12000);
-    return () => clearInterval(timer);
-  }, [permisos.canCaja, recargarAgua, recargarLuz, tab, usuarioSistema]);
-
-  useEffect(() => {
-    const unsubscribeEvent = realtime.onEvent((event) => {
-      if (!event || event.type !== "event" || event.channel !== "caja") return;
-      if (tab === "agua") {
-        recargarAgua();
-      } else {
-        recargarLuz();
-      }
-    });
-    return () => {
-      unsubscribeEvent();
-    };
-  }, [recargarAgua, recargarLuz, tab]);
-
-  useEffect(() => {
     if (!usuarioSistema) {
       realtime.disconnect(true);
       return;
@@ -796,6 +789,20 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const idRecibo = Number(row?.id_recibo || 0);
     if (!idRecibo) {
       showFlash("warning", "No se puede anular este periodo porque no tiene recibo asociado.");
+      return;
+    }
+    const hoy = toIsoDate();
+    const fechaUltimoPagoIso = normalizeDateOnlyText(row?.fecha_ultimo_pago);
+    const diasDesdeUltimoPago = diffDaysBetweenIsoDates(fechaUltimoPagoIso, hoy);
+    const dentroDeVentana = Number.isFinite(diasDesdeUltimoPago)
+      && diasDesdeUltimoPago >= 0
+      && diasDesdeUltimoPago <= MAX_DIAS_CORRECCION_PAGO;
+    if (!dentroDeVentana) {
+      const fechaTxt = fechaUltimoPagoIso || "desconocida";
+      showFlash(
+        "warning",
+        `Solo se puede editar/anular dentro de ${MAX_DIAS_CORRECCION_PAGO} dias. Ultimo pago: ${fechaTxt}.`
+      );
       return;
     }
     const periodo = `${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"}`;
@@ -1208,6 +1215,16 @@ function CajaMunicipalApp({ onBackToSelector }) {
               {tab === "agua" ? (
                 <>
                   <button
+                    className="btn btn-outline-primary d-flex align-items-center justify-content-center"
+                    onClick={recargarAgua}
+                    disabled={loadingAgua || loadingReporteAgua || loadingConteoAgua}
+                    title={(loadingAgua || loadingReporteAgua || loadingConteoAgua) ? "Actualizando..." : "Recargar agua"}
+                    aria-label="Recargar agua"
+                    style={{ width: "42px", height: "38px" }}
+                  >
+                    <FaSyncAlt />
+                  </button>
+                  <button
                     className="btn btn-outline-secondary d-flex align-items-center gap-2"
                     onClick={() => setMostrarReporteCajaAgua(true)}
                   >
@@ -1483,7 +1500,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         const esAdelantado = Boolean(row?.es_adelantado) || idRecibo <= 0;
                         const puedeCobrar = canSelectCobroAguaRow(row);
                         const estadoUpper = String(row?.estado || "").trim().toUpperCase();
-                        const puedeAnularPagoPeriodo = estadoUpper === "PAGADO" && idRecibo > 0;
+                        const dentroVentanaEdicion = canEditarAnularPagoPeriodo(row, toIsoDate());
+                        const puedeAnularPagoPeriodo = estadoUpper === "PAGADO" && idRecibo > 0 && dentroVentanaEdicion;
+                        const pagoFueraVentanaEdicion = estadoUpper === "PAGADO" && idRecibo > 0 && !dentroVentanaEdicion;
                         const estadoNoCobro = estadoUpper === "PAGADO" ? "PAGADO" : "BLOQUEADO";
                         const checkboxBloqueado = cobrandoDirectoAgua
                           || loadingPendientesCobroAgua
@@ -1521,6 +1540,14 @@ function CajaMunicipalApp({ onBackToSelector }) {
                                 >
                                   {anulandoEstaFila ? "Anulando..." : "Editar/Anular"}
                                 </button>
+                              )}
+                              {!puedeCobrar && pagoFueraVentanaEdicion && (
+                                <span
+                                  className="badge text-bg-dark ms-2"
+                                  title={`Solo se permite editar/anular hasta ${MAX_DIAS_CORRECCION_PAGO} dias despues del pago.`}
+                                >
+                                  Fuera de ventana
+                                </span>
                               )}
                             </td>
                             <td className="text-end">{formatMoney(saldo)}</td>
@@ -1656,6 +1683,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
           cerrarModal={() => setMostrarReporteCajaAgua(false)}
           darkMode={false}
           origen="caja"
+          usuarioSistema={usuarioSistema}
         />
       )}
 

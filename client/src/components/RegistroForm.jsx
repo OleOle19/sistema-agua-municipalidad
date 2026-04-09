@@ -154,7 +154,7 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
               <select className={selectClass} name="estado_conexion" value={formData.estado_conexion} onChange={handleChange}>
                 <option value="CON_CONEXION">Con conexion</option>
                 <option value="SIN_CONEXION">Sin conexion</option>
-                
+                <option value="CORTADO">Cortado</option>
               </select>
             </div>
           </div>

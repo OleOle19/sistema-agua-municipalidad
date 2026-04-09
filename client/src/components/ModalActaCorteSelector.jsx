@@ -5,8 +5,7 @@ import { compareByDireccionAsc } from "../utils/cortesAddress";
 
 const esDeudor = (c) => {
   const meses = Number(c?.meses_deuda || 0);
-  const deuda = parseFloat(c?.deuda_anio || 0) || 0;
-  return meses > 0 || deuda > 0;
+  return meses >= 4;
 };
 
 const ModalActaCorteSelector = ({
@@ -62,10 +61,10 @@ const ModalActaCorteSelector = ({
   }, [modo, deudores, idCalle, sector, manualIds]);
 
   const criterioDescripcion = useMemo(() => {
-    if (modo === "todos") return "Todos los deudores";
-    if (modo === "calle") return calleNombre ? `Deudores por calle: ${calleNombre}` : "Deudores por calle";
-    if (modo === "sector") return sector ? `Deudores por sector: ${sector}` : "Deudores por sector";
-    return "Seleccion manual de deudores";
+    if (modo === "todos") return "Todos (4+ meses)";
+    if (modo === "calle") return calleNombre ? `4+ meses por calle: ${calleNombre}` : "4+ meses por calle";
+    if (modo === "sector") return sector ? `4+ meses por sector: ${sector}` : "4+ meses por sector";
+    return "Seleccion manual (4+ meses)";
   }, [modo, calleNombre, sector]);
 
   const totalDeuda = useMemo(
@@ -87,7 +86,7 @@ const ModalActaCorteSelector = ({
       .map((m) => Number(m.id_contribuyente))
       .filter((id) => Number.isInteger(id) && id > 0);
     if (ids.length === 0) {
-      alert("No hay deudores seleccionados para generar actas.");
+      alert("No hay contribuyentes con 4 o más meses seleccionados para generar actas.");
       return;
     }
     onConfirmar?.(ids, criterioDescripcion);
@@ -102,7 +101,7 @@ const ModalActaCorteSelector = ({
       <div className="modal-dialog modal-xl">
         <div className="modal-content" style={modalStyle}>
           <div className="modal-header">
-            <h5 className="modal-title"><FaFileInvoiceDollar className="me-2" /> Seleccionar Deudores para Acta</h5>
+            <h5 className="modal-title"><FaFileInvoiceDollar className="me-2" /> Seleccionar Deudores (4+ meses) para Acta</h5>
             <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
           </div>
 
@@ -129,7 +128,7 @@ const ModalActaCorteSelector = ({
                     Usar seleccion actual ({selectedIds.length})
                   </button>
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set(deudores.map((m) => m.id_contribuyente)))}>
-                    Marcar todos deudores
+                    Marcar todos (4+ meses)
                   </button>
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set())}>
                     Limpiar
@@ -137,7 +136,7 @@ const ModalActaCorteSelector = ({
                 </div>
                 <div style={{ maxHeight: "220px", overflowY: "auto" }}>
                   {deudores.length === 0 ? (
-                    <div className="small text-muted">No hay deudores para seleccionar.</div>
+                    <div className="small text-muted">No hay contribuyentes con 4 o más meses de deuda.</div>
                   ) : (
                     deudores.map((m) => (
                       <label key={m.id_contribuyente} className="d-flex align-items-center gap-2 small border-bottom py-1">
@@ -186,14 +185,14 @@ const ModalActaCorteSelector = ({
 
             {modo === "todos" && (
               <div className={cardClass}>
-                Se incluiran todos los deudores del sistema.
+                Se incluiran todos los contribuyentes con 4 o más meses de deuda.
               </div>
             )}
 
             <div className="alert alert-warning mt-3 mb-2">
               <div><strong>Criterio:</strong> {criterioDescripcion}</div>
               <div><strong>Orden:</strong> Calle y numero ascendente</div>
-              <div><strong>Deudores seleccionados:</strong> {seleccion.length}</div>
+              <div><strong>Contribuyentes seleccionados (4+ meses):</strong> {seleccion.length}</div>
               <div><strong>Total deuda:</strong> S/. {totalDeuda.toFixed(2)}</div>
             </div>
 

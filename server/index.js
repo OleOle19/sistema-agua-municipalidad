@@ -225,6 +225,107 @@ const uploadLegacyComparacion = multer({
   }),
   limits: { fileSize: LEGACY_COMPARACION_MAX_FILE_BYTES }
 });
+const CORTE_EVIDENCIA_MAX_FILE_BYTES = Math.max(
+  1024 * 1024,
+  Number(process.env.CORTE_EVIDENCIA_MAX_FILE_BYTES || (15 * 1024 * 1024))
+);
+const CORTE_EVIDENCIA_MAX_FILES = Math.min(
+  20,
+  Math.max(1, Number(process.env.CORTE_EVIDENCIA_MAX_FILES || 8))
+);
+const CORTE_EVIDENCIA_UPLOAD_DIR = path.join(__dirname, "uploads", "cortes_evidencia");
+const CORTE_EVIDENCIA_ALLOWED_EXTS = new Set([
+  ".pdf",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".tif",
+  ".tiff",
+  ".doc",
+  ".docx"
+]);
+const CORTE_EVIDENCIA_ALLOWED_MIMES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/bmp",
+  "image/tiff",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/octet-stream"
+]);
+const ensureCorteEvidenciaUploadDir = () => {
+  try {
+    fs.mkdirSync(CORTE_EVIDENCIA_UPLOAD_DIR, { recursive: true });
+  } catch {}
+};
+const sanitizeFilenamePart = (value, maxLen = 64) => {
+  const ascii = String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return (ascii || "archivo").slice(0, Math.max(1, Number(maxLen) || 64));
+};
+const isCorteEvidenciaTipoPermitido = (file) => {
+  const ext = String(path.extname(file?.originalname || "") || "").toLowerCase();
+  if (!CORTE_EVIDENCIA_ALLOWED_EXTS.has(ext)) return false;
+  const mime = String(file?.mimetype || "").trim().toLowerCase();
+  if (!mime) return true;
+  if (mime.startsWith("image/")) return true;
+  return CORTE_EVIDENCIA_ALLOWED_MIMES.has(mime);
+};
+const cleanupUploadedTempFiles = (files = []) => {
+  for (const file of Array.isArray(files) ? files : []) {
+    cleanupUploadedTempFile(file);
+  }
+};
+const uploadCorteEvidencia = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        ensureCorteEvidenciaUploadDir();
+        return cb(null, CORTE_EVIDENCIA_UPLOAD_DIR);
+      } catch (err) {
+        return cb(err);
+      }
+    },
+    filename: (req, file, cb) => {
+      const originalName = String(file?.originalname || "evidencia").trim();
+      const extRaw = String(path.extname(originalName) || "").toLowerCase();
+      const ext = CORTE_EVIDENCIA_ALLOWED_EXTS.has(extRaw) ? extRaw : ".bin";
+      const base = sanitizeFilenamePart(path.basename(originalName, extRaw), 40);
+      const unique = `${Date.now()}_${crypto.randomBytes(6).toString("hex")}_${base}${ext}`;
+      return cb(null, unique);
+    }
+  }),
+  limits: {
+    fileSize: CORTE_EVIDENCIA_MAX_FILE_BYTES,
+    files: CORTE_EVIDENCIA_MAX_FILES
+  }
+});
+const uploadCorteEvidenciaArray = (fieldName = "evidencias") => (req, res, next) => {
+  uploadCorteEvidencia.array(fieldName, CORTE_EVIDENCIA_MAX_FILES)(req, res, (err) => {
+    if (!err) return next();
+    cleanupUploadedTempFiles(req?.files);
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        error: `Un archivo excede el límite permitido (${Math.round(CORTE_EVIDENCIA_MAX_FILE_BYTES / (1024 * 1024))}MB).`
+      });
+    }
+    if (err.code === "LIMIT_FILE_COUNT") {
+      return res.status(400).json({
+        error: `Solo se permiten hasta ${CORTE_EVIDENCIA_MAX_FILES} archivo(s) por corte.`
+      });
+    }
+    return res.status(400).json({ error: err.message || "No se pudieron procesar los archivos de evidencia." });
+  });
+};
 const AUTO_DEUDA_TIMEZONE = process.env.AUTO_DEUDA_TIMEZONE || APP_TIMEZONE;
 const AUTO_DEUDA_CHECK_MS = Number(process.env.AUTO_DEUDA_CHECK_MS || (60 * 60 * 1000));
 const AUTO_DEUDA_ACTIVA = process.env.AUTO_DEUDA_ACTIVA !== "0";
@@ -249,7 +350,8 @@ const AUDIT_REDACT_KEYS = new Set([
 ]);
 const ESTADOS_CONEXION = {
   CON_CONEXION: "CON_CONEXION",
-  SIN_CONEXION: "SIN_CONEXION"
+  SIN_CONEXION: "SIN_CONEXION",
+  CORTADO: "CORTADO"
 };
 const FUENTES_ESTADO_CONEXION = {
   INFERIDO: "INFERIDO",
@@ -298,6 +400,7 @@ const CAJA_CIERRE_ALERTA_UMBRAL = parseMonto(process.env.CAJA_CIERRE_ALERTA_UMBR
 const CAJA_RIESGO_WINDOW_HOURS = Math.min(168, Math.max(1, Number(process.env.CAJA_RIESGO_WINDOW_HOURS || 24)));
 const CAJA_RIESGO_ANULACIONES_UMBRAL = Math.min(20, Math.max(1, Number(process.env.CAJA_RIESGO_ANULACIONES_UMBRAL || 3)));
 const MAX_RETROACTIVE_COBRO_YEARS = Math.min(5, Math.max(0, Number(process.env.MAX_RETROACTIVE_COBRO_YEARS || 1)));
+const MAX_DIAS_CORRECCION_PAGO = Math.min(30, Math.max(1, Number(process.env.MAX_DIAS_CORRECCION_PAGO || 7)));
 const PAGO_OPERATIVO_CAJA_SQL = "(p.id_orden_cobro IS NOT NULL OR COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '')";
 const normalizeHoraHM = (value, fallback) => {
   const raw = String(value || "").trim();
@@ -324,7 +427,7 @@ const normalizeEstadoConexion = (value) => {
   ].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
   if ([
     "CORTADO", "CORTE", "SUSPENDIDO", "SUSPENSION"
-  ].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
+  ].includes(raw)) return ESTADOS_CONEXION.CORTADO;
   return ESTADOS_CONEXION.CON_CONEXION;
 };
 
@@ -339,7 +442,7 @@ const tryNormalizeEstadoConexion = (value) => {
   ].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
   if ([
     "CORTADO", "CORTE", "SUSPENDIDO", "SUSPENSION"
-  ].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
+  ].includes(raw)) return ESTADOS_CONEXION.CORTADO;
   return null;
 };
 
@@ -471,6 +574,85 @@ const validateCobroDateWindow = (requestedDateRaw, hoyIso = toISODate()) => {
     };
   }
   return { ok: true, fecha: fechaSolicitada, hoy, minPermitida };
+};
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const isoDateToUtcMs = (isoDateRaw) => {
+  const iso = normalizeDateOnly(isoDateRaw);
+  if (!iso) return null;
+  const [yyyy, mm, dd] = iso.split("-").map((v) => Number(v));
+  if (!Number.isInteger(yyyy) || !Number.isInteger(mm) || !Number.isInteger(dd)) return null;
+  return Date.UTC(yyyy, mm - 1, dd);
+};
+const diffDaysBetweenIsoDates = (fromIsoRaw, toIsoRaw) => {
+  const fromMs = isoDateToUtcMs(fromIsoRaw);
+  const toMs = isoDateToUtcMs(toIsoRaw);
+  if (fromMs === null || toMs === null) return null;
+  return Math.floor((toMs - fromMs) / DAY_IN_MS);
+};
+const getPagoCorrectionMinDate = (hoyIso = toISODate()) => {
+  const hoy = normalizeDateOnly(hoyIso) || toISODate();
+  const hoyMs = isoDateToUtcMs(hoy);
+  if (hoyMs === null) return hoy;
+  const minDate = new Date(hoyMs - (MAX_DIAS_CORRECCION_PAGO * DAY_IN_MS));
+  return normalizeDateOnly(minDate) || hoy;
+};
+const validatePagoCorrectionWindow = (fechaPagoRaw, hoyIso = toISODate()) => {
+  const hoy = normalizeDateOnly(hoyIso) || toISODate();
+  const fechaPago = normalizeDateOnly(fechaPagoRaw);
+  const fechaMinima = getPagoCorrectionMinDate(hoy);
+
+  if (!fechaPago) {
+    return {
+      ok: false,
+      fechaPago: null,
+      hoy,
+      fechaMinima,
+      diasTranscurridos: null,
+      error: "No se pudo validar la fecha del pago original para anular/editar."
+    };
+  }
+
+  const diasTranscurridos = diffDaysBetweenIsoDates(fechaPago, hoy);
+  if (!Number.isInteger(diasTranscurridos)) {
+    return {
+      ok: false,
+      fechaPago,
+      hoy,
+      fechaMinima,
+      diasTranscurridos: null,
+      error: "No se pudo calcular la antiguedad del pago para anular/editar."
+    };
+  }
+
+  if (diasTranscurridos < 0) {
+    return {
+      ok: false,
+      fechaPago,
+      hoy,
+      fechaMinima,
+      diasTranscurridos,
+      error: `No se puede anular/editar un pago con fecha futura (${fechaPago}).`
+    };
+  }
+
+  if (diasTranscurridos > MAX_DIAS_CORRECCION_PAGO) {
+    return {
+      ok: false,
+      fechaPago,
+      hoy,
+      fechaMinima,
+      diasTranscurridos,
+      error: `Solo se permite anular/editar pagos dentro de ${MAX_DIAS_CORRECCION_PAGO} dia(s). Fecha pago: ${fechaPago}. Fecha minima permitida hoy (${hoy}): ${fechaMinima}.`
+    };
+  }
+
+  return {
+    ok: true,
+    fechaPago,
+    hoy,
+    fechaMinima,
+    diasTranscurridos
+  };
 };
 const parseDateYearMonth = (isoDateRaw, fallback = {}) => {
   const normalized = normalizeDateOnly(isoDateRaw);
@@ -694,6 +876,9 @@ const resolveCalleIdByNombre = async (client, calleNombreRaw, fallbackIdCalle = 
 
 const estadoConexionToPredio = (estadoConexion) => {
   const estado = normalizeEstadoConexion(estadoConexion);
+  if (estado === ESTADOS_CONEXION.CORTADO) {
+    return { activo_sn: "N", estado_servicio: "CORTADO" };
+  }
   if (estado === ESTADOS_CONEXION.SIN_CONEXION) {
     return { activo_sn: "N", estado_servicio: "SIN_CONEXION" };
   }
@@ -1016,7 +1201,7 @@ const ACCESS_RULES = [
   { methods: ["PUT"], pattern: /^\/admin\/usuarios\/\d+$/, minRole: "ADMIN" },
   { methods: ["DELETE"], pattern: /^\/admin\/usuarios\/\d+$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/admin\/backup$/, minRole: "ADMIN" },
-  { methods: ["GET"], pattern: /^\/admin\/pagos-anulados$/, minRole: "ADMIN_SEC" },
+  { methods: ["GET"], pattern: /^\/admin\/pagos-anulados$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/admin\/campo-remoto\/estado$/, minRole: "ADMIN_SEC" },
 
   { methods: ["POST"], pattern: /^\/importar\/padron$/, minRole: "ADMIN" },
@@ -1046,6 +1231,7 @@ const ACCESS_RULES = [
   { methods: ["POST"], pattern: /^\/recibos\/generar-masivo$/, minRole: "ADMIN_SEC" },
   { methods: ["DELETE"], pattern: /^\/recibos\/\d+$/, minRole: "ADMIN" },
   { methods: ["POST"], pattern: /^\/actas-corte\/generar$/, minRole: "CAJERO" },
+  { methods: ["POST"], pattern: /^\/actas-corte\/generar-lote$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro\/pendientes$/, minRole: "CAJERO" },
@@ -1434,15 +1620,21 @@ const ensureEstadoConexionContribuyentes = async (client) => {
   await client.query(`
     UPDATE contribuyentes c
     SET estado_conexion = CASE
-      WHEN UPPER(COALESCE(TRIM(c.estado_conexion), '')) IN ('CON_CONEXION', 'SIN_CONEXION')
+      WHEN UPPER(COALESCE(TRIM(c.estado_conexion), '')) IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO')
         THEN UPPER(TRIM(c.estado_conexion))
       WHEN UPPER(COALESCE(TRIM(c.estado_conexion), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
-        THEN 'SIN_CONEXION'
+        THEN 'CORTADO'
       WHEN EXISTS (
         SELECT 1
         FROM predios p
         WHERE p.id_contribuyente = c.id_contribuyente
-          AND UPPER(COALESCE(p.estado_servicio, '')) IN ('CORTADO', 'SIN_CONEXION')
+          AND UPPER(COALESCE(p.estado_servicio, '')) = 'CORTADO'
+      ) THEN 'CORTADO'
+      WHEN EXISTS (
+        SELECT 1
+        FROM predios p
+        WHERE p.id_contribuyente = c.id_contribuyente
+          AND UPPER(COALESCE(p.estado_servicio, '')) = 'SIN_CONEXION'
       ) THEN 'SIN_CONEXION'
       WHEN EXISTS (
         SELECT 1
@@ -1453,7 +1645,7 @@ const ensureEstadoConexionContribuyentes = async (client) => {
       ELSE 'SIN_CONEXION'
     END
     WHERE c.estado_conexion IS NULL
-       OR UPPER(COALESCE(TRIM(c.estado_conexion), '')) NOT IN ('CON_CONEXION', 'SIN_CONEXION')
+       OR UPPER(COALESCE(TRIM(c.estado_conexion), '')) NOT IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO')
   `);
   await client.query(`
     ALTER TABLE contribuyentes
@@ -1462,13 +1654,14 @@ const ensureEstadoConexionContribuyentes = async (client) => {
   await client.query(`
     ALTER TABLE contribuyentes
     ADD CONSTRAINT chk_contribuyentes_estado_conexion
-    CHECK (estado_conexion IN ('CON_CONEXION', 'SIN_CONEXION'))
+    CHECK (estado_conexion IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO'))
   `);
   await client.query(`
     UPDATE predios p
     SET
       estado_servicio = CASE
         WHEN UPPER(COALESCE(TRIM(c.estado_conexion), 'CON_CONEXION')) = 'CON_CONEXION' THEN 'ACTIVO'
+        WHEN UPPER(COALESCE(TRIM(c.estado_conexion), 'CON_CONEXION')) = 'CORTADO' THEN 'CORTADO'
         ELSE 'SIN_CONEXION'
       END,
       activo_sn = CASE
@@ -1583,6 +1776,30 @@ const ensureEstadoConexionEventosTable = async (client) => {
   `);
 };
 
+const ensureEstadoConexionEvidenciasTable = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS estado_conexion_eventos_evidencias (
+      id_evidencia BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      id_evento BIGINT NOT NULL REFERENCES estado_conexion_eventos(id_evento) ON DELETE CASCADE,
+      id_contribuyente INTEGER NOT NULL,
+      archivo_nombre TEXT NOT NULL,
+      archivo_mime VARCHAR(160) NULL,
+      archivo_bytes BIGINT NOT NULL DEFAULT 0,
+      archivo_sha256 VARCHAR(64) NOT NULL,
+      archivo_path TEXT NOT NULL
+    )
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_estado_conexion_evidencias_evento
+    ON estado_conexion_eventos_evidencias (id_evento)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_estado_conexion_evidencias_contribuyente
+    ON estado_conexion_eventos_evidencias (id_contribuyente, creado_en DESC)
+  `);
+};
+
 const ensurePrediosDireccionAlterna = async (client) => {
   await client.query(`
     ALTER TABLE predios
@@ -1657,7 +1874,7 @@ const ensurePrediosDireccionAlterna = async (client) => {
   `);
   await client.query(`
     UPDATE predios_direcciones_alternas
-    SET estado_conexion = 'SIN_CONEXION'
+    SET estado_conexion = 'CORTADO'
     WHERE UPPER(COALESCE(TRIM(estado_conexion), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
   `);
   await client.query(`
@@ -1667,7 +1884,7 @@ const ensurePrediosDireccionAlterna = async (client) => {
   await client.query(`
     ALTER TABLE predios_direcciones_alternas
     ADD CONSTRAINT chk_predios_dir_alt_estado_conexion
-    CHECK (estado_conexion IN ('CON_CONEXION', 'SIN_CONEXION'))
+    CHECK (estado_conexion IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO'))
   `);
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_predios_dir_alt_contribuyente
@@ -1758,18 +1975,18 @@ const ensureCampoSolicitudesTable = async (client) => {
     UPDATE campo_solicitudes
     SET
       estado_conexion_actual = CASE
-        WHEN UPPER(COALESCE(TRIM(estado_conexion_actual), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
-          THEN 'SIN_CONEXION'
+        WHEN UPPER(COALESCE(TRIM(estado_conexion_actual), '')) IN ('CORTE', 'SUSPENDIDO', 'SUSPENSION')
+          THEN 'CORTADO'
         ELSE estado_conexion_actual
       END,
       estado_conexion_nuevo = CASE
-        WHEN UPPER(COALESCE(TRIM(estado_conexion_nuevo), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
-          THEN 'SIN_CONEXION'
+        WHEN UPPER(COALESCE(TRIM(estado_conexion_nuevo), '')) IN ('CORTE', 'SUSPENDIDO', 'SUSPENSION')
+          THEN 'CORTADO'
         ELSE estado_conexion_nuevo
       END
     WHERE
-      UPPER(COALESCE(TRIM(estado_conexion_actual), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
-      OR UPPER(COALESCE(TRIM(estado_conexion_nuevo), '')) IN ('CORTADO', 'CORTE', 'SUSPENDIDO', 'SUSPENSION')
+      UPPER(COALESCE(TRIM(estado_conexion_actual), '')) IN ('CORTE', 'SUSPENDIDO', 'SUSPENSION')
+      OR UPPER(COALESCE(TRIM(estado_conexion_nuevo), '')) IN ('CORTE', 'SUSPENDIDO', 'SUSPENSION')
   `);
   await client.query(`
     ALTER TABLE campo_solicitudes
@@ -1778,7 +1995,7 @@ const ensureCampoSolicitudesTable = async (client) => {
   await client.query(`
     ALTER TABLE campo_solicitudes
     ADD CONSTRAINT chk_campo_solicitudes_estado_actual
-    CHECK (estado_conexion_actual IN ('CON_CONEXION', 'SIN_CONEXION'))
+    CHECK (estado_conexion_actual IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO'))
   `);
   await client.query(`
     ALTER TABLE campo_solicitudes
@@ -1787,7 +2004,7 @@ const ensureCampoSolicitudesTable = async (client) => {
   await client.query(`
     ALTER TABLE campo_solicitudes
     ADD CONSTRAINT chk_campo_solicitudes_estado_nuevo
-    CHECK (estado_conexion_nuevo IN ('CON_CONEXION', 'SIN_CONEXION'))
+    CHECK (estado_conexion_nuevo IN ('CON_CONEXION', 'SIN_CONEXION', 'CORTADO'))
   `);
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_campo_solicitudes_estado
@@ -1994,6 +2211,7 @@ const ensurePerformanceIndexes = async (client) => {
   await ensureCajaConteosEfectivoTable(client);
   await ensureEstadoConexionContribuyentes(client);
   await ensureEstadoConexionEventosTable(client);
+  await ensureEstadoConexionEvidenciasTable(client);
   await ensurePrediosDireccionAlterna(client);
   await ensureCampoSolicitudesTable(client);
   await ensureComparacionesLegacyTables(client);
@@ -3012,7 +3230,7 @@ app.post("/campo/solicitudes", async (req, res) => {
     const cortadoSNLegacy = normalizeSN(req.body?.cortado_sn, "N");
     const estadoSolicitado = normalizeEstadoConexion(
       req.body?.estado_conexion_nuevo
-      || (cortadoSNLegacy === "S" ? ESTADOS_CONEXION.SIN_CONEXION : estadoActual)
+      || (cortadoSNLegacy === "S" ? ESTADOS_CONEXION.CORTADO : estadoActual)
     );
     const estadoNuevo = estadoSolicitado;
     const fechaCorte = normalizeDateOnly(req.body?.fecha_corte) || null;
@@ -3051,7 +3269,7 @@ app.post("/campo/solicitudes", async (req, res) => {
       ...metadataInput,
       formato: "REPORTE_CORTES",
       visitado_sn: visitadoSN,
-      cortado_sn: estadoNuevo === ESTADOS_CONEXION.SIN_CONEXION ? "S" : "N",
+      cortado_sn: (estadoNuevo === ESTADOS_CONEXION.SIN_CONEXION || estadoNuevo === ESTADOS_CONEXION.CORTADO) ? "S" : "N",
       fecha_corte: fechaCorteFinal,
       motivo_obs: motivoObs,
       inspector: inspector || normalizeLimitedText(req.user?.nombre || req.user?.username || "", 120),
@@ -4495,6 +4713,159 @@ app.put("/contribuyentes/:id", async (req, res) => {
   } finally { client.release(); }
 });
 
+app.post("/contribuyentes/cortes/registrar", uploadCorteEvidenciaArray("evidencias"), async (req, res) => {
+  const client = await pool.connect();
+  const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+  try {
+    const idContribuyente = Number(req.body?.id_contribuyente);
+    if (!Number.isInteger(idContribuyente) || idContribuyente <= 0) {
+      cleanupUploadedTempFiles(uploadedFiles);
+      return res.status(400).json({ error: "ID de contribuyente inválido." });
+    }
+    const motivo = normalizeLimitedText(req.body?.motivo, 1200) || "";
+    if (!motivo) {
+      cleanupUploadedTempFiles(uploadedFiles);
+      return res.status(400).json({ error: "Debe indicar el motivo del corte." });
+    }
+    if (uploadedFiles.length === 0) {
+      return res.status(400).json({ error: "Debe adjuntar al menos una evidencia (PDF o imagen)." });
+    }
+    for (const file of uploadedFiles) {
+      if (!isCorteEvidenciaTipoPermitido(file)) {
+        cleanupUploadedTempFiles(uploadedFiles);
+        return res.status(400).json({
+          error: `Archivo no permitido: ${String(file?.originalname || "sin_nombre")}. Formatos: PDF, imagen o Word.`
+        });
+      }
+    }
+
+    await client.query("BEGIN");
+    await ensureEstadoConexionEventosTable(client);
+    await ensureEstadoConexionEvidenciasTable(client);
+
+    const actual = await client.query(`
+      SELECT
+        id_contribuyente,
+        codigo_municipal,
+        nombre_completo,
+        COALESCE(NULLIF(UPPER(TRIM(estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
+      FROM contribuyentes
+      WHERE id_contribuyente = $1
+      FOR UPDATE
+    `, [idContribuyente]);
+
+    if (actual.rows.length === 0) {
+      await client.query("ROLLBACK");
+      cleanupUploadedTempFiles(uploadedFiles);
+      return res.status(404).json({ error: "Contribuyente no encontrado." });
+    }
+
+    const row = actual.rows[0];
+    const estadoActual = normalizeEstadoConexion(row.estado_conexion);
+    if (estadoActual !== ESTADOS_CONEXION.CON_CONEXION) {
+      await client.query("ROLLBACK");
+      cleanupUploadedTempFiles(uploadedFiles);
+      return res.status(400).json({
+        error: "Solo se puede registrar corte para contribuyentes con conexión activa."
+      });
+    }
+
+    const estadoDestino = ESTADOS_CONEXION.CORTADO;
+    const fechaVerificacion = normalizeDateOnly(req.body?.fecha_corte) || toISODate();
+    const predioEstado = estadoConexionToPredio(estadoDestino);
+    const fuente = FUENTES_ESTADO_CONEXION.OFICINA;
+
+    await client.query(
+      `UPDATE contribuyentes
+       SET estado_conexion = $1,
+           estado_conexion_fuente = $2,
+           estado_conexion_verificado_sn = 'N',
+           estado_conexion_fecha_verificacion = $3,
+           estado_conexion_motivo_ultimo = $4
+       WHERE id_contribuyente = $5`,
+      [estadoDestino, fuente, fechaVerificacion, motivo, idContribuyente]
+    );
+    await client.query(
+      "UPDATE predios SET activo_sn = $1, estado_servicio = $2 WHERE id_contribuyente = $3",
+      [predioEstado.activo_sn, predioEstado.estado_servicio, idContribuyente]
+    );
+    const recalc = await recalcularRecibosFuturosPorServicios(client, idContribuyente);
+    const recibosRecalculados = Number(recalc?.actualizados || 0);
+
+    const evento = await client.query(`
+      INSERT INTO estado_conexion_eventos (
+        id_usuario, id_contribuyente, estado_anterior, estado_nuevo, motivo
+      ) VALUES ($1, $2, $3, $4, $5)
+      RETURNING id_evento, creado_en
+    `, [
+      req.user?.id_usuario || null,
+      idContribuyente,
+      estadoActual,
+      estadoDestino,
+      motivo
+    ]);
+
+    const idEvento = Number(evento.rows[0].id_evento);
+    const evidencias = [];
+    for (const file of uploadedFiles) {
+      const originalName = normalizeLimitedText(file?.originalname, 240) || "evidencia";
+      const mime = normalizeLimitedText(file?.mimetype, 160) || null;
+      const fileBytes = Number(file?.size || 0);
+      const absolutePath = path.resolve(String(file?.path || "").trim());
+      if (!absolutePath.startsWith(path.resolve(CORTE_EVIDENCIA_UPLOAD_DIR))) {
+        throw new Error("Ruta de evidencia inválida.");
+      }
+      const relativePath = path.relative(__dirname, absolutePath).replace(/\\/g, "/");
+      const sha = await sha256File(absolutePath);
+      const insertEv = await client.query(`
+        INSERT INTO estado_conexion_eventos_evidencias (
+          id_evento, id_contribuyente, archivo_nombre, archivo_mime, archivo_bytes, archivo_sha256, archivo_path
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING id_evidencia
+      `, [idEvento, idContribuyente, originalName, mime, fileBytes, sha, relativePath]);
+      evidencias.push({
+        id_evidencia: Number(insertEv.rows[0].id_evidencia),
+        archivo_nombre: originalName,
+        archivo_mime: mime,
+        archivo_bytes: fileBytes
+      });
+    }
+
+    await registrarAuditoria(
+      client,
+      "ESTADO_CONEXION_CORTE",
+      `${row.codigo_municipal || idContribuyente} ${row.nombre_completo || ""}: ${estadoActual} -> ${estadoDestino}. Motivo: ${motivo}. Evidencias: ${evidencias.length}.`,
+      req.user?.nombre || req.user?.username || "SISTEMA"
+    );
+
+    await client.query("COMMIT");
+    invalidateContribuyentesCache();
+    realtimeHub.broadcast("deuda", "saldo_actualizado", {
+      id_contribuyente: idContribuyente,
+      origen: "corte_con_evidencia"
+    });
+
+    return res.json({
+      mensaje: "Corte registrado con evidencia.",
+      id_contribuyente: idContribuyente,
+      estado_anterior: estadoActual,
+      estado_nuevo: estadoDestino,
+      fecha_evento: evento.rows[0].creado_en,
+      id_evento: idEvento,
+      recibos_recalculados: recibosRecalculados,
+      evidencias
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    cleanupUploadedTempFiles(uploadedFiles);
+    console.error("Error registrando corte con evidencia:", err);
+    return res.status(500).json({ error: "Error registrando corte con evidencia." });
+  } finally {
+    client.release();
+  }
+});
+
 app.post("/contribuyentes/:id/estado-conexion", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -4537,6 +4908,11 @@ app.post("/contribuyentes/:id/estado-conexion", async (req, res) => {
     if (estadoActual === estadoDestino) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "El contribuyente ya tiene ese estado de conexión." });
+    }
+
+    if (estadoDestino === ESTADOS_CONEXION.CORTADO && estadoActual !== ESTADOS_CONEXION.CON_CONEXION) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Solo se puede cortar a contribuyentes con conexión activa." });
     }
 
     if (estadoDestino === ESTADOS_CONEXION.CON_CONEXION && estadoActual === ESTADOS_CONEXION.CON_CONEXION) {
@@ -4599,6 +4975,116 @@ app.post("/contribuyentes/:id/estado-conexion", async (req, res) => {
     try { await client.query("ROLLBACK"); } catch {}
     console.error("Error actualizando estado de conexión:", err);
     return res.status(500).json({ error: "Error actualizando estado de conexión." });
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/contribuyentes/cortes/resumen", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureEstadoConexionEventosTable(client);
+    await ensureEstadoConexionEvidenciasTable(client);
+    const idsRaw = Array.isArray(req.body?.ids_contribuyentes) ? req.body.ids_contribuyentes : [];
+    const ids = Array.from(
+      new Set(
+        idsRaw
+          .map((v) => Number(v))
+          .filter((v) => Number.isInteger(v) && v > 0)
+      )
+    );
+    if (ids.length === 0) {
+      return res.json({ items: [] });
+    }
+
+    const data = await client.query(`
+      WITH ultimos AS (
+        SELECT DISTINCT ON (e.id_contribuyente)
+          e.id_contribuyente,
+          e.id_evento,
+          e.creado_en,
+          e.motivo
+        FROM estado_conexion_eventos e
+        WHERE e.id_contribuyente = ANY($1::int[])
+          AND UPPER(COALESCE(TRIM(e.estado_nuevo), '')) = 'CORTADO'
+        ORDER BY e.id_contribuyente, e.creado_en DESC, e.id_evento DESC
+      )
+      SELECT
+        u.id_contribuyente,
+        u.id_evento,
+        u.creado_en,
+        u.motivo,
+        ev.id_evidencia,
+        ev.archivo_nombre,
+        ev.archivo_mime,
+        ev.archivo_bytes
+      FROM ultimos u
+      LEFT JOIN estado_conexion_eventos_evidencias ev ON ev.id_evento = u.id_evento
+      ORDER BY u.id_contribuyente ASC, ev.id_evidencia ASC
+    `, [ids]);
+
+    const byId = new Map();
+    for (const row of data.rows) {
+      const id = Number(row.id_contribuyente);
+      if (!byId.has(id)) {
+        byId.set(id, {
+          id_contribuyente: id,
+          id_evento: Number(row.id_evento),
+          fecha_evento: row.creado_en,
+          motivo: row.motivo || "",
+          evidencias: []
+        });
+      }
+      if (row.id_evidencia) {
+        byId.get(id).evidencias.push({
+          id_evidencia: Number(row.id_evidencia),
+          archivo_nombre: row.archivo_nombre || "",
+          archivo_mime: row.archivo_mime || "",
+          archivo_bytes: Number(row.archivo_bytes || 0),
+          descarga_url: `/contribuyentes/cortes/evidencias/${Number(row.id_evidencia)}/descargar`
+        });
+      }
+    }
+
+    return res.json({ items: Array.from(byId.values()) });
+  } catch (err) {
+    console.error("Error consultando resumen de cortes:", err);
+    return res.status(500).json({ error: "Error consultando resumen de cortes." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/contribuyentes/cortes/evidencias/:id_evidencia/descargar", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureEstadoConexionEvidenciasTable(client);
+    const idEvidencia = Number(req.params?.id_evidencia);
+    if (!Number.isInteger(idEvidencia) || idEvidencia <= 0) {
+      return res.status(400).json({ error: "ID de evidencia inválido." });
+    }
+    const data = await client.query(`
+      SELECT archivo_nombre, archivo_mime, archivo_path
+      FROM estado_conexion_eventos_evidencias
+      WHERE id_evidencia = $1
+      LIMIT 1
+    `, [idEvidencia]);
+    if (data.rows.length === 0) {
+      return res.status(404).json({ error: "Evidencia no encontrada." });
+    }
+    const row = data.rows[0];
+    const absolutePath = path.resolve(__dirname, String(row.archivo_path || ""));
+    const uploadRoot = path.resolve(CORTE_EVIDENCIA_UPLOAD_DIR);
+    if (!absolutePath.startsWith(uploadRoot)) {
+      return res.status(400).json({ error: "Ruta de evidencia inválida." });
+    }
+    if (!fs.existsSync(absolutePath)) {
+      return res.status(404).json({ error: "Archivo de evidencia no disponible." });
+    }
+    return res.download(absolutePath, row.archivo_nombre || `evidencia_${idEvidencia}`);
+  } catch (err) {
+    console.error("Error descargando evidencia:", err);
+    return res.status(500).json({ error: "Error descargando evidencia." });
   } finally {
     client.release();
   }
@@ -6498,6 +6984,11 @@ app.post("/pagos/:id/anular", async (req, res) => {
     }
 
     const pago = pagoRs.rows[0];
+    const validacionVentana = validatePagoCorrectionWindow(pago.fecha_pago, toISODate());
+    if (!validacionVentana.ok) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: validacionVentana.error });
+    }
     const idRecibo = Number(pago.id_recibo || 0);
     const idOrdenCobro = parsePositiveInt(pago.id_orden_cobro, 0) || null;
     const idContribuyente = parsePositiveInt(pago.id_contribuyente, 0) || null;
@@ -6676,6 +7167,11 @@ app.post("/pagos/recibo/:id_recibo/anular-ultimo", async (req, res) => {
     }
 
     const pago = pagoRs.rows[0];
+    const validacionVentana = validatePagoCorrectionWindow(pago.fecha_pago, toISODate());
+    if (!validacionVentana.ok) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: validacionVentana.error });
+    }
     const idReciboPago = Number(pago.id_recibo || 0);
     const idOrdenCobro = parsePositiveInt(pago.id_orden_cobro, 0) || null;
     const idContribuyente = parsePositiveInt(pago.id_contribuyente, 0) || null;
@@ -6827,9 +7323,12 @@ app.get("/admin/pagos-anulados", async (req, res) => {
         pa.username_anula,
         pa.motivo_anulacion,
         pa.payload_json,
+        r.mes,
+        r.anio,
         c.codigo_municipal,
         COALESCE(NULLIF(TRIM(c.nombre_completo), ''), NULLIF(TRIM(c.sec_nombre), ''), '') AS nombre_completo
       FROM pagos_anulados pa
+      LEFT JOIN recibos r ON r.id_recibo = pa.id_recibo
       LEFT JOIN contribuyentes c ON c.id_contribuyente = pa.id_contribuyente
       WHERE DATE(pa.anulado_en) >= $1::date
         AND DATE(pa.anulado_en) <= $2::date
@@ -6975,6 +7474,11 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
     const mesesDeuda = Number(fila.meses_deuda || 0);
     const deudaTotal = parseMonto(fila.deuda_total, 0);
 
+    if (mesesDeuda < 4) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "La notificación aplica solo a contribuyentes con 4 o más meses de deuda." });
+    }
+
     if (deudaTotal <= 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "El contribuyente no tiene deuda pendiente." });
@@ -7014,6 +7518,132 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
   }
 });
 
+app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const idsRaw = Array.isArray(req.body?.ids_contribuyentes) ? req.body.ids_contribuyentes : [];
+    const ids = Array.from(
+      new Set(
+        idsRaw
+          .map((v) => Number(v))
+          .filter((v) => Number.isInteger(v) && v > 0)
+      )
+    );
+    if (ids.length === 0) {
+      return res.status(400).json({ error: "Debe enviar al menos un contribuyente." });
+    }
+
+    const anioActual = getCurrentYear();
+    const mesActual = getCurrentMonth();
+    await client.query("BEGIN");
+    await ensureActasCorteTable(client);
+
+    const resumen = await client.query(`
+      WITH pagos_por_recibo AS (
+        SELECT id_recibo, SUM(monto_pagado) AS total_pagado
+        FROM pagos
+        GROUP BY id_recibo
+      )
+      SELECT
+        c.id_contribuyente,
+        c.codigo_municipal,
+        COUNT(*) FILTER (
+          WHERE GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+        ) AS meses_deuda,
+        COALESCE(SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)), 0) AS deuda_total
+      FROM contribuyentes c
+      LEFT JOIN predios pr ON pr.id_contribuyente = c.id_contribuyente
+      LEFT JOIN recibos r
+        ON r.id_predio = pr.id_predio
+       AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))
+      LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+      WHERE c.id_contribuyente = ANY($1::int[])
+      GROUP BY c.id_contribuyente, c.codigo_municipal
+    `, [ids, anioActual, mesActual]);
+
+    const resumenById = new Map();
+    for (const row of resumen.rows) {
+      resumenById.set(Number(row.id_contribuyente), row);
+    }
+
+    const generadas = [];
+    const omitidas = [];
+    for (const idContribuyente of ids) {
+      const row = resumenById.get(idContribuyente);
+      if (!row) {
+        omitidas.push({
+          id_contribuyente: idContribuyente,
+          motivo: "Contribuyente no encontrado."
+        });
+        continue;
+      }
+      const codigoMunicipal = row.codigo_municipal || null;
+      const mesesDeuda = Number(row.meses_deuda || 0);
+      const deudaTotal = parseMonto(row.deuda_total, 0);
+
+      if (mesesDeuda < 4) {
+        omitidas.push({
+          id_contribuyente: idContribuyente,
+          codigo_municipal: codigoMunicipal,
+          meses_deuda: mesesDeuda,
+          deuda_total: deudaTotal,
+          motivo: "Menos de 4 meses de deuda."
+        });
+        continue;
+      }
+      if (deudaTotal <= 0) {
+        omitidas.push({
+          id_contribuyente: idContribuyente,
+          codigo_municipal: codigoMunicipal,
+          meses_deuda: mesesDeuda,
+          deuda_total: deudaTotal,
+          motivo: "Sin deuda pendiente."
+        });
+        continue;
+      }
+
+      const insercion = await client.query(`
+        INSERT INTO actas_corte (
+          id_usuario, id_contribuyente, codigo_municipal, meses_deuda, deuda_total
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id_acta, creado_en
+      `, [
+        req.user?.id_usuario || null,
+        idContribuyente,
+        codigoMunicipal,
+        mesesDeuda,
+        deudaTotal
+      ]);
+
+      const idActa = Number(insercion.rows[0].id_acta);
+      generadas.push({
+        id_acta: idActa,
+        numero_acta: `AC-${String(idActa).padStart(6, "0")}`,
+        fecha_emision: insercion.rows[0].creado_en,
+        id_contribuyente: idContribuyente,
+        codigo_municipal: codigoMunicipal,
+        meses_deuda: mesesDeuda,
+        deuda_total: deudaTotal
+      });
+    }
+
+    await client.query("COMMIT");
+    return res.json({
+      total_solicitadas: ids.length,
+      total_generadas: generadas.length,
+      generadas,
+      omitidas
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("Error generando actas de corte en lote:", err);
+    return res.status(500).json({ error: "Error generando actas de corte en lote." });
+  } finally {
+    client.release();
+  }
+});
+
 app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
   try {
     const { id_contribuyente } = req.params;
@@ -7033,6 +7663,8 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
         r.total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
+        p.id_ultimo_pago,
+        p.fecha_ultimo_pago,
         CASE
           WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 0
           ELSE GREATEST(r.total_pagar - COALESCE(p.total_pagado, 0), 0)
@@ -7045,7 +7677,11 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
         END as estado
       FROM recibos r
       LEFT JOIN (
-        SELECT id_recibo, SUM(monto_pagado) as total_pagado
+        SELECT
+          id_recibo,
+          SUM(monto_pagado) AS total_pagado,
+          MAX(fecha_pago) AS fecha_ultimo_pago,
+          (ARRAY_AGG(id_pago ORDER BY fecha_pago DESC, id_pago DESC))[1] AS id_ultimo_pago
         FROM pagos
         WHERE DATE(fecha_pago) <= $4::date
         GROUP BY id_recibo
@@ -8236,8 +8872,12 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
     }
     if (modo === "morosos") {
       where.push("COALESCE(rp.meses_deuda_total, 0) >= 2");
-    } else if (modo === "cortados" || modo === "sin_conexion") {
+    } else if (modo === "cortados") {
+      where.push("COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CORTADO'");
+    } else if (modo === "sin_conexion") {
       where.push("COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'SIN_CONEXION'");
+    } else if (modo === "con_conexion") {
+      where.push("COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'");
     }
 
     const sql = `
@@ -8340,7 +8980,7 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
     [
       "1) Use la hoja Verificacion_Campo para imprimir o digitar resultados de visita.",
       "2) Complete CODIGO y los campos *_VERIFICADO si hubo cambio.",
-      "3) En ESTADO_CONEXION_VERIFICADO use: CON_CONEXION o SIN_CONEXION.",
+      "3) En ESTADO_CONEXION_VERIFICADO use: CON_CONEXION, SIN_CONEXION o CORTADO.",
       "4) FECHA_VERIFICACION_CAMPO en formato YYYY-MM-DD o DD/MM/YYYY.",
       "5) Luego sincronice cambios desde la app de campo o por API interna."
     ].forEach((txt) => wsAyuda.addRow({ txt }));
@@ -10570,6 +11210,7 @@ app.get("/admin/backup", authenticateToken, requireSuperAdmin, (req, res) => {
 app.post("/recibos/masivos", async (req, res) => {
   try {
     const { tipo_seleccion, ids_usuarios, id_calle, anio, mes, meses } = req.body;
+    const incluirPagados = normalizeSN(req.body?.incluir_pagados, "N") === "S";
     const mesesSeleccionados = (Array.isArray(meses) ? meses : [mes])
       .map((m) => Number(m))
       .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
@@ -10627,6 +11268,7 @@ app.post("/recibos/masivos", async (req, res) => {
       WHERE r.anio = $1
         AND r.mes = ANY($2::int[])
         AND COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'
+        ${incluirPagados ? "" : "AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0"}
         ${filtro}
       ORDER BY r.mes ASC, ca.nombre ASC, p.numero_casa ASC, c.nombre_completo ASC
     `;

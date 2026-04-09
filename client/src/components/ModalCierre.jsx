@@ -12,6 +12,21 @@ const EMPTY_REPORTE = {
   movimientos: []
 };
 
+const ROLE_ORDER = { BRIGADA: 1, CONSULTA: 2, CAJERO: 3, ADMIN_SEC: 4, ADMIN: 5 };
+const normalizeRole = (role) => {
+  const raw = String(role || "").trim().toUpperCase();
+  if (["ADMIN", "SUPERADMIN", "ADMIN_PRINCIPAL", "NIVEL_1"].includes(raw)) return "ADMIN";
+  if (["ADMIN_SEC", "ADMIN_SECUNDARIO", "JEFE_CAJA", "NIVEL_2"].includes(raw)) return "ADMIN_SEC";
+  if (["CAJERO", "OPERADOR_CAJA", "OPERADOR", "NIVEL_3"].includes(raw)) return "CAJERO";
+  if (["BRIGADA", "BRIGADISTA", "CAMPO", "NIVEL_5"].includes(raw)) return "BRIGADA";
+  return "CONSULTA";
+};
+const hasMinRole = (role, requiredRole) => {
+  const currentLevel = ROLE_ORDER[normalizeRole(role)] || 0;
+  const requiredLevel = ROLE_ORDER[normalizeRole(requiredRole)] || 0;
+  return currentLevel >= requiredLevel;
+};
+
 const formatMoney = (value) => {
   const num = Number.parseFloat(value);
   return Number.isFinite(num)
@@ -43,18 +58,31 @@ const todayIso = () => {
   return `${y}-${m}-${day}`;
 };
 
+const addIsoDays = (isoDateRaw, deltaDays) => {
+  const iso = String(isoDateRaw || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "";
+  const date = new Date(`${iso}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setDate(date.getDate() + Number(deltaDays || 0));
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
+
 const toMonthValue = (isoDate) => String(isoDate || "").slice(0, 7);
 const toYearValue = (isoDate) => String(isoDate || "").slice(0, 4);
 
-const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
+const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSistema = null }) => {
   const [reporteTipo, setReporteTipo] = useState("diario");
   const [fechaConsulta, setFechaConsulta] = useState(todayIso());
   const [cargando, setCargando] = useState(false);
   const [exportandoExcel, setExportandoExcel] = useState(false);
   const [paginaMovimientos, setPaginaMovimientos] = useState(1);
   const [reporte, setReporte] = useState(EMPTY_REPORTE);
-  const [anulandoPagoId, setAnulandoPagoId] = useState(0);
   const [cargandoAlertas, setCargandoAlertas] = useState(false);
+  const [cargandoAdmin, setCargandoAdmin] = useState(false);
+  const [movimientosAdmin, setMovimientosAdmin] = useState([]);
   const [alertasRiesgo, setAlertasRiesgo] = useState({
     severidad: "NORMAL",
     resumen: {
@@ -73,6 +101,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
   });
 
   const componentRef = useRef();
+  const adminRangeRef = useRef({ desde: "", hasta: "" });
   const printPageStyle = `
     @media print {
       .no-print {
@@ -85,6 +114,9 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
     documentTitle: `${origen === "caja" ? "Reporte_Caja" : "Reporte_Ventanilla"}_${reporteTipo}_${fechaConsulta}`,
     pageStyle: printPageStyle
   });
+
+  const esCaja = origen === "caja";
+  const esAdminPrincipal = esCaja && hasMinRole(usuarioSistema?.rol, "ADMIN");
 
   const cargarCaja = useCallback(async (signal) => {
     try {
@@ -107,32 +139,6 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
       if (!signal?.aborted) setCargando(false);
     }
   }, [fechaConsulta, paginaMovimientos, reporteTipo]);
-
-  const exportarExcel = async () => {
-    try {
-      setExportandoExcel(true);
-      const res = await api.get("/caja/reporte/excel", {
-        params: { tipo: reporteTipo, fecha: fechaConsulta },
-        responseType: "blob",
-        timeout: 0
-      });
-      const blob = new Blob([res.data], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-      });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `reporte_caja_${reporteTipo}_${fechaConsulta}.xlsx`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch {
-      alert("No se pudo exportar el reporte en Excel.");
-    } finally {
-      setExportandoExcel(false);
-    }
-  };
 
   const cargarAlertasRiesgo = useCallback(async (signal) => {
     try {
@@ -165,25 +171,56 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
     }
   }, []);
 
-  const anularPago = useCallback(async (mov) => {
-    if (!mov?.id_pago) return;
-    const idPago = Number(mov.id_pago);
-    const monto = Number(mov?.monto_pagado || 0);
-    const periodo = `${String(mov?.mes || "").padStart(2, "0")}/${mov?.anio || "-"}`;
-    const confirmar = window.confirm(`Anular pago #${idPago} de S/. ${formatMoney(monto)} (${periodo})?`);
-    if (!confirmar) return;
-    setAnulandoPagoId(idPago);
+  const cargarMovimientosAdmin = useCallback(async (fechaDesde, fechaHasta, signal) => {
+    if (!esAdminPrincipal) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fechaDesde || ""))) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fechaHasta || ""))) return;
     try {
-      const res = await api.post(`/pagos/${idPago}/anular`);
-      window.alert(res?.data?.mensaje || "Pago anulado correctamente.");
-      await Promise.all([cargarCaja(), cargarAlertasRiesgo()]);
+      setCargandoAdmin(true);
+      const res = await api.get("/admin/pagos-anulados", {
+        params: {
+          fecha_desde: fechaDesde,
+          fecha_hasta: fechaHasta,
+          limit: 1000
+        },
+        signal
+      });
+      const rows = Array.isArray(res?.data?.movimientos) ? res.data.movimientos : [];
+      setMovimientosAdmin(rows);
     } catch (error) {
-      const msg = error?.response?.data?.error || "No se pudo anular el pago.";
-      window.alert(msg);
+      if (error?.code === "ERR_CANCELED" || error?.name === "CanceledError") return;
+      console.error(error);
+      setMovimientosAdmin([]);
     } finally {
-      setAnulandoPagoId(0);
+      if (!signal?.aborted) setCargandoAdmin(false);
     }
-  }, [cargarAlertasRiesgo, cargarCaja]);
+  }, [esAdminPrincipal]);
+
+  const exportarExcel = async () => {
+    try {
+      setExportandoExcel(true);
+      const res = await api.get("/caja/reporte/excel", {
+        params: { tipo: reporteTipo, fecha: fechaConsulta },
+        responseType: "blob",
+        timeout: 0
+      });
+      const blob = new Blob([res.data], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `reporte_caja_${reporteTipo}_${fechaConsulta}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      alert("No se pudo exportar el reporte en Excel.");
+    } finally {
+      setExportandoExcel(false);
+    }
+  };
 
   useEffect(() => {
     setPaginaMovimientos(1);
@@ -203,14 +240,24 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
   useEffect(() => {
     const controller = new AbortController();
     cargarAlertasRiesgo(controller.signal);
-    const timer = setInterval(() => {
-      cargarAlertasRiesgo(controller.signal);
-    }, 30000);
-    return () => {
-      clearInterval(timer);
-      controller.abort();
-    };
+    return () => controller.abort();
   }, [cargarAlertasRiesgo]);
+
+  useEffect(() => {
+    if (!esAdminPrincipal) {
+      adminRangeRef.current = { desde: "", hasta: "" };
+      setMovimientosAdmin([]);
+      return;
+    }
+    const desde = String(reporte?.rango?.desde || "");
+    const hastaExclusivo = String(reporte?.rango?.hasta_exclusivo || "");
+    const hasta = addIsoDays(hastaExclusivo, -1);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(desde) || !/^\d{4}-\d{2}-\d{2}$/.test(hasta)) return;
+    adminRangeRef.current = { desde, hasta };
+    const controller = new AbortController();
+    cargarMovimientosAdmin(desde, hasta, controller.signal);
+    return () => controller.abort();
+  }, [cargarMovimientosAdmin, esAdminPrincipal, reporte?.rango?.desde, reporte?.rango?.hasta_exclusivo]);
 
   const movimientos = Array.isArray(reporte.movimientos) ? reporte.movimientos : [];
   const totalPaginas = Math.max(1, Number(reporte?.paginacion?.total_paginas || 1));
@@ -220,6 +267,9 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
   const totalGeneral = formatMoney(reporte.total_general || reporte.total || 0);
   const alertasResumen = alertasRiesgo?.resumen || {};
   const alertasDetalle = alertasRiesgo?.alertas || {};
+  const totalAnuladoAdmin = formatMoney(
+    movimientosAdmin.reduce((acc, row) => acc + Number(row?.monto_pagado || 0), 0)
+  );
   const periodoLabel = reporteTipo === "semanal"
     ? "Semanal"
     : reporteTipo === "mensual"
@@ -276,14 +326,13 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
     setFechaConsulta(value);
   }, [reporteTipo]);
 
-  const esCaja = origen === "caja";
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : { backgroundColor: "#fff" };
   const tituloModal = esCaja ? "Reporte de Caja" : "Reporte de Ventanilla";
   const subtituloImpresion = esCaja
     ? "REPORTE DETALLADO DE INGRESOS - CAJA"
     : "REPORTE DETALLADO DE INGRESOS - VENTANILLA";
   const colorTotal = esCaja ? "text-success" : "text-primary";
-  const columnasTabla = esCaja ? 9 : 8;
+  const columnasTabla = 8;
   const colSpanTotal = 7;
 
   return (
@@ -333,6 +382,28 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
               </div>
               <div className="ms-auto d-flex flex-column align-items-end">
                 <div className={`fs-5 fw-bold ${colorTotal}`}>Total Caja: S/. {totalGeneral}</div>
+                {esAdminPrincipal && (
+                  <div className="small text-muted">Admin: anulados en rango = {movimientosAdmin.length}</div>
+                )}
+              </div>
+              <div className="d-flex">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-secondary"
+                  onClick={() => {
+                    cargarCaja().catch(() => {});
+                    cargarAlertasRiesgo().catch(() => {});
+                    if (esAdminPrincipal) {
+                      const { desde, hasta } = adminRangeRef.current;
+                      if (desde && hasta) {
+                        cargarMovimientosAdmin(desde, hasta).catch(() => {});
+                      }
+                    }
+                  }}
+                  disabled={cargando || cargandoAlertas || cargandoAdmin}
+                >
+                  {(cargando || cargandoAlertas || cargandoAdmin) ? "Actualizando..." : "Actualizar"}
+                </button>
               </div>
             </div>
 
@@ -471,7 +542,6 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
                     <th>CONTRIBUYENTE</th>
                     <th className="text-center">PERIODO</th>
                     <th className="text-end">MONTO (S/.)</th>
-                    {esCaja && <th className="text-center no-print">ACCIONES</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -490,18 +560,6 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
                         <td>{m.nombre_completo}</td>
                         <td className="text-center">{m.mes}/{m.anio}</td>
                         <td className="text-end fw-bold">{formatMoney(m.monto_pagado)}</td>
-                        {esCaja && (
-                          <td className="text-center no-print">
-                            <button
-                              type="button"
-                              className="btn btn-outline-danger btn-sm"
-                              onClick={() => anularPago(m)}
-                              disabled={cargando || anulandoPagoId === Number(m.id_pago || 0)}
-                            >
-                              {anulandoPagoId === Number(m.id_pago || 0) ? "Anulando..." : "Anular"}
-                            </button>
-                          </td>
-                        )}
                       </tr>
                     ))
                   )}
@@ -510,7 +568,6 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
                   <tr className="table-light border-top border-dark fw-bold" style={{ fontSize: "14px" }}>
                     <td colSpan={colSpanTotal} className="text-end pe-3">TOTAL CAJA:</td>
                     <td className={`text-end ${esCaja ? "text-success" : "text-primary"}`}>S/. {totalGeneral}</td>
-                    {esCaja && <td className="no-print"></td>}
                   </tr>
                 </tfoot>
               </table>
@@ -541,6 +598,57 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla" }) => {
                       Siguiente
                     </button>
                   </div>
+                </div>
+              )}
+
+              {esAdminPrincipal && (
+                <div className="mt-4 pt-3 border-top border-2 border-dark">
+                  <div className="d-flex justify-content-between align-items-center mb-2">
+                    <h6 className="fw-bold m-0">ANEXO ADMINISTRATIVO - PAGOS ANULADOS/EDITADOS</h6>
+                    <div className="small fw-semibold">Total anulado: S/. {totalAnuladoAdmin}</div>
+                  </div>
+                  <div className="small mb-2">
+                    Este anexo es solo para administrador e incluye trazabilidad de correcciones (anulaciones para reingreso de pago).
+                  </div>
+                  {cargandoAdmin && (
+                    <div className="small text-muted mb-2">Actualizando movimientos administrativos...</div>
+                  )}
+                  <table className="table table-sm table-striped border border-dark" style={{ fontSize: "11px" }}>
+                    <thead className="table-secondary">
+                      <tr>
+                        <th className="text-center">#</th>
+                        <th>PAGO ORIGINAL</th>
+                        <th>ANULADO EN</th>
+                        <th>CODIGO</th>
+                        <th>CONTRIBUYENTE</th>
+                        <th className="text-center">PERIODO</th>
+                        <th className="text-end">MONTO</th>
+                        <th>MOTIVO</th>
+                        <th>ANULADO POR</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {movimientosAdmin.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="text-center py-2">Sin anulaciones en este rango.</td>
+                        </tr>
+                      ) : (
+                        movimientosAdmin.map((row, idx) => (
+                          <tr key={`adm-${row?.id_anulacion || idx}`}>
+                            <td className="text-center">{idx + 1}</td>
+                            <td>{formatFechaHoraLocal(row?.fecha_pago_original) || "-"}</td>
+                            <td>{formatFechaHoraLocal(row?.anulado_en) || "-"}</td>
+                            <td>{row?.codigo_municipal || "-"}</td>
+                            <td>{row?.nombre_completo || "-"}</td>
+                            <td className="text-center">{row?.mes ? `${row.mes}/${row?.anio || ""}` : "-"}</td>
+                            <td className="text-end fw-bold">{formatMoney(row?.monto_pagado || 0)}</td>
+                            <td>{row?.motivo_anulacion || "-"}</td>
+                            <td>{row?.username_anula || "-"}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
