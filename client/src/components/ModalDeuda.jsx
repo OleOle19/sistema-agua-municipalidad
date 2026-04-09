@@ -1,5 +1,6 @@
 import { useState } from "react";
 import api from "../api";
+import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
 
 const toNumber = (value, fallback = 0) => {
   const normalized = typeof value === "string" ? value.replace(",", ".") : value;
@@ -63,6 +64,19 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
       });
       return { ...prev, [key]: next };
     });
+  };
+
+  const onChangeMonto = (key, value) => {
+    const next = normalizeMoneyTyping(value);
+    if (next === null) return;
+    setForm((prev) => ({ ...prev, [key]: next }));
+  };
+
+  const onBlurMonto = (key) => {
+    setForm((prev) => ({
+      ...prev,
+      [key]: finalizeMoneyInput(prev[key], { min: 0, emptyValue: "0.00" })
+    }));
   };
 
   const montos = {
@@ -144,7 +158,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                   <input className="form-check-input" type="checkbox" id="svc-agua" checked={servicios.agua} onChange={() => toggleServicio("agua")} />
                   <label className="form-check-label" htmlFor="svc-agua">Agua Potable</label>
                 </div>
-                <input type="number" step="0.01" min="0" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.agua} onChange={(e) => setForm((p) => ({ ...p, agua: e.target.value }))} disabled={!servicios.agua} />
+                <input type="text" inputMode="decimal" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.agua} onChange={(e) => onChangeMonto("agua", e.target.value)} onBlur={() => onBlurMonto("agua")} disabled={!servicios.agua} />
               </div>
 
               <div className="d-flex align-items-center justify-content-between mt-1 gap-2">
@@ -152,7 +166,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                   <input className="form-check-input" type="checkbox" id="svc-desague" checked={servicios.desague} onChange={() => toggleServicio("desague")} />
                   <label className="form-check-label" htmlFor="svc-desague">Desague</label>
                 </div>
-                <input type="number" step="0.01" min="0" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.desague} onChange={(e) => setForm((p) => ({ ...p, desague: e.target.value }))} disabled={!servicios.desague} />
+                <input type="text" inputMode="decimal" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.desague} onChange={(e) => onChangeMonto("desague", e.target.value)} onBlur={() => onBlurMonto("desague")} disabled={!servicios.desague} />
               </div>
 
               <div className="d-flex align-items-center justify-content-between mt-1 gap-2">
@@ -160,7 +174,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                   <input className="form-check-input" type="checkbox" id="svc-limpieza" checked={servicios.limpieza} onChange={() => toggleServicio("limpieza")} />
                   <label className="form-check-label" htmlFor="svc-limpieza">Limpieza Publica</label>
                 </div>
-                <input type="number" step="0.01" min="0" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.limpieza} onChange={(e) => setForm((p) => ({ ...p, limpieza: e.target.value }))} disabled={!servicios.limpieza} />
+                <input type="text" inputMode="decimal" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.limpieza} onChange={(e) => onChangeMonto("limpieza", e.target.value)} onBlur={() => onBlurMonto("limpieza")} disabled={!servicios.limpieza} />
               </div>
 
               <div className="d-flex align-items-center justify-content-between mt-1 gap-2">
@@ -168,7 +182,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                   <input className="form-check-input" type="checkbox" id="svc-admin" checked={servicios.admin} onChange={() => toggleServicio("admin")} />
                   <label className="form-check-label" htmlFor="svc-admin">Gastos Administrativos</label>
                 </div>
-                <input type="number" step="0.01" min="0" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.admin} onChange={(e) => setForm((p) => ({ ...p, admin: e.target.value }))} disabled={!servicios.admin} />
+                <input type="text" inputMode="decimal" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.admin} onChange={(e) => onChangeMonto("admin", e.target.value)} onBlur={() => onBlurMonto("admin")} disabled={!servicios.admin} />
               </div>
 
               <div className="d-flex align-items-center justify-content-between mt-1 gap-2">
@@ -176,7 +190,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                   <input className="form-check-input" type="checkbox" id="svc-extra" checked={servicios.extra} onChange={() => toggleServicio("extra")} />
                   <label className="form-check-label" htmlFor="svc-extra">Extra</label>
                 </div>
-                <input type="number" step="0.01" min="0" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.extra} onChange={(e) => setForm((p) => ({ ...p, extra: e.target.value }))} disabled={!servicios.extra} />
+                <input type="text" inputMode="decimal" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.extra} onChange={(e) => onChangeMonto("extra", e.target.value)} onBlur={() => onBlurMonto("extra")} disabled={!servicios.extra} />
               </div>
 
               <div className="text-end fw-bold mt-2">Total a cobrar: S/ {totalServicios.toFixed(2)}</div>

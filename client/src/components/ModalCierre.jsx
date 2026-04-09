@@ -50,6 +50,26 @@ const formatFechaLocal = (value) => {
   return date.toLocaleDateString("es-PE");
 };
 
+const formatFechaCorta = (value) => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const [y, m, d] = text.split("-");
+    return `${d}/${m}/${y}`;
+  }
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return text;
+  const d = String(parsed.getDate()).padStart(2, "0");
+  const m = String(parsed.getMonth() + 1).padStart(2, "0");
+  const y = parsed.getFullYear();
+  return `${d}/${m}/${y}`;
+};
+
+const formatMontoReporte = (value) => {
+  const num = Number.parseFloat(value);
+  return Number.isFinite(num) ? num.toFixed(2) : "0.00";
+};
+
 const todayIso = () => {
   const d = new Date();
   const y = d.getFullYear();
@@ -280,10 +300,75 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   const graficosCaja = reporte?.graficos || {};
   const recaudacionTemporal = Array.isArray(graficosCaja.recaudacion_temporal) ? graficosCaja.recaudacion_temporal : [];
   const topContribuyentes = Array.isArray(graficosCaja.top_contribuyentes) ? graficosCaja.top_contribuyentes : [];
-  const recaudacionPeriodo = Array.isArray(graficosCaja.recaudacion_por_periodo) ? graficosCaja.recaudacion_por_periodo : [];
+  const recaudacionPeriodoRaw = Array.isArray(graficosCaja.recaudacion_por_periodo) ? graficosCaja.recaudacion_por_periodo : [];
+  const recaudacionPeriodo = useMemo(() => {
+    if (reporteTipo !== "anual") return recaudacionPeriodoRaw;
+    const year = toYearValue(fechaConsulta);
+    if (!/^\d{4}$/.test(year)) return recaudacionPeriodoRaw;
+    return recaudacionPeriodoRaw.filter((row) => {
+      const periodo = String(row?.periodo || "").trim();
+      return periodo.endsWith(`/${year}`);
+    });
+  }, [recaudacionPeriodoRaw, reporteTipo, fechaConsulta]);
   const maxTemporal = Math.max(1, ...recaudacionTemporal.map((r) => Number(r?.total || 0)));
   const maxTop = Math.max(1, ...topContribuyentes.map((r) => Number(r?.total || 0)));
   const maxPeriodo = Math.max(1, ...recaudacionPeriodo.map((r) => Number(r?.total || 0)));
+  const movimientosReporte = useMemo(() => {
+    const rows = [...movimientos];
+    rows.sort((a, b) => {
+      const fa = String(a?.fecha || "");
+      const fb = String(b?.fecha || "");
+      if (fa !== fb) return fa.localeCompare(fb);
+      const na = String(a?.nombre_completo || "");
+      const nb = String(b?.nombre_completo || "");
+      if (na !== nb) return na.localeCompare(nb, "es");
+      return Number(a?.id_pago || 0) - Number(b?.id_pago || 0);
+    });
+    return rows;
+  }, [movimientos]);
+  const gruposReporte = useMemo(() => {
+    const byFecha = new Map();
+    movimientosReporte.forEach((row) => {
+      const fecha = String(row?.fecha || "").trim() || "SIN_FECHA";
+      if (!byFecha.has(fecha)) byFecha.set(fecha, new Map());
+      const contribuyentes = byFecha.get(fecha);
+      const key = `${row?.id_contribuyente || 0}|${row?.codigo_municipal || ""}|${row?.nombre_completo || ""}`;
+      if (!contribuyentes.has(key)) {
+        contribuyentes.set(key, {
+          codigo_municipal: row?.codigo_municipal || "",
+          nombre_completo: row?.nombre_completo || "-",
+          items: []
+        });
+      }
+      contribuyentes.get(key).items.push(row);
+    });
+    return Array.from(byFecha.entries()).map(([fecha, contribuyentes]) => ({
+      fecha,
+      contribuyentes: Array.from(contribuyentes.values())
+    }));
+  }, [movimientosReporte]);
+  const totalAguaReporte = useMemo(
+    () => movimientosReporte.reduce((acc, row) => acc + Number(row?.monto_agua || 0), 0),
+    [movimientosReporte]
+  );
+  const totalDesagueReporte = useMemo(
+    () => movimientosReporte.reduce((acc, row) => acc + Number(row?.monto_desague || 0), 0),
+    [movimientosReporte]
+  );
+  const totalLimpiezaReporte = useMemo(
+    () => movimientosReporte.reduce((acc, row) => acc + Number(row?.monto_limpieza || 0), 0),
+    [movimientosReporte]
+  );
+  const totalGastosReporte = useMemo(
+    () => movimientosReporte.reduce((acc, row) => acc + Number(row?.monto_gastos || 0), 0),
+    [movimientosReporte]
+  );
+  const totalAbonoReporte = useMemo(
+    () => movimientosReporte.reduce((acc, row) => acc + Number(row?.monto_pagado || 0), 0),
+    [movimientosReporte]
+  );
+  const fechaDesdeImpresion = formatFechaCorta(reporte?.rango?.desde || "");
+  const fechaHastaImpresion = formatFechaCorta(addIsoDays(reporte?.rango?.hasta_exclusivo || "", -1));
 
   const yearActual = Number(todayIso().slice(0, 4));
   const yearsDisponibles = useMemo(() => {
@@ -328,12 +413,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
 
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : { backgroundColor: "#fff" };
   const tituloModal = esCaja ? "Reporte de Caja" : "Reporte de Ventanilla";
-  const subtituloImpresion = esCaja
-    ? "REPORTE DETALLADO DE INGRESOS - CAJA"
-    : "REPORTE DETALLADO DE INGRESOS - VENTANILLA";
   const colorTotal = esCaja ? "text-success" : "text-primary";
-  const columnasTabla = 8;
-  const colSpanTotal = 7;
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -514,60 +594,99 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
               </div>
             </div>
 
-            <div ref={componentRef} className="p-3" style={{ backgroundColor: "#fff", color: "#000" }}>
-              <div className="row mb-3 border-bottom border-2 border-dark pb-2">
-                <div className="col-2 text-center d-flex align-items-center justify-content-center">
-                  <img src="/logo.png" alt="Logo" style={{ width: "60px", height: "60px", objectFit: "contain" }} />
+            <div ref={componentRef} className="p-3" style={{ backgroundColor: "#fff", color: "#000", fontFamily: "'Times New Roman', serif" }}>
+              <div className="text-center mb-2" style={{ fontSize: "18px", fontWeight: 700, letterSpacing: "0.3px" }}>
+                INFORME DE INGRESOS TRIBUTARIOS
+              </div>
+              <div className="d-flex justify-content-between align-items-start mb-2" style={{ fontSize: "13px" }}>
+                <div>
+                  <div><strong>MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO</strong></div>
+                  <div>Area de Administracion Tributaria - Agua Potable</div>
                 </div>
-                <div className="col-7 text-center">
-                  <h4 className="fw-bold m-0">MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO</h4>
-                  <h5 className="m-0">{subtituloImpresion}</h5>
-                  <p className="small m-0">Area de Administracion Tributaria - Agua Potable</p>
-                </div>
-                <div className="col-3 text-end small">
-                  <div><strong>Fecha:</strong> {fechaConsulta}</div>
-                  <div><strong>Periodo:</strong> {periodoLabel}</div>
-                  <div><strong>Movimientos:</strong> {reporte?.cantidad_movimientos || 0}</div>
+                <div className="text-end">
+                  <div>{formatFechaCorta(fechaConsulta)}</div>
+                  <div><strong>Desde</strong> {fechaDesdeImpresion || "-"}</div>
+                  <div><strong>Hasta</strong> {fechaHastaImpresion || "-"}</div>
                 </div>
               </div>
+              <hr className="mt-1 mb-2" />
 
-              <table className="table table-sm table-striped border border-dark" style={{ fontSize: "12px" }}>
-                <thead className="table-dark text-white">
-                  <tr>
-                    <th className="text-center">#</th>
-                    <th>FECHA</th>
-                    <th className="text-center">HORA</th>
-                    <th className="text-center">COD. IMP.</th>
-                    <th>CODIGO</th>
-                    <th>CONTRIBUYENTE</th>
-                    <th className="text-center">PERIODO</th>
-                    <th className="text-end">MONTO (S/.)</th>
+              <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
+                <thead>
+                  <tr className="border border-dark">
+                    <th style={{ width: "34%" }}>Fecha / Contribuyente</th>
+                    <th className="text-center" style={{ width: "14%" }}>Recibo</th>
+                    <th className="text-center" style={{ width: "7%" }}>Año</th>
+                    <th className="text-center" style={{ width: "6%" }}>Mes</th>
+                    <th className="text-end" style={{ width: "8%" }}>Agua</th>
+                    <th className="text-end" style={{ width: "8%" }}>Desague</th>
+                    <th className="text-end" style={{ width: "8%" }}>Limpieza</th>
+                    <th className="text-end" style={{ width: "7%" }}>Gastos</th>
+                    <th className="text-end" style={{ width: "8%" }}>Abono</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {movimientos.length === 0 ? (
+                  {gruposReporte.length === 0 ? (
                     <tr>
-                      <td colSpan={columnasTabla} className="text-center p-3">No hay movimientos para el dia.</td>
+                      <td colSpan={9} className="text-center py-3 border">No hay movimientos para el rango consultado.</td>
                     </tr>
                   ) : (
-                    movimientos.map((m, i) => (
-                      <tr key={`${m.id_pago}-${i}`}>
-                        <td className="text-center">{inicioIndice + i + 1}</td>
-                        <td>{m.fecha}</td>
-                        <td className="text-center">{m.hora}</td>
-                        <td className="text-center fw-bold">{m.codigo_impresion || "-"}</td>
-                        <td className="fw-bold">{m.codigo_municipal}</td>
-                        <td>{m.nombre_completo}</td>
-                        <td className="text-center">{m.mes}/{m.anio}</td>
-                        <td className="text-end fw-bold">{formatMoney(m.monto_pagado)}</td>
+                    gruposReporte.map((grupoFecha) => (
+                      <tr key={`fecha-${grupoFecha.fecha}`}>
+                        <td colSpan={9} className="p-0 border-0">
+                          <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
+                            <tbody>
+                              <tr>
+                                <td colSpan={9} className="fw-bold border-top border-dark border-bottom">
+                                  Fecha {formatFechaCorta(grupoFecha.fecha)}
+                                </td>
+                              </tr>
+                              {grupoFecha.contribuyentes.map((contrib, idxContrib) => (
+                                <tr key={`contrib-${grupoFecha.fecha}-${idxContrib}`}>
+                                  <td colSpan={9} className="p-0 border-0">
+                                    <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
+                                      <tbody>
+                                        <tr>
+                                          <td colSpan={9} className="fw-semibold border-bottom">
+                                            {String(contrib.nombre_completo || "-").toUpperCase()}
+                                          </td>
+                                        </tr>
+                                        {contrib.items.map((item) => (
+                                          <tr key={`item-${item.id_pago}`}>
+                                            <td style={{ width: "34%" }}></td>
+                                            <td className="text-center" style={{ width: "14%" }}>{item.codigo_impresion || "-"}</td>
+                                            <td className="text-center" style={{ width: "7%" }}>{item.anio || "-"}</td>
+                                            <td className="text-center" style={{ width: "6%" }}>{String(item.mes || "").padStart(2, "0")}</td>
+                                            <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_agua || 0)}</td>
+                                            <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_desague || 0)}</td>
+                                            <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_limpieza || 0)}</td>
+                                            <td className="text-end" style={{ width: "7%" }}>{formatMontoReporte(item.monto_gastos || 0)}</td>
+                                            <td className="text-end fw-bold" style={{ width: "8%" }}>{formatMontoReporte(item.monto_pagado || 0)}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
                       </tr>
                     ))
                   )}
                 </tbody>
                 <tfoot>
-                  <tr className="table-light border-top border-dark fw-bold" style={{ fontSize: "14px" }}>
-                    <td colSpan={colSpanTotal} className="text-end pe-3">TOTAL CAJA:</td>
-                    <td className={`text-end ${esCaja ? "text-success" : "text-primary"}`}>S/. {totalGeneral}</td>
+                  <tr className="border-top border-dark">
+                    <td className="fw-bold">Total Fechas</td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td className="text-end fw-bold">{formatMontoReporte(totalAguaReporte)}</td>
+                    <td className="text-end fw-bold">{formatMontoReporte(totalDesagueReporte)}</td>
+                    <td className="text-end fw-bold">{formatMontoReporte(totalLimpiezaReporte)}</td>
+                    <td className="text-end fw-bold">{formatMontoReporte(totalGastosReporte)}</td>
+                    <td className="text-end fw-bold">{formatMontoReporte(totalAbonoReporte)}</td>
                   </tr>
                 </tfoot>
               </table>

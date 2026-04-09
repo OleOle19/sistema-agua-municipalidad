@@ -7,6 +7,7 @@ import ReciboAnexoCaja from "../components/ReciboAnexoCaja";
 import ModalCierre from "../components/ModalCierre";
 import cajaLuzApi from "./apiCajaLuz";
 import realtime from "../realtime";
+import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
 
 const AGUA_TOKEN_KEY = "token_agua";
 
@@ -107,7 +108,8 @@ const shiftIsoDateByYears = (isoDate, deltaYears) => {
 };
 
 const parseMonto = (value) => {
-  const parsed = Number.parseFloat(value);
+  const normalized = typeof value === "string" ? value.replace(",", ".") : value;
+  const parsed = Number.parseFloat(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
@@ -836,17 +838,23 @@ function CajaMunicipalApp({ onBackToSelector }) {
   ]);
 
   const setMontoCobroAgua = useCallback((rowKey, value, maxSaldo) => {
-    const raw = String(value || "").replace(",", ".");
-    if (raw && !/^\d*(\.\d{0,2})?$/.test(raw)) return;
-    const parsed = parseMonto(raw);
-    const clamped = raw === ""
-      ? ""
-      : round2(Math.min(Math.max(parsed, 0), round2(maxSaldo))).toFixed(2);
+    const clamped = normalizeMoneyTyping(value, { max: round2(maxSaldo) });
+    if (clamped === null) return;
     setSeleccionCobroAgua((prev) => ({
       ...prev,
       [rowKey]: {
         ...(prev[rowKey] || {}),
         monto: clamped
+      }
+    }));
+  }, []);
+
+  const finalizarMontoCobroAgua = useCallback((rowKey, maxSaldo) => {
+    setSeleccionCobroAgua((prev) => ({
+      ...prev,
+      [rowKey]: {
+        ...(prev[rowKey] || {}),
+        monto: finalizeMoneyInput(prev[rowKey]?.monto, { min: 0, max: round2(maxSaldo), emptyValue: "0.00" })
       }
     }));
   }, []);
@@ -1557,8 +1565,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
                                 <input
                                   type="text"
                                   className="form-control text-end"
+                                  inputMode="decimal"
                                   value={sel?.monto ?? ""}
                                   onChange={(e) => setMontoCobroAgua(rowKey, e.target.value, saldo)}
+                                  onBlur={() => finalizarMontoCobroAgua(rowKey, saldo)}
                                   disabled={!sel?.checked || cobrandoDirectoAgua || !puedeCobrar || anulandoEstaFila}
                                 />
                               </div>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import api from "../api";
+import { finalizeMoneyInput, normalizeMoneyTyping, parseMoneyInput } from "../utils/moneyInput";
 
 const ROLE_ORDER = { BRIGADA: 1, CONSULTA: 2, CAJERO: 3, ADMIN_SEC: 4, ADMIN: 5 };
 
@@ -19,7 +20,7 @@ const hasMinRole = (role, requiredRole) => {
 };
 
 const toNum = (v) => {
-  const n = parseFloat(v);
+  const n = parseMoneyInput(v, Number.NaN);
   return Number.isFinite(n) ? n : 0;
 };
 
@@ -163,13 +164,21 @@ const ModalPago = ({
   };
 
   const setMonto = (id, value, maxSaldo) => {
-    const cleaned = String(value || "").replace(",", ".");
-    if (cleaned && !/^\d*(\.\d{0,2})?$/.test(cleaned)) return;
-    const parsed = toNum(cleaned);
-    const clamped = cleaned === "" ? "" : Math.min(Math.max(parsed, 0), round2(maxSaldo)).toFixed(2);
+    const next = normalizeMoneyTyping(value, { max: round2(maxSaldo) });
+    if (next === null) return;
     setSeleccion((prev) => ({
       ...prev,
-      [id]: { ...(prev[id] || {}), monto: clamped }
+      [id]: { ...(prev[id] || {}), monto: next }
+    }));
+  };
+
+  const finalizarMonto = (id, maxSaldo) => {
+    setSeleccion((prev) => ({
+      ...prev,
+      [id]: {
+        ...(prev[id] || {}),
+        monto: finalizeMoneyInput(prev[id]?.monto, { min: 0, max: round2(maxSaldo), emptyValue: "0.00" })
+      }
     }));
   };
 
@@ -438,8 +447,10 @@ const ModalPago = ({
                           <input
                             type="text"
                             className="form-control text-end"
+                            inputMode="decimal"
                             value={row.monto ?? ""}
                             onChange={(e) => setMonto(r.id_recibo, e.target.value, saldo)}
+                            onBlur={() => finalizarMonto(r.id_recibo, saldo)}
                             disabled={!row.checked || bloqueadoPorOrden}
                           />
                         </div>

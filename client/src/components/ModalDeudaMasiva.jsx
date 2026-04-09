@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import api from "../api";
 import { FaLayerGroup, FaBuilding, FaUsers } from "react-icons/fa";
+import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
 
 const validarPeriodoNoFuturo = (anioInput, mesInput) => {
   const anio = Number.parseInt(String(anioInput ?? ""), 10);
@@ -69,6 +70,19 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
     if (!servicios[key]) return sum;
     return sum + parseMonto(form[key]);
   }, 0);
+
+  const onChangeMonto = (key, value) => {
+    const next = normalizeMoneyTyping(value);
+    if (next === null) return;
+    setForm((prev) => ({ ...prev, [key]: next }));
+  };
+
+  const onBlurMonto = (key) => {
+    setForm((prev) => ({
+      ...prev,
+      [key]: finalizeMoneyInput(prev[key], { min: 0, emptyValue: "0.00" })
+    }));
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -160,28 +174,28 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
                           <input className="form-check-input" type="checkbox" id="masivo-agua" checked={servicios.agua} onChange={() => toggleServicio("agua")} />
                           <label className="form-check-label small" htmlFor="masivo-agua">Agua</label>
                       </div>
-                      <input type="number" step="0.01" className={inputClass} value={form.agua} onChange={e=>setForm({...form, agua: e.target.value})} disabled={!servicios.agua} />
+                      <input type="text" inputMode="decimal" className={inputClass} value={form.agua} onChange={e => onChangeMonto("agua", e.target.value)} onBlur={() => onBlurMonto("agua")} disabled={!servicios.agua} />
                   </div>
                   <div className="col-3">
                       <div className="form-check">
                           <input className="form-check-input" type="checkbox" id="masivo-desague" checked={servicios.desague} onChange={() => toggleServicio("desague")} />
                           <label className="form-check-label small" htmlFor="masivo-desague">Desagüe</label>
                       </div>
-                      <input type="number" step="0.01" className={inputClass} value={form.desague} onChange={e=>setForm({...form, desague: e.target.value})} disabled={!servicios.desague} />
+                      <input type="text" inputMode="decimal" className={inputClass} value={form.desague} onChange={e => onChangeMonto("desague", e.target.value)} onBlur={() => onBlurMonto("desague")} disabled={!servicios.desague} />
                   </div>
                   <div className="col-3">
                       <div className="form-check">
                           <input className="form-check-input" type="checkbox" id="masivo-limpieza" checked={servicios.limpieza} onChange={() => toggleServicio("limpieza")} />
                           <label className="form-check-label small" htmlFor="masivo-limpieza">Limpieza</label>
                       </div>
-                      <input type="number" step="0.01" className={inputClass} value={form.limpieza} onChange={e=>setForm({...form, limpieza: e.target.value})} disabled={!servicios.limpieza} />
+                      <input type="text" inputMode="decimal" className={inputClass} value={form.limpieza} onChange={e => onChangeMonto("limpieza", e.target.value)} onBlur={() => onBlurMonto("limpieza")} disabled={!servicios.limpieza} />
                   </div>
                   <div className="col-3">
                       <div className="form-check">
                           <input className="form-check-input" type="checkbox" id="masivo-admin" checked={servicios.admin} onChange={() => toggleServicio("admin")} />
                           <label className="form-check-label small" htmlFor="masivo-admin">Admin</label>
                       </div>
-                      <input type="number" step="0.01" className={inputClass} value={form.admin} onChange={e=>setForm({...form, admin: e.target.value})} disabled={!servicios.admin} />
+                      <input type="text" inputMode="decimal" className={inputClass} value={form.admin} onChange={e => onChangeMonto("admin", e.target.value)} onBlur={() => onBlurMonto("admin")} disabled={!servicios.admin} />
                   </div>
                   <div className="col-12 text-end fw-bold mt-1">Total: S/ {totalServicios.toFixed(2)}</div>
               </div>

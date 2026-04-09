@@ -7903,6 +7903,7 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
   const rango = await obtenerRangoCaja(tipo, fechaReferencia);
   const desde = rango.desde;
   const hasta = rango.hasta;
+  const anioReferencia = Number(String(fechaReferencia || "").slice(0, 4)) || getCurrentYear();
 
   const resumenPagos = await pool.query(`
     SELECT
@@ -7944,7 +7945,7 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
     LIMIT 10
   `, [desde, hasta]);
 
-  const periodos = await pool.query(`
+  const periodosSql = `
     SELECT
       CONCAT(LPAD(r.mes::text, 2, '0'), '/', r.anio::text) AS periodo,
       ROUND(SUM(p.monto_pagado)::numeric, 2) AS total
@@ -7953,9 +7954,14 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
     WHERE ${PAGO_OPERATIVO_CAJA_SQL}
       AND p.fecha_pago >= $1::date
       AND p.fecha_pago < $2::date
+      ${tipo === "anual" ? "AND r.anio = $3::int" : ""}
     GROUP BY r.anio, r.mes
     ORDER BY r.anio ASC, r.mes ASC
-  `, [desde, hasta]);
+  `;
+  const periodosParams = tipo === "anual"
+    ? [desde, hasta, anioReferencia]
+    : [desde, hasta];
+  const periodos = await pool.query(periodosSql, periodosParams);
 
   const serieTemporal = await construirSerieTemporalCaja(tipo, desde, hasta);
 
@@ -8022,9 +8028,15 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
           NULLIF(TRIM(c.sec_nombre), ''),
           ''
         ) AS nombre_completo,
+        pr.id_contribuyente,
         c.codigo_municipal,
         r.mes,
         r.anio,
+        r.subtotal_agua,
+        r.subtotal_desague,
+        r.subtotal_limpieza,
+        r.subtotal_admin,
+        r.total_pagar,
         CASE
           WHEN ci.id_codigo IS NOT NULL THEN LPAD(ci.id_codigo::text, 6, '0')
           ELSE NULL
@@ -8056,9 +8068,15 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       hora,
       monto_pagado,
       nombre_completo,
+      id_contribuyente,
       codigo_municipal,
       mes,
       anio,
+      subtotal_agua,
+      subtotal_desague,
+      subtotal_limpieza,
+      subtotal_admin,
+      total_pagar,
       codigo_impresion,
       0::numeric AS cargo_reimpresion
     FROM movimientos_base
@@ -8069,10 +8087,39 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     ? [desde, hasta]
     : [desde, hasta, safePageSize, offset];
   const movimientos = await pool.query(movimientosSql, movimientosParams);
-  const movimientosSanitizados = movimientos.rows.map((row) => ({
-    ...row,
-    codigo_impresion: includeCodigoImpresion ? (row.codigo_impresion || null) : null
-  }));
+  const prorratearPagoComponentes = (row) => {
+    const montoPagado = roundMonto2(parseMonto(row?.monto_pagado, 0));
+    const baseAgua = roundMonto2(parseMonto(row?.subtotal_agua, 0));
+    const baseDesague = roundMonto2(parseMonto(row?.subtotal_desague, 0));
+    const baseLimpieza = roundMonto2(parseMonto(row?.subtotal_limpieza, 0));
+    const baseGastos = roundMonto2(parseMonto(row?.subtotal_admin, 0));
+    const totalBase = roundMonto2(parseMonto(row?.total_pagar, (baseAgua + baseDesague + baseLimpieza + baseGastos)));
+    if (montoPagado <= 0) {
+      return { agua: 0, desague: 0, limpieza: 0, gastos: 0 };
+    }
+    if (totalBase <= 0) {
+      return { agua: montoPagado, desague: 0, limpieza: 0, gastos: 0 };
+    }
+    const factor = montoPagado / totalBase;
+    let agua = roundMonto2(baseAgua * factor);
+    let desague = roundMonto2(baseDesague * factor);
+    let limpieza = roundMonto2(baseLimpieza * factor);
+    let gastos = roundMonto2(baseGastos * factor);
+    const ajuste = roundMonto2(montoPagado - (agua + desague + limpieza + gastos));
+    gastos = roundMonto2(gastos + ajuste);
+    return { agua, desague, limpieza, gastos };
+  };
+  const movimientosSanitizados = movimientos.rows.map((row) => {
+    const montos = prorratearPagoComponentes(row);
+    return {
+      ...row,
+      codigo_impresion: includeCodigoImpresion ? (row.codigo_impresion || null) : null,
+      monto_agua: montos.agua,
+      monto_desague: montos.desague,
+      monto_limpieza: montos.limpieza,
+      monto_gastos: montos.gastos
+    };
+  });
   const pageSizeRespuesta = includeAllMovimientos
     ? Math.max(1, cantidadMovimientos)
     : safePageSize;
