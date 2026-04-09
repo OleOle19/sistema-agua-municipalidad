@@ -1191,7 +1191,7 @@ const anexoCajaPageStyle = `
       const rows = Array.isArray(res.data) ? res.data : [];
       setHistorial(rows);
       if (anio === "all") {
-        const years = Array.from(new Set(rows.map((r) => Number(r.anio)).filter(Boolean))).sort((a, b) => a - b);
+        const years = Array.from(new Set(rows.map((r) => Number(r.anio)).filter(Boolean))).sort((a, b) => b - a);
         setHistorialYears(years);
         historialCacheRef.current.set(cacheKey, { rows, years });
       } else {
@@ -1238,7 +1238,7 @@ const anexoCajaPageStyle = `
 
     let yearsToShow = [];
     if (historialYear === "all") {
-      yearsToShow = historialYears.length > 0 ? historialYears : [currentYear];
+      yearsToShow = historialYears.length > 0 ? [...historialYears].sort((a, b) => b - a) : [currentYear];
     } else {
       const y = Number(historialYear);
       yearsToShow = Number.isFinite(y) ? [y] : [currentYear];
@@ -1268,7 +1268,7 @@ const anexoCajaPageStyle = `
   }, [usuarioSeleccionado, historial, historialYear, historialYears, currentYear]);
 
   const yearsForSelect = useMemo(() => {
-    if (historialYears.length > 0) return historialYears;
+    if (historialYears.length > 0) return [...historialYears].sort((a, b) => b - a);
     return [currentYear];
   }, [historialYears, currentYear]);
 

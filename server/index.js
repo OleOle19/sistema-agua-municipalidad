@@ -774,6 +774,26 @@ const recalcularRecibosFuturosPorServicios = async (
     ? Math.max(0, periodoSolicitado)
     : Math.max(periodoSolicitado, periodoMinimoFuturo);
 
+  await client.query(`
+    UPDATE predios
+    SET
+      agua_sn = CASE WHEN ${sqlSnEsSi("agua_sn", "S")} THEN 'S' ELSE 'N' END,
+      desague_sn = CASE WHEN ${sqlSnEsSi("desague_sn", "S")} THEN 'S' ELSE 'N' END,
+      limpieza_sn = CASE WHEN ${sqlSnEsSi("limpieza_sn", "S")} THEN 'S' ELSE 'N' END,
+      activo_sn = CASE WHEN ${sqlSnEsSi("activo_sn", "S")} THEN 'S' ELSE 'N' END
+    WHERE id_contribuyente = $1
+      AND (
+        agua_sn IS NULL
+        OR desague_sn IS NULL
+        OR limpieza_sn IS NULL
+        OR activo_sn IS NULL
+        OR COALESCE(NULLIF(UPPER(TRIM(CAST(agua_sn AS text))), ''), 'S') NOT IN ('S', 'N')
+        OR COALESCE(NULLIF(UPPER(TRIM(CAST(desague_sn AS text))), ''), 'S') NOT IN ('S', 'N')
+        OR COALESCE(NULLIF(UPPER(TRIM(CAST(limpieza_sn AS text))), ''), 'S') NOT IN ('S', 'N')
+        OR COALESCE(NULLIF(UPPER(TRIM(CAST(activo_sn AS text))), ''), 'S') NOT IN ('S', 'N')
+      )
+  `, [id]);
+
   const resultado = await client.query(`
     WITH objetivo AS (
       SELECT
@@ -832,6 +852,110 @@ const recalcularRecibosFuturosPorServicios = async (
   `, [id, montoAgua, montoDesague, montoLimpieza, montoAdmin, periodo, incluirPendientesHistoricos]);
 
   return { actualizados: Number(resultado.rowCount || 0) };
+};
+
+const repararRecibosPendientesSnLegacy = async () => {
+  const client = await pool.connect();
+  try {
+    const fix = await client.query(`
+      WITH objetivo AS (
+        SELECT
+          r.id_recibo,
+          CASE
+            WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.agua_sn, 'S')) = 'S'
+              THEN COALESCE(p.tarifa_agua, $1::numeric)
+            ELSE 0::numeric
+          END AS old_agua,
+          CASE
+            WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.desague_sn, 'S')) = 'S'
+              THEN COALESCE(p.tarifa_desague, $2::numeric)
+            ELSE 0::numeric
+          END AS old_desague,
+          CASE
+            WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S'
+              THEN COALESCE(p.tarifa_limpieza, $3::numeric)
+            ELSE 0::numeric
+          END AS old_limpieza,
+          CASE
+            WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S'
+              THEN COALESCE(p.tarifa_admin, $4::numeric) + COALESCE(p.tarifa_extra, 0::numeric)
+            ELSE 0::numeric
+          END AS old_admin,
+          CASE
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")}
+              THEN COALESCE(p.tarifa_agua, $1::numeric)
+            ELSE 0::numeric
+          END AS new_agua,
+          CASE
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")}
+              THEN COALESCE(p.tarifa_desague, $2::numeric)
+            ELSE 0::numeric
+          END AS new_desague,
+          CASE
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")}
+              THEN COALESCE(p.tarifa_limpieza, $3::numeric)
+            ELSE 0::numeric
+          END AS new_limpieza,
+          CASE
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+              THEN COALESCE(p.tarifa_admin, $4::numeric) + COALESCE(p.tarifa_extra, 0::numeric)
+            ELSE 0::numeric
+          END AS new_admin
+        FROM recibos r
+        INNER JOIN predios p ON p.id_predio = r.id_predio
+        WHERE r.estado = 'PENDIENTE'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM pagos pg
+            WHERE pg.id_recibo = r.id_recibo
+          )
+      ),
+      actualizables AS (
+        SELECT
+          id_recibo,
+          old_agua,
+          old_desague,
+          old_limpieza,
+          old_admin,
+          (old_agua + old_desague + old_limpieza + old_admin) AS old_total,
+          new_agua,
+          new_desague,
+          new_limpieza,
+          new_admin,
+          (new_agua + new_desague + new_limpieza + new_admin) AS new_total
+        FROM objetivo
+        WHERE
+          old_agua <> new_agua
+          OR old_desague <> new_desague
+          OR old_limpieza <> new_limpieza
+          OR old_admin <> new_admin
+      )
+      UPDATE recibos r
+      SET
+        subtotal_agua = a.new_agua,
+        subtotal_desague = a.new_desague,
+        subtotal_limpieza = a.new_limpieza,
+        subtotal_admin = a.new_admin,
+        total_pagar = a.new_total
+      FROM actualizables a
+      WHERE r.id_recibo = a.id_recibo
+        AND COALESCE(r.subtotal_agua, 0) = a.old_agua
+        AND COALESCE(r.subtotal_desague, 0) = a.old_desague
+        AND COALESCE(r.subtotal_limpieza, 0) = a.old_limpieza
+        AND COALESCE(r.subtotal_admin, 0) = a.old_admin
+        AND COALESCE(r.total_pagar, 0) = a.old_total
+      RETURNING r.id_recibo
+    `, [AUTO_DEUDA_BASE.agua, AUTO_DEUDA_BASE.desague, AUTO_DEUDA_BASE.limpieza, AUTO_DEUDA_BASE.admin]);
+    const total = Number(fix.rowCount || 0);
+    if (total > 0) {
+      console.log(`[MIGRACION_SN] Recibos pendientes corregidos por flags legacy: ${total}`);
+      invalidateContribuyentesCache();
+    }
+  } catch (err) {
+    console.error("[MIGRACION_SN] Error corrigiendo recibos pendientes legacy:", err);
+  } finally {
+    client.release();
+  }
 };
 
 const normalizeCodigoMunicipal = (value, padTo = 6) => {
@@ -12251,6 +12375,9 @@ const onServerStarted = (label, host, port) => {
   bootstrapped = true;
   ensurePerformanceIndexes(pool).catch((err) => {
     console.error("[DB] Error creando índices de rendimiento:", err);
+  });
+  repararRecibosPendientesSnLegacy().catch((err) => {
+    console.error("[MIGRACION_SN] Error iniciando corrección legacy:", err);
   });
   removerArtefactosReniec().catch((err) => {
     console.error("[RENIEC] Error en limpieza inicial:", err);
