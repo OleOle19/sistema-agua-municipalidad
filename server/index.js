@@ -4581,8 +4581,13 @@ app.post("/contribuyentes", async (req, res) => {
 
 app.put("/contribuyentes/:id", async (req, res) => {
   const client = await pool.connect();
+  let txStarted = false;
   try {
     const { id } = req.params;
+    const idContribuyente = parsePositiveInt(id, 0);
+    if (!idContribuyente) {
+      return res.status(400).json({ error: "ID de contribuyente invalido." });
+    }
     const {
       nombre_completo, codigo_municipal, sec_cod, sec_nombre,
       dni_ruc, email, telefono, id_calle, numero_casa, manzana, lote, estado_conexion,
@@ -4597,24 +4602,6 @@ app.put("/contribuyentes/:id", async (req, res) => {
     if (!codigoMunicipal) {
       return res.status(400).json({ error: "Código municipal inválido." });
     }
-
-    const exMunicipal = await client.query(
-      "SELECT 1 FROM contribuyentes WHERE codigo_municipal = $1 AND id_contribuyente <> $2 LIMIT 1",
-      [codigoMunicipal, id]
-    );
-    if (exMunicipal.rows.length > 0) {
-      return res.status(400).json({ error: "El código municipal ya pertenece a otro contribuyente." });
-    }
-
-    if (codigoSistema) {
-      const exSistema = await client.query(
-        "SELECT 1 FROM contribuyentes WHERE sec_cod = $1 AND id_contribuyente <> $2 LIMIT 1",
-        [codigoSistema, id]
-      );
-      if (exSistema.rows.length > 0) {
-        return res.status(400).json({ error: "El código de sistema ya pertenece a otro contribuyente." });
-      }
-    }
     const tarifaAgua = parseOptionalTarifaMonto(tarifa_agua);
     const tarifaDesague = parseOptionalTarifaMonto(tarifa_desague);
     const tarifaLimpieza = parseOptionalTarifaMonto(tarifa_limpieza);
@@ -4623,18 +4610,49 @@ app.put("/contribuyentes/:id", async (req, res) => {
     if ([tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin, tarifaExtra].includes("__INVALID__")) {
       return res.status(400).json({ error: "Tarifas inválidas. Deben ser números mayores o iguales a 0." });
     }
-    
+
     await client.query('BEGIN');
+    txStarted = true;
     const actualData = await client.query(
-      `SELECT nombre_completo
+      `SELECT nombre_completo, codigo_municipal, sec_cod
        FROM contribuyentes
        WHERE id_contribuyente = $1
        FOR UPDATE`,
-      [id]
+      [idContribuyente]
     );
     if (actualData.rows.length === 0) {
       await client.query("ROLLBACK");
+      txStarted = false;
       return res.status(404).json({ error: "Contribuyente no encontrado." });
+    }
+
+    const codigoMunicipalActual = normalizeCodigoMunicipal(actualData.rows[0].codigo_municipal);
+    const codigoSistemaActual = String(actualData.rows[0].sec_cod || "").trim() || null;
+    const cambioCodigoMunicipal = codigoMunicipal !== codigoMunicipalActual;
+    const cambioCodigoSistema = (codigoSistema || null) !== codigoSistemaActual;
+
+    if (cambioCodigoMunicipal) {
+      const exMunicipal = await client.query(
+        "SELECT 1 FROM contribuyentes WHERE codigo_municipal = $1 AND id_contribuyente <> $2 LIMIT 1",
+        [codigoMunicipal, idContribuyente]
+      );
+      if (exMunicipal.rows.length > 0) {
+        await client.query("ROLLBACK");
+        txStarted = false;
+        return res.status(400).json({ error: "El código municipal ya pertenece a otro contribuyente." });
+      }
+    }
+
+    if (cambioCodigoSistema && codigoSistema) {
+      const exSistema = await client.query(
+        "SELECT 1 FROM contribuyentes WHERE sec_cod = $1 AND id_contribuyente <> $2 LIMIT 1",
+        [codigoSistema, idContribuyente]
+      );
+      if (exSistema.rows.length > 0) {
+        await client.query("ROLLBACK");
+        txStarted = false;
+        return res.status(400).json({ error: "El código de sistema ya pertenece a otro contribuyente." });
+      }
     }
 
     const nombreAnterior = normalizeLimitedText(actualData.rows[0].nombre_completo, 200) || "";
@@ -4644,10 +4662,12 @@ app.put("/contribuyentes/:id", async (req, res) => {
     const detalleMotivoRazonSocial = normalizeLimitedText(detalle_motivo_cambio_razon_social, 300) || "";
     if (cambioRazonSocial && !motivoCambioRazonSocial) {
       await client.query("ROLLBACK");
+      txStarted = false;
       return res.status(400).json({ error: "Debe indicar el motivo del cambio de razon social." });
     }
     if (cambioRazonSocial && motivoCambioRazonSocial === "OTRO" && !detalleMotivoRazonSocial) {
       await client.query("ROLLBACK");
+      txStarted = false;
       return res.status(400).json({ error: "Debe detallar el motivo de cambio de razon social." });
     }
     const motivoRazonSocialTexto = cambioRazonSocial
@@ -4670,7 +4690,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
            razon_social_motivo_ultimo = CASE WHEN $10::boolean THEN $11 ELSE razon_social_motivo_ultimo END,
            razon_social_actualizado_en = CASE WHEN $10::boolean THEN NOW() ELSE razon_social_actualizado_en END
        WHERE id_contribuyente = $9`,
-      [nombreNuevo, codigoMunicipal, codigoSistema, sec_nombre || null, dni_ruc, email, telefono, estadoConexion, id, cambioRazonSocial, motivoRazonSocialTexto]
+      [nombreNuevo, codigoMunicipal, codigoSistema, sec_nombre || null, dni_ruc, email, telefono, estadoConexion, idContribuyente, cambioRazonSocial, motivoRazonSocialTexto]
     );
     await client.query(
       `UPDATE predios
@@ -4686,9 +4706,9 @@ app.put("/contribuyentes/:id", async (req, res) => {
            tarifa_admin = $11,
            tarifa_extra = $12
        WHERE id_contribuyente = $7`,
-      [id_calle, numero_casa, manzana, lote, predioEstado.activo_sn, predioEstado.estado_servicio, id, tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin, tarifaExtra]
+      [id_calle, numero_casa, manzana, lote, predioEstado.activo_sn, predioEstado.estado_servicio, idContribuyente, tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin, tarifaExtra]
     );
-    const recalcManual = await recalcularRecibosFuturosPorServicios(client, id);
+    const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente);
     const recibosRecalculados = Number(recalcManual?.actualizados || 0);
     if (cambioRazonSocial) {
       const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
@@ -4697,15 +4717,18 @@ app.put("/contribuyentes/:id", async (req, res) => {
       await registrarAuditoria(
         client,
         "CAMBIO_RAZON_SOCIAL",
-        `contribuyente=${id}; codigo_municipal=${codigoMunicipal}; anterior=${nombreAnterior}; nuevo=${nombreNuevo}; motivo=${motivoLabel}${extraOtro}`,
+        `contribuyente=${idContribuyente}; codigo_municipal=${codigoMunicipal}; anterior=${nombreAnterior}; nuevo=${nombreNuevo}; motivo=${motivoLabel}${extraOtro}`,
         usuarioAuditoria
       );
     }
     await client.query('COMMIT');
+    txStarted = false;
     invalidateContribuyentesCache();
     res.json({ mensaje: "Datos actualizados correctamente", recibos_recalculados: recibosRecalculados });
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (txStarted) {
+      try { await client.query('ROLLBACK'); } catch {}
+    }
     if (err.code === '23505') {
       return res.status(400).json({ error: "Código municipal o código de sistema ya existen." });
     }
@@ -7903,7 +7926,6 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
   const rango = await obtenerRangoCaja(tipo, fechaReferencia);
   const desde = rango.desde;
   const hasta = rango.hasta;
-  const anioReferencia = Number(String(fechaReferencia || "").slice(0, 4)) || getCurrentYear();
 
   const resumenPagos = await pool.query(`
     SELECT
@@ -7947,20 +7969,17 @@ const construirResumenCaja = async (tipo, fechaReferencia) => {
 
   const periodosSql = `
     SELECT
-      CONCAT(LPAD(r.mes::text, 2, '0'), '/', r.anio::text) AS periodo,
-      ROUND(SUM(p.monto_pagado)::numeric, 2) AS total
+      to_char(date_trunc('month', p.fecha_pago), 'MM/YYYY') AS periodo,
+      ROUND(SUM(p.monto_pagado)::numeric, 2) AS total,
+      date_trunc('month', p.fecha_pago) AS orden
     FROM pagos p
-    JOIN recibos r ON p.id_recibo = r.id_recibo
     WHERE ${PAGO_OPERATIVO_CAJA_SQL}
       AND p.fecha_pago >= $1::date
       AND p.fecha_pago < $2::date
-      ${tipo === "anual" ? "AND r.anio = $3::int" : ""}
-    GROUP BY r.anio, r.mes
-    ORDER BY r.anio ASC, r.mes ASC
+    GROUP BY 1, 3
+    ORDER BY 3 ASC
   `;
-  const periodosParams = tipo === "anual"
-    ? [desde, hasta, anioReferencia]
-    : [desde, hasta];
+  const periodosParams = [desde, hasta];
   const periodos = await pool.query(periodosSql, periodosParams);
 
   const serieTemporal = await construirSerieTemporalCaja(tipo, desde, hasta);

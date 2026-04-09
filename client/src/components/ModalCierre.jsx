@@ -571,7 +571,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
               </div>
               <div className="col-12 col-lg-4">
                 <div className="border rounded p-3 h-100">
-                  <div className="fw-bold mb-2">Recaudacion por periodo tributario</div>
+                  <div className="fw-bold mb-2">Recaudacion por mes de cobro</div>
                   {recaudacionPeriodo.length === 0 ? (
                     <div className="small text-muted">Sin datos para el periodo.</div>
                   ) : (
