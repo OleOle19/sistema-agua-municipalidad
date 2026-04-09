@@ -747,7 +747,8 @@ const recalcularRecibosFuturosPorServicios = async (
   idContribuyente,
   {
     desdePeriodoNum = getNextPeriod().periodoNum,
-    montosBase = AUTO_DEUDA_BASE
+    montosBase = AUTO_DEUDA_BASE,
+    incluirPendientesHistoricos = false
   } = {}
 ) => {
   const id = parsePositiveInt(idContribuyente, 0);
@@ -761,7 +762,9 @@ const recalcularRecibosFuturosPorServicios = async (
     ? Number(desdePeriodoNum)
     : getNextPeriod().periodoNum;
   const periodoMinimoFuturo = getNextPeriod().periodoNum;
-  const periodo = Math.max(periodoSolicitado, periodoMinimoFuturo);
+  const periodo = incluirPendientesHistoricos
+    ? Math.max(0, periodoSolicitado)
+    : Math.max(periodoSolicitado, periodoMinimoFuturo);
 
   const resultado = await client.query(`
     WITH objetivo AS (
@@ -791,7 +794,10 @@ const recalcularRecibosFuturosPorServicios = async (
       INNER JOIN predios p ON p.id_predio = r.id_predio
       WHERE p.id_contribuyente = $1
         AND r.estado = 'PENDIENTE'
-        AND ((r.anio::int * 100) + r.mes::int) >= $6::int
+        AND (
+          $7::boolean = true
+          OR ((r.anio::int * 100) + r.mes::int) >= $6::int
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM pagos pg
@@ -815,7 +821,7 @@ const recalcularRecibosFuturosPorServicios = async (
         COALESCE(r.total_pagar, 0) <> (o.nuevo_agua + o.nuevo_desague + o.nuevo_limpieza + o.nuevo_admin)
       )
     RETURNING r.id_recibo
-  `, [id, montoAgua, montoDesague, montoLimpieza, montoAdmin, periodo]);
+  `, [id, montoAgua, montoDesague, montoLimpieza, montoAdmin, periodo, incluirPendientesHistoricos]);
 
   return { actualizados: Number(resultado.rowCount || 0) };
 };
@@ -4708,7 +4714,10 @@ app.put("/contribuyentes/:id", async (req, res) => {
        WHERE id_contribuyente = $7`,
       [id_calle, numero_casa, manzana, lote, predioEstado.activo_sn, predioEstado.estado_servicio, idContribuyente, tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin, tarifaExtra]
     );
-    const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente);
+    const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
+      incluirPendientesHistoricos: true,
+      desdePeriodoNum: 0
+    });
     const recibosRecalculados = Number(recalcManual?.actualizados || 0);
     if (cambioRazonSocial) {
       const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";

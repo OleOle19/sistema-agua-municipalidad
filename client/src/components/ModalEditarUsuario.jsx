@@ -125,7 +125,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
           : null
       });
       const recalc = Number(res?.data?.recibos_recalculados || 0);
-      alert(`Usuario actualizado.\nRecibos futuros recalculados: ${recalc}`);
+      alert(`Usuario actualizado.\nRecibos pendientes/futuros recalculados: ${recalc}`);
       alGuardar();
       cerrarModal();
     } catch (error) {
