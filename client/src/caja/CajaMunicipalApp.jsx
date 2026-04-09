@@ -121,7 +121,7 @@ const normalizeSearchText = (value) => String(value || "")
   .trim();
 
 const tokenizeSearchText = (value) => normalizeSearchText(value)
-  .split(" ")
+  .split(/[^a-z0-9]+/)
   .map((t) => t.trim())
   .filter(Boolean);
 
@@ -1486,24 +1486,30 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         <th style={{ width: "36px" }}></th>
                         <th>Periodo</th>
                         <th className="text-end">Saldo</th>
+                        <th className="text-end">Monto pagado</th>
                         <th className="text-end">Monto a cobrar</th>
                       </tr>
                     </thead>
                     <tbody>
                       {loadingPendientesCobroAgua && (
                         <tr>
-                          <td colSpan="4" className="text-center text-muted py-3">Actualizando periodos...</td>
+                          <td colSpan="5" className="text-center text-muted py-3">Actualizando periodos...</td>
                         </tr>
                       )}
                       {!loadingPendientesCobroAgua && recibosPendientesCobroAgua.length === 0 && (
                         <tr>
-                          <td colSpan="4" className="text-center text-muted py-3">Sin meses disponibles para cobro.</td>
+                          <td colSpan="5" className="text-center text-muted py-3">Sin meses disponibles para cobro.</td>
                         </tr>
                       )}
                       {recibosPendientesCobroAgua.map((row) => {
                         const idRecibo = Number(row?.id_recibo || 0);
                         const rowKey = getCobroAguaRowKey(row);
                         const saldo = getCobroAguaRowSaldo(row);
+                        const montoPagado = round2(parseMonto(row?.abono_mes ?? 0));
+                        const fechaUltimoPagoLabel = formatFechaHora(row?.fecha_ultimo_pago);
+                        const mostrarFechaUltimoPago = montoPagado > 0.001
+                          && fechaUltimoPagoLabel
+                          && fechaUltimoPagoLabel !== "-";
                         const sel = seleccionCobroAgua[rowKey] || { checked: false, monto: saldo.toFixed(2) };
                         const esAdelantado = Boolean(row?.es_adelantado) || idRecibo <= 0;
                         const puedeCobrar = canSelectCobroAguaRow(row);
@@ -1559,6 +1565,18 @@ function CajaMunicipalApp({ onBackToSelector }) {
                               )}
                             </td>
                             <td className="text-end">{formatMoney(saldo)}</td>
+                            <td className="text-end">
+                              {montoPagado > 0.001 ? (
+                                <>
+                                  <div className="fw-semibold">{formatMoney(montoPagado)}</div>
+                                  {mostrarFechaUltimoPago && (
+                                    <div className="small text-muted">{fechaUltimoPagoLabel}</div>
+                                  )}
+                                </>
+                              ) : (
+                                <span className="text-muted">-</span>
+                              )}
+                            </td>
                             <td className="text-end">
                               <div className="input-group input-group-sm ms-auto" style={{ maxWidth: "170px" }}>
                                 <span className="input-group-text">S/.</span>

@@ -5593,6 +5593,8 @@ app.post("/recibos/generar-masivo", async (req, res) => {
 });
 
 app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
+  const client = await pool.connect();
+  let txStarted = false;
   try {
     const idContribuyente = parsePositiveInt(req.params?.id_contribuyente, 0);
     if (!idContribuyente) {
@@ -5609,6 +5611,17 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     const anioActual = Number(fechaBase.anio || getCurrentYear());
     const mesActual = Number(fechaBase.mes || getCurrentMonth());
     const periodoActual = (anioActual * 100) + mesActual;
+
+    await client.query("BEGIN");
+    txStarted = true;
+
+    // Auto-corrección preventiva: sincroniza recibos pendientes sin pagos con la tarifa/servicios vigentes.
+    // Así evitamos cobros inconsistentes (por ejemplo, montos legacy desfasados) en cualquier contribuyente.
+    await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
+      incluirPendientesHistoricos: true,
+      desdePeriodoNum: 0
+    });
+
     const whereParts = [
       "r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)",
       "(r.total_pagar - COALESCE(p.total_pagado, 0)) > 0"
@@ -5618,7 +5631,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       params.push(anioActual, mesActual);
       whereParts.push("((r.anio < $3) OR (r.anio = $3 AND r.mes <= $4))");
     }
-    const pendientes = await pool.query(`
+    const pendientes = await client.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
         r.total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
@@ -5639,10 +5652,12 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       ORDER BY r.anio, r.mes
     `, params);
     if (!incluirAdelantados) {
+      await client.query("COMMIT");
+      txStarted = false;
       return res.json(pendientes.rows);
     }
 
-    const predio = await pool.query(`
+    const predio = await client.query(`
       SELECT
         p.id_predio,
         COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
@@ -5662,10 +5677,13 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       LIMIT 1
     `, [idContribuyente]);
     if (predio.rows.length === 0 || predio.rows[0].estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) {
-      return res.json(pendientes.rows.map((row) => ({
+      const rows = pendientes.rows.map((row) => ({
         ...row,
         es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoActual
-      })));
+      }));
+      await client.query("COMMIT");
+      txStarted = false;
+      return res.json(rows);
     }
 
     const activoSN = normalizeSN(predio.rows[0].activo_sn, "S");
@@ -5686,6 +5704,8 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoActual
     }));
     if (totalBase <= 0) {
+      await client.query("COMMIT");
+      txStarted = false;
       return res.json(rows);
     }
 
@@ -5721,8 +5741,18 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       });
     }
     rows.sort((a, b) => ((Number(a.anio || 0) * 100 + Number(a.mes || 0)) - (Number(b.anio || 0) * 100 + Number(b.mes || 0))));
+    await client.query("COMMIT");
+    txStarted = false;
     return res.json(rows);
-  } catch (err) { res.status(500).send("Error"); }
+  } catch (err) {
+    if (txStarted) {
+      try { await client.query("ROLLBACK"); } catch {}
+    }
+    console.error("Error obteniendo recibos pendientes:", err.message);
+    return res.status(500).send("Error");
+  } finally {
+    client.release();
+  }
 });
 
 app.post("/caja/ordenes-cobro", async (req, res) => {
