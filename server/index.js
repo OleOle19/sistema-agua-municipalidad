@@ -1355,7 +1355,7 @@ const ACCESS_RULES = [
   { methods: ["POST"], pattern: /^\/importar\/verificacion-campo$/, minRole: "ADMIN_SEC" },
 
   { methods: ["GET"], pattern: /^\/exportar\/usuarios-completo$/, minRole: "ADMIN" },
-  { methods: ["GET"], pattern: /^\/exportar\/finanzas-completo$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/exportar\/finanzas-completo(?:\.txt)?$/, minRole: "ADMIN" },
   { methods: ["POST"], pattern: /^\/comparaciones\/legacy\/run$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/comparaciones\/legacy$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/plantilla$/, minRole: "ADMIN" },
@@ -9749,6 +9749,110 @@ app.get("/exportar/finanzas-completo", authenticateToken, requireSuperAdmin, asy
     console.error("Error exportando finanzas:", err);
     if (!res.headersSent) {
       return res.status(500).json({ error: "Error exportando finanzas" });
+    }
+    try { res.end(); } catch {}
+  }
+});
+
+app.get("/exportar/finanzas-completo.txt", authenticateToken, requireSuperAdmin, async (req, res) => {
+  const CHUNK_SIZE = 2000;
+  const EPS_TXT = 0.001;
+  const writeToResponse = async (chunk) => {
+    if (res.write(chunk)) return;
+    await new Promise((resolve, reject) => {
+      const onDrain = () => {
+        res.off("error", onError);
+        resolve();
+      };
+      const onError = (err) => {
+        res.off("drain", onDrain);
+        reject(err);
+      };
+      res.once("drain", onDrain);
+      res.once("error", onError);
+    });
+  };
+  const formatLegacyMontoTxt = (value) => {
+    const n = roundMonto2(parseMonto(value, 0));
+    if (!Number.isFinite(n) || Math.abs(n) < 0.000001) return "0";
+    const text = String(n);
+    return text.includes(".") ? text.replace(/\.?0+$/, "") : text;
+  };
+  const formatLegacyReciboToken = (idRecibo) => {
+    const n = Number(idRecibo || 0);
+    if (Number.isInteger(n) && n > 0) return n.toString(16).toUpperCase().padStart(16, "0");
+    const fallback = String(idRecibo || "").trim();
+    return fallback || "0000000000000000";
+  };
+
+  try {
+    const fechaSafe = toISODate().replace(/[^0-9]/g, "");
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename=finanzas_completo_${fechaSafe}.txt`);
+
+    let lastReciboId = null;
+    while (true) {
+      const recibos = await pool.query(`
+        SELECT
+          r.id_recibo,
+          r.anio,
+          r.mes,
+          r.subtotal_agua,
+          r.subtotal_desague,
+          r.subtotal_limpieza,
+          r.subtotal_admin,
+          r.total_pagar,
+          c.codigo_municipal
+        FROM recibos r
+        INNER JOIN predios pr ON pr.id_predio = r.id_predio
+        INNER JOIN contribuyentes c ON c.id_contribuyente = pr.id_contribuyente
+        WHERE ($1::int IS NULL OR r.id_recibo < $1::int)
+        ORDER BY r.id_recibo DESC
+        LIMIT $2
+      `, [lastReciboId, CHUNK_SIZE]);
+
+      if (recibos.rows.length === 0) break;
+
+      const ids = recibos.rows
+        .map((r) => Number(r.id_recibo))
+        .filter((v) => Number.isInteger(v) && v > 0);
+      const pagosMap = new Map();
+      if (ids.length > 0) {
+        const pagos = await pool.query(`
+          SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
+          FROM pagos p
+          WHERE p.id_recibo = ANY($1::int[])
+          GROUP BY p.id_recibo
+        `, [ids]);
+        pagos.rows.forEach((p) => {
+          pagosMap.set(Number(p.id_recibo), roundMonto2(parseMonto(p.total_pagado, 0)));
+        });
+      }
+
+      for (const row of recibos.rows) {
+        const codigo = normalizeCodigoMunicipal(row.codigo_municipal, 6) || "000000";
+        const anio = String(Number(row.anio || 0)).padStart(4, "0");
+        const mes = String(Number(row.mes || 0)).padStart(2, "0");
+        const agua = formatLegacyMontoTxt(row.subtotal_agua);
+        const desague = formatLegacyMontoTxt(row.subtotal_desague);
+        const limpieza = formatLegacyMontoTxt(row.subtotal_limpieza);
+        const admin = formatLegacyMontoTxt(row.subtotal_admin);
+        const total = roundMonto2(parseMonto(row.total_pagar, 0));
+        const pagado = roundMonto2(parseMonto(pagosMap.get(Number(row.id_recibo)), 0));
+        const estadoSN = pagado > 0 && pagado >= (total - EPS_TXT) ? "S" : "N";
+        const reciboToken = formatLegacyReciboToken(row.id_recibo);
+        const line = `"${codigo}","${anio}","${mes}",${agua},${desague},${limpieza},${admin},0,${formatLegacyMontoTxt(total)},${formatLegacyMontoTxt(pagado)},${reciboToken},"${estadoSN}"\n`;
+        await writeToResponse(line);
+      }
+
+      lastReciboId = recibos.rows[recibos.rows.length - 1].id_recibo;
+    }
+
+    res.end();
+  } catch (err) {
+    console.error("Error exportando finanzas TXT:", err);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "Error exportando finanzas en TXT." });
     }
     try { res.end(); } catch {}
   }

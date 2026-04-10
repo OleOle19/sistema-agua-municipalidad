@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FaBalanceScale, FaDatabase, FaFileExcel, FaMoneyBillWave, FaUsers } from "react-icons/fa";
+import { FaBalanceScale, FaDatabase, FaFileAlt, FaFileExcel, FaMoneyBillWave, FaUsers } from "react-icons/fa";
 import api from "../api";
 import ModalComparacionesLegacy from "./ModalComparacionesLegacy";
 
@@ -7,7 +7,13 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
   const [exportando, setExportando] = useState("");
   const [mostrarComparaciones, setMostrarComparaciones] = useState(false);
 
-  const descargarExcel = async (key, endpoint, nombreBase) => {
+  const descargarArchivo = async ({
+    key,
+    endpoint,
+    nombreBase,
+    extension,
+    mimeType
+  }) => {
     try {
       setExportando(key);
       const res = await api.get(endpoint, {
@@ -16,12 +22,12 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
       });
       const fecha = new Date().toISOString().slice(0, 10);
       const blob = new Blob([res.data], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        type: mimeType
       });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${nombreBase}_${fecha}.xlsx`;
+      a.download = `${nombreBase}_${fecha}.${extension}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -91,7 +97,13 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
                 type="button"
                 className="btn btn-success btn-sm"
                 disabled={exportando !== ""}
-                onClick={() => descargarExcel("usuarios", "/exportar/usuarios-completo", "usuarios_completo")}
+                onClick={() => descargarArchivo({
+                  key: "usuarios",
+                  endpoint: "/exportar/usuarios-completo",
+                  nombreBase: "usuarios_completo",
+                  extension: "xlsx",
+                  mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                })}
               >
                 <FaFileExcel className="me-2" />
                 {exportando === "usuarios" ? "Exportando..." : "Exportar Usuarios"}
@@ -103,17 +115,40 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
                 <FaMoneyBillWave /> Pagos, deudas e historial
               </div>
               <div className="small opacity-75 mb-2">
-                Exporta un Excel con hojas separadas para pagos, deudas pendientes e historial completo.
+                Exporta finanzas en Excel (3 hojas) o en TXT estilo legacy para comparacion externa.
               </div>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                disabled={exportando !== ""}
-                onClick={() => descargarExcel("finanzas", "/exportar/finanzas-completo", "finanzas_completo")}
-              >
-                <FaFileExcel className="me-2" />
-                {exportando === "finanzas" ? "Exportando..." : "Exportar Finanzas"}
-              </button>
+              <div className="d-flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={exportando !== ""}
+                  onClick={() => descargarArchivo({
+                    key: "finanzas",
+                    endpoint: "/exportar/finanzas-completo",
+                    nombreBase: "finanzas_completo",
+                    extension: "xlsx",
+                    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  })}
+                >
+                  <FaFileExcel className="me-2" />
+                  {exportando === "finanzas" ? "Exportando..." : "Exportar Finanzas"}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline-primary btn-sm"
+                  disabled={exportando !== ""}
+                  onClick={() => descargarArchivo({
+                    key: "finanzas_txt",
+                    endpoint: "/exportar/finanzas-completo.txt",
+                    nombreBase: "finanzas_completo_legacy",
+                    extension: "txt",
+                    mimeType: "text/plain;charset=utf-8"
+                  })}
+                >
+                  <FaFileAlt className="me-2" />
+                  {exportando === "finanzas_txt" ? "Exportando..." : "Exportar TXT"}
+                </button>
+              </div>
             </div>
 
             <div className={`border rounded p-3 mt-3 ${bodyCardClass}`}>
