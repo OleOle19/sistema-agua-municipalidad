@@ -5709,7 +5709,6 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       return res.json(rows);
     }
 
-    const idPredioBase = parsePositiveInt(predio.rows?.[0]?.id_predio, 0);
     const existing = new Set(
       rows.map((row) => `${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`)
     );
@@ -5720,16 +5719,17 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       anio: startPeriodoDate.getUTCFullYear(),
       mes: startPeriodoDate.getUTCMonth() + 1
     };
-    if (idPredioBase > 0) {
+    if (idContribuyente > 0) {
       const endPeriodoDate = new Date(Date.UTC(startPeriodo.anio, (startPeriodo.mes - 1) + Math.max(0, adelantadoMeses - 1), 1));
       const periodosExistentesRs = await client.query(`
         SELECT DISTINCT r.anio, r.mes
         FROM recibos r
-        WHERE r.id_predio = $1
+        JOIN predios p ON p.id_predio = r.id_predio
+        WHERE p.id_contribuyente = $1
           AND ((r.anio > $2) OR (r.anio = $2 AND r.mes >= $3))
           AND ((r.anio < $4) OR (r.anio = $4 AND r.mes <= $5))
       `, [
-        idPredioBase,
+        idContribuyente,
         startPeriodo.anio,
         startPeriodo.mes,
         endPeriodoDate.getUTCFullYear(),
