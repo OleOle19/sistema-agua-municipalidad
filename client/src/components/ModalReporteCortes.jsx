@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../api";
-import { FaCut, FaFilePdf, FaPrint } from "react-icons/fa";
+import { FaCut, FaFileExcel, FaFilePdf, FaPrint, FaSyncAlt } from "react-icons/fa";
 import { compareByDireccionAsc } from "../utils/cortesAddress";
 
 const ESTADOS_CONEXION = {
@@ -38,6 +38,20 @@ const STATUS_META = {
   }
 };
 
+const currentMonthValue = () => {
+  const dt = new Date();
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+};
+
+const buildDownloadNameFromHeaders = (headers = {}, fallback = "reporte_estado_conexion.xlsx") => {
+  const contentDisposition = String(headers?.["content-disposition"] || "");
+  const match = contentDisposition.match(/filename\*=UTF-8''([^;]+)|filename=\"?([^\";]+)\"?/i);
+  const fileNameRaw = decodeURIComponent(match?.[1] || match?.[2] || "").trim();
+  return fileNameRaw || fallback;
+};
+
 const ModalReporteCortes = ({
   cerrarModal,
   contribuyentes = [],
@@ -56,6 +70,15 @@ const ModalReporteCortes = ({
   const [calles, setCalles] = useState([]);
   const [idCalle, setIdCalle] = useState("");
   const [procesando, setProcesando] = useState(false);
+  const [estadoReporte, setEstadoReporte] = useState(estadoFiltro);
+  const [modoReporte, setModoReporte] = useState("actual");
+  const [periodoReporte, setPeriodoReporte] = useState(currentMonthValue());
+  const [ordenCampo, setOrdenCampo] = useState("direccion");
+  const [ordenDireccion, setOrdenDireccion] = useState("asc");
+  const [loadingReporte, setLoadingReporte] = useState(false);
+  const [exportandoExcel, setExportandoExcel] = useState(false);
+  const [reporteRows, setReporteRows] = useState([]);
+  const [reporteMeta, setReporteMeta] = useState(null);
 
   const usuariosBase = useMemo(() => {
     const rows = Array.isArray(contribuyentes) ? contribuyentes : [];
@@ -64,6 +87,10 @@ const ModalReporteCortes = ({
       .slice()
       .sort(compareByDireccionAsc);
   }, [contribuyentes, estadoFiltro]);
+
+  useEffect(() => {
+    setEstadoReporte(estadoFiltro);
+  }, [estadoFiltro]);
 
   useEffect(() => {
     const filtrados = new Set(usuariosBase.map((m) => Number(m.id_contribuyente)));
@@ -183,6 +210,74 @@ const ModalReporteCortes = ({
     }
   };
 
+  const cargarReporteDetallado = async () => {
+    setLoadingReporte(true);
+    try {
+      const res = await api.get("/contribuyentes/reporte-estado-conexion", {
+        params: {
+          estado: estadoReporte,
+          modo: modoReporte,
+          periodo: periodoReporte,
+          ordenar_por: ordenCampo,
+          orden: ordenDireccion
+        }
+      });
+      setReporteRows(Array.isArray(res?.data?.rows) ? res.data.rows : []);
+      setReporteMeta(res?.data?.meta || null);
+    } catch (err) {
+      setReporteRows([]);
+      setReporteMeta(null);
+      alert(err?.response?.data?.error || "No se pudo cargar el reporte detallado.");
+    } finally {
+      setLoadingReporte(false);
+    }
+  };
+
+  useEffect(() => {
+    cargarReporteDetallado().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [estadoReporte, modoReporte, periodoReporte, ordenCampo, ordenDireccion]);
+
+  const exportarReporteExcel = async () => {
+    setExportandoExcel(true);
+    try {
+      const res = await api.get("/contribuyentes/reporte-estado-conexion.xlsx", {
+        params: {
+          estado: estadoReporte,
+          modo: modoReporte,
+          periodo: periodoReporte,
+          ordenar_por: ordenCampo,
+          orden: ordenDireccion
+        },
+        responseType: "blob"
+      });
+      const blob = new Blob([res.data], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = buildDownloadNameFromHeaders(res?.headers, `reporte_estado_conexion_${currentMonthValue().replace("-", "")}.xlsx`);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err?.response?.data?.error || "No se pudo exportar el Excel del reporte.");
+    } finally {
+      setExportandoExcel(false);
+    }
+  };
+
+  const totalReporteMonto = useMemo(
+    () => reporteRows.reduce((acc, item) => acc + (parseFloat(item?.monto_referencia) || 0), 0),
+    [reporteRows]
+  );
+  const totalReporteDeuda = useMemo(
+    () => reporteRows.reduce((acc, item) => acc + (parseFloat(item?.deuda_total) || 0), 0),
+    [reporteRows]
+  );
+
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
   const inputClass = darkMode ? "form-select bg-dark text-white border-secondary" : "form-select";
   const cardClass = darkMode ? "border border-secondary rounded p-2 bg-dark text-white" : "border rounded p-2";
@@ -202,6 +297,71 @@ const ModalReporteCortes = ({
               <button type="button" className={`btn btn-sm ${meta.claseBtn}`}>
                 {meta.etiqueta} ({usuariosBase.length})
               </button>
+            </div>
+
+            <div className={`${cardClass} mb-3`}>
+              <div className="row g-2 align-items-end">
+                <div className="col-md-2">
+                  <label className="form-label form-label-sm mb-1">Modo reporte</label>
+                  <select className={inputClass} value={modoReporte} onChange={(e) => setModoReporte(e.target.value)}>
+                    <option value="actual">Estado actual</option>
+                    <option value="mensual">Emitidos por mes</option>
+                  </select>
+                </div>
+                <div className="col-md-2">
+                  <label className="form-label form-label-sm mb-1">Periodo</label>
+                  <input
+                    type="month"
+                    className="form-control form-control-sm"
+                    value={periodoReporte}
+                    onChange={(e) => setPeriodoReporte(e.target.value)}
+                    disabled={modoReporte !== "mensual"}
+                  />
+                </div>
+                <div className="col-md-2">
+                  <label className="form-label form-label-sm mb-1">Estado</label>
+                  <select className={inputClass} value={estadoReporte} onChange={(e) => setEstadoReporte(e.target.value)}>
+                    <option value="TODOS">Todos</option>
+                    <option value={ESTADOS_CONEXION.CON_CONEXION}>Con conexion</option>
+                    <option value={ESTADOS_CONEXION.SIN_CONEXION}>Sin conexion</option>
+                    <option value={ESTADOS_CONEXION.CORTADO}>Cortado</option>
+                  </select>
+                </div>
+                <div className="col-md-2">
+                  <label className="form-label form-label-sm mb-1">Ordenar por</label>
+                  <select className={inputClass} value={ordenCampo} onChange={(e) => setOrdenCampo(e.target.value)}>
+                    <option value="direccion">Direccion</option>
+                    <option value="monto">Monto referencia</option>
+                    <option value="deuda">Deuda total</option>
+                    <option value="meses">Meses deuda</option>
+                    <option value="nombre">Nombre</option>
+                    <option value="codigo">Codigo</option>
+                    <option value="estado">Estado</option>
+                  </select>
+                </div>
+                <div className="col-md-1">
+                  <label className="form-label form-label-sm mb-1">Orden</label>
+                  <select className={inputClass} value={ordenDireccion} onChange={(e) => setOrdenDireccion(e.target.value)}>
+                    <option value="asc">Asc</option>
+                    <option value="desc">Desc</option>
+                  </select>
+                </div>
+                <div className="col-md-3 d-flex gap-2">
+                  <button type="button" className="btn btn-outline-primary btn-sm" onClick={() => cargarReporteDetallado()} disabled={loadingReporte}>
+                    <FaSyncAlt className="me-2" />
+                    {loadingReporte ? "Cargando..." : "Actualizar"}
+                  </button>
+                  <button type="button" className="btn btn-outline-success btn-sm" onClick={exportarReporteExcel} disabled={loadingReporte || exportandoExcel}>
+                    <FaFileExcel className="me-2" />
+                    {exportandoExcel ? "Exportando..." : "Exportar Excel"}
+                  </button>
+                </div>
+              </div>
+              <div className="small text-muted mt-2">
+                {modoReporte === "mensual"
+                  ? `Periodo consultado: ${reporteMeta?.periodo || periodoReporte}`
+                  : "Consulta a la fecha actual."}
+              </div>
             </div>
 
             <div className="d-flex flex-wrap gap-2 mb-3">
@@ -309,6 +469,53 @@ const ModalReporteCortes = ({
                 </tbody>
               </table>
             </div>
+
+            <div className="alert alert-info mt-3 mb-2">
+              <div><strong>Reporte detallado:</strong> {reporteRows.length} registro(s)</div>
+              <div><strong>Total monto referencia:</strong> S/. {totalReporteMonto.toFixed(2)}</div>
+              <div><strong>Total deuda:</strong> S/. {totalReporteDeuda.toFixed(2)}</div>
+            </div>
+
+            <div className="table-responsive" style={{ maxHeight: "260px" }}>
+              <table className={`table table-sm ${darkMode ? "table-dark" : "table-striped"}`}>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Codigo</th>
+                    <th>Contribuyente</th>
+                    <th>Direccion</th>
+                    <th>Estado</th>
+                    <th className="text-end">Monto referencia</th>
+                    <th className="text-center">Meses</th>
+                    <th className="text-end">Deuda</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loadingReporte && (
+                    <tr>
+                      <td colSpan="8" className="text-center py-3">Cargando reporte...</td>
+                    </tr>
+                  )}
+                  {!loadingReporte && reporteRows.length === 0 && (
+                    <tr>
+                      <td colSpan="8" className="text-center py-3">Sin datos para el filtro seleccionado.</td>
+                    </tr>
+                  )}
+                  {!loadingReporte && reporteRows.map((row, idx) => (
+                    <tr key={`rep-${row.id_contribuyente}-${idx}`}>
+                      <td>{idx + 1}</td>
+                      <td className="fw-bold">{row.codigo_municipal || "-"}</td>
+                      <td>{row.nombre_completo || "-"}</td>
+                      <td>{row.direccion_completa || "-"}</td>
+                      <td>{row.estado_conexion || "-"}</td>
+                      <td className="text-end fw-semibold">S/. {parseFloat(row.monto_referencia || 0).toFixed(2)}</td>
+                      <td className="text-center">{Number(row.meses_deuda || 0)}</td>
+                      <td className="text-end">S/. {parseFloat(row.deuda_total || 0).toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div className="modal-footer">
@@ -320,6 +527,10 @@ const ModalReporteCortes = ({
             <button type="button" className="btn btn-danger" onClick={() => prepararReporte("pdf")} disabled={procesando}>
               <FaFilePdf className="me-2" />
               {procesando ? "Procesando..." : "Exportar PDF"}
+            </button>
+            <button type="button" className="btn btn-success" onClick={exportarReporteExcel} disabled={loadingReporte || exportandoExcel}>
+              <FaFileExcel className="me-2" />
+              {exportandoExcel ? "Exportando..." : "Excel detallado"}
             </button>
           </div>
         </div>

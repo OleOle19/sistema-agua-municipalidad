@@ -4570,6 +4570,300 @@ app.delete("/calles/:id", async (req, res) => {
 // ==========================================
 // RUTAS DE CONTRIBUYENTES (CONCATENACIÓN DIRECCIÓN)
 // ==========================================
+const REPORTES_ESTADO_CONEXION_ORDEN = new Set([
+  "direccion",
+  "monto",
+  "deuda",
+  "meses",
+  "nombre",
+  "codigo",
+  "estado"
+]);
+
+const normalizeReporteEstadoConexionMode = (value, fallback = "actual") => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "mensual") return "mensual";
+  return fallback;
+};
+
+const normalizeReporteEstadoConexionFilter = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (!raw || raw === "TODOS" || raw === "ALL") return "TODOS";
+  return normalizeEstadoConexion(raw);
+};
+
+const normalizeReporteOrdenCampo = (value, fallback = "direccion") => {
+  const raw = String(value || "").trim().toLowerCase();
+  return REPORTES_ESTADO_CONEXION_ORDEN.has(raw) ? raw : fallback;
+};
+
+const normalizeReporteOrdenDireccion = (value, fallback = "asc") => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "desc") return "desc";
+  return fallback;
+};
+
+const parsePeriodoReporteConexion = (query = {}) => {
+  const periodoRaw = String(query?.periodo || "").trim();
+  if (/^\d{4}-\d{2}$/.test(periodoRaw)) {
+    const [anio, mes] = periodoRaw.split("-").map((v) => Number(v));
+    if (Number.isInteger(anio) && anio >= 1900 && anio <= 9999 && Number.isInteger(mes) && mes >= 1 && mes <= 12) {
+      return { anio, mes, periodo: `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}` };
+    }
+  }
+  const anio = parsePositiveInt(query?.anio, getCurrentYear());
+  const mes = parsePositiveInt(query?.mes, getCurrentMonth());
+  const anioSafe = anio >= 1900 && anio <= 9999 ? anio : getCurrentYear();
+  const mesSafe = mes >= 1 && mes <= 12 ? mes : getCurrentMonth();
+  return { anio: anioSafe, mes: mesSafe, periodo: `${String(anioSafe).padStart(4, "0")}-${String(mesSafe).padStart(2, "0")}` };
+};
+
+const sortReporteEstadoConexionRows = (rows = [], ordenCampo = "direccion", ordenDireccion = "asc") => {
+  const direction = ordenDireccion === "desc" ? -1 : 1;
+  const collator = new Intl.Collator("es", { sensitivity: "base", numeric: true });
+  const pickValue = (row) => {
+    switch (ordenCampo) {
+      case "codigo":
+        return String(row?.codigo_municipal || "");
+      case "nombre":
+        return String(row?.nombre_completo || "");
+      case "estado":
+        return String(row?.estado_conexion || "");
+      case "monto":
+        return Number(row?.monto_referencia || 0);
+      case "deuda":
+        return Number(row?.deuda_total || 0);
+      case "meses":
+        return Number(row?.meses_deuda || 0);
+      case "direccion":
+      default:
+        return String(row?.direccion_completa || "");
+    }
+  };
+  return rows.slice().sort((a, b) => {
+    const va = pickValue(a);
+    const vb = pickValue(b);
+    if (typeof va === "number" || typeof vb === "number") {
+      const da = Number(va || 0);
+      const db = Number(vb || 0);
+      if (da !== db) return (da - db) * direction;
+      return collator.compare(String(a?.direccion_completa || ""), String(b?.direccion_completa || "")) * direction;
+    }
+    const cmp = collator.compare(String(va || ""), String(vb || ""));
+    if (cmp !== 0) return cmp * direction;
+    return collator.compare(String(a?.direccion_completa || ""), String(b?.direccion_completa || "")) * direction;
+  });
+};
+
+const obtenerReporteEstadoConexionRows = async ({
+  estadoFiltro = "TODOS",
+  modo = "actual",
+  periodo = { anio: getCurrentYear(), mes: getCurrentMonth(), periodo: `${getCurrentYear()}-${String(getCurrentMonth()).padStart(2, "0")}` }
+} = {}) => {
+  const anioCorte = modo === "mensual" ? Number(periodo?.anio || getCurrentYear()) : getCurrentYear();
+  const mesCorte = modo === "mensual" ? Number(periodo?.mes || getCurrentMonth()) : getCurrentMonth();
+  const anioMesReporte = Number(periodo?.anio || getCurrentYear());
+  const mesMesReporte = Number(periodo?.mes || getCurrentMonth());
+
+  const where = [];
+  const params = [anioCorte, mesCorte, anioMesReporte, mesMesReporte];
+  if (estadoFiltro !== "TODOS") {
+    params.push(estadoFiltro);
+    where.push(`COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = $${params.length}`);
+  }
+  if (modo === "mensual") {
+    where.push("COALESCE(rm.recibos_emitidos_mes, 0) > 0");
+  }
+
+  const query = `
+    WITH recibos_objetivo AS (
+      SELECT r.id_recibo, r.id_predio, r.total_pagar
+      FROM recibos r
+      WHERE (r.anio, r.mes) <= ($1::int, $2::int)
+    ),
+    pagos_por_recibo AS (
+      SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
+      FROM pagos p
+      JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+      GROUP BY p.id_recibo
+    ),
+    resumen_predio AS (
+      SELECT
+        ro.id_predio,
+        SUM(GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
+        COUNT(*) FILTER (WHERE (ro.total_pagar - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
+      FROM recibos_objetivo ro
+      LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+      GROUP BY ro.id_predio
+    ),
+    resumen_contribuyente AS (
+      SELECT
+        p.id_contribuyente,
+        SUM(COALESCE(rp.deuda_total, 0)) AS deuda_total,
+        SUM(COALESCE(rp.meses_deuda_total, 0)) AS meses_deuda
+      FROM predios p
+      LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
+      GROUP BY p.id_contribuyente
+    ),
+    tarifa_contribuyente AS (
+      SELECT
+        p.id_contribuyente,
+        SUM(
+          (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, 0) ELSE 0 END)
+          + (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, 0) ELSE 0 END)
+          + (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, 0) ELSE 0 END)
+          + (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, 0) + COALESCE(p.tarifa_extra, 0) ELSE 0 END)
+        ) AS monto_mensual_base
+      FROM predios p
+      GROUP BY p.id_contribuyente
+    ),
+    recibos_mes AS (
+      SELECT
+        p.id_contribuyente,
+        COUNT(DISTINCT r.id_recibo)::int AS recibos_emitidos_mes,
+        SUM(COALESCE(r.total_pagar, 0)) AS monto_periodo_mes
+      FROM recibos r
+      JOIN predios p ON p.id_predio = r.id_predio
+      WHERE r.anio = $3
+        AND r.mes = $4
+      GROUP BY p.id_contribuyente
+    ),
+    direccion_principal AS (
+      SELECT x.id_contribuyente, x.direccion_completa
+      FROM (
+        SELECT
+          p.id_contribuyente,
+          ${buildDireccionSql("ca", "p")} AS direccion_completa,
+          ROW_NUMBER() OVER (PARTITION BY p.id_contribuyente ORDER BY p.id_predio ASC) AS rn
+        FROM predios p
+        LEFT JOIN calles ca ON ca.id_calle = p.id_calle
+      ) x
+      WHERE x.rn = 1
+    )
+    SELECT
+      c.id_contribuyente,
+      c.codigo_municipal,
+      c.nombre_completo,
+      COALESCE(NULLIF(TRIM(dp.direccion_completa), ''), '-') AS direccion_completa,
+      COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
+      COALESCE(tc.monto_mensual_base, 0) AS monto_mensual_base,
+      COALESCE(rm.monto_periodo_mes, 0) AS monto_periodo_mes,
+      COALESCE(rm.recibos_emitidos_mes, 0) AS recibos_emitidos_mes,
+      COALESCE(rc.meses_deuda, 0) AS meses_deuda,
+      COALESCE(rc.deuda_total, 0) AS deuda_total
+    FROM contribuyentes c
+    LEFT JOIN direccion_principal dp ON dp.id_contribuyente = c.id_contribuyente
+    LEFT JOIN resumen_contribuyente rc ON rc.id_contribuyente = c.id_contribuyente
+    LEFT JOIN tarifa_contribuyente tc ON tc.id_contribuyente = c.id_contribuyente
+    LEFT JOIN recibos_mes rm ON rm.id_contribuyente = c.id_contribuyente
+    ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+  `;
+
+  const rs = await pool.query(query, params);
+  return rs.rows.map((row) => {
+    const montoMensual = roundMonto2(parseMonto(row.monto_mensual_base, 0));
+    const montoPeriodo = roundMonto2(parseMonto(row.monto_periodo_mes, 0));
+    return {
+      id_contribuyente: Number(row.id_contribuyente || 0),
+      codigo_municipal: row.codigo_municipal || "",
+      nombre_completo: row.nombre_completo || "",
+      direccion_completa: row.direccion_completa || "-",
+      estado_conexion: normalizeEstadoConexion(row.estado_conexion),
+      monto_mensual: montoMensual,
+      monto_periodo: montoPeriodo,
+      monto_referencia: modo === "mensual" ? montoPeriodo : montoMensual,
+      recibos_emitidos_mes: Number(row.recibos_emitidos_mes || 0),
+      meses_deuda: Number(row.meses_deuda || 0),
+      deuda_total: roundMonto2(parseMonto(row.deuda_total, 0))
+    };
+  });
+};
+
+app.get("/contribuyentes/reporte-estado-conexion", async (req, res) => {
+  try {
+    const modo = normalizeReporteEstadoConexionMode(req.query?.modo, "actual");
+    const estado = normalizeReporteEstadoConexionFilter(req.query?.estado);
+    const periodo = parsePeriodoReporteConexion(req.query);
+    const ordenarPor = normalizeReporteOrdenCampo(req.query?.ordenar_por, "direccion");
+    const orden = normalizeReporteOrdenDireccion(req.query?.orden, "asc");
+    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, modo, periodo });
+    const rowsOrdenadas = sortReporteEstadoConexionRows(rows, ordenarPor, orden);
+    return res.json({
+      meta: {
+        modo,
+        estado,
+        periodo: periodo.periodo,
+        ordenar_por: ordenarPor,
+        orden
+      },
+      rows: rowsOrdenadas
+    });
+  } catch (err) {
+    console.error("Error reporte estado conexion:", err);
+    return res.status(500).json({ error: "Error generando reporte de estado de conexion." });
+  }
+});
+
+app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
+  try {
+    const modo = normalizeReporteEstadoConexionMode(req.query?.modo, "actual");
+    const estado = normalizeReporteEstadoConexionFilter(req.query?.estado);
+    const periodo = parsePeriodoReporteConexion(req.query);
+    const ordenarPor = normalizeReporteOrdenCampo(req.query?.ordenar_por, "direccion");
+    const orden = normalizeReporteOrdenDireccion(req.query?.orden, "asc");
+    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, modo, periodo });
+    const rowsOrdenadas = sortReporteEstadoConexionRows(rows, ordenarPor, orden);
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Reporte_Estado_Conexion");
+    ws.columns = [
+      { header: "CODIGO", key: "codigo_municipal", width: 14 },
+      { header: "NOMBRE", key: "nombre_completo", width: 42 },
+      { header: "DIRECCION", key: "direccion_completa", width: 44 },
+      { header: "ESTADO_CONEXION", key: "estado_conexion", width: 18 },
+      { header: "MONTO_MENSUAL", key: "monto_mensual", width: 16 },
+      { header: "MONTO_PERIODO", key: "monto_periodo", width: 16 },
+      { header: "MONTO_REFERENCIA", key: "monto_referencia", width: 18 },
+      { header: "RECIBOS_EMITIDOS_PERIODO", key: "recibos_emitidos_mes", width: 24 },
+      { header: "MESES_DEUDA", key: "meses_deuda", width: 14 },
+      { header: "DEUDA_TOTAL", key: "deuda_total", width: 16 }
+    ];
+    ws.getRow(1).font = { bold: true };
+    rowsOrdenadas.forEach((row) => {
+      ws.addRow({
+        codigo_municipal: row.codigo_municipal,
+        nombre_completo: row.nombre_completo,
+        direccion_completa: row.direccion_completa,
+        estado_conexion: row.estado_conexion,
+        monto_mensual: row.monto_mensual,
+        monto_periodo: row.monto_periodo,
+        monto_referencia: row.monto_referencia,
+        recibos_emitidos_mes: row.recibos_emitidos_mes,
+        meses_deuda: row.meses_deuda,
+        deuda_total: row.deuda_total
+      });
+    });
+    for (let i = 2; i <= ws.rowCount; i += 1) {
+      ws.getCell(`E${i}`).numFmt = "#,##0.00";
+      ws.getCell(`F${i}`).numFmt = "#,##0.00";
+      ws.getCell(`G${i}`).numFmt = "#,##0.00";
+      ws.getCell(`J${i}`).numFmt = "#,##0.00";
+    }
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+
+    const estadoTag = estado === "TODOS" ? "TODOS" : estado;
+    const modoTag = modo.toUpperCase();
+    const periodoTag = String(periodo.periodo || "").replace("-", "");
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename=reporte_estado_conexion_${estadoTag}_${modoTag}_${periodoTag}.xlsx`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("Error exportando reporte estado conexion excel:", err);
+    return res.status(500).json({ error: "Error exportando reporte estado de conexion en Excel." });
+  }
+});
+
 app.get("/contribuyentes", async (req, res) => {
   try {
     const now = Date.now();
