@@ -4603,19 +4603,96 @@ const normalizeReporteOrdenDireccion = (value, fallback = "asc") => {
   return fallback;
 };
 
+const getLastDayOfMonth = (anio, mes) => new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+
 const parsePeriodoReporteConexion = (query = {}) => {
+  const tipoRaw = String(query?.tipo_periodo || "").trim().toLowerCase();
+  const tipo = ["dia", "mes", "anio", "rango"].includes(tipoRaw) ? tipoRaw : "mes";
+  const hoy = normalizeDateOnly(toISODate()) || toISODate();
+
+  if (tipo === "dia") {
+    const fecha = normalizeDateOnly(query?.fecha) || hoy;
+    const [anio, mes] = fecha.split("-").map((v) => Number(v));
+    return {
+      tipo,
+      fecha_desde: fecha,
+      fecha_hasta: fecha,
+      anio_corte: anio,
+      mes_corte: mes,
+      periodo: fecha
+    };
+  }
+
+  if (tipo === "anio") {
+    const anio = parsePositiveInt(query?.anio, getCurrentYear());
+    const anioSafe = anio >= 1900 && anio <= 9999 ? anio : getCurrentYear();
+    const fechaDesde = `${String(anioSafe).padStart(4, "0")}-01-01`;
+    const fechaHasta = `${String(anioSafe).padStart(4, "0")}-12-31`;
+    return {
+      tipo,
+      fecha_desde: fechaDesde,
+      fecha_hasta: fechaHasta,
+      anio_corte: anioSafe,
+      mes_corte: 12,
+      periodo: String(anioSafe)
+    };
+  }
+
+  if (tipo === "rango") {
+    let fechaDesde = normalizeDateOnly(query?.desde);
+    let fechaHasta = normalizeDateOnly(query?.hasta);
+    if (!fechaDesde && !fechaHasta) {
+      fechaHasta = hoy;
+      fechaDesde = hoy;
+    } else if (!fechaDesde) {
+      fechaDesde = fechaHasta;
+    } else if (!fechaHasta) {
+      fechaHasta = fechaDesde;
+    }
+    if (fechaDesde > fechaHasta) {
+      const tmp = fechaDesde;
+      fechaDesde = fechaHasta;
+      fechaHasta = tmp;
+    }
+    const [anio, mes] = String(fechaHasta || hoy).split("-").map((v) => Number(v));
+    return {
+      tipo,
+      fecha_desde: fechaDesde,
+      fecha_hasta: fechaHasta,
+      anio_corte: anio,
+      mes_corte: mes,
+      periodo: `${fechaDesde}..${fechaHasta}`
+    };
+  }
+
   const periodoRaw = String(query?.periodo || "").trim();
   if (/^\d{4}-\d{2}$/.test(periodoRaw)) {
     const [anio, mes] = periodoRaw.split("-").map((v) => Number(v));
     if (Number.isInteger(anio) && anio >= 1900 && anio <= 9999 && Number.isInteger(mes) && mes >= 1 && mes <= 12) {
-      return { anio, mes, periodo: `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}` };
+      const lastDay = getLastDayOfMonth(anio, mes);
+      return {
+        tipo: "mes",
+        fecha_desde: `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-01`,
+        fecha_hasta: `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
+        anio_corte: anio,
+        mes_corte: mes,
+        periodo: `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}`
+      };
     }
   }
   const anio = parsePositiveInt(query?.anio, getCurrentYear());
   const mes = parsePositiveInt(query?.mes, getCurrentMonth());
   const anioSafe = anio >= 1900 && anio <= 9999 ? anio : getCurrentYear();
   const mesSafe = mes >= 1 && mes <= 12 ? mes : getCurrentMonth();
-  return { anio: anioSafe, mes: mesSafe, periodo: `${String(anioSafe).padStart(4, "0")}-${String(mesSafe).padStart(2, "0")}` };
+  const lastDay = getLastDayOfMonth(anioSafe, mesSafe);
+  return {
+    tipo: "mes",
+    fecha_desde: `${String(anioSafe).padStart(4, "0")}-${String(mesSafe).padStart(2, "0")}-01`,
+    fecha_hasta: `${String(anioSafe).padStart(4, "0")}-${String(mesSafe).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
+    anio_corte: anioSafe,
+    mes_corte: mesSafe,
+    periodo: `${String(anioSafe).padStart(4, "0")}-${String(mesSafe).padStart(2, "0")}`
+  };
 };
 
 const sortReporteEstadoConexionRows = (rows = [], ordenCampo = "direccion", ordenDireccion = "asc") => {
@@ -4630,7 +4707,7 @@ const sortReporteEstadoConexionRows = (rows = [], ordenCampo = "direccion", orde
       case "estado":
         return String(row?.estado_conexion || "");
       case "monto":
-        return Number(row?.monto_referencia || 0);
+        return Number(row?.monto_mensual || row?.monto_referencia || 0);
       case "deuda":
         return Number(row?.deuda_total || 0);
       case "meses":
@@ -4657,22 +4734,16 @@ const sortReporteEstadoConexionRows = (rows = [], ordenCampo = "direccion", orde
 
 const obtenerReporteEstadoConexionRows = async ({
   estadoFiltro = "TODOS",
-  modo = "actual",
-  periodo = { anio: getCurrentYear(), mes: getCurrentMonth(), periodo: `${getCurrentYear()}-${String(getCurrentMonth()).padStart(2, "0")}` }
+  periodo = parsePeriodoReporteConexion({ tipo_periodo: "mes" })
 } = {}) => {
-  const anioCorte = modo === "mensual" ? Number(periodo?.anio || getCurrentYear()) : getCurrentYear();
-  const mesCorte = modo === "mensual" ? Number(periodo?.mes || getCurrentMonth()) : getCurrentMonth();
-  const anioMesReporte = Number(periodo?.anio || getCurrentYear());
-  const mesMesReporte = Number(periodo?.mes || getCurrentMonth());
+  const anioCorte = Number(periodo?.anio_corte || getCurrentYear());
+  const mesCorte = Number(periodo?.mes_corte || getCurrentMonth());
 
   const where = [];
-  const params = [anioCorte, mesCorte, anioMesReporte, mesMesReporte];
+  const params = [anioCorte, mesCorte];
   if (estadoFiltro !== "TODOS") {
     params.push(estadoFiltro);
     where.push(`COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = $${params.length}`);
-  }
-  if (modo === "mensual") {
-    where.push("COALESCE(rm.recibos_emitidos_mes, 0) > 0");
   }
 
   const query = `
@@ -4717,17 +4788,6 @@ const obtenerReporteEstadoConexionRows = async ({
       FROM predios p
       GROUP BY p.id_contribuyente
     ),
-    recibos_mes AS (
-      SELECT
-        p.id_contribuyente,
-        COUNT(DISTINCT r.id_recibo)::int AS recibos_emitidos_mes,
-        SUM(COALESCE(r.total_pagar, 0)) AS monto_periodo_mes
-      FROM recibos r
-      JOIN predios p ON p.id_predio = r.id_predio
-      WHERE r.anio = $3
-        AND r.mes = $4
-      GROUP BY p.id_contribuyente
-    ),
     direccion_principal AS (
       SELECT x.id_contribuyente, x.direccion_completa
       FROM (
@@ -4747,22 +4807,18 @@ const obtenerReporteEstadoConexionRows = async ({
       COALESCE(NULLIF(TRIM(dp.direccion_completa), ''), '-') AS direccion_completa,
       COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
       COALESCE(tc.monto_mensual_base, 0) AS monto_mensual_base,
-      COALESCE(rm.monto_periodo_mes, 0) AS monto_periodo_mes,
-      COALESCE(rm.recibos_emitidos_mes, 0) AS recibos_emitidos_mes,
       COALESCE(rc.meses_deuda, 0) AS meses_deuda,
       COALESCE(rc.deuda_total, 0) AS deuda_total
     FROM contribuyentes c
     LEFT JOIN direccion_principal dp ON dp.id_contribuyente = c.id_contribuyente
     LEFT JOIN resumen_contribuyente rc ON rc.id_contribuyente = c.id_contribuyente
     LEFT JOIN tarifa_contribuyente tc ON tc.id_contribuyente = c.id_contribuyente
-    LEFT JOIN recibos_mes rm ON rm.id_contribuyente = c.id_contribuyente
     ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
   `;
 
   const rs = await pool.query(query, params);
   return rs.rows.map((row) => {
     const montoMensual = roundMonto2(parseMonto(row.monto_mensual_base, 0));
-    const montoPeriodo = roundMonto2(parseMonto(row.monto_periodo_mes, 0));
     return {
       id_contribuyente: Number(row.id_contribuyente || 0),
       codigo_municipal: row.codigo_municipal || "",
@@ -4770,9 +4826,9 @@ const obtenerReporteEstadoConexionRows = async ({
       direccion_completa: row.direccion_completa || "-",
       estado_conexion: normalizeEstadoConexion(row.estado_conexion),
       monto_mensual: montoMensual,
-      monto_periodo: montoPeriodo,
-      monto_referencia: modo === "mensual" ? montoPeriodo : montoMensual,
-      recibos_emitidos_mes: Number(row.recibos_emitidos_mes || 0),
+      monto_periodo: 0,
+      monto_referencia: montoMensual,
+      recibos_emitidos_mes: 0,
       meses_deuda: Number(row.meses_deuda || 0),
       deuda_total: roundMonto2(parseMonto(row.deuda_total, 0))
     };
@@ -4781,18 +4837,19 @@ const obtenerReporteEstadoConexionRows = async ({
 
 app.get("/contribuyentes/reporte-estado-conexion", async (req, res) => {
   try {
-    const modo = normalizeReporteEstadoConexionMode(req.query?.modo, "actual");
     const estado = normalizeReporteEstadoConexionFilter(req.query?.estado);
     const periodo = parsePeriodoReporteConexion(req.query);
     const ordenarPor = normalizeReporteOrdenCampo(req.query?.ordenar_por, "direccion");
     const orden = normalizeReporteOrdenDireccion(req.query?.orden, "asc");
-    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, modo, periodo });
+    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, periodo });
     const rowsOrdenadas = sortReporteEstadoConexionRows(rows, ordenarPor, orden);
     return res.json({
       meta: {
-        modo,
         estado,
+        tipo_periodo: periodo.tipo,
         periodo: periodo.periodo,
+        fecha_desde: periodo.fecha_desde,
+        fecha_hasta: periodo.fecha_hasta,
         ordenar_por: ordenarPor,
         orden
       },
@@ -4806,25 +4863,37 @@ app.get("/contribuyentes/reporte-estado-conexion", async (req, res) => {
 
 app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
   try {
-    const modo = normalizeReporteEstadoConexionMode(req.query?.modo, "actual");
     const estado = normalizeReporteEstadoConexionFilter(req.query?.estado);
     const periodo = parsePeriodoReporteConexion(req.query);
     const ordenarPor = normalizeReporteOrdenCampo(req.query?.ordenar_por, "direccion");
     const orden = normalizeReporteOrdenDireccion(req.query?.orden, "asc");
-    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, modo, periodo });
+    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, periodo });
     const rowsOrdenadas = sortReporteEstadoConexionRows(rows, ordenarPor, orden);
 
     const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet("Reporte_Estado_Conexion");
+    const wsResumen = wb.addWorksheet("Resumen");
+    wsResumen.columns = [
+      { header: "CAMPO", key: "campo", width: 28 },
+      { header: "VALOR", key: "valor", width: 42 }
+    ];
+    wsResumen.getRow(1).font = { bold: true };
+    wsResumen.addRow({ campo: "Estado objetivo", valor: estado === "TODOS" ? "Todos" : estado });
+    wsResumen.addRow({ campo: "Tipo periodo", valor: periodo.tipo || "mes" });
+    wsResumen.addRow({ campo: "Desde", valor: periodo.fecha_desde || "" });
+    wsResumen.addRow({ campo: "Hasta", valor: periodo.fecha_hasta || "" });
+    wsResumen.addRow({ campo: "Total registros", valor: Number(rowsOrdenadas.length || 0) });
+    wsResumen.addRow({
+      campo: "Total deuda",
+      valor: Number(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.deuda_total, 0), 0).toFixed(2))
+    });
+
+    const ws = wb.addWorksheet("Detalle");
     ws.columns = [
       { header: "CODIGO", key: "codigo_municipal", width: 14 },
-      { header: "NOMBRE", key: "nombre_completo", width: 42 },
+      { header: "CONTRIBUYENTE", key: "nombre_completo", width: 42 },
       { header: "DIRECCION", key: "direccion_completa", width: 44 },
-      { header: "ESTADO_CONEXION", key: "estado_conexion", width: 18 },
+      { header: "ESTADO", key: "estado_conexion", width: 18 },
       { header: "MONTO_MENSUAL", key: "monto_mensual", width: 16 },
-      { header: "MONTO_PERIODO", key: "monto_periodo", width: 16 },
-      { header: "MONTO_REFERENCIA", key: "monto_referencia", width: 18 },
-      { header: "RECIBOS_EMITIDOS_PERIODO", key: "recibos_emitidos_mes", width: 24 },
       { header: "MESES_DEUDA", key: "meses_deuda", width: 14 },
       { header: "DEUDA_TOTAL", key: "deuda_total", width: 16 }
     ];
@@ -4836,26 +4905,34 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
         direccion_completa: row.direccion_completa,
         estado_conexion: row.estado_conexion,
         monto_mensual: row.monto_mensual,
-        monto_periodo: row.monto_periodo,
-        monto_referencia: row.monto_referencia,
-        recibos_emitidos_mes: row.recibos_emitidos_mes,
         meses_deuda: row.meses_deuda,
         deuda_total: row.deuda_total
       });
     });
+    const totalMeses = rowsOrdenadas.reduce((acc, item) => acc + Number(item?.meses_deuda || 0), 0);
+    const totalDeuda = roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.deuda_total, 0), 0));
+    const totalRow = ws.addRow({
+      codigo_municipal: "",
+      nombre_completo: "TOTAL",
+      direccion_completa: "",
+      estado_conexion: "",
+      monto_mensual: "",
+      meses_deuda: totalMeses,
+      deuda_total: totalDeuda
+    });
+    totalRow.font = { bold: true };
     for (let i = 2; i <= ws.rowCount; i += 1) {
       ws.getCell(`E${i}`).numFmt = "#,##0.00";
-      ws.getCell(`F${i}`).numFmt = "#,##0.00";
       ws.getCell(`G${i}`).numFmt = "#,##0.00";
-      ws.getCell(`J${i}`).numFmt = "#,##0.00";
     }
     ws.views = [{ state: "frozen", ySplit: 1 }];
 
     const estadoTag = estado === "TODOS" ? "TODOS" : estado;
-    const modoTag = modo.toUpperCase();
-    const periodoTag = String(periodo.periodo || "").replace("-", "");
+    const periodoTag = String(periodo.periodo || "")
+      .replace(/[^0-9]/g, "")
+      .slice(0, 16) || "periodo";
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename=reporte_estado_conexion_${estadoTag}_${modoTag}_${periodoTag}.xlsx`);
+    res.setHeader("Content-Disposition", `attachment; filename=reporte_estado_conexion_${estadoTag}_${periodoTag}.xlsx`);
     await wb.xlsx.write(res);
     res.end();
   } catch (err) {
@@ -5901,6 +5978,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     }
     const fechaBase = parseDateYearMonth(fechaCorte, parseDateYearMonth(hoyIso));
     const incluirAdelantados = normalizeSN(req.query?.incluir_adelantados, "N") === "S";
+    const incluirFuturosExistentes = normalizeSN(req.query?.incluir_futuros_existentes, "N") === "S";
     const adelantadoMeses = Math.min(24, Math.max(1, parsePositiveInt(req.query?.adelantado_meses, 12)));
     const anioActual = Number(fechaBase.anio || getCurrentYear());
     const mesActual = Number(fechaBase.mes || getCurrentMonth());
@@ -5997,6 +6075,11 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       ...row,
       es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoActual
     }));
+    if (incluirFuturosExistentes) {
+      await client.query("COMMIT");
+      txStarted = false;
+      return res.json(rows);
+    }
     if (totalBase <= 0) {
       await client.query("COMMIT");
       txStarted = false;
@@ -7358,6 +7441,34 @@ app.post("/pagos", async (req, res) => {
         pago.id_recibo = Number(periodo.id_recibo);
       }
     }
+
+    // Consolidar pagos por recibo para evitar validaciones inconsistentes cuando
+    // la UI envía el mismo recibo más de una vez (por ejemplo, filas duplicadas).
+    const pagosAgrupadosMap = new Map();
+    for (const pago of pagosSolicitados) {
+      const idRecibo = parsePositiveInt(pago?.id_recibo, 0);
+      if (!idRecibo) continue;
+      const montoSolicitado = parsePositiveMonto(pago?.monto_pagado);
+      const prev = pagosAgrupadosMap.get(idRecibo) || {
+        ...pago,
+        id_recibo: idRecibo,
+        monto_pagado: null,
+        _monto_explicitado: false
+      };
+      if (montoSolicitado > 0) {
+        const acumulado = parseMonto(prev.monto_pagado, 0) + montoSolicitado;
+        prev.monto_pagado = roundMonto2(acumulado);
+        prev._monto_explicitado = true;
+      }
+      pagosAgrupadosMap.set(idRecibo, prev);
+    }
+    const pagosSolicitadosConsolidados = Array.from(pagosAgrupadosMap.values()).map((pago) => {
+      const { _monto_explicitado, ...rest } = pago;
+      if (!_monto_explicitado) return { ...rest, monto_pagado: null };
+      return rest;
+    });
+    pagosSolicitados.length = 0;
+    pagosSolicitados.push(...pagosSolicitadosConsolidados);
 
     const idsRecibos = [...new Set(pagosSolicitados.map((p) => Number(p.id_recibo)).filter((v) => Number.isInteger(v) && v > 0))];
     if (idsRecibos.length === 0) {

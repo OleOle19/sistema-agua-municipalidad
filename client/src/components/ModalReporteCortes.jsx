@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../api";
-import { FaCut, FaFileExcel, FaFilePdf, FaPrint, FaSyncAlt } from "react-icons/fa";
+import { FaCut, FaFileExcel, FaFilePdf, FaPrint } from "react-icons/fa";
 import { compareByDireccionAsc } from "../utils/cortesAddress";
 
 const ESTADOS_CONEXION = {
@@ -25,17 +25,25 @@ const STATUS_META = {
     etiqueta: "Cortado"
   },
   CON_CONEXION: {
-    titulo: "Reporte de Conexión Activa",
+    titulo: "Reporte de Conexion Activa",
     claseBtn: "btn-success",
     claseOutline: "btn-outline-success",
-    etiqueta: "Con conexión"
+    etiqueta: "Con conexion"
   },
   SIN_CONEXION: {
-    titulo: "Reporte de Sin Conexión",
+    titulo: "Reporte de Sin Conexion",
     claseBtn: "btn-secondary",
     claseOutline: "btn-outline-secondary",
-    etiqueta: "Sin conexión"
+    etiqueta: "Sin conexion"
   }
+};
+
+const currentDateValue = () => {
+  const dt = new Date();
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 };
 
 const currentMonthValue = () => {
@@ -45,11 +53,57 @@ const currentMonthValue = () => {
   return `${y}-${m}`;
 };
 
+const currentYearValue = () => String(new Date().getFullYear());
+
 const buildDownloadNameFromHeaders = (headers = {}, fallback = "reporte_estado_conexion.xlsx") => {
   const contentDisposition = String(headers?.["content-disposition"] || "");
   const match = contentDisposition.match(/filename\*=UTF-8''([^;]+)|filename=\"?([^\";]+)\"?/i);
   const fileNameRaw = decodeURIComponent(match?.[1] || match?.[2] || "").trim();
   return fileNameRaw || fallback;
+};
+
+const normalizeRange = (desde, hasta) => {
+  if (!desde || !hasta) return { desde, hasta };
+  if (desde <= hasta) return { desde, hasta };
+  return { desde: hasta, hasta: desde };
+};
+
+const buildPeriodoQuery = ({
+  tipoPeriodo,
+  periodoDia,
+  periodoMes,
+  periodoAnio,
+  periodoDesde,
+  periodoHasta
+}) => {
+  if (tipoPeriodo === "dia") {
+    return { tipo_periodo: "dia", fecha: periodoDia };
+  }
+  if (tipoPeriodo === "anio") {
+    return { tipo_periodo: "anio", anio: periodoAnio };
+  }
+  if (tipoPeriodo === "rango") {
+    const normalized = normalizeRange(periodoDesde, periodoHasta);
+    return { tipo_periodo: "rango", desde: normalized.desde, hasta: normalized.hasta };
+  }
+  return { tipo_periodo: "mes", periodo: periodoMes };
+};
+
+const describePeriodo = ({
+  tipoPeriodo,
+  periodoDia,
+  periodoMes,
+  periodoAnio,
+  periodoDesde,
+  periodoHasta
+}) => {
+  if (tipoPeriodo === "dia") return `Dia: ${periodoDia || "-"}`;
+  if (tipoPeriodo === "anio") return `Anio: ${periodoAnio || "-"}`;
+  if (tipoPeriodo === "rango") {
+    const normalized = normalizeRange(periodoDesde, periodoHasta);
+    return `Intervalo: ${normalized.desde || "-"} a ${normalized.hasta || "-"}`;
+  }
+  return `Mes: ${periodoMes || "-"}`;
 };
 
 const ModalReporteCortes = ({
@@ -69,16 +123,15 @@ const ModalReporteCortes = ({
   const [manualIds, setManualIds] = useState(new Set(selectedIds));
   const [calles, setCalles] = useState([]);
   const [idCalle, setIdCalle] = useState("");
+  const [busquedaManual, setBusquedaManual] = useState("");
   const [procesando, setProcesando] = useState(false);
-  const [estadoReporte, setEstadoReporte] = useState(estadoFiltro);
-  const [modoReporte, setModoReporte] = useState("actual");
-  const [periodoReporte, setPeriodoReporte] = useState(currentMonthValue());
-  const [ordenCampo, setOrdenCampo] = useState("direccion");
-  const [ordenDireccion, setOrdenDireccion] = useState("asc");
-  const [loadingReporte, setLoadingReporte] = useState(false);
   const [exportandoExcel, setExportandoExcel] = useState(false);
-  const [reporteRows, setReporteRows] = useState([]);
-  const [reporteMeta, setReporteMeta] = useState(null);
+  const [tipoPeriodo, setTipoPeriodo] = useState("mes");
+  const [periodoDia, setPeriodoDia] = useState(currentDateValue());
+  const [periodoMes, setPeriodoMes] = useState(currentMonthValue());
+  const [periodoAnio, setPeriodoAnio] = useState(currentYearValue());
+  const [periodoDesde, setPeriodoDesde] = useState(currentDateValue());
+  const [periodoHasta, setPeriodoHasta] = useState(currentDateValue());
 
   const usuariosBase = useMemo(() => {
     const rows = Array.isArray(contribuyentes) ? contribuyentes : [];
@@ -87,10 +140,6 @@ const ModalReporteCortes = ({
       .slice()
       .sort(compareByDireccionAsc);
   }, [contribuyentes, estadoFiltro]);
-
-  useEffect(() => {
-    setEstadoReporte(estadoFiltro);
-  }, [estadoFiltro]);
 
   useEffect(() => {
     const filtrados = new Set(usuariosBase.map((m) => Number(m.id_contribuyente)));
@@ -133,6 +182,17 @@ const ModalReporteCortes = ({
     const c = calles.find((x) => String(x.id_calle) === String(idCalle));
     return c?.nombre || "";
   }, [calles, idCalle]);
+
+  const manualRows = useMemo(() => {
+    const q = String(busquedaManual || "").trim().toLowerCase();
+    if (!q) return usuariosBase;
+    return usuariosBase.filter((m) => {
+      const codigo = String(m?.codigo_municipal || "").toLowerCase();
+      const nombre = String(m?.nombre_completo || "").toLowerCase();
+      const direccion = String(m?.direccion_completa || "").toLowerCase();
+      return codigo.includes(q) || nombre.includes(q) || direccion.includes(q);
+    });
+  }, [usuariosBase, busquedaManual]);
 
   const seleccion = useMemo(() => {
     let rows = [];
@@ -210,45 +270,22 @@ const ModalReporteCortes = ({
     }
   };
 
-  const cargarReporteDetallado = async () => {
-    setLoadingReporte(true);
-    try {
-      const res = await api.get("/contribuyentes/reporte-estado-conexion", {
-        params: {
-          estado: estadoReporte,
-          modo: modoReporte,
-          periodo: periodoReporte,
-          ordenar_por: ordenCampo,
-          orden: ordenDireccion
-        }
-      });
-      setReporteRows(Array.isArray(res?.data?.rows) ? res.data.rows : []);
-      setReporteMeta(res?.data?.meta || null);
-    } catch (err) {
-      setReporteRows([]);
-      setReporteMeta(null);
-      alert(err?.response?.data?.error || "No se pudo cargar el reporte detallado.");
-    } finally {
-      setLoadingReporte(false);
-    }
-  };
-
-  useEffect(() => {
-    cargarReporteDetallado().catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [estadoReporte, modoReporte, periodoReporte, ordenCampo, ordenDireccion]);
-
   const exportarReporteExcel = async () => {
     setExportandoExcel(true);
     try {
+      const params = {
+        estado: estadoFiltro,
+        ...buildPeriodoQuery({
+          tipoPeriodo,
+          periodoDia,
+          periodoMes,
+          periodoAnio,
+          periodoDesde,
+          periodoHasta
+        })
+      };
       const res = await api.get("/contribuyentes/reporte-estado-conexion.xlsx", {
-        params: {
-          estado: estadoReporte,
-          modo: modoReporte,
-          periodo: periodoReporte,
-          ordenar_por: ordenCampo,
-          orden: ordenDireccion
-        },
+        params,
         responseType: "blob"
       });
       const blob = new Blob([res.data], {
@@ -257,7 +294,10 @@ const ModalReporteCortes = ({
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = buildDownloadNameFromHeaders(res?.headers, `reporte_estado_conexion_${currentMonthValue().replace("-", "")}.xlsx`);
+      a.download = buildDownloadNameFromHeaders(
+        res?.headers,
+        `reporte_estado_conexion_${currentMonthValue().replace("-", "")}.xlsx`
+      );
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -268,15 +308,6 @@ const ModalReporteCortes = ({
       setExportandoExcel(false);
     }
   };
-
-  const totalReporteMonto = useMemo(
-    () => reporteRows.reduce((acc, item) => acc + (parseFloat(item?.monto_referencia) || 0), 0),
-    [reporteRows]
-  );
-  const totalReporteDeuda = useMemo(
-    () => reporteRows.reduce((acc, item) => acc + (parseFloat(item?.deuda_total) || 0), 0),
-    [reporteRows]
-  );
 
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
   const inputClass = darkMode ? "form-select bg-dark text-white border-secondary" : "form-select";
@@ -301,66 +332,83 @@ const ModalReporteCortes = ({
 
             <div className={`${cardClass} mb-3`}>
               <div className="row g-2 align-items-end">
-                <div className="col-md-2">
-                  <label className="form-label form-label-sm mb-1">Modo reporte</label>
-                  <select className={inputClass} value={modoReporte} onChange={(e) => setModoReporte(e.target.value)}>
-                    <option value="actual">Estado actual</option>
-                    <option value="mensual">Emitidos por mes</option>
-                  </select>
-                </div>
-                <div className="col-md-2">
+                <div className="col-md-3">
                   <label className="form-label form-label-sm mb-1">Periodo</label>
-                  <input
-                    type="month"
-                    className="form-control form-control-sm"
-                    value={periodoReporte}
-                    onChange={(e) => setPeriodoReporte(e.target.value)}
-                    disabled={modoReporte !== "mensual"}
-                  />
-                </div>
-                <div className="col-md-2">
-                  <label className="form-label form-label-sm mb-1">Estado</label>
-                  <select className={inputClass} value={estadoReporte} onChange={(e) => setEstadoReporte(e.target.value)}>
-                    <option value="TODOS">Todos</option>
-                    <option value={ESTADOS_CONEXION.CON_CONEXION}>Con conexion</option>
-                    <option value={ESTADOS_CONEXION.SIN_CONEXION}>Sin conexion</option>
-                    <option value={ESTADOS_CONEXION.CORTADO}>Cortado</option>
+                  <select
+                    className={inputClass}
+                    value={tipoPeriodo}
+                    onChange={(e) => setTipoPeriodo(e.target.value)}
+                  >
+                    <option value="dia">Dia</option>
+                    <option value="mes">Mes</option>
+                    <option value="anio">Anio</option>
+                    <option value="rango">Intervalo de fechas</option>
                   </select>
                 </div>
-                <div className="col-md-2">
-                  <label className="form-label form-label-sm mb-1">Ordenar por</label>
-                  <select className={inputClass} value={ordenCampo} onChange={(e) => setOrdenCampo(e.target.value)}>
-                    <option value="direccion">Direccion</option>
-                    <option value="monto">Monto referencia</option>
-                    <option value="deuda">Deuda total</option>
-                    <option value="meses">Meses deuda</option>
-                    <option value="nombre">Nombre</option>
-                    <option value="codigo">Codigo</option>
-                    <option value="estado">Estado</option>
-                  </select>
-                </div>
-                <div className="col-md-1">
-                  <label className="form-label form-label-sm mb-1">Orden</label>
-                  <select className={inputClass} value={ordenDireccion} onChange={(e) => setOrdenDireccion(e.target.value)}>
-                    <option value="asc">Asc</option>
-                    <option value="desc">Desc</option>
-                  </select>
-                </div>
-                <div className="col-md-3 d-flex gap-2">
-                  <button type="button" className="btn btn-outline-primary btn-sm" onClick={() => cargarReporteDetallado()} disabled={loadingReporte}>
-                    <FaSyncAlt className="me-2" />
-                    {loadingReporte ? "Cargando..." : "Actualizar"}
-                  </button>
-                  <button type="button" className="btn btn-outline-success btn-sm" onClick={exportarReporteExcel} disabled={loadingReporte || exportandoExcel}>
-                    <FaFileExcel className="me-2" />
-                    {exportandoExcel ? "Exportando..." : "Exportar Excel"}
-                  </button>
-                </div>
+                {tipoPeriodo === "dia" && (
+                  <div className="col-md-3">
+                    <input
+                      type="date"
+                      className="form-control form-control-sm"
+                      value={periodoDia}
+                      onChange={(e) => setPeriodoDia(e.target.value)}
+                    />
+                  </div>
+                )}
+                {tipoPeriodo === "mes" && (
+                  <div className="col-md-3">
+                    <input
+                      type="month"
+                      className="form-control form-control-sm"
+                      value={periodoMes}
+                      onChange={(e) => setPeriodoMes(e.target.value)}
+                    />
+                  </div>
+                )}
+                {tipoPeriodo === "anio" && (
+                  <div className="col-md-3">
+                    <input
+                      type="number"
+                      min="1900"
+                      max="9999"
+                      className="form-control form-control-sm"
+                      value={periodoAnio}
+                      onChange={(e) => setPeriodoAnio(e.target.value)}
+                    />
+                  </div>
+                )}
+                {tipoPeriodo === "rango" && (
+                  <>
+                    <div className="col-md-3">
+                      <label className="form-label form-label-sm mb-1">Desde</label>
+                      <input
+                        type="date"
+                        className="form-control form-control-sm"
+                        value={periodoDesde}
+                        onChange={(e) => setPeriodoDesde(e.target.value)}
+                      />
+                    </div>
+                    <div className="col-md-3">
+                      <label className="form-label form-label-sm mb-1">Hasta</label>
+                      <input
+                        type="date"
+                        className="form-control form-control-sm"
+                        value={periodoHasta}
+                        onChange={(e) => setPeriodoHasta(e.target.value)}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
               <div className="small text-muted mt-2">
-                {modoReporte === "mensual"
-                  ? `Periodo consultado: ${reporteMeta?.periodo || periodoReporte}`
-                  : "Consulta a la fecha actual."}
+                {describePeriodo({
+                  tipoPeriodo,
+                  periodoDia,
+                  periodoMes,
+                  periodoAnio,
+                  periodoDesde,
+                  periodoHasta
+                })}
               </div>
             </div>
 
@@ -379,21 +427,26 @@ const ModalReporteCortes = ({
             {modo === "manual" && (
               <div className={cardClass}>
                 <div className="d-flex gap-2 mb-2">
-                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set(selectedIds.map((id) => Number(id)).filter((id) => usuariosBase.some((u) => Number(u.id_contribuyente) === id))))}>
-                    Usar seleccion actual ({selectedIds.length})
-                  </button>
-                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set(usuariosBase.map((m) => Number(m.id_contribuyente))))}>
-                    Marcar todos
-                  </button>
-                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set())}>
+                  <input
+                    type="search"
+                    className="form-control form-control-sm"
+                    placeholder="Buscar por codigo, contribuyente o direccion"
+                    value={busquedaManual}
+                    onChange={(e) => setBusquedaManual(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-secondary"
+                    onClick={() => setManualIds(new Set())}
+                  >
                     Limpiar
                   </button>
                 </div>
                 <div style={{ maxHeight: "220px", overflowY: "auto" }}>
-                  {usuariosBase.length === 0 ? (
-                    <div className="small text-muted">No hay contribuyentes para este estado.</div>
+                  {manualRows.length === 0 ? (
+                    <div className="small text-muted">No hay contribuyentes para este estado y filtro.</div>
                   ) : (
-                    usuariosBase.map((m) => (
+                    manualRows.map((m) => (
                       <label key={m.id_contribuyente} className="d-flex align-items-center gap-2 small border-bottom py-1">
                         <input
                           type="checkbox"
@@ -469,53 +522,6 @@ const ModalReporteCortes = ({
                 </tbody>
               </table>
             </div>
-
-            <div className="alert alert-info mt-3 mb-2">
-              <div><strong>Reporte detallado:</strong> {reporteRows.length} registro(s)</div>
-              <div><strong>Total monto referencia:</strong> S/. {totalReporteMonto.toFixed(2)}</div>
-              <div><strong>Total deuda:</strong> S/. {totalReporteDeuda.toFixed(2)}</div>
-            </div>
-
-            <div className="table-responsive" style={{ maxHeight: "260px" }}>
-              <table className={`table table-sm ${darkMode ? "table-dark" : "table-striped"}`}>
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>Codigo</th>
-                    <th>Contribuyente</th>
-                    <th>Direccion</th>
-                    <th>Estado</th>
-                    <th className="text-end">Monto referencia</th>
-                    <th className="text-center">Meses</th>
-                    <th className="text-end">Deuda</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loadingReporte && (
-                    <tr>
-                      <td colSpan="8" className="text-center py-3">Cargando reporte...</td>
-                    </tr>
-                  )}
-                  {!loadingReporte && reporteRows.length === 0 && (
-                    <tr>
-                      <td colSpan="8" className="text-center py-3">Sin datos para el filtro seleccionado.</td>
-                    </tr>
-                  )}
-                  {!loadingReporte && reporteRows.map((row, idx) => (
-                    <tr key={`rep-${row.id_contribuyente}-${idx}`}>
-                      <td>{idx + 1}</td>
-                      <td className="fw-bold">{row.codigo_municipal || "-"}</td>
-                      <td>{row.nombre_completo || "-"}</td>
-                      <td>{row.direccion_completa || "-"}</td>
-                      <td>{row.estado_conexion || "-"}</td>
-                      <td className="text-end fw-semibold">S/. {parseFloat(row.monto_referencia || 0).toFixed(2)}</td>
-                      <td className="text-center">{Number(row.meses_deuda || 0)}</td>
-                      <td className="text-end">S/. {parseFloat(row.deuda_total || 0).toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
           </div>
 
           <div className="modal-footer">
@@ -528,9 +534,9 @@ const ModalReporteCortes = ({
               <FaFilePdf className="me-2" />
               {procesando ? "Procesando..." : "Exportar PDF"}
             </button>
-            <button type="button" className="btn btn-success" onClick={exportarReporteExcel} disabled={loadingReporte || exportandoExcel}>
+            <button type="button" className="btn btn-success" onClick={exportarReporteExcel} disabled={exportandoExcel}>
               <FaFileExcel className="me-2" />
-              {exportandoExcel ? "Exportando..." : "Excel detallado"}
+              {exportandoExcel ? "Exportando..." : "Exportar Excel"}
             </button>
           </div>
         </div>
