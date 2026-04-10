@@ -5709,6 +5709,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       return res.json(rows);
     }
 
+    const idPredioBase = parsePositiveInt(predio.rows?.[0]?.id_predio, 0);
     const existing = new Set(
       rows.map((row) => `${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`)
     );
@@ -5719,6 +5720,25 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       anio: startPeriodoDate.getUTCFullYear(),
       mes: startPeriodoDate.getUTCMonth() + 1
     };
+    if (idPredioBase > 0) {
+      const endPeriodoDate = new Date(Date.UTC(startPeriodo.anio, (startPeriodo.mes - 1) + Math.max(0, adelantadoMeses - 1), 1));
+      const periodosExistentesRs = await client.query(`
+        SELECT DISTINCT r.anio, r.mes
+        FROM recibos r
+        WHERE r.id_predio = $1
+          AND ((r.anio > $2) OR (r.anio = $2 AND r.mes >= $3))
+          AND ((r.anio < $4) OR (r.anio = $4 AND r.mes <= $5))
+      `, [
+        idPredioBase,
+        startPeriodo.anio,
+        startPeriodo.mes,
+        endPeriodoDate.getUTCFullYear(),
+        endPeriodoDate.getUTCMonth() + 1
+      ]);
+      for (const row of periodosExistentesRs.rows) {
+        existing.add(`${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`);
+      }
+    }
     for (let i = 0; i < adelantadoMeses; i += 1) {
       const dt = new Date(startPeriodo.anio, (startPeriodo.mes - 1) + i, 1);
       const anio = dt.getFullYear();
@@ -7938,9 +7958,9 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
           ELSE GREATEST(r.total_pagar - COALESCE(p.total_pagado, 0), 0)
         END as deuda_mes,
         CASE
-          WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 'NO_EXIGIBLE'
           WHEN COALESCE(p.total_pagado, 0) >= r.total_pagar THEN 'PAGADO'
           WHEN COALESCE(p.total_pagado, 0) > 0 THEN 'PARCIAL'
+          WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 'NO_EXIGIBLE'
           ELSE 'PENDIENTE'
         END as estado
       FROM recibos r

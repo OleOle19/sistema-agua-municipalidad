@@ -696,6 +696,15 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const mes = Number(row?.mes || 0);
       const anio = Number(row?.anio || 0);
       if (mes < 1 || mes > 12 || anio < 1900) return;
+      const esAdelantadoSinRecibo = Number(row?.id_recibo || 0) <= 0 && Boolean(row?.es_adelantado);
+      if (esAdelantadoSinRecibo) {
+        const existeReciboRealMismoPeriodo = Array.from(byPeriodo.values()).some((it) =>
+          Number(it?.anio || 0) === anio
+          && Number(it?.mes || 0) === mes
+          && Number(it?.id_recibo || 0) > 0
+        );
+        if (existeReciboRealMismoPeriodo) return;
+      }
       const key = buildCobroMapKey(row);
       const prev = byPeriodo.get(key);
       const deudaMes = round2(parseMonto(row?.deuda_mes ?? row?.total_pagar ?? 0));
