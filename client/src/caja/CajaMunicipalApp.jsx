@@ -656,7 +656,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
       api.get(`/recibos/historial/${idContribuyente}`, {
         params: {
           anio: "all",
-          fecha_corte: fecha
+          fecha_corte: fecha,
+          incluir_futuros: "S"
         }
       })
     ]);
@@ -917,7 +918,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
         return;
       }
       if (idRecibo > 0) {
-        pagos.push({ id_recibo: idRecibo, monto_pagado: monto });
+        pagos.push({ id_recibo: idRecibo, anio, mes, monto_pagado: monto });
       } else if (mes >= 1 && mes <= 12 && anio >= 1900) {
         pagos.push({ anio, mes, monto_pagado: monto });
       } else {
