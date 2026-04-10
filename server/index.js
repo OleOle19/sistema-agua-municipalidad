@@ -6596,7 +6596,14 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
 
     const idsRecibos = items.map((i) => i.id_recibo);
     const recibosRows = await client.query(`
-      WITH pagos_agg AS (
+      WITH pagos_hasta AS (
+        SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+        FROM pagos
+        WHERE id_recibo = ANY($1::int[])
+          AND DATE(fecha_pago) <= $2::date
+        GROUP BY id_recibo
+      ),
+      pagos_total AS (
         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
         FROM pagos
         WHERE id_recibo = ANY($1::int[])
@@ -6607,12 +6614,14 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         r.mes,
         r.anio,
         r.total_pagar,
-        COALESCE(pa.total_pagado, 0) AS total_pagado
+        COALESCE(ph.total_pagado, 0) AS total_pagado_hasta_fecha,
+        COALESCE(pt.total_pagado, 0) AS total_pagado_actual
       FROM recibos r
-      LEFT JOIN pagos_agg pa ON pa.id_recibo = r.id_recibo
+      LEFT JOIN pagos_hasta ph ON ph.id_recibo = r.id_recibo
+      LEFT JOIN pagos_total pt ON pt.id_recibo = r.id_recibo
       WHERE r.id_recibo = ANY($1::int[])
       FOR UPDATE OF r
-    `, [idsRecibos]);
+    `, [idsRecibos, fechaPagoSolicitada]);
     if (recibosRows.rows.length !== idsRecibos.length) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Uno o mas recibos de la orden no existen." });
@@ -6623,7 +6632,8 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       mes: Number(r.mes),
       anio: Number(r.anio),
       total_pagar: parseMonto(r.total_pagar, 0),
-      total_pagado: parseMonto(r.total_pagado, 0)
+      total_pagado_hasta_fecha: parseMonto(r.total_pagado_hasta_fecha, 0),
+      total_pagado_actual: parseMonto(r.total_pagado_actual, 0)
     }]));
 
     const pagosAplicados = [];
@@ -6635,7 +6645,7 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         return res.status(400).json({ error: `Recibo ${item.id_recibo} no disponible para cobro.` });
       }
       const monto = parsePositiveMonto(item.monto_autorizado);
-      const saldoPrevio = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado, 0));
+      const saldoPrevio = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado_hasta_fecha, 0));
       if (saldoPrevio <= 0) {
         await client.query("ROLLBACK");
         return res.status(409).json({ error: `Recibo ${item.id_recibo} ya fue cancelado.` });
@@ -6653,21 +6663,23 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         [item.id_recibo, monto, fechaPagoSolicitada, req.user?.username || req.user?.nombre || null, idOrden]
       );
 
-      const totalPagadoNuevo = roundMonto2(recibo.total_pagado + monto);
-      const nuevoEstado = totalPagadoNuevo >= recibo.total_pagar - 0.001 ? "PAGADO" : "PARCIAL";
+      const totalPagadoHastaFechaNuevo = roundMonto2(recibo.total_pagado_hasta_fecha + monto);
+      const totalPagadoActualNuevo = roundMonto2(recibo.total_pagado_actual + monto);
+      const nuevoEstado = totalPagadoActualNuevo >= recibo.total_pagar - 0.001 ? "PAGADO" : "PARCIAL";
       await client.query(
         "UPDATE recibos SET estado = $1 WHERE id_recibo = $2",
         [nuevoEstado, item.id_recibo]
       );
 
-      const saldoPosterior = roundMonto2(Math.max(recibo.total_pagar - totalPagadoNuevo, 0));
+      const saldoPosterior = roundMonto2(Math.max(recibo.total_pagar - totalPagadoActualNuevo, 0));
       pagosAplicados.push({
         id_recibo: item.id_recibo,
         mes: recibo.mes,
         anio: recibo.anio,
         monto_cobrado: monto,
         total_pagar: recibo.total_pagar,
-        total_pagado: totalPagadoNuevo,
+        total_pagado: totalPagadoActualNuevo,
+        total_pagado_hasta_fecha: totalPagadoHastaFechaNuevo,
         saldo: saldoPosterior,
         estado: nuevoEstado,
         subtotal_agua: parseSubtotalOrden(item.subtotal_agua),
@@ -6676,7 +6688,8 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         subtotal_admin: parseSubtotalOrden(item.subtotal_admin)
       });
       totalAplicado = roundMonto2(totalAplicado + monto);
-      recibo.total_pagado = totalPagadoNuevo;
+      recibo.total_pagado_hasta_fecha = totalPagadoHastaFechaNuevo;
+      recibo.total_pagado_actual = totalPagadoActualNuevo;
     }
 
     await client.query(`
@@ -7038,7 +7051,14 @@ app.post("/pagos", async (req, res) => {
       return res.status(400).json({ error: "No se encontraron recibos válidos para procesar el cobro." });
     }
     const recibosRows = await client.query(`
-      WITH pagos_prev AS (
+      WITH pagos_hasta AS (
+        SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+        FROM pagos
+        WHERE id_recibo = ANY($1::int[])
+          AND DATE(fecha_pago) <= $2::date
+        GROUP BY id_recibo
+      ),
+      pagos_total AS (
         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
         FROM pagos
         WHERE id_recibo = ANY($1::int[])
@@ -7053,14 +7073,16 @@ app.post("/pagos", async (req, res) => {
         r.subtotal_limpieza,
         r.subtotal_admin,
         r.total_pagar,
-        COALESCE(pp.total_pagado, 0) AS total_pagado,
+        COALESCE(ph.total_pagado, 0) AS total_pagado_hasta_fecha,
+        COALESCE(pt.total_pagado, 0) AS total_pagado_actual,
         p.id_contribuyente
       FROM recibos r
       LEFT JOIN predios p ON p.id_predio = r.id_predio
-      LEFT JOIN pagos_prev pp ON pp.id_recibo = r.id_recibo
+      LEFT JOIN pagos_hasta ph ON ph.id_recibo = r.id_recibo
+      LEFT JOIN pagos_total pt ON pt.id_recibo = r.id_recibo
       WHERE r.id_recibo = ANY($1::int[])
       FOR UPDATE OF r
-    `, [idsRecibos]);
+    `, [idsRecibos, fechaPagoSolicitada]);
     if (recibosRows.rows.length !== idsRecibos.length) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Uno o más recibos no existen." });
@@ -7075,7 +7097,8 @@ app.post("/pagos", async (req, res) => {
       subtotal_limpieza: parseMonto(r.subtotal_limpieza, 0),
       subtotal_admin: parseMonto(r.subtotal_admin, 0),
       total_pagar: parseMonto(r.total_pagar, 0),
-      total_pagado: parseMonto(r.total_pagado, 0),
+      total_pagado_hasta_fecha: parseMonto(r.total_pagado_hasta_fecha, 0),
+      total_pagado_actual: parseMonto(r.total_pagado_actual, 0),
       id_contribuyente: parsePositiveInt(r.id_contribuyente, 0)
     }]));
 
@@ -7093,7 +7116,7 @@ app.post("/pagos", async (req, res) => {
         });
       }
 
-      const saldoPrevio = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado, 0));
+      const saldoPrevio = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado_hasta_fecha, 0));
       const montoSolicitado = parsePositiveMonto(pagoReq.monto_pagado);
       const monto = montoSolicitado > 0 ? montoSolicitado : saldoPrevio;
       if (monto <= 0) {
@@ -7110,14 +7133,15 @@ app.post("/pagos", async (req, res) => {
         [recibo.id_recibo, monto, fechaPagoSolicitada, req.user?.username || req.user?.nombre || null]
       );
 
-      const totalPagadoNuevo = roundMonto2(recibo.total_pagado + monto);
-      const nuevoEstado = totalPagadoNuevo >= recibo.total_pagar - 0.001 ? "PAGADO" : "PARCIAL";
+      const totalPagadoHastaFechaNuevo = roundMonto2(recibo.total_pagado_hasta_fecha + monto);
+      const totalPagadoActualNuevo = roundMonto2(recibo.total_pagado_actual + monto);
+      const nuevoEstado = totalPagadoActualNuevo >= recibo.total_pagar - 0.001 ? "PAGADO" : "PARCIAL";
       await client.query(
         "UPDATE recibos SET estado = $1 WHERE id_recibo = $2",
         [nuevoEstado, recibo.id_recibo]
       );
 
-      const saldo = roundMonto2(Math.max(recibo.total_pagar - totalPagadoNuevo, 0));
+      const saldo = roundMonto2(Math.max(recibo.total_pagar - totalPagadoActualNuevo, 0));
       pagosAplicados.push({
         id_recibo: recibo.id_recibo,
         mes: recibo.mes,
@@ -7125,14 +7149,16 @@ app.post("/pagos", async (req, res) => {
         id_contribuyente: recibo.id_contribuyente,
         monto_pagado: monto,
         estado: nuevoEstado,
-        total_pagado: totalPagadoNuevo,
+        total_pagado: totalPagadoActualNuevo,
+        total_pagado_hasta_fecha: totalPagadoHastaFechaNuevo,
         subtotal_agua: recibo.subtotal_agua,
         subtotal_desague: recibo.subtotal_desague,
         subtotal_limpieza: recibo.subtotal_limpieza,
         subtotal_admin: recibo.subtotal_admin,
         saldo
       });
-      recibo.total_pagado = totalPagadoNuevo;
+      recibo.total_pagado_hasta_fecha = totalPagadoHastaFechaNuevo;
+      recibo.total_pagado_actual = totalPagadoActualNuevo;
     }
 
     await client.query("COMMIT");
