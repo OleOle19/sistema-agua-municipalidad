@@ -663,12 +663,19 @@ function CajaMunicipalApp({ onBackToSelector }) {
     ]);
     const pendientes = Array.isArray(resPendientes.data) ? resPendientes.data : [];
     const historial = Array.isArray(resHistorial.data) ? resHistorial.data : [];
+    const buildCobroMapKey = (row = {}) => {
+      const idRecibo = Number(row?.id_recibo || 0);
+      if (idRecibo > 0) return `r-${idRecibo}`;
+      const anio = Number(row?.anio || 0);
+      const mes = Number(row?.mes || 0);
+      return `p-${anio}-${mes}`;
+    };
     const byPeriodo = new Map();
     historial.forEach((row) => {
       const mes = Number(row?.mes || 0);
       const anio = Number(row?.anio || 0);
       if (mes < 1 || mes > 12 || anio < 1900) return;
-      const key = `${anio}-${mes}`;
+      const key = buildCobroMapKey(row);
       byPeriodo.set(key, {
         ...row,
         id_recibo: Number(row?.id_recibo || 0) || null,
@@ -689,7 +696,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const mes = Number(row?.mes || 0);
       const anio = Number(row?.anio || 0);
       if (mes < 1 || mes > 12 || anio < 1900) return;
-      const key = `${anio}-${mes}`;
+      const key = buildCobroMapKey(row);
       const prev = byPeriodo.get(key);
       const deudaMes = round2(parseMonto(row?.deuda_mes ?? row?.total_pagar ?? 0));
       byPeriodo.set(key, {
@@ -712,7 +719,11 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const rows = Array.from(byPeriodo.values()).sort((a, b) => {
       const pa = (Number(a?.anio || 0) * 100) + Number(a?.mes || 0);
       const pb = (Number(b?.anio || 0) * 100) + Number(b?.mes || 0);
-      return pa - pb;
+      if (pa !== pb) return pa - pb;
+      const ia = Number(a?.id_recibo || 0);
+      const ib = Number(b?.id_recibo || 0);
+      if (ia !== ib) return ia - ib;
+      return String(a?.estado || "").localeCompare(String(b?.estado || ""));
     });
     const fechaBase = new Date(`${fecha}T00:00:00`);
     const fechaMinima = new Date(fechaBase);
@@ -1539,6 +1550,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                             </td>
                             <td>
                               {String(row?.mes || "").padStart(2, "0")}/{row?.anio || "-"}
+                              {idRecibo > 0 && <span className="text-muted ms-2">Recibo #{idRecibo}</span>}
                               {esAdelantado && <span className="badge text-bg-warning ms-2">ADELANTADO</span>}
                               {!puedeCobrar && <span className="badge text-bg-secondary ms-2">{estadoNoCobro}</span>}
                               {!puedeCobrar && puedeAnularPagoPeriodo && (

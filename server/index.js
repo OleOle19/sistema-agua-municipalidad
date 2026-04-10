@@ -7045,43 +7045,6 @@ app.post("/pagos", async (req, res) => {
       }
     }
 
-    const pagosConPeriodo = pagosSolicitados
-      .map((pago, idx) => {
-        const anio = parsePositiveInt(pago?.anio, 0);
-        const mes = parsePositiveInt(pago?.mes, 0);
-        if (!anio || mes < 1 || mes > 12) return null;
-        return { idx, anio, mes, periodo_num: (anio * 100) + mes };
-      })
-      .filter(Boolean);
-
-    if (idContribuyenteSolicitado > 0 && pagosConPeriodo.length > 0) {
-      const periodosUnicos = [...new Set(pagosConPeriodo.map((p) => p.periodo_num))];
-      const recibosPeriodoRs = await client.query(`
-        SELECT DISTINCT ON ((r.anio * 100) + r.mes)
-          r.id_recibo,
-          r.anio,
-          r.mes
-        FROM recibos r
-        JOIN predios p ON p.id_predio = r.id_predio
-        WHERE p.id_contribuyente = $1
-          AND ((r.anio * 100) + r.mes) = ANY($2::int[])
-        ORDER BY ((r.anio * 100) + r.mes), r.id_recibo DESC
-      `, [idContribuyenteSolicitado, periodosUnicos]);
-      const reciboPorPeriodo = new Map(
-        recibosPeriodoRs.rows.map((row) => [
-          `${Number(row.anio || 0)}-${Number(row.mes || 0)}`,
-          Number(row.id_recibo || 0)
-        ])
-      );
-      for (const item of pagosConPeriodo) {
-        const key = `${item.anio}-${item.mes}`;
-        const idCanonico = parsePositiveInt(reciboPorPeriodo.get(key), 0);
-        if (idCanonico > 0) {
-          pagosSolicitados[item.idx].id_recibo = idCanonico;
-        }
-      }
-    }
-
     const idsRecibos = [...new Set(pagosSolicitados.map((p) => Number(p.id_recibo)).filter((v) => Number.isInteger(v) && v > 0))];
     if (idsRecibos.length === 0) {
       await client.query("ROLLBACK");
