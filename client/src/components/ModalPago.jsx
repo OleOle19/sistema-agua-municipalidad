@@ -152,7 +152,6 @@ const ModalPago = ({
   );
 
   const totalOrdenCaja = round2(toNum(ordenSeleccionada?.total_orden));
-  const codigoReciboOrden = Number(ordenSeleccionada?.codigo_recibo || 0);
   const totalCobroCaja = totalOrdenCaja;
 
   const toggleRecibo = (id, disabled = false) => {
@@ -241,12 +240,7 @@ const ModalPago = ({
         cargo_reimpresion: 0
       });
       const id = Number(res?.data?.orden?.id_orden || 0);
-      const codigoReferencia = Number(res?.data?.orden?.codigo_recibo || 0);
-      if (codigoReferencia > 0) {
-        alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.\nReferencia recibo: #${codigoReferencia}`);
-      } else {
-        alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.`);
-      }
+      alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.`);
       alGuardar?.();
       cerrarModal?.();
     } catch (err) {
@@ -382,7 +376,7 @@ const ModalPago = ({
                           Recibos: {o.cantidad_recibos} | Emitida: {new Date(o.creado_en).toLocaleString()}
                         </div>
                         <div className="small text-muted">
-                          Recibo referencia: {Number(o.codigo_recibo || 0) > 0 ? `#${Number(o.codigo_recibo)}` : "-"}
+                          Referencia de recibo: {Number(o.codigo_recibo || 0) > 0 ? "Registrada" : "-"}
                         </div>
                       </button>
                     ))}
@@ -403,7 +397,7 @@ const ModalPago = ({
                       </tbody>
                     </table>
                     <div className="small mt-2">
-                      Recibo referencia: {codigoReciboOrden > 0 ? `#${codigoReciboOrden}` : "-"}
+                      Referencia de recibo: {Number(ordenSeleccionada?.codigo_recibo || 0) > 0 ? "Registrada" : "-"}
                     </div>
                     <div className="small fw-bold text-end mt-2">
                       Total a cobrar: S/. {totalCobroCaja.toFixed(2)}

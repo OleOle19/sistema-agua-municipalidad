@@ -508,7 +508,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                     <div key={`anul-${idx}`}>- Anulaciones altas: {a.username} ({a.total_anulaciones})</div>
                   ))}
                   {(alertasDetalle?.reemisiones_recibo || []).slice(0, 3).map((a, idx) => (
-                    <div key={`ree-${idx}`}>- Reemision recibo {a.id_recibo}: {a.total_ordenes} ordenes</div>
+                    <div key={`ree-${idx}`}>- Reemision de recibo: {a.total_ordenes} ordenes</div>
                   ))}
                   {(alertasDetalle?.cobros_fuera_horario || []).slice(0, 3).map((a, idx) => (
                     <div key={`off-${idx}`}>- Cobro fuera horario: orden {a.id_orden} ({a.username})</div>
@@ -654,7 +654,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                                         {contrib.items.map((item) => (
                                           <tr key={`item-${item.id_pago}`}>
                                             <td style={{ width: "34%" }}></td>
-                                            <td className="text-center" style={{ width: "14%" }}>{item.codigo_impresion || "-"}</td>
+                                            <td className="text-center" style={{ width: "14%" }}>{item.numero_recibo || item.codigo_impresion || "-"}</td>
                                             <td className="text-center" style={{ width: "7%" }}>{item.anio || "-"}</td>
                                             <td className="text-center" style={{ width: "6%" }}>{String(item.mes || "").padStart(2, "0")}</td>
                                             <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_agua || 0)}</td>
