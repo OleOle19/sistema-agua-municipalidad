@@ -1559,7 +1559,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
                             </td>
                             <td>
                               {String(row?.mes || "").padStart(2, "0")}/{row?.anio || "-"}
-                              {idRecibo > 0 && <span className="text-muted ms-2">Recibo #{idRecibo}</span>}
                               {esAdelantado && <span className="badge text-bg-warning ms-2">ADELANTADO</span>}
                               {!puedeCobrar && <span className="badge text-bg-secondary ms-2">{estadoNoCobro}</span>}
                               {!puedeCobrar && puedeAnularPagoPeriodo && (
