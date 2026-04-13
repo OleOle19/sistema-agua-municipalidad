@@ -1,4 +1,4 @@
-﻿import React, { forwardRef } from "react";
+import React, { forwardRef } from "react";
 
 const mm = (value) => `${value}mm`;
 
@@ -19,7 +19,7 @@ const RECIBO_SIZE_MM = {
 const RECIBO_TEXTOS = {
   distrito: "PUEBLO NUEVO",
   tipoServicio: "Servicio: Domestico",
-  notaPago: "El pago de este recibo no cancela deudas anteriores.",
+  notaPago: "El pago de este recibo\nno cancela deudas anteriores.",
   tituloDeudaAnterior: "Deuda Anterior",
   tituloDeudaMes: "Mes",
   labelDeuda: "Deuda S/."
@@ -255,7 +255,18 @@ const Recibo = forwardRef(({ datos }, ref) => {
         {formatMonto(totalRecibo)}
       </div>
 
-      <div style={{ ...baseText, left: x(CAL.top.xNota), top: y(CAL.top.yNota), fontSize: "3.0mm", maxWidth: mm(95) }}>
+      <div
+        style={{
+          ...baseText,
+          left: x(CAL.top.xNota),
+          top: y(CAL.top.yNota),
+          fontSize: "2.5mm",
+          width: mm(95),
+          whiteSpace: "pre-line",
+          lineHeight: 1.05,
+          textAlign: "center"
+        }}
+      >
         {RECIBO_TEXTOS.notaPago}
       </div>
 
