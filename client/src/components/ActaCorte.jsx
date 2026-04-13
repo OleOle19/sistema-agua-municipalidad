@@ -1,4 +1,4 @@
-import React, { forwardRef } from "react";
+﻿import React, { forwardRef } from "react";
 
 const toNumber = (value) => {
   const n = Number(value);
@@ -40,28 +40,41 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
       minHeight: "auto",
       height: "auto",
       margin: 0,
-      padding: isCompact ? "3.5mm 4.5mm" : "12mm 14mm",
+      padding: isCompact ? "4mm 5mm" : "12mm 14mm",
       boxSizing: "border-box",
       background: "#fff",
       color: "#111",
       fontFamily: "\"Times New Roman\", Times, serif",
-      fontSize: isCompact ? "10px" : "13px",
-      lineHeight: isCompact ? 1.12 : 1.25,
+      fontSize: isCompact ? "10.6px" : "13px",
+      lineHeight: isCompact ? 1.15 : 1.25,
       breakInside: "avoid",
       pageBreakInside: "avoid"
     },
     top: {
       display: "grid",
-      gridTemplateColumns: "1fr auto",
+      gridTemplateColumns: isCompact ? "38px 1fr auto" : "72px 1fr auto",
       alignItems: "start",
+      columnGap: isCompact ? "6px" : "10px",
       marginBottom: isCompact ? "6px" : "14px"
+    },
+    logo: {
+      width: isCompact ? "34px" : "64px",
+      height: isCompact ? "34px" : "64px",
+      objectFit: "contain"
+    },
+    entidad: {
+      textAlign: "center",
+      fontWeight: 700,
+      fontSize: isCompact ? "10px" : "14px",
+      marginBottom: isCompact ? "1px" : "2px",
+      textTransform: "uppercase"
     },
     title: {
       textAlign: "center",
       fontWeight: 700,
-      fontSize: isCompact ? "14px" : "20px",
+      fontSize: isCompact ? "15px" : "20px",
       letterSpacing: "0.4px",
-      marginTop: "2px",
+      marginTop: 0,
       marginBottom: "0",
       textTransform: "uppercase"
     },
@@ -167,8 +180,17 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
       fontSize: isCompact ? "10px" : "14px",
       lineHeight: isCompact ? 1.1 : 1.35
     },
+    firmaRow: {
+      marginTop: isCompact ? "6px" : "16px",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "flex-end"
+    },
+    selloSpace: {
+      width: "50mm",
+      height: isCompact ? "10mm" : "50mm"
+    },
     administracion: {
-      marginTop: isCompact ? "8px" : "18px",
       textAlign: "right",
       fontSize: isCompact ? "10px" : "14px",
       paddingRight: isCompact ? "16px" : "50px"
@@ -178,7 +200,13 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
   return (
     <div ref={ref} style={styles.page}>
       <div style={styles.top}>
-        <h2 style={styles.title}>NOTIFICACION ADMINISTRATIVA</h2>
+        <div>
+          <img src="/logo.png" alt="Logo Municipalidad" style={styles.logo} />
+        </div>
+        <div>
+          <div style={styles.entidad}>MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO</div>
+          <h2 style={styles.title}>NOTIFICACION ADMINISTRATIVA</h2>
+        </div>
         <div style={styles.fecha}>{formatFechaCorta(acta.fecha_emision)}</div>
       </div>
 
@@ -192,9 +220,9 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
       </div>
 
       <p style={styles.paragraph}>
-        Sr. a traves de la presente le saludamos cordialmente y a la vez le comunicamos que la administracion de agua
+        Sr. a través de la presente le saludamos cordialmente y a la vez le comunicamos que la administración de agua
         potable y alcantarillado, le hace llegar su estado de cuenta por concepto de arbitrios municipales
-        (Agua, desague y limpieza publica), siendo los años anteriores.
+        (Agua, desagüe y limpieza pública), siendo los años anteriores.
       </p>
 
       <table style={styles.table}>
@@ -203,7 +231,7 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
             <th style={{ ...styles.th, width: "9%" }}>Año</th>
             <th style={{ ...styles.th, width: "8%" }}>Mes</th>
             <th style={{ ...styles.th, width: "15%" }}>Agua Potable</th>
-            <th style={{ ...styles.th, width: "14%" }}>Desague</th>
+            <th style={{ ...styles.th, width: "14%" }}>Desagüe</th>
             <th style={{ ...styles.th, width: "14%" }}>Limpieza</th>
             <th style={{ ...styles.th, width: "14%" }}>Gasto Admin.</th>
             <th style={{ ...styles.th, width: "16%" }}>Deuda Anual</th>
@@ -256,10 +284,13 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
       </table>
 
       <div style={styles.closingText}>
-        Sr. usuario acercarse a la oficina de la administracion para la cancelacion respectiva, se realizara el corte respectivo.
+        Sr. usuario, acercarse a la oficina de la administración para la cancelación respectiva; se realizará el corte respectivo.
       </div>
 
-      <div style={styles.administracion}>LA ADMINISTRACION</div>
+      <div style={styles.firmaRow}>
+        <div style={styles.selloSpace}></div>
+        <div style={styles.administracion}>LA ADMINISTRACIÓN MUNICIPAL</div>
+      </div>
     </div>
   );
 });
@@ -267,3 +298,6 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
 ActaCorte.displayName = "ActaCorte";
 
 export default ActaCorte;
+
+
+

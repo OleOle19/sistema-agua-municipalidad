@@ -7,6 +7,10 @@ const esDeudor = (c) => {
   const meses = Number(c?.meses_deuda || 0);
   return meses >= 4;
 };
+const esConConexion = (c) => {
+  const raw = String(c?.estado_conexion || "").trim().toUpperCase();
+  return ["CON_CONEXION", "CONEXION", "ACTIVO", "CONECTADO"].includes(raw);
+};
 
 const ModalActaCorteSelector = ({
   cerrarModal,
@@ -23,7 +27,9 @@ const ModalActaCorteSelector = ({
   const [sector, setSector] = useState("");
 
   const deudores = useMemo(() => {
-    const rows = Array.isArray(contribuyentes) ? contribuyentes.filter(esDeudor) : [];
+    const rows = Array.isArray(contribuyentes)
+      ? contribuyentes.filter((item) => esDeudor(item) && esConConexion(item))
+      : [];
     return rows.slice().sort(compareByDireccionAsc);
   }, [contribuyentes]);
 
@@ -86,7 +92,7 @@ const ModalActaCorteSelector = ({
       .map((m) => Number(m.id_contribuyente))
       .filter((id) => Number.isInteger(id) && id > 0);
     if (ids.length === 0) {
-      alert("No hay contribuyentes con 4 o más meses seleccionados para generar actas.");
+      alert("No hay contribuyentes con conexión activa y 4 o más meses seleccionados para generar actas.");
       return;
     }
     onConfirmar?.(ids, criterioDescripcion);
@@ -128,7 +134,7 @@ const ModalActaCorteSelector = ({
                     Usar seleccion actual ({selectedIds.length})
                   </button>
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set(deudores.map((m) => m.id_contribuyente)))}>
-                    Marcar todos (4+ meses)
+                    Marcar todos (con conexión, 4+ meses)
                   </button>
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set())}>
                     Limpiar
@@ -136,7 +142,7 @@ const ModalActaCorteSelector = ({
                 </div>
                 <div style={{ maxHeight: "220px", overflowY: "auto" }}>
                   {deudores.length === 0 ? (
-                    <div className="small text-muted">No hay contribuyentes con 4 o más meses de deuda.</div>
+                    <div className="small text-muted">No hay contribuyentes con conexión activa y 4 o más meses de deuda.</div>
                   ) : (
                     deudores.map((m) => (
                       <label key={m.id_contribuyente} className="d-flex align-items-center gap-2 small border-bottom py-1">
@@ -185,14 +191,14 @@ const ModalActaCorteSelector = ({
 
             {modo === "todos" && (
               <div className={cardClass}>
-                Se incluiran todos los contribuyentes con 4 o más meses de deuda.
+                Se incluirán todos los contribuyentes con conexión activa y 4 o más meses de deuda.
               </div>
             )}
 
             <div className="alert alert-warning mt-3 mb-2">
               <div><strong>Criterio:</strong> {criterioDescripcion}</div>
               <div><strong>Orden:</strong> Calle y numero ascendente</div>
-              <div><strong>Contribuyentes seleccionados (4+ meses):</strong> {seleccion.length}</div>
+              <div><strong>Contribuyentes seleccionados (con conexión, 4+ meses):</strong> {seleccion.length}</div>
               <div><strong>Total deuda:</strong> S/. {totalDeuda.toFixed(2)}</div>
             </div>
 

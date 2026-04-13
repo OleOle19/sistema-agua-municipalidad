@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+﻿import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useReactToPrint } from "react-to-print";
 import { FaPrint, FaMoneyBillWave } from "react-icons/fa";
 import api from "../api";
@@ -96,6 +96,8 @@ const toYearValue = (isoDate) => String(isoDate || "").slice(0, 4);
 const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSistema = null }) => {
   const [reporteTipo, setReporteTipo] = useState("diario");
   const [fechaConsulta, setFechaConsulta] = useState(todayIso());
+  const [fechaDesdeRango, setFechaDesdeRango] = useState(todayIso());
+  const [fechaHastaRango, setFechaHastaRango] = useState(todayIso());
   const [cargando, setCargando] = useState(false);
   const [exportandoExcel, setExportandoExcel] = useState(false);
   const [paginaMovimientos, setPaginaMovimientos] = useState(1);
@@ -131,7 +133,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   `;
   const handlePrint = useReactToPrint({
     contentRef: componentRef,
-    documentTitle: `${origen === "caja" ? "Reporte_Caja" : "Reporte_Ventanilla"}_${reporteTipo}_${fechaConsulta}`,
+    documentTitle: `Reporte_Ventanilla_Caja_${reporteTipo}_${fechaConsulta}`,
     pageStyle: printPageStyle
   });
 
@@ -145,6 +147,10 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
         params: {
           tipo: reporteTipo,
           fecha: fechaConsulta,
+          ...(reporteTipo === "rango" ? {
+            fecha_desde: fechaDesdeRango,
+            fecha_hasta: fechaHastaRango
+          } : {}),
           page: paginaMovimientos,
           page_size: MOVIMIENTOS_PAGE_SIZE
         },
@@ -158,7 +164,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     } finally {
       if (!signal?.aborted) setCargando(false);
     }
-  }, [fechaConsulta, paginaMovimientos, reporteTipo]);
+  }, [fechaConsulta, fechaDesdeRango, fechaHastaRango, paginaMovimientos, reporteTipo]);
 
   const cargarAlertasRiesgo = useCallback(async (signal) => {
     try {
@@ -220,7 +226,14 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     try {
       setExportandoExcel(true);
       const res = await api.get("/caja/reporte/excel", {
-        params: { tipo: reporteTipo, fecha: fechaConsulta },
+        params: {
+          tipo: reporteTipo,
+          fecha: fechaConsulta,
+          ...(reporteTipo === "rango" ? {
+            fecha_desde: fechaDesdeRango,
+            fecha_hasta: fechaHastaRango
+          } : {})
+        },
         responseType: "blob",
         timeout: 0
       });
@@ -230,7 +243,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `reporte_caja_${reporteTipo}_${fechaConsulta}.xlsx`;
+      a.download = `reporte_ventanilla_caja_${reporteTipo}_${fechaConsulta}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -244,7 +257,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
 
   useEffect(() => {
     setPaginaMovimientos(1);
-  }, [reporteTipo, fechaConsulta]);
+  }, [reporteTipo, fechaConsulta, fechaDesdeRango, fechaHastaRango]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -296,6 +309,8 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
       ? "Mensual"
       : reporteTipo === "anual"
         ? "Anual"
+        : reporteTipo === "rango"
+          ? "Intervalo"
         : "Diario";
   const graficosCaja = reporte?.graficos || {};
   const recaudacionTemporal = Array.isArray(graficosCaja.recaudacion_temporal) ? graficosCaja.recaudacion_temporal : [];
@@ -390,6 +405,11 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
       setFechaConsulta(`${year}-${month}-01`);
     } else if (nextTipo === "anual") {
       setFechaConsulta(`${year}-01-01`);
+    } else if (nextTipo === "rango") {
+      const iso = /^\d{4}-\d{2}-\d{2}$/.test(actual) ? actual : todayIso();
+      setFechaConsulta(iso);
+      setFechaDesdeRango(iso);
+      setFechaHastaRango(iso);
     } else {
       setFechaConsulta(`${year}-${month}-${day}`);
     }
@@ -408,25 +428,26 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
       setFechaConsulta(`${value}-01-01`);
       return;
     }
+    if (reporteTipo === "rango") return;
     setFechaConsulta(value);
   }, [reporteTipo]);
 
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : { backgroundColor: "#fff" };
-  const tituloModal = esCaja ? "Reporte de Caja" : "Reporte de Ventanilla";
-  const colorTotal = esCaja ? "text-success" : "text-primary";
+  const tituloModal = "Reporte";
+  const colorTotal = "text-primary";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
       <div className="modal-dialog modal-xl">
         <div className="modal-content" style={modalStyle}>
-          <div className={`modal-header ${esCaja ? "bg-success text-white" : "bg-primary text-white"}`}>
+          <div className="modal-header bg-primary text-white">
             <h5 className="modal-title"><FaMoneyBillWave className="me-2" /> {tituloModal}</h5>
             <button type="button" className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
 
           <div className="modal-body">
-            <div className="d-flex flex-wrap gap-2 align-items-end mb-3 no-print">
-              <div>
+            <div className="row g-2 align-items-end mb-3 no-print">
+              <div className="col-12 col-md-4 col-lg-3">
                 <label className="form-label small mb-1">Periodo</label>
                 <select
                   className="form-select form-select-sm"
@@ -437,11 +458,29 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   <option value="semanal">Semanal</option>
                   <option value="mensual">Mensual</option>
                   <option value="anual">Anual</option>
+                  <option value="rango">Intervalo de fechas</option>
                 </select>
               </div>
-              <div>
-                <label className="form-label small mb-1">Fecha de referencia</label>
-                {reporteTipo === "anual" ? (
+              <div className="col-12 col-md-5 col-lg-4">
+                <label className="form-label small mb-1">{reporteTipo === "rango" ? "Intervalo" : "Fecha de referencia"}</label>
+                {reporteTipo === "rango" ? (
+                  <div className="d-flex gap-2 flex-nowrap">
+                    <input
+                      type="date"
+                      className="form-control form-control-sm"
+                      style={{ minWidth: "150px" }}
+                      value={fechaDesdeRango}
+                      onChange={(e) => setFechaDesdeRango(e.target.value)}
+                    />
+                    <input
+                      type="date"
+                      className="form-control form-control-sm"
+                      style={{ minWidth: "150px" }}
+                      value={fechaHastaRango}
+                      onChange={(e) => setFechaHastaRango(e.target.value)}
+                    />
+                  </div>
+                ) : reporteTipo === "anual" ? (
                   <select
                     className="form-select form-select-sm"
                     value={toYearValue(fechaConsulta)}
@@ -460,13 +499,13 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   />
                 )}
               </div>
-              <div className="ms-auto d-flex flex-column align-items-end">
+              <div className="col-12 col-md d-flex flex-column align-items-md-end">
                 <div className={`fs-5 fw-bold ${colorTotal}`}>Total Caja: S/. {totalGeneral}</div>
                 {esAdminPrincipal && (
                   <div className="small text-muted">Admin: anulados en rango = {movimientosAdmin.length}</div>
                 )}
               </div>
-              <div className="d-flex">
+              <div className="col-12 col-md-auto d-flex justify-content-md-end">
                 <button
                   type="button"
                   className="btn btn-sm btn-outline-secondary"
@@ -595,13 +634,20 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
             </div>
 
             <div ref={componentRef} className="p-3" style={{ backgroundColor: "#fff", color: "#000", fontFamily: "'Times New Roman', serif" }}>
-              <div className="text-center mb-2" style={{ fontSize: "18px", fontWeight: 700, letterSpacing: "0.3px" }}>
-                INFORME DE INGRESOS TRIBUTARIOS
-              </div>
               <div className="d-flex justify-content-between align-items-start mb-2" style={{ fontSize: "13px" }}>
-                <div>
-                  <div><strong>MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO</strong></div>
-                  <div>Area de Administracion Tributaria - Agua Potable</div>
+                <div className="d-flex align-items-start gap-2">
+                  <img
+                    src="/logo.png"
+                    alt="Logo Municipalidad"
+                    style={{ width: "44px", height: "44px", objectFit: "contain" }}
+                  />
+                  <div>
+                    <div><strong>MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO</strong></div>
+                    <div>Area de Administracion Tributaria - Agua Potable</div>
+                    <div className="fw-bold mt-1" style={{ fontSize: "17px", letterSpacing: "0.3px" }}>
+                      INFORME DE INGRESOS TRIBUTARIOS
+                    </div>
+                  </div>
                 </div>
                 <div className="text-end">
                   <div>{formatFechaCorta(fechaConsulta)}</div>
@@ -789,3 +835,4 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
 };
 
 export default ModalCierre;
+

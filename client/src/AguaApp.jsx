@@ -774,7 +774,7 @@ const reciboIndividualPageStyle = `
 const actaPageStyle = `
   @page {
     size: A4 portrait;
-    margin: 6mm;
+    margin: 4mm;
   }
   @media print {
     html, body {
@@ -952,11 +952,12 @@ const anexoCajaPageStyle = `
       const c = contribuyenteById.get(id);
       if (!c) return false;
       const meses = Number(c.meses_deuda || 0);
-      return meses >= 4;
+      const estado = normalizeEstadoConexion(c.estado_conexion);
+      return meses >= 4 && estado === ESTADOS_CONEXION.CON_CONEXION;
     });
 
     if (objetivosConDeuda.length === 0) {
-      return alert("Los contribuyentes seleccionados deben tener 4 o más meses de deuda.");
+      return alert("Los contribuyentes seleccionados deben tener conexión activa y 4 o más meses de deuda.");
     }
 
     try {
@@ -2218,7 +2219,7 @@ const anexoCajaPageStyle = `
       )}
 
       {/* OCULTOS PARA IMPRESION */}
-      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "148mm", height: "auto" }}>
+      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", height: "auto", display: "flex", justifyContent: "flex-end", background: "#fff" }}>
           <Recibo ref={componentRef} datos={datosReciboImprimir} />
       </div>
 
@@ -2234,7 +2235,7 @@ const anexoCajaPageStyle = `
           <ActasCorteLote ref={actaCorteRef} actas={datosActaCorteImprimir} />
       </div>
 
-      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "203mm", height: "auto" }}>
+      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", height: "auto", display: "flex", justifyContent: "flex-end" }}>
           <RecibosMasivos ref={masivoRef} datos={datosMasivos} />
       </div>
     </div>

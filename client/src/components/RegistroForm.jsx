@@ -19,6 +19,7 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
   const [calles, setCalles] = useState([]);
   const [sectores, setSectores] = useState([]);
   const [mostrarModalCalles, setMostrarModalCalles] = useState(false);
+  const [adjuntos, setAdjuntos] = useState([]);
 
   const cardClass = `card shadow-sm ${darkMode ? "text-white border-secondary" : "bg-light"}`;
   const cardStyle = darkMode ? { backgroundColor: "#2b3035" } : {};
@@ -62,23 +63,37 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
   }, []);
 
   const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+  const onSelectAdjuntos = (event) => {
+    const files = Array.from(event?.target?.files || []);
+    setAdjuntos(files);
+  };
+  const quitarAdjunto = (idx) => {
+    setAdjuntos((prev) => prev.filter((_, i) => i !== idx));
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.nombre_completo || !formData.id_calle) return alert("Faltan datos obligatorios");
     try {
-      const payload = {
-        dni_ruc: formData.dni_ruc,
-        nombre_completo: formData.nombre_completo,
-        sec_nombre: formData.sec_nombre,
-        estado_conexion: formData.estado_conexion,
-        id_calle: formData.id_calle,
-        numero_casa: formData.numero_casa,
-        manzana: formData.manzana,
-        lote: formData.lote
-      };
-      await api.post("/contribuyentes", payload);
-      alert("Contribuyente registrado con exito");
+      const payload = new FormData();
+      payload.append("dni_ruc", formData.dni_ruc || "");
+      payload.append("nombre_completo", formData.nombre_completo || "");
+      payload.append("sec_nombre", formData.sec_nombre || "");
+      payload.append("estado_conexion", formData.estado_conexion || "");
+      payload.append("id_calle", formData.id_calle || "");
+      payload.append("numero_casa", formData.numero_casa || "");
+      payload.append("manzana", formData.manzana || "");
+      payload.append("lote", formData.lote || "");
+      adjuntos.forEach((file) => payload.append("adjuntos", file));
+      const res = await api.post("/contribuyentes", payload, {
+        headers: { "Content-Type": "multipart/form-data" }
+      });
+      const totalAdjuntos = Number(res?.data?.adjuntos_registrados || 0);
+      alert(
+        totalAdjuntos > 0
+          ? `Contribuyente registrado con exito. Adjuntos guardados: ${totalAdjuntos}.`
+          : "Contribuyente registrado con exito"
+      );
       setFormData({
         codigo_municipal: "",
         dni_ruc: "",
@@ -90,6 +105,7 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
         manzana: "",
         lote: ""
       });
+      setAdjuntos([]);
       onGuardar();
     } catch (error) {
       alert(error.response?.data?.error || "Error al guardar");
@@ -176,6 +192,37 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
             <div className="col-md-2"><label className={labelClass}>Mz.</label><input type="text" className={inputClass} name="manzana" value={formData.manzana} onChange={handleChange} /></div>
             <div className="col-md-2"><label className={labelClass}>Lt.</label><input type="text" className={inputClass} name="lote" value={formData.lote} onChange={handleChange} /></div>
           </div>
+
+          <h6 className={`border-bottom pb-2 mb-3 ${darkMode ? "border-secondary" : "text-primary"}`}>3. Adjuntos del Contribuyente</h6>
+          <div className="mb-3">
+            <label className={labelClass}>Documentos / fotos (opcional)</label>
+            <input
+              type="file"
+              className={inputClass}
+              multiple
+              accept=".pdf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.doc,.docx,.xls,.xlsx,image/*,application/pdf"
+              onChange={onSelectAdjuntos}
+            />
+            <div className="form-text">Se guardan en el servidor municipal para trazabilidad del registro.</div>
+          </div>
+          {adjuntos.length > 0 && (
+            <div className="border rounded p-2 mb-4">
+              <div className="small fw-bold mb-1">Archivos seleccionados ({adjuntos.length})</div>
+              {adjuntos.map((file, idx) => (
+                <div key={`${file.name}-${idx}`} className="d-flex align-items-center small border-bottom py-1">
+                  <span className="text-truncate">{file.name}</span>
+                  <span className="ms-auto text-muted">{Math.round((Number(file.size || 0) / 1024) * 10) / 10} KB</span>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-link text-danger ms-2 p-0"
+                    onClick={() => quitarAdjunto(idx)}
+                  >
+                    Quitar
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
 
           <button type="submit" className="btn btn-success w-100 py-2 fw-bold">Guardar Registro</button>
         </form>

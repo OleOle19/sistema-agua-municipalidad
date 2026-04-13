@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useReactToPrint } from "react-to-print";
 import {
   FaBolt,
@@ -1203,7 +1203,7 @@ function LuzApp({ onBackToSelector }) {
                           <form onSubmit={emitirReciboManual}>
                             <div className="row g-2">
                               <div className="col-6">
-                                <label className="form-label">Anio</label>
+                                <label className="form-label">Año</label>
                                 <input
                                   type="number"
                                   className="form-control"
@@ -1246,7 +1246,7 @@ function LuzApp({ onBackToSelector }) {
                                   {!lecturaAnteriorInfo.loading && !lecturaAnteriorInfo.encontrada && lecturaAnteriorInfo.periodoAnterior && (
                                     <>No hay registro en {formatPeriodoCorto(lecturaAnteriorInfo.periodoAnterior.anio, lecturaAnteriorInfo.periodoAnterior.mes)}. Ingrese manualmente.</>
                                   )}
-                                  {!lecturaAnteriorInfo.loading && !lecturaAnteriorInfo.periodoAnterior && "Ingrese anio y mes validos."}
+                                  {!lecturaAnteriorInfo.loading && !lecturaAnteriorInfo.periodoAnterior && "Ingrese año y mes válidos."}
                                   {!lecturaAnteriorInfo.loading && lecturaAnteriorInfo.error && ` ${lecturaAnteriorInfo.error}`}
                                 </div>
                               </div>
@@ -1747,7 +1747,7 @@ function LuzApp({ onBackToSelector }) {
                     <div className="card-header fw-semibold">Importar lecturas masivas</div>
                     <div className="card-body">
                       <div className="small text-muted mb-2">
-                        Plantilla: zona, nro_medidor, anio, mes, lectura_actual, observacion(opcional).
+                        Plantilla: zona, nro_medidor, año, mes, lectura_actual, observación(opcional).
                       </div>
                       <input
                         type="file"
@@ -1786,7 +1786,7 @@ function LuzApp({ onBackToSelector }) {
                                 <th>Linea</th>
                                 <th>Zona</th>
                                 <th>Medidor</th>
-                                <th>Anio/Mes</th>
+                                <th>Año/Mes</th>
                                 <th>Motivo</th>
                               </tr>
                             </thead>
@@ -1870,3 +1870,4 @@ function LuzApp({ onBackToSelector }) {
 }
 
 export default LuzApp;
+

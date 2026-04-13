@@ -76,6 +76,9 @@ const buildPeriodoQuery = ({
   periodoDesde,
   periodoHasta
 }) => {
+  if (tipoPeriodo === "todo") {
+    return { tipo_periodo: "todo" };
+  }
   if (tipoPeriodo === "dia") {
     return { tipo_periodo: "dia", fecha: periodoDia };
   }
@@ -97,13 +100,19 @@ const describePeriodo = ({
   periodoDesde,
   periodoHasta
 }) => {
-  if (tipoPeriodo === "dia") return `Dia: ${periodoDia || "-"}`;
-  if (tipoPeriodo === "anio") return `Anio: ${periodoAnio || "-"}`;
+  if (tipoPeriodo === "todo") return "Todo histórico: desde el inicio hasta hoy";
+  if (tipoPeriodo === "dia") return `Día: ${periodoDia || "-"}`;
+  if (tipoPeriodo === "anio") return `Año: ${periodoAnio || "-"}`;
   if (tipoPeriodo === "rango") {
     const normalized = normalizeRange(periodoDesde, periodoHasta);
     return `Intervalo: ${normalized.desde || "-"} a ${normalized.hasta || "-"}`;
   }
   return `Mes: ${periodoMes || "-"}`;
+};
+
+const parseAmount = (value) => {
+  const n = Number.parseFloat(value);
+  return Number.isFinite(n) ? n : 0;
 };
 
 const ModalReporteCortes = ({
@@ -132,6 +141,9 @@ const ModalReporteCortes = ({
   const [periodoAnio, setPeriodoAnio] = useState(currentYearValue());
   const [periodoDesde, setPeriodoDesde] = useState(currentDateValue());
   const [periodoHasta, setPeriodoHasta] = useState(currentDateValue());
+  const [reporteRows, setReporteRows] = useState([]);
+  const [cargandoReporte, setCargandoReporte] = useState(false);
+  const [errorReporte, setErrorReporte] = useState("");
 
   const usuariosBase = useMemo(() => {
     const rows = Array.isArray(contribuyentes) ? contribuyentes : [];
@@ -169,6 +181,41 @@ const ModalReporteCortes = ({
     cargarCalles();
   }, []);
 
+  useEffect(() => {
+    let cancelado = false;
+    const cargarReporte = async () => {
+      setCargandoReporte(true);
+      setErrorReporte("");
+      try {
+        const res = await api.get("/contribuyentes/reporte-estado-conexion", {
+          params: {
+            estado: estadoFiltro,
+            ...buildPeriodoQuery({
+              tipoPeriodo,
+              periodoDia,
+              periodoMes,
+              periodoAnio,
+              periodoDesde,
+              periodoHasta
+            })
+          }
+        });
+        if (cancelado) return;
+        setReporteRows(Array.isArray(res?.data?.rows) ? res.data.rows : []);
+      } catch (error) {
+        if (cancelado) return;
+        setReporteRows([]);
+        setErrorReporte(error?.response?.data?.error || "No se pudo actualizar la información del reporte.");
+      } finally {
+        if (!cancelado) setCargandoReporte(false);
+      }
+    };
+    cargarReporte();
+    return () => {
+      cancelado = true;
+    };
+  }, [estadoFiltro, tipoPeriodo, periodoDia, periodoMes, periodoAnio, periodoDesde, periodoHasta]);
+
   const toggleManual = (id) => {
     setManualIds((prev) => {
       const next = new Set(prev);
@@ -182,6 +229,29 @@ const ModalReporteCortes = ({
     const c = calles.find((x) => String(x.id_calle) === String(idCalle));
     return c?.nombre || "";
   }, [calles, idCalle]);
+
+  const reporteMap = useMemo(
+    () => new Map(reporteRows.map((item) => [Number(item?.id_contribuyente || 0), item])),
+    [reporteRows]
+  );
+
+  const enriquecerRowDesdeMapa = (row, map = reporteMap) => {
+    const detalle = map.get(Number(row?.id_contribuyente || 0)) || {};
+    const mesesDeuda = Number(detalle?.meses_deuda ?? row?.meses_deuda ?? 0) || 0;
+    const deudaTotal = parseAmount(detalle?.deuda_total ?? row?.deuda_total ?? row?.deuda_anio ?? 0);
+    const abonoTotal = parseAmount(detalle?.abono_total ?? row?.abono_total ?? row?.abono_anio ?? 0);
+    return {
+      ...detalle,
+      ...row,
+      meses_deuda: mesesDeuda,
+      deuda_total: deudaTotal,
+      deuda_anio: deudaTotal,
+      abono_total: abonoTotal,
+      abono_anio: abonoTotal
+    };
+  };
+
+  const enriquecerRow = (row) => enriquecerRowDesdeMapa(row, reporteMap);
 
   const manualRows = useMemo(() => {
     const q = String(busquedaManual || "").trim().toLowerCase();
@@ -202,9 +272,19 @@ const ModalReporteCortes = ({
     return rows.slice().sort(compareByDireccionAsc);
   }, [modo, usuariosBase, idCalle, manualIds]);
 
+  const seleccionEnriquecida = useMemo(
+    () => seleccion.map((row) => enriquecerRow(row)),
+    [seleccion, reporteMap]
+  );
+
   const totalDeuda = useMemo(
-    () => seleccion.reduce((acc, item) => acc + (parseFloat(item.deuda_anio) || 0), 0),
-    [seleccion]
+    () => seleccionEnriquecida.reduce((acc, item) => acc + parseAmount(item.deuda_total), 0),
+    [seleccionEnriquecida]
+  );
+
+  const totalAbono = useMemo(
+    () => seleccionEnriquecida.reduce((acc, item) => acc + parseAmount(item.abono_total), 0),
+    [seleccionEnriquecida]
   );
 
   const criterioDescripcion = useMemo(() => {
@@ -224,6 +304,24 @@ const ModalReporteCortes = ({
 
     setProcesando(true);
     try {
+      const reporteRes = await api.get("/contribuyentes/reporte-estado-conexion", {
+        params: {
+          estado: estadoFiltro,
+          ids: ids.join(","),
+          ...buildPeriodoQuery({
+            tipoPeriodo,
+            periodoDia,
+            periodoMes,
+            periodoAnio,
+            periodoDesde,
+            periodoHasta
+          })
+        }
+      });
+      const reporteItems = Array.isArray(reporteRes?.data?.rows) ? reporteRes.data.rows : [];
+      const reporteSeleccionMap = new Map(
+        reporteItems.map((item) => [Number(item?.id_contribuyente || 0), item])
+      );
       const requiereResumenCorte = estadoFiltro === ESTADOS_CONEXION.CORTADO;
       let resumenItems = [];
       if (requiereResumenCorte && ids.length > 0) {
@@ -236,15 +334,16 @@ const ModalReporteCortes = ({
         resumenItems.map((item) => [Number(item.id_contribuyente), item])
       );
       const listaFinal = seleccion.map((row) => {
+        const rowEnriquecida = enriquecerRowDesdeMapa(row, reporteSeleccionMap);
         if (!requiereResumenCorte) {
-          return { ...row };
+          return rowEnriquecida;
         }
         const resumen = resumenMap.get(Number(row.id_contribuyente)) || null;
         const evidencias = Array.isArray(resumen?.evidencias) ? resumen.evidencias : [];
         return {
-          ...row,
+          ...rowEnriquecida,
           corte_fecha: resumen?.fecha_evento || null,
-          corte_motivo: resumen?.motivo || row?.estado_conexion_motivo_ultimo || "",
+          corte_motivo: resumen?.motivo || rowEnriquecida?.estado_conexion_motivo_ultimo || "",
           evidencia_resumen: evidencias.length > 0
             ? evidencias.map((ev) => String(ev.archivo_nombre || "").trim()).filter(Boolean).join(" | ")
             : "Sin evidencia adjunta"
@@ -273,8 +372,12 @@ const ModalReporteCortes = ({
   const exportarReporteExcel = async () => {
     setExportandoExcel(true);
     try {
+      const idsSeleccionados = seleccion
+        .map((row) => Number(row?.id_contribuyente || 0))
+        .filter((id) => Number.isInteger(id) && id > 0);
       const params = {
         estado: estadoFiltro,
+        ids: idsSeleccionados.join(","),
         ...buildPeriodoQuery({
           tipoPeriodo,
           periodoDia,
@@ -303,7 +406,22 @@ const ModalReporteCortes = ({
       a.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      alert(err?.response?.data?.error || "No se pudo exportar el Excel del reporte.");
+      let msg = "";
+      const payload = err?.response?.data;
+      if (typeof payload === "string") {
+        msg = payload;
+      } else if (payload instanceof Blob) {
+        try {
+          const text = await payload.text();
+          const parsed = JSON.parse(text);
+          msg = String(parsed?.error || "").trim();
+        } catch {
+          msg = "";
+        }
+      } else if (payload && typeof payload === "object") {
+        msg = String(payload?.error || "").trim();
+      }
+      alert(msg || "No se pudo exportar el Excel del reporte.");
     } finally {
       setExportandoExcel(false);
     }
@@ -339,9 +457,10 @@ const ModalReporteCortes = ({
                     value={tipoPeriodo}
                     onChange={(e) => setTipoPeriodo(e.target.value)}
                   >
-                    <option value="dia">Dia</option>
+                    <option value="todo">Todo histórico</option>
+                    <option value="dia">Día</option>
                     <option value="mes">Mes</option>
-                    <option value="anio">Anio</option>
+                    <option value="anio">Año</option>
                     <option value="rango">Intervalo de fechas</option>
                   </select>
                 </div>
@@ -379,7 +498,7 @@ const ModalReporteCortes = ({
                 )}
                 {tipoPeriodo === "rango" && (
                   <>
-                    <div className="col-md-3">
+                    <div className="col-md-4">
                       <label className="form-label form-label-sm mb-1">Desde</label>
                       <input
                         type="date"
@@ -388,7 +507,7 @@ const ModalReporteCortes = ({
                         onChange={(e) => setPeriodoDesde(e.target.value)}
                       />
                     </div>
-                    <div className="col-md-3">
+                    <div className="col-md-4">
                       <label className="form-label form-label-sm mb-1">Hasta</label>
                       <input
                         type="date"
@@ -430,7 +549,7 @@ const ModalReporteCortes = ({
                   <input
                     type="search"
                     className="form-control form-control-sm"
-                    placeholder="Buscar por codigo, contribuyente o direccion"
+                    placeholder="Buscar por código, contribuyente o dirección"
                     value={busquedaManual}
                     onChange={(e) => setBusquedaManual(e.target.value)}
                   />
@@ -446,18 +565,23 @@ const ModalReporteCortes = ({
                   {manualRows.length === 0 ? (
                     <div className="small text-muted">No hay contribuyentes para este estado y filtro.</div>
                   ) : (
-                    manualRows.map((m) => (
-                      <label key={m.id_contribuyente} className="d-flex align-items-center gap-2 small border-bottom py-1">
-                        <input
-                          type="checkbox"
-                          checked={manualIds.has(Number(m.id_contribuyente))}
-                          onChange={() => toggleManual(Number(m.id_contribuyente))}
-                        />
-                        <span className="fw-bold">{m.codigo_municipal}</span>
-                        <span className="text-truncate">{m.nombre_completo}</span>
-                        <span className="ms-auto">S/. {parseFloat(m.deuda_anio || 0).toFixed(2)}</span>
-                      </label>
-                    ))
+                    manualRows.map((m) => {
+                      const row = enriquecerRow(m);
+                      return (
+                        <label key={m.id_contribuyente} className="d-flex align-items-center gap-2 small border-bottom py-1">
+                          <input
+                            type="checkbox"
+                            checked={manualIds.has(Number(m.id_contribuyente))}
+                            onChange={() => toggleManual(Number(m.id_contribuyente))}
+                          />
+                          <span className="fw-bold">{m.codigo_municipal}</span>
+                          <span className="text-truncate">{m.nombre_completo}</span>
+                          <span className="ms-auto text-end">
+                            D: S/. {parseAmount(row.deuda_total).toFixed(2)} | A: S/. {parseAmount(row.abono_total).toFixed(2)}
+                          </span>
+                        </label>
+                      );
+                    })
                   )}
                 </div>
               </div>
@@ -488,6 +612,9 @@ const ModalReporteCortes = ({
               <div><strong>Orden:</strong> Calle y numero ascendente</div>
               <div><strong>Usuarios seleccionados:</strong> {seleccion.length}</div>
               <div><strong>Total deuda:</strong> S/. {totalDeuda.toFixed(2)}</div>
+              <div><strong>Total abono:</strong> S/. {totalAbono.toFixed(2)}</div>
+              {cargandoReporte && <div className="small mt-1">Actualizando importes segun el periodo seleccionado...</div>}
+              {!cargandoReporte && errorReporte && <div className="small mt-1 text-danger">{errorReporte}</div>}
             </div>
 
             <div className="table-responsive" style={{ maxHeight: "240px" }}>
@@ -498,23 +625,27 @@ const ModalReporteCortes = ({
                     <th>Codigo</th>
                     <th>Contribuyente</th>
                     <th>Direccion</th>
-                    <th className="text-center">Meses</th>
-                    <th className="text-end">Deuda</th>
+                    <th className="text-center">Meses Deuda</th>
+                    <th className="text-end">Deuda Total</th>
+                    <th className="text-end">Abono Total</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {seleccion.length === 0 ? (
-                    <tr><td colSpan="6" className="text-center py-3">Sin datos para mostrar.</td></tr>
+                  {seleccionEnriquecida.length === 0 ? (
+                    <tr><td colSpan="7" className="text-center py-3">Sin datos para mostrar.</td></tr>
                   ) : (
-                    seleccion.map((m, idx) => (
+                    seleccionEnriquecida.map((m, idx) => (
                       <tr key={`${m.id_contribuyente}-${idx}`}>
                         <td>{idx + 1}</td>
                         <td className="fw-bold">{m.codigo_municipal}</td>
                         <td>{m.nombre_completo}</td>
                         <td>{m.direccion_completa}</td>
                         <td className={`text-center ${Number(m.meses_deuda || 0) > 0 ? "fw-bold text-danger" : ""}`}>{m.meses_deuda}</td>
-                        <td className={`text-end ${parseFloat(m.deuda_anio || 0) > 0 ? "fw-bold" : "text-muted"}`}>
-                          S/. {parseFloat(m.deuda_anio || 0).toFixed(2)}
+                        <td className={`text-end ${parseAmount(m.deuda_total) > 0 ? "fw-bold" : "text-muted"}`}>
+                          S/. {parseAmount(m.deuda_total).toFixed(2)}
+                        </td>
+                        <td className={`text-end ${parseAmount(m.abono_total) > 0 ? "fw-bold text-success" : "text-muted"}`}>
+                          S/. {parseAmount(m.abono_total).toFixed(2)}
                         </td>
                       </tr>
                     ))
@@ -546,3 +677,5 @@ const ModalReporteCortes = ({
 };
 
 export default ModalReporteCortes;
+
+
