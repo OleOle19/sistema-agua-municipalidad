@@ -911,18 +911,30 @@ const recalcularRecibosFuturosPorServicios = async (
       SELECT
         r.id_recibo,
         CASE
-          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")}
-            THEN COALESCE(p.tarifa_agua, $2::numeric)
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+            AND (
+              ${sqlSnEsSi("p.agua_sn", "S")}
+              OR COALESCE(r.subtotal_agua, 0) > 0
+            )
+            THEN COALESCE(p.tarifa_agua, NULLIF(COALESCE(r.subtotal_agua, 0), 0), $2::numeric)
           ELSE 0::numeric
         END AS nuevo_agua,
         CASE
-          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")}
-            THEN COALESCE(p.tarifa_desague, $3::numeric)
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+            AND (
+              ${sqlSnEsSi("p.desague_sn", "S")}
+              OR COALESCE(r.subtotal_desague, 0) > 0
+            )
+            THEN COALESCE(p.tarifa_desague, NULLIF(COALESCE(r.subtotal_desague, 0), 0), $3::numeric)
           ELSE 0::numeric
         END AS nuevo_desague,
         CASE
-          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")}
-            THEN COALESCE(p.tarifa_limpieza, $4::numeric)
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+            AND (
+              ${sqlSnEsSi("p.limpieza_sn", "S")}
+              OR COALESCE(r.subtotal_limpieza, 0) > 0
+            )
+            THEN COALESCE(p.tarifa_limpieza, NULLIF(COALESCE(r.subtotal_limpieza, 0), 0), $4::numeric)
           ELSE 0::numeric
         END AS nuevo_limpieza,
         CASE
@@ -973,39 +985,53 @@ const repararRecibosPendientesSnLegacy = async () => {
       WITH objetivo AS (
         SELECT
           r.id_recibo,
+          COALESCE(r.subtotal_agua, 0) AS old_agua,
+          COALESCE(r.subtotal_desague, 0) AS old_desague,
+          COALESCE(r.subtotal_limpieza, 0) AS old_limpieza,
+          COALESCE(r.subtotal_admin, 0) AS old_admin,
           CASE
-            WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.agua_sn, 'S')) = 'S'
-              THEN COALESCE(p.tarifa_agua, $1::numeric)
-            ELSE 0::numeric
-          END AS old_agua,
-          CASE
-            WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.desague_sn, 'S')) = 'S'
-              THEN COALESCE(p.tarifa_desague, $2::numeric)
-            ELSE 0::numeric
-          END AS old_desague,
-          CASE
-            WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S' AND UPPER(COALESCE(p.limpieza_sn, 'S')) = 'S'
-              THEN COALESCE(p.tarifa_limpieza, $3::numeric)
-            ELSE 0::numeric
-          END AS old_limpieza,
-          CASE
-            WHEN UPPER(COALESCE(p.activo_sn, 'S')) = 'S'
-              THEN COALESCE(p.tarifa_admin, $4::numeric) + COALESCE(p.tarifa_extra, 0::numeric)
-            ELSE 0::numeric
-          END AS old_admin,
-          CASE
-            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")}
-              THEN COALESCE(p.tarifa_agua, $1::numeric)
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+              AND (
+                ${sqlSnEsSi("p.agua_sn", "S")}
+                OR COALESCE(r.subtotal_agua, 0) > 0
+                OR (COALESCE(hist.agua_hist, 0) > 0 AND COALESCE(p.tarifa_agua, 0) <= 0)
+              )
+              THEN COALESCE(
+                p.tarifa_agua,
+                NULLIF(COALESCE(r.subtotal_agua, 0), 0),
+                NULLIF(COALESCE(hist.agua_hist, 0), 0),
+                $1::numeric
+              )
             ELSE 0::numeric
           END AS new_agua,
           CASE
-            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")}
-              THEN COALESCE(p.tarifa_desague, $2::numeric)
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+              AND (
+                ${sqlSnEsSi("p.desague_sn", "S")}
+                OR COALESCE(r.subtotal_desague, 0) > 0
+                OR (COALESCE(hist.desague_hist, 0) > 0 AND COALESCE(p.tarifa_desague, 0) <= 0)
+              )
+              THEN COALESCE(
+                p.tarifa_desague,
+                NULLIF(COALESCE(r.subtotal_desague, 0), 0),
+                NULLIF(COALESCE(hist.desague_hist, 0), 0),
+                $2::numeric
+              )
             ELSE 0::numeric
           END AS new_desague,
           CASE
-            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")}
-              THEN COALESCE(p.tarifa_limpieza, $3::numeric)
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+              AND (
+                ${sqlSnEsSi("p.limpieza_sn", "S")}
+                OR COALESCE(r.subtotal_limpieza, 0) > 0
+                OR (COALESCE(hist.limpieza_hist, 0) > 0 AND COALESCE(p.tarifa_limpieza, 0) <= 0)
+              )
+              THEN COALESCE(
+                p.tarifa_limpieza,
+                NULLIF(COALESCE(r.subtotal_limpieza, 0), 0),
+                NULLIF(COALESCE(hist.limpieza_hist, 0), 0),
+                $3::numeric
+              )
             ELSE 0::numeric
           END AS new_limpieza,
           CASE
@@ -1015,6 +1041,36 @@ const repararRecibosPendientesSnLegacy = async () => {
           END AS new_admin
         FROM recibos r
         INNER JOIN predios p ON p.id_predio = r.id_predio
+        LEFT JOIN LATERAL (
+          SELECT
+            (
+              SELECT COALESCE(rh.subtotal_agua, 0)
+              FROM recibos rh
+              WHERE rh.id_predio = r.id_predio
+                AND rh.id_recibo <> r.id_recibo
+                AND COALESCE(rh.subtotal_agua, 0) > 0
+              ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+              LIMIT 1
+            ) AS agua_hist,
+            (
+              SELECT COALESCE(rh.subtotal_desague, 0)
+              FROM recibos rh
+              WHERE rh.id_predio = r.id_predio
+                AND rh.id_recibo <> r.id_recibo
+                AND COALESCE(rh.subtotal_desague, 0) > 0
+              ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+              LIMIT 1
+            ) AS desague_hist,
+            (
+              SELECT COALESCE(rh.subtotal_limpieza, 0)
+              FROM recibos rh
+              WHERE rh.id_predio = r.id_predio
+                AND rh.id_recibo <> r.id_recibo
+                AND COALESCE(rh.subtotal_limpieza, 0) > 0
+              ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+              LIMIT 1
+            ) AS limpieza_hist
+        ) hist ON TRUE
         WHERE r.estado = 'PENDIENTE'
           AND NOT EXISTS (
             SELECT 1
