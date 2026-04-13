@@ -6590,7 +6590,6 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     const anioActual = Number(fechaBase.anio || getCurrentYear());
     const mesActual = Number(fechaBase.mes || getCurrentMonth());
     const periodoActual = (anioActual * 100) + mesActual;
-    const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
 
     await client.query("BEGIN");
     txStarted = true;
@@ -6604,11 +6603,11 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
         WHERE id_contribuyente = $1
           AND estado = 'APROBADO'
           AND periodo_num > $2
-      `, [idContribuyente, periodoEmitidoMaximo]);
+      `, [idContribuyente, periodoActual]);
       permisosFuturosSet = new Set(
         permisosRs.rows
           .map((row) => Number(row?.periodo_num || 0))
-          .filter((v) => Number.isInteger(v) && v > periodoEmitidoMaximo)
+          .filter((v) => Number.isInteger(v) && v > periodoActual)
       );
     }
     const filtrarRowsPorPermisos = (rows = []) => {
@@ -6616,7 +6615,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       const permisos = permisosFuturosSet || new Set();
       return rows.filter((row) => {
         const periodoNum = (Number(row?.anio || 0) * 100) + Number(row?.mes || 0);
-        if (periodoNum <= periodoEmitidoMaximo) return true;
+        if (periodoNum <= periodoActual) return true;
         return permisos.has(periodoNum);
       });
     };
@@ -6685,7 +6684,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     if (predio.rows.length === 0 || predio.rows[0].estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) {
       const rows = filtrarRowsPorPermisos(pendientes.rows.map((row) => ({
         ...row,
-        es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoEmitidoMaximo
+        es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoActual
       })));
       await client.query("COMMIT");
       txStarted = false;
@@ -6707,7 +6706,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     const totalBase = roundMonto2(subtotalBase.agua + subtotalBase.desague + subtotalBase.limpieza + subtotalBase.admin);
     const rows = filtrarRowsPorPermisos(pendientes.rows.map((row) => ({
       ...row,
-      es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoEmitidoMaximo
+      es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoActual
     })));
     if (totalBase <= 0) {
       await client.query("COMMIT");
@@ -6754,7 +6753,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       const key = `${anio}-${mes}`;
       if (existing.has(key)) continue;
       const periodoNum = (anio * 100) + mes;
-      if (periodoNum > periodoEmitidoMaximo && incluirAdelantados && aplicarFiltroPermisosFuturos) {
+      if (periodoNum > periodoActual && incluirAdelantados && aplicarFiltroPermisosFuturos) {
         if (!permisosFuturosSet || !permisosFuturosSet.has(periodoNum)) {
           continue;
         }
@@ -6807,10 +6806,10 @@ app.post("/caja/permisos-adelantado/solicitar", async (req, res) => {
     if (periodos.length === 0) {
       return res.status(400).json({ error: "Debe indicar al menos un periodo válido (mes/año)." });
     }
-    const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
-    const periodosNoEmitidos = periodos.filter((p) => Number(p.periodo_num || 0) > periodoEmitidoMaximo);
-    if (periodosNoEmitidos.length === 0) {
-      return res.status(400).json({ error: "Solo se pueden habilitar periodos no emitidos para Caja." });
+    const periodoActual = getCurrentPeriodoNum();
+    const periodosFuturos = periodos.filter((p) => Number(p.periodo_num || 0) > periodoActual);
+    if (periodosFuturos.length === 0) {
+      return res.status(400).json({ error: "Solo se pueden habilitar periodos futuros para Caja." });
     }
     const motivo = normalizeLimitedText(
       req.body?.motivo,
@@ -6834,7 +6833,7 @@ app.post("/caja/permisos-adelantado/solicitar", async (req, res) => {
     }
 
     const creados = [];
-    for (const p of periodosNoEmitidos) {
+    for (const p of periodosFuturos) {
       const upsert = await client.query(`
         INSERT INTO caja_permisos_adelantado (
           id_contribuyente, anio, mes, periodo_num, estado, origen, motivo, id_usuario_solicita, metadata
@@ -6921,7 +6920,7 @@ app.get("/caja/permisos-adelantado/:id_contribuyente", async (req, res) => {
       return res.status(400).json({ error: "ID de contribuyente inválido." });
     }
     await ensureCajaPermisosAdelantadoTable(client);
-    const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
+    const ahoraPeriodo = getCurrentPeriodoNum();
     const data = await client.query(`
       SELECT
         id_permiso,
@@ -6939,7 +6938,7 @@ app.get("/caja/permisos-adelantado/:id_contribuyente", async (req, res) => {
         AND estado = 'APROBADO'
         AND periodo_num > $2
       ORDER BY periodo_num ASC, id_permiso ASC
-    `, [idContribuyente, periodoEmitidoMaximo]);
+    `, [idContribuyente, ahoraPeriodo]);
     return res.json({
       items: data.rows.map((row) => ({
         id_permiso: Number(row.id_permiso || 0),
