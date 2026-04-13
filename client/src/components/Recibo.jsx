@@ -30,6 +30,10 @@ const RECIBO_TEXTOS = {
 const CAL = {
   nudgeX: 6,
   nudgeY: 0,
+  topBlockOffsetX: -15,
+  topBlockOffsetY: 10,
+  bottomBlockOffsetX: 0,
+  bottomBlockOffsetY: 23,
   // Coordenadas del bloque superior.
   top: {
     // IMPORTANTE: estos nombres deben mantenerse exactos (xMes, xAnio, xNumero).
@@ -156,6 +160,10 @@ const Recibo = forwardRef(({ datos }, ref) => {
   // Helpers para aplicar calibracion global a cada coordenada.
   const x = (value) => mm(value + CAL.nudgeX);
   const y = (value) => mm(value + CAL.nudgeY);
+  const xTop = (value) => x(value + CAL.topBlockOffsetX);
+  const yTop = (value) => y(value + CAL.topBlockOffsetY);
+  const xBottom = (value) => x(value + CAL.bottomBlockOffsetX);
+  const yBottom = (value) => y(value + CAL.bottomBlockOffsetY);
 
   const baseText = {
     position: "absolute",
@@ -183,29 +191,29 @@ const Recibo = forwardRef(({ datos }, ref) => {
         textTransform: "uppercase"
       }}
     >
-      <div style={{ ...baseText, left: x(CAL.top.xMes), top: y(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xTop(CAL.top.xMes), top: yTop(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
         {mesLabel}
       </div>
-      <div style={{ ...baseText, left: x(CAL.top.xAnio), top: y(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xTop(CAL.top.xAnio), top: yTop(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
         {anioLabel}
       </div>
-      <div style={{ ...baseText, left: x(CAL.top.xNumero), top: y(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xTop(CAL.top.xNumero), top: yTop(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
         {reciboNumero}
       </div>
 
-      <div style={{ ...baseText, left: x(CAL.top.xCodigo), top: y(CAL.top.yCodigo), fontSize: "3.0mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xTop(CAL.top.xCodigo), top: yTop(CAL.top.yCodigo), fontSize: "3.0mm", fontWeight: 700 }}>
         {contribuyente.codigo_municipal || ""}
       </div>
-      <div style={{ ...baseText, left: x(CAL.top.xNombre), top: y(CAL.top.yNombre), fontSize: "2.9mm", maxWidth: mm(78), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <div style={{ ...baseText, left: xTop(CAL.top.xNombre), top: yTop(CAL.top.yNombre), fontSize: "2.9mm", maxWidth: mm(78), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         {contribuyente.nombre_completo || ""}
       </div>
-      <div style={{ ...baseText, left: x(CAL.top.xDireccion), top: y(CAL.top.yDireccion), fontSize: "2.9mm", maxWidth: mm(78), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <div style={{ ...baseText, left: xTop(CAL.top.xDireccion), top: yTop(CAL.top.yDireccion), fontSize: "2.9mm", maxWidth: mm(78), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         {predio.direccion_completa || ""}
       </div>
-      <div style={{ ...baseText, left: x(CAL.top.xDistrito), top: y(CAL.top.yDistrito), fontSize: "2.9mm", maxWidth: mm(40), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <div style={{ ...baseText, left: xTop(CAL.top.xDistrito), top: yTop(CAL.top.yDistrito), fontSize: "2.9mm", maxWidth: mm(40), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         {RECIBO_TEXTOS.distrito}
       </div>
-      <div style={{ ...baseText, left: x(CAL.top.xTipoServicio), top: y(CAL.top.yTipoServicio), fontSize: "3.0mm", maxWidth: mm(45), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <div style={{ ...baseText, left: xTop(CAL.top.xTipoServicio), top: yTop(CAL.top.yTipoServicio), fontSize: "3.0mm", maxWidth: mm(45), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         {RECIBO_TEXTOS.tipoServicio}
       </div>
 
@@ -214,8 +222,8 @@ const Recibo = forwardRef(({ datos }, ref) => {
           <div
             style={{
               ...baseText,
-              left: x(CAL.top.xConcepto),
-              top: y(CAL.top.yDetalleInicio + (idx * CAL.top.detalleGap)),
+              left: xTop(CAL.top.xConcepto),
+              top: yTop(CAL.top.yDetalleInicio + (idx * CAL.top.detalleGap)),
               fontSize: "3.0mm",
               maxWidth: mm(80),
               whiteSpace: "nowrap",
@@ -228,8 +236,8 @@ const Recibo = forwardRef(({ datos }, ref) => {
           <div
             style={{
               ...baseText,
-              left: x(CAL.top.xImporte),
-              top: y(CAL.top.yDetalleInicio + (idx * CAL.top.detalleGap)),
+              left: xTop(CAL.top.xImporte),
+              top: yTop(CAL.top.yDetalleInicio + (idx * CAL.top.detalleGap)),
               width: mm(14),
               textAlign: "right",
               fontSize: "3.0mm",
@@ -244,8 +252,8 @@ const Recibo = forwardRef(({ datos }, ref) => {
       <div
         style={{
           ...baseText,
-          left: x(CAL.top.xTotal),
-          top: y(CAL.top.yTotal),
+          left: xTop(CAL.top.xTotal),
+          top: yTop(CAL.top.yTotal),
           width: mm(14),
           textAlign: "right",
           fontSize: "3.3mm",
@@ -258,8 +266,8 @@ const Recibo = forwardRef(({ datos }, ref) => {
       <div
         style={{
           ...baseText,
-          left: x(CAL.top.xNota),
-          top: y(CAL.top.yNota),
+          left: xTop(CAL.top.xNota),
+          top: yTop(CAL.top.yNota),
           fontSize: "2.5mm",
           width: mm(68),
           whiteSpace: "pre-line",
@@ -270,18 +278,18 @@ const Recibo = forwardRef(({ datos }, ref) => {
         {RECIBO_TEXTOS.notaPago}
       </div>
 
-      <div style={{ ...baseText, left: x(CAL.top.xFechaTop), top: y(CAL.top.yFechaEmisionTop), width: mm(CAL.top.fechaWidth), textAlign: "right", fontSize: "3.0mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xTop(CAL.top.xFechaTop), top: yTop(CAL.top.yFechaEmisionTop), width: mm(CAL.top.fechaWidth), textAlign: "right", fontSize: "3.0mm", fontWeight: 700 }}>
         {fechaEmision}
       </div>
-      <div style={{ ...baseText, left: x(CAL.top.xFechaTop), top: y(CAL.top.yFechaCorteTop), width: mm(CAL.top.fechaWidth), textAlign: "right", fontSize: "3.0mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xTop(CAL.top.xFechaTop), top: yTop(CAL.top.yFechaCorteTop), width: mm(CAL.top.fechaWidth), textAlign: "right", fontSize: "3.0mm", fontWeight: 700 }}>
         {fechaCorte}
       </div>
 
       <div
         style={{
           ...baseText,
-          left: x(CAL.top.debt.xAnterior),
-          top: y(CAL.top.debt.y),
+          left: xTop(CAL.top.debt.xAnterior),
+          top: yTop(CAL.top.debt.y),
           width: mm(CAL.top.debt.boxW),
           fontSize: "3.0mm"
         }}
@@ -306,8 +314,8 @@ const Recibo = forwardRef(({ datos }, ref) => {
       <div
         style={{
           ...baseText,
-          left: x(CAL.top.debt.xMes),
-          top: y(CAL.top.debt.y),
+          left: xTop(CAL.top.debt.xMes),
+          top: yTop(CAL.top.debt.y),
           width: mm(CAL.top.debt.boxW),
           fontSize: "3.0mm"
         }}
@@ -329,27 +337,27 @@ const Recibo = forwardRef(({ datos }, ref) => {
         </div>
       </div>
 
-      <div style={{ ...baseText, left: x(CAL.bottom.xMes), top: y(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xBottom(CAL.bottom.xMes), top: yBottom(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
         {mesLabel}
       </div>
-      <div style={{ ...baseText, left: x(CAL.bottom.xAnio), top: y(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xBottom(CAL.bottom.xAnio), top: yBottom(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
         {anioLabel}
       </div>
-      <div style={{ ...baseText, left: x(CAL.bottom.xNumero), top: y(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xBottom(CAL.bottom.xNumero), top: yBottom(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
         {reciboNumero}
       </div>
 
-      <div style={{ ...baseText, left: x(CAL.bottom.xNombre), top: y(CAL.bottom.yNombre), fontSize: "2.9mm", maxWidth: mm(55), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <div style={{ ...baseText, left: xBottom(CAL.bottom.xNombre), top: yBottom(CAL.bottom.yNombre), fontSize: "2.9mm", maxWidth: mm(55), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         {contribuyente.nombre_completo || ""}
       </div>
-      <div style={{ ...baseText, left: x(CAL.bottom.xEmision), top: y(CAL.bottom.yEmision), fontSize: "2.9mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xBottom(CAL.bottom.xEmision), top: yBottom(CAL.bottom.yEmision), fontSize: "2.9mm", fontWeight: 700 }}>
         {fechaEmision}
       </div>
-      <div style={{ ...baseText, left: x(CAL.bottom.xCorte), top: y(CAL.bottom.yCorte), fontSize: "2.9mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xBottom(CAL.bottom.xCorte), top: yBottom(CAL.bottom.yCorte), fontSize: "2.9mm", fontWeight: 700 }}>
         {fechaCorte}
       </div>
 
-      <div style={{ ...baseText, left: x(CAL.bottom.xTotal), top: y(CAL.bottom.yTotal), width: mm(14), textAlign: "right", fontSize: "4.0mm", fontWeight: 700 }}>
+      <div style={{ ...baseText, left: xBottom(CAL.bottom.xTotal), top: yBottom(CAL.bottom.yTotal), width: mm(14), textAlign: "right", fontSize: "4.0mm", fontWeight: 700 }}>
         {formatMonto(totalRecibo)}
       </div>
     </div>
