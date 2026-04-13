@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import api from "../api";
 import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
 
@@ -137,7 +137,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
 
             <div className="row g-3">
               <div className="col-6">
-                <label className="form-label">Anio</label>
+                <label className="form-label">Año</label>
                 <input type="number" className={inputClass} value={anio} onChange={(e) => setAnio(e.target.value)} />
               </div>
               <div className="col-6">
@@ -209,3 +209,4 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
 };
 
 export default ModalDeuda;
+

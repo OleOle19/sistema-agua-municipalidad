@@ -6,6 +6,17 @@ import CajaMunicipalApp from "./caja/CajaMunicipalApp";
 
 const MODULE_STORAGE_KEY = "sistema_modulo_activo";
 const AGUA_TOKEN_KEY = "token_agua";
+const LUZ_TOKEN_KEY = "token_luz";
+const LEGACY_TOKEN_KEY = "token";
+const clearAllModuleSessions = () => {
+  [
+    AGUA_TOKEN_KEY,
+    LUZ_TOKEN_KEY,
+    LEGACY_TOKEN_KEY
+  ].forEach((key) => {
+    try { localStorage.removeItem(key); } catch {}
+  });
+};
 
 const normalizeRole = (role) => {
   const raw = String(role || "").trim().toUpperCase();
@@ -63,11 +74,13 @@ function App() {
         setSelectorAviso("El modulo Caja Municipal solo permite cuentas de Administrador o Cajero.");
         return;
       }
+      clearAllModuleSessions();
       setSelectorAviso("");
       localStorage.setItem(MODULE_STORAGE_KEY, value);
       setModulo(value);
     },
     volver: () => {
+      clearAllModuleSessions();
       localStorage.removeItem(MODULE_STORAGE_KEY);
       setModulo("");
       setSelectorAviso("");
