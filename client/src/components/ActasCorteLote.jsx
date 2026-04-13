@@ -1,7 +1,8 @@
 import React, { forwardRef } from "react";
 import ActaCorte from "./ActaCorte";
 
-const GAP_MM = 1.5;
+const GAP_MM = 1.2;
+const ACTA_SLOT_MM = 90.5;
 
 const ActasCorteLote = forwardRef(({ actas = [] }, ref) => {
   const lista = Array.isArray(actas) ? actas : [];
@@ -17,7 +18,8 @@ const ActasCorteLote = forwardRef(({ actas = [] }, ref) => {
             pageBreakInside: "avoid",
             borderTop: idx > 0 ? "1px dashed #9ca3af" : "none",
             paddingTop: idx > 0 ? `${GAP_MM}mm` : 0,
-            marginBottom: `${GAP_MM}mm`
+            marginBottom: `${GAP_MM}mm`,
+            minHeight: `${ACTA_SLOT_MM}mm`
           }}
         >
           <ActaCorte datos={acta} compact />

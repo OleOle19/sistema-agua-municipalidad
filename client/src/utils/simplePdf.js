@@ -138,7 +138,8 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
 
   const generadoEn = payload?.generado_en ? new Date(payload.generado_en) : new Date();
   const fechaValida = Number.isNaN(generadoEn.getTime()) ? new Date() : generadoEn;
-  const totalDeuda = lista.reduce((acc, row) => acc + (Number.parseFloat(row?.deuda_anio || 0) || 0), 0);
+  const totalDeuda = lista.reduce((acc, row) => acc + (Number.parseFloat(row?.deuda_total ?? row?.deuda_anio ?? 0) || 0), 0);
+  const totalAbono = lista.reduce((acc, row) => acc + (Number.parseFloat(row?.abono_total ?? row?.abono_anio ?? 0) || 0), 0);
 
   const lines = [];
   lines.push("REPORTE DE ESTADO DE CONEXION");
@@ -147,7 +148,7 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
   lines.push(`Criterio: ${criterio?.descripcion || "Seleccion manual"}`);
   lines.push(`Estado: ${criterio?.estado_label || "Contribuyentes"}`);
   lines.push("Orden: Calle y numero ascendente");
-  lines.push(`Registros: ${lista.length} | Total deuda: ${formatMoney(totalDeuda)}`);
+  lines.push(`Registros: ${lista.length} | Total deuda: ${formatMoney(totalDeuda)} | Total abono: ${formatMoney(totalAbono)}`);
   if (mostrarEvidencia) {
     lines.push("Incluye evidencia de corte adjunta.");
   }
@@ -162,12 +163,13 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
       const dni = row?.dni_ruc || "-";
       const direccion = row?.direccion_completa || "";
       const meses = Number(row?.meses_deuda || 0);
-      const deuda = formatMoney(row?.deuda_anio || 0);
+      const deuda = formatMoney(row?.deuda_total ?? row?.deuda_anio ?? 0);
+      const abono = formatMoney(row?.abono_total ?? row?.abono_anio ?? 0);
 
       pushWrapped(lines, `${idx + 1}. [${codigo}] ${nombre}`);
       pushWrapped(lines, `   DNI: ${dni}`);
       pushWrapped(lines, `   Direccion: ${direccion}`);
-      pushWrapped(lines, `   Meses: ${meses} | Deuda: ${deuda}`);
+      pushWrapped(lines, `   Meses deuda: ${meses} | Deuda total: ${deuda} | Abono total: ${abono}`);
 
       if (mostrarDetalleCorte) {
         const fechaCorte = formatDate(row?.corte_fecha) || "-";
@@ -188,4 +190,3 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
   const streams = toPageStreams(lines);
   return buildPdfBlobFromStreams(streams);
 };
-

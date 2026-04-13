@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useReactToPrint } from "react-to-print";
 import { FaBolt, FaCashRegister, FaSignOutAlt, FaSyncAlt, FaTint } from "react-icons/fa";
 import api from "../api";
@@ -561,7 +561,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
       realtime.disconnect(true);
     };
   }, [usuarioSistema]);
-
   const buscarContribuyentesAgua = useCallback(async () => {
     const qRaw = String(busquedaContribuyenteAgua || "").trim();
     if (!qRaw) {
@@ -656,6 +655,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
           incluir_adelantados: "S",
           adelantado_meses: 12,
           incluir_futuros_existentes: permitirContingencia ? "N" : "S",
+          solo_futuros_habilitados: "S",
           fecha_corte: fecha
         }
       }),
@@ -767,6 +767,44 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash("warning", "No hay periodos disponibles para mostrar en cobro.");
     }
   }, [showFlash]);
+
+  useEffect(() => {
+    if (!usuarioSistema) return undefined;
+    const unsubscribe = realtime.onEvent((event) => {
+      const action = String(event?.action || "").trim().toLowerCase();
+      if (action !== "permiso_adelantado_habilitado") return;
+      const entity = event?.entity || {};
+      const idContribuyenteEvento = Number(entity?.id_contribuyente || 0);
+      const periodos = Array.isArray(entity?.periodos) ? entity.periodos : [];
+      const totalPeriodos = Number(entity?.total_periodos || periodos.length || 0);
+      const nombre = String(entity?.nombre_completo || entity?.codigo_municipal || "").trim();
+      showFlash(
+        "info",
+        `Ventanilla habilito ${totalPeriodos} mes(es) futuro(s)${nombre ? ` para ${nombre}` : ""}.`
+      );
+
+      const idSeleccionado = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
+      const fecha = String(fechaCobroAgua || "").trim();
+      if (!mostrarModalCobroAgua) return;
+      if (!idSeleccionado || idSeleccionado !== idContribuyenteEvento) return;
+      if (!isValidIsoDate(fecha)) return;
+      cargarPeriodosCobroAgua(idSeleccionado, fecha, {
+        avisarVacio: false,
+        permitirContingencia: permitirContingenciaAgua
+      }).catch(() => {});
+    });
+    return () => {
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
+  }, [
+    cargarPeriodosCobroAgua,
+    fechaCobroAgua,
+    mostrarModalCobroAgua,
+    permitirContingenciaAgua,
+    selectedContribuyenteAgua?.id_contribuyente,
+    showFlash,
+    usuarioSistema
+  ]);
 
   const abrirCobroDirectoAgua = async () => {
     const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
@@ -965,7 +1003,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       return;
     }
     if (fechaPago < fechaMinima) {
-      showFlash("warning", `Solo se permite registrar cobros hasta un anio atras. Fecha minima: ${fechaMinima}.`);
+      showFlash("warning", `Solo se permite registrar cobros hasta un año atrás. Fecha mínima: ${fechaMinima}.`);
       return;
     }
     const pagos = [];
@@ -1166,7 +1204,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       className: "bg-primary text-white"
     },
     {
-      label: "DEUDA EN BÚSQUEDA",
+      label: "DEUDA EN BÃšSQUEDA",
       value: formatMoney(totalPendienteAgua),
       className: "bg-danger text-white"
     }
@@ -1544,7 +1582,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   </div>
                   <div className="col-sm-8 col-md-6">
                     <div className="small text-muted">
-                      El cobro se registrara en el reporte de la fecha seleccionada. Retroactivo maximo: 1 anio.
+                      El cobro se registrará en el reporte de la fecha seleccionada. Retroactivo máximo: 1 año.
                     </div>
                   </div>
                   <div className="col-sm-12 col-md-3">
@@ -1798,5 +1836,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
 }
 
 export default CajaMunicipalApp;
+
 
 

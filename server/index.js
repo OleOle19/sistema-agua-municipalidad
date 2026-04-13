@@ -326,6 +326,98 @@ const uploadCorteEvidenciaArray = (fieldName = "evidencias") => (req, res, next)
     return res.status(400).json({ error: err.message || "No se pudieron procesar los archivos de evidencia." });
   });
 };
+const CONTRIBUYENTE_ADJUNTO_MAX_FILE_BYTES = Math.max(
+  1024 * 1024,
+  Number(process.env.CONTRIBUYENTE_ADJUNTO_MAX_FILE_BYTES || (20 * 1024 * 1024))
+);
+const CONTRIBUYENTE_ADJUNTO_MAX_FILES = Math.min(
+  20,
+  Math.max(1, Number(process.env.CONTRIBUYENTE_ADJUNTO_MAX_FILES || 8))
+);
+const CONTRIBUYENTE_ADJUNTO_UPLOAD_DIR = path.join(__dirname, "uploads", "contribuyentes_adjuntos");
+const CONTRIBUYENTE_ADJUNTO_ALLOWED_EXTS = new Set([
+  ".pdf",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".tif",
+  ".tiff",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx"
+]);
+const CONTRIBUYENTE_ADJUNTO_ALLOWED_MIMES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/bmp",
+  "image/tiff",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/octet-stream"
+]);
+const ensureContribuyenteAdjuntoUploadDir = () => {
+  try {
+    fs.mkdirSync(CONTRIBUYENTE_ADJUNTO_UPLOAD_DIR, { recursive: true });
+  } catch {}
+};
+const isContribuyenteAdjuntoTipoPermitido = (file) => {
+  const ext = String(path.extname(file?.originalname || "") || "").toLowerCase();
+  if (!CONTRIBUYENTE_ADJUNTO_ALLOWED_EXTS.has(ext)) return false;
+  const mime = String(file?.mimetype || "").trim().toLowerCase();
+  if (!mime) return true;
+  if (mime.startsWith("image/")) return true;
+  return CONTRIBUYENTE_ADJUNTO_ALLOWED_MIMES.has(mime);
+};
+const uploadContribuyenteAdjuntos = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        ensureContribuyenteAdjuntoUploadDir();
+        return cb(null, CONTRIBUYENTE_ADJUNTO_UPLOAD_DIR);
+      } catch (err) {
+        return cb(err);
+      }
+    },
+    filename: (req, file, cb) => {
+      const originalName = String(file?.originalname || "adjunto").trim();
+      const extRaw = String(path.extname(originalName) || "").toLowerCase();
+      const ext = CONTRIBUYENTE_ADJUNTO_ALLOWED_EXTS.has(extRaw) ? extRaw : ".bin";
+      const base = sanitizeFilenamePart(path.basename(originalName, extRaw), 40);
+      const unique = `${Date.now()}_${crypto.randomBytes(6).toString("hex")}_${base}${ext}`;
+      return cb(null, unique);
+    }
+  }),
+  limits: {
+    fileSize: CONTRIBUYENTE_ADJUNTO_MAX_FILE_BYTES,
+    files: CONTRIBUYENTE_ADJUNTO_MAX_FILES
+  }
+});
+const uploadContribuyenteAdjuntosArray = (fieldName = "adjuntos") => (req, res, next) => {
+  uploadContribuyenteAdjuntos.array(fieldName, CONTRIBUYENTE_ADJUNTO_MAX_FILES)(req, res, (err) => {
+    if (!err) return next();
+    cleanupUploadedTempFiles(req?.files);
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        error: `Un archivo excede el límite permitido (${Math.round(CONTRIBUYENTE_ADJUNTO_MAX_FILE_BYTES / (1024 * 1024))}MB).`
+      });
+    }
+    if (err.code === "LIMIT_FILE_COUNT") {
+      return res.status(400).json({
+        error: `Solo se permiten hasta ${CONTRIBUYENTE_ADJUNTO_MAX_FILES} archivo(s) por contribuyente.`
+      });
+    }
+    return res.status(400).json({ error: err.message || "No se pudieron procesar los archivos adjuntos." });
+  });
+};
 const AUTO_DEUDA_TIMEZONE = process.env.AUTO_DEUDA_TIMEZONE || APP_TIMEZONE;
 const AUTO_DEUDA_CHECK_MS = Number(process.env.AUTO_DEUDA_CHECK_MS || (60 * 60 * 1000));
 const AUTO_DEUDA_ACTIVA = process.env.AUTO_DEUDA_ACTIVA !== "0";
@@ -596,6 +688,18 @@ const diffDaysBetweenIsoDates = (fromIsoRaw, toIsoRaw) => {
   const toMs = isoDateToUtcMs(toIsoRaw);
   if (fromMs === null || toMs === null) return null;
   return Math.floor((toMs - fromMs) / DAY_IN_MS);
+};
+const shiftIsoDateByDays = (isoDateRaw, deltaDays = 0) => {
+  const iso = normalizeDateOnly(isoDateRaw);
+  if (!iso) return null;
+  const [yyyy, mm, dd] = iso.split("-").map((v) => Number(v));
+  const probe = new Date(Date.UTC(yyyy, mm - 1, dd));
+  if (Number.isNaN(probe.getTime())) return null;
+  probe.setUTCDate(probe.getUTCDate() + Number(deltaDays || 0));
+  const y = probe.getUTCFullYear();
+  const m = String(probe.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(probe.getUTCDate()).padStart(2, "0");
+  return `${String(y).padStart(4, "0")}-${m}-${d}`;
 };
 const getPagoCorrectionMinDate = (hoyIso = toISODate()) => {
   const hoy = normalizeDateOnly(hoyIso) || toISODate();
@@ -1382,6 +1486,8 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro\/pendientes$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/ordenes-cobro\/resumen-pendientes$/, minRole: "CAJERO" },
+  { methods: ["POST"], pattern: /^\/caja\/permisos-adelantado\/solicitar$/, minRole: "ADMIN_SEC" },
+  { methods: ["GET"], pattern: /^\/caja\/permisos-adelantado\/\d+$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro\/\d+\/cobrar$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro\/\d+\/anular$/, minRole: "ADMIN_SEC" },
   { methods: ["POST"], pattern: /^\/caja\/conteo-efectivo$/, minRole: "CAJERO" },
@@ -1946,6 +2052,83 @@ const ensureEstadoConexionEvidenciasTable = async (client) => {
   `);
 };
 
+const ensureContribuyentesAdjuntosTable = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS contribuyentes_adjuntos (
+      id_adjunto BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      id_contribuyente INTEGER NOT NULL REFERENCES contribuyentes(id_contribuyente) ON DELETE CASCADE,
+      id_usuario INTEGER NULL,
+      tipo_contexto VARCHAR(30) NOT NULL DEFAULT 'ALTA',
+      descripcion TEXT NULL,
+      archivo_nombre TEXT NOT NULL,
+      archivo_mime VARCHAR(160) NULL,
+      archivo_bytes BIGINT NOT NULL DEFAULT 0,
+      archivo_sha256 VARCHAR(64) NOT NULL,
+      archivo_path TEXT NOT NULL
+    )
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_contribuyentes_adjuntos_contribuyente
+    ON contribuyentes_adjuntos (id_contribuyente, creado_en DESC)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_contribuyentes_adjuntos_contexto
+    ON contribuyentes_adjuntos (tipo_contexto, creado_en DESC)
+  `);
+};
+
+const ensureCajaPermisosAdelantadoTable = async (client) => {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS caja_permisos_adelantado (
+      id_permiso BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      actualizado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      id_contribuyente INTEGER NOT NULL REFERENCES contribuyentes(id_contribuyente) ON DELETE CASCADE,
+      anio INTEGER NOT NULL,
+      mes INTEGER NOT NULL,
+      periodo_num INTEGER NOT NULL,
+      estado VARCHAR(20) NOT NULL DEFAULT 'APROBADO',
+      origen VARCHAR(40) NOT NULL DEFAULT 'VENTANILLA_REIMPRESION',
+      motivo TEXT NULL,
+      id_usuario_solicita INTEGER NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+  await client.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_caja_permisos_adelantado_periodo
+    ON caja_permisos_adelantado (id_contribuyente, anio, mes)
+  `);
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS idx_caja_permisos_adelantado_estado
+    ON caja_permisos_adelantado (estado, periodo_num, creado_en DESC)
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_caja_permisos_adelantado_periodo'
+      ) THEN
+        ALTER TABLE caja_permisos_adelantado
+        ADD CONSTRAINT chk_caja_permisos_adelantado_periodo
+        CHECK (anio BETWEEN 1900 AND 9999 AND mes BETWEEN 1 AND 12);
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_caja_permisos_adelantado_estado'
+      ) THEN
+        ALTER TABLE caja_permisos_adelantado
+        ADD CONSTRAINT chk_caja_permisos_adelantado_estado
+        CHECK (estado IN ('APROBADO', 'BLOQUEADO', 'ANULADO'));
+      END IF;
+    END $$;
+  `);
+};
+
 const ensurePrediosDireccionAlterna = async (client) => {
   await client.query(`
     ALTER TABLE predios
@@ -2375,6 +2558,8 @@ const ensurePerformanceIndexes = async (client) => {
   await ensureEstadoConexionContribuyentes(client);
   await ensureEstadoConexionEventosTable(client);
   await ensureEstadoConexionEvidenciasTable(client);
+  await ensureContribuyentesAdjuntosTable(client);
+  await ensureCajaPermisosAdelantadoTable(client);
   await ensurePrediosDireccionAlterna(client);
   await ensureCampoSolicitudesTable(client);
   await ensureComparacionesLegacyTables(client);
@@ -4607,7 +4792,7 @@ const getLastDayOfMonth = (anio, mes) => new Date(Date.UTC(anio, mes, 0)).getUTC
 
 const parsePeriodoReporteConexion = (query = {}) => {
   const tipoRaw = String(query?.tipo_periodo || "").trim().toLowerCase();
-  const tipo = ["dia", "mes", "anio", "rango"].includes(tipoRaw) ? tipoRaw : "mes";
+  const tipo = ["dia", "mes", "anio", "rango", "todo"].includes(tipoRaw) ? tipoRaw : "mes";
   const hoy = normalizeDateOnly(toISODate()) || toISODate();
 
   if (tipo === "dia") {
@@ -4665,6 +4850,19 @@ const parsePeriodoReporteConexion = (query = {}) => {
     };
   }
 
+  if (tipo === "todo") {
+    const anio = getCurrentYear();
+    const mes = getCurrentMonth();
+    return {
+      tipo,
+      fecha_desde: "",
+      fecha_hasta: hoy,
+      anio_corte: anio,
+      mes_corte: mes,
+      periodo: "TODO"
+    };
+  }
+
   const periodoRaw = String(query?.periodo || "").trim();
   if (/^\d{4}-\d{2}$/.test(periodoRaw)) {
     const [anio, mes] = periodoRaw.split("-").map((v) => Number(v));
@@ -4693,6 +4891,15 @@ const parsePeriodoReporteConexion = (query = {}) => {
     mes_corte: mesSafe,
     periodo: `${String(anioSafe).padStart(4, "0")}-${String(mesSafe).padStart(2, "0")}`
   };
+};
+
+const parseIdsContribuyentesFromQuery = (rawValue) => {
+  if (!rawValue) return [];
+  const parts = String(rawValue || "")
+    .split(",")
+    .map((v) => Number(v))
+    .filter((v) => Number.isInteger(v) && v > 0);
+  return Array.from(new Set(parts)).slice(0, 5000);
 };
 
 const sortReporteEstadoConexionRows = (rows = [], ordenCampo = "direccion", ordenDireccion = "asc") => {
@@ -4734,13 +4941,21 @@ const sortReporteEstadoConexionRows = (rows = [], ordenCampo = "direccion", orde
 
 const obtenerReporteEstadoConexionRows = async ({
   estadoFiltro = "TODOS",
-  periodo = parsePeriodoReporteConexion({ tipo_periodo: "mes" })
+  periodo = parsePeriodoReporteConexion({ tipo_periodo: "mes" }),
+  idsContribuyentes = []
 } = {}) => {
   const anioCorte = Number(periodo?.anio_corte || getCurrentYear());
   const mesCorte = Number(periodo?.mes_corte || getCurrentMonth());
 
   const where = [];
   const params = [anioCorte, mesCorte];
+  const ids = Array.from(new Set((Array.isArray(idsContribuyentes) ? idsContribuyentes : [])
+    .map((v) => Number(v))
+    .filter((v) => Number.isInteger(v) && v > 0))).slice(0, 5000);
+  if (ids.length > 0) {
+    params.push(ids);
+    where.push(`c.id_contribuyente = ANY($${params.length}::int[])`);
+  }
   if (estadoFiltro !== "TODOS") {
     params.push(estadoFiltro);
     where.push(`COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = $${params.length}`);
@@ -4762,6 +4977,7 @@ const obtenerReporteEstadoConexionRows = async ({
       SELECT
         ro.id_predio,
         SUM(GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
+        SUM(COALESCE(pp.total_pagado, 0)) AS abono_total,
         COUNT(*) FILTER (WHERE (ro.total_pagar - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
       FROM recibos_objetivo ro
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
@@ -4771,6 +4987,7 @@ const obtenerReporteEstadoConexionRows = async ({
       SELECT
         p.id_contribuyente,
         SUM(COALESCE(rp.deuda_total, 0)) AS deuda_total,
+        SUM(COALESCE(rp.abono_total, 0)) AS abono_total,
         SUM(COALESCE(rp.meses_deuda_total, 0)) AS meses_deuda
       FROM predios p
       LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
@@ -4808,7 +5025,8 @@ const obtenerReporteEstadoConexionRows = async ({
       COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
       COALESCE(tc.monto_mensual_base, 0) AS monto_mensual_base,
       COALESCE(rc.meses_deuda, 0) AS meses_deuda,
-      COALESCE(rc.deuda_total, 0) AS deuda_total
+      COALESCE(rc.deuda_total, 0) AS deuda_total,
+      COALESCE(rc.abono_total, 0) AS abono_total
     FROM contribuyentes c
     LEFT JOIN direccion_principal dp ON dp.id_contribuyente = c.id_contribuyente
     LEFT JOIN resumen_contribuyente rc ON rc.id_contribuyente = c.id_contribuyente
@@ -4830,7 +5048,118 @@ const obtenerReporteEstadoConexionRows = async ({
       monto_referencia: montoMensual,
       recibos_emitidos_mes: 0,
       meses_deuda: Number(row.meses_deuda || 0),
-      deuda_total: roundMonto2(parseMonto(row.deuda_total, 0))
+      deuda_total: roundMonto2(parseMonto(row.deuda_total, 0)),
+      abono_total: roundMonto2(parseMonto(row.abono_total, 0))
+    };
+  });
+};
+
+const obtenerReporteEstadoConexionDetalleMensualRows = async ({
+  estadoFiltro = "TODOS",
+  periodo = parsePeriodoReporteConexion({ tipo_periodo: "todo" }),
+  idsContribuyentes = []
+} = {}) => {
+  const anioCorte = Number(periodo?.anio_corte || getCurrentYear());
+  const mesCorte = Number(periodo?.mes_corte || getCurrentMonth());
+  const fechaHasta = normalizeDateOnly(periodo?.fecha_hasta) || toISODate();
+
+  const where = [];
+  const params = [anioCorte, mesCorte, fechaHasta];
+  const ids = Array.from(new Set((Array.isArray(idsContribuyentes) ? idsContribuyentes : [])
+    .map((v) => Number(v))
+    .filter((v) => Number.isInteger(v) && v > 0))).slice(0, 5000);
+  if (ids.length > 0) {
+    params.push(ids);
+    where.push(`c.id_contribuyente = ANY($${params.length}::int[])`);
+  }
+  if (estadoFiltro !== "TODOS") {
+    params.push(estadoFiltro);
+    where.push(`COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = $${params.length}`);
+  }
+  where.push("((r.anio < $1) OR (r.anio = $1 AND r.mes <= $2))");
+
+  const query = `
+    WITH pagos_por_recibo AS (
+      SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
+      FROM pagos p
+      WHERE DATE(p.fecha_pago) <= $3::date
+      GROUP BY p.id_recibo
+    ),
+    direccion_principal AS (
+      SELECT x.id_contribuyente, x.direccion_completa
+      FROM (
+        SELECT
+          p.id_contribuyente,
+          ${buildDireccionSql("ca", "p")} AS direccion_completa,
+          ROW_NUMBER() OVER (PARTITION BY p.id_contribuyente ORDER BY p.id_predio ASC) AS rn
+        FROM predios p
+        LEFT JOIN calles ca ON ca.id_calle = p.id_calle
+      ) x
+      WHERE x.rn = 1
+    )
+    SELECT
+      c.id_contribuyente,
+      c.codigo_municipal,
+      c.nombre_completo,
+      COALESCE(NULLIF(TRIM(dp.direccion_completa), ''), '-') AS direccion_completa,
+      COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
+      r.anio,
+      r.mes,
+      SUM(COALESCE(r.subtotal_agua, 0)) AS subtotal_agua,
+      SUM(COALESCE(r.subtotal_desague, 0)) AS subtotal_desague,
+      SUM(COALESCE(r.subtotal_limpieza, 0)) AS subtotal_limpieza,
+      SUM(COALESCE(r.subtotal_admin, 0)) AS subtotal_admin,
+      SUM(COALESCE(r.total_pagar, 0)) AS total_mes,
+      SUM(COALESCE(pp.total_pagado, 0)) AS abono_mes,
+      SUM(
+        CASE
+          WHEN (r.anio > $1) OR (r.anio = $1 AND r.mes > $2) THEN 0
+          ELSE GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)
+        END
+      ) AS deuda_mes
+    FROM contribuyentes c
+    JOIN predios p ON p.id_contribuyente = c.id_contribuyente
+    JOIN recibos r ON r.id_predio = p.id_predio
+    LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+    LEFT JOIN direccion_principal dp ON dp.id_contribuyente = c.id_contribuyente
+    ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+    GROUP BY
+      c.id_contribuyente,
+      c.codigo_municipal,
+      c.nombre_completo,
+      dp.direccion_completa,
+      COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION'),
+      r.anio,
+      r.mes
+    ORDER BY c.nombre_completo ASC, r.anio ASC, r.mes ASC
+  `;
+
+  const rs = await pool.query(query, params);
+  return rs.rows.map((row) => {
+    const totalMes = roundMonto2(parseMonto(row.total_mes, 0));
+    const abonoMes = roundMonto2(parseMonto(row.abono_mes, 0));
+    const deudaMes = roundMonto2(parseMonto(row.deuda_mes, 0));
+    let estadoRecibo = "NO_EXIGIBLE";
+    if (abonoMes >= totalMes && totalMes > 0) estadoRecibo = "PAGADO";
+    else if (abonoMes > 0) estadoRecibo = "PARCIAL";
+    else if (deudaMes > 0) estadoRecibo = "PENDIENTE";
+
+    return {
+      id_contribuyente: Number(row.id_contribuyente || 0),
+      codigo_municipal: row.codigo_municipal || "",
+      nombre_completo: row.nombre_completo || "",
+      direccion_completa: row.direccion_completa || "-",
+      estado_conexion: normalizeEstadoConexion(row.estado_conexion),
+      anio: Number(row.anio || 0),
+      mes: Number(row.mes || 0),
+      subtotal_agua: roundMonto2(parseMonto(row.subtotal_agua, 0)),
+      subtotal_desague: roundMonto2(parseMonto(row.subtotal_desague, 0)),
+      subtotal_limpieza: roundMonto2(parseMonto(row.subtotal_limpieza, 0)),
+      subtotal_admin: roundMonto2(parseMonto(row.subtotal_admin, 0)),
+      total_mes: totalMes,
+      deuda_mes: deudaMes,
+      abono_mes: abonoMes,
+      estado_recibo: estadoRecibo
     };
   });
 };
@@ -4839,9 +5168,10 @@ app.get("/contribuyentes/reporte-estado-conexion", async (req, res) => {
   try {
     const estado = normalizeReporteEstadoConexionFilter(req.query?.estado);
     const periodo = parsePeriodoReporteConexion(req.query);
+    const idsContribuyentes = parseIdsContribuyentesFromQuery(req.query?.ids);
     const ordenarPor = normalizeReporteOrdenCampo(req.query?.ordenar_por, "direccion");
     const orden = normalizeReporteOrdenDireccion(req.query?.orden, "asc");
-    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, periodo });
+    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, periodo, idsContribuyentes });
     const rowsOrdenadas = sortReporteEstadoConexionRows(rows, ordenarPor, orden);
     return res.json({
       meta: {
@@ -4865,9 +5195,10 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
   try {
     const estado = normalizeReporteEstadoConexionFilter(req.query?.estado);
     const periodo = parsePeriodoReporteConexion(req.query);
+    const idsContribuyentes = parseIdsContribuyentesFromQuery(req.query?.ids);
     const ordenarPor = normalizeReporteOrdenCampo(req.query?.ordenar_por, "direccion");
     const orden = normalizeReporteOrdenDireccion(req.query?.orden, "asc");
-    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, periodo });
+    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, periodo, idsContribuyentes });
     const rowsOrdenadas = sortReporteEstadoConexionRows(rows, ordenarPor, orden);
 
     const wb = new ExcelJS.Workbook();
@@ -4886,16 +5217,20 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
       campo: "Total deuda",
       valor: Number(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.deuda_total, 0), 0).toFixed(2))
     });
+    wsResumen.addRow({
+      campo: "Total abono",
+      valor: Number(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.abono_total, 0), 0).toFixed(2))
+    });
 
-    const ws = wb.addWorksheet("Detalle");
+    const ws = wb.addWorksheet(periodo.tipo === "todo" ? "Contribuyentes" : "Detalle");
     ws.columns = [
       { header: "CODIGO", key: "codigo_municipal", width: 14 },
       { header: "CONTRIBUYENTE", key: "nombre_completo", width: 42 },
       { header: "DIRECCION", key: "direccion_completa", width: 44 },
       { header: "ESTADO", key: "estado_conexion", width: 18 },
-      { header: "MONTO_MENSUAL", key: "monto_mensual", width: 16 },
-      { header: "MESES_DEUDA", key: "meses_deuda", width: 14 },
-      { header: "DEUDA_TOTAL", key: "deuda_total", width: 16 }
+      { header: "Meses Deuda", key: "meses_deuda", width: 14 },
+      { header: "Deuda Total", key: "deuda_total", width: 16 },
+      { header: "Abono Total", key: "abono_total", width: 16 }
     ];
     ws.getRow(1).font = { bold: true };
     rowsOrdenadas.forEach((row) => {
@@ -4904,28 +5239,115 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
         nombre_completo: row.nombre_completo,
         direccion_completa: row.direccion_completa,
         estado_conexion: row.estado_conexion,
-        monto_mensual: row.monto_mensual,
         meses_deuda: row.meses_deuda,
-        deuda_total: row.deuda_total
+        deuda_total: row.deuda_total,
+        abono_total: row.abono_total
       });
     });
     const totalMeses = rowsOrdenadas.reduce((acc, item) => acc + Number(item?.meses_deuda || 0), 0);
     const totalDeuda = roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.deuda_total, 0), 0));
+    const totalAbono = roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.abono_total, 0), 0));
     const totalRow = ws.addRow({
       codigo_municipal: "",
       nombre_completo: "TOTAL",
       direccion_completa: "",
       estado_conexion: "",
-      monto_mensual: "",
       meses_deuda: totalMeses,
-      deuda_total: totalDeuda
+      deuda_total: totalDeuda,
+      abono_total: totalAbono
     });
     totalRow.font = { bold: true };
     for (let i = 2; i <= ws.rowCount; i += 1) {
-      ws.getCell(`E${i}`).numFmt = "#,##0.00";
+      ws.getCell(`F${i}`).numFmt = "#,##0.00";
       ws.getCell(`G${i}`).numFmt = "#,##0.00";
+      ws.getCell(`H${i}`).numFmt = "#,##0.00";
     }
     ws.views = [{ state: "frozen", ySplit: 1 }];
+
+    if (periodo.tipo === "todo") {
+      const monthLabels = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+      const detalleRows = await obtenerReporteEstadoConexionDetalleMensualRows({
+        estadoFiltro: estado,
+        periodo,
+        idsContribuyentes
+      });
+      const wsDetalle = wb.addWorksheet("Detalle");
+      wsDetalle.columns = [
+        { header: "CODIGO", key: "codigo_municipal", width: 14 },
+        { header: "CONTRIBUYENTE", key: "nombre_completo", width: 34 },
+        { header: "DIRECCION", key: "direccion_completa", width: 36 },
+        { header: "ESTADO", key: "estado_conexion", width: 16 },
+        { header: "AÑO", key: "anio", width: 10 },
+        { header: "MES", key: "mes_label", width: 12 },
+        { header: "AGUA", key: "subtotal_agua", width: 12 },
+        { header: "DESAGUE", key: "subtotal_desague", width: 12 },
+        { header: "LIMPIEZA", key: "subtotal_limpieza", width: 12 },
+        { header: "ADMIN", key: "subtotal_admin", width: 12 },
+        { header: "TOTAL MES", key: "total_mes", width: 14 },
+        { header: "DEUDA MES", key: "deuda_mes", width: 14 },
+        { header: "ABONO MES", key: "abono_mes", width: 14 },
+        { header: "ESTADO RECIBO", key: "estado_recibo", width: 16 }
+      ];
+      wsDetalle.getRow(1).font = { bold: true };
+
+      let totalAgua = 0;
+      let totalDesague = 0;
+      let totalLimpieza = 0;
+      let totalAdmin = 0;
+      let totalMes = 0;
+      let totalDeudaMes = 0;
+      let totalAbonoMes = 0;
+
+      detalleRows.forEach((row) => {
+        totalAgua += parseMonto(row.subtotal_agua, 0);
+        totalDesague += parseMonto(row.subtotal_desague, 0);
+        totalLimpieza += parseMonto(row.subtotal_limpieza, 0);
+        totalAdmin += parseMonto(row.subtotal_admin, 0);
+        totalMes += parseMonto(row.total_mes, 0);
+        totalDeudaMes += parseMonto(row.deuda_mes, 0);
+        totalAbonoMes += parseMonto(row.abono_mes, 0);
+        wsDetalle.addRow({
+          codigo_municipal: row.codigo_municipal,
+          nombre_completo: row.nombre_completo,
+          direccion_completa: row.direccion_completa,
+          estado_conexion: row.estado_conexion,
+          anio: row.anio,
+          mes_label: monthLabels[Number(row.mes || 0)] || String(row.mes || ""),
+          subtotal_agua: row.subtotal_agua,
+          subtotal_desague: row.subtotal_desague,
+          subtotal_limpieza: row.subtotal_limpieza,
+          subtotal_admin: row.subtotal_admin,
+          total_mes: row.total_mes,
+          deuda_mes: row.deuda_mes,
+          abono_mes: row.abono_mes,
+          estado_recibo: row.estado_recibo
+        });
+      });
+
+      const totalDetalleRow = wsDetalle.addRow({
+        codigo_municipal: "",
+        nombre_completo: "TOTAL",
+        direccion_completa: "",
+        estado_conexion: "",
+        anio: "",
+        mes_label: "",
+        subtotal_agua: roundMonto2(totalAgua),
+        subtotal_desague: roundMonto2(totalDesague),
+        subtotal_limpieza: roundMonto2(totalLimpieza),
+        subtotal_admin: roundMonto2(totalAdmin),
+        total_mes: roundMonto2(totalMes),
+        deuda_mes: roundMonto2(totalDeudaMes),
+        abono_mes: roundMonto2(totalAbonoMes),
+        estado_recibo: ""
+      });
+      totalDetalleRow.font = { bold: true };
+      for (let i = 2; i <= wsDetalle.rowCount; i += 1) {
+        for (const col of ["G", "H", "I", "J", "K", "L", "M"]) {
+          wsDetalle.getCell(`${col}${i}`).numFmt = "#,##0.00";
+        }
+      }
+      wsDetalle.views = [{ state: "frozen", ySplit: 1 }];
+    }
 
     const estadoTag = estado === "TODOS" ? "TODOS" : estado;
     const periodoTag = String(periodo.periodo || "")
@@ -5069,8 +5491,9 @@ app.get("/contribuyentes/detalle/:id", async (req, res) => {
 });
 
 // CREAR CONTRIBUYENTE (CÓDIGO NUMÉRICO AUTOGENERADO)
-app.post("/contribuyentes", async (req, res) => {
+app.post("/contribuyentes", uploadContribuyenteAdjuntosArray("adjuntos"), async (req, res) => {
   const client = await pool.connect();
+  const uploadedFiles = Array.isArray(req.files) ? req.files : [];
   try {
     const {
       dni_ruc, nombre_completo, telefono, id_calle, numero_casa, manzana, lote, sec_nombre, estado_conexion
@@ -5079,7 +5502,16 @@ app.post("/contribuyentes", async (req, res) => {
     const predioEstado = estadoConexionToPredio(estadoConexion);
 
     if (!nombre_completo || !dni_ruc || !id_calle) {
+      cleanupUploadedTempFiles(uploadedFiles);
       return res.status(400).json({ error: "Faltan datos obligatorios." });
+    }
+    for (const file of uploadedFiles) {
+      if (!isContribuyenteAdjuntoTipoPermitido(file)) {
+        cleanupUploadedTempFiles(uploadedFiles);
+        return res.status(400).json({
+          error: `Archivo adjunto no permitido: ${String(file?.originalname || "sin_nombre")}. Formatos permitidos: PDF, imagen, Word o Excel.`
+        });
+      }
     }
 
     await client.query("BEGIN");
@@ -5099,13 +5531,48 @@ app.post("/contribuyentes", async (req, res) => {
       "INSERT INTO predios (id_contribuyente, id_calle, numero_casa, manzana, lote, id_tarifa, estado_servicio, activo_sn) VALUES ($1, $2, $3, $4, $5, 1, $6, $7)",
       [id, id_calle, numero_casa, manzana, lote, predioEstado.estado_servicio, predioEstado.activo_sn]
     );
+    if (uploadedFiles.length > 0) {
+      await ensureContribuyentesAdjuntosTable(client);
+      for (const file of uploadedFiles) {
+        const originalName = normalizeLimitedText(file?.originalname, 240) || "adjunto";
+        const mime = normalizeLimitedText(file?.mimetype, 160) || null;
+        const fileBytes = Number(file?.size || 0);
+        const absolutePath = path.resolve(String(file?.path || "").trim());
+        if (!absolutePath.startsWith(path.resolve(CONTRIBUYENTE_ADJUNTO_UPLOAD_DIR))) {
+          throw new Error("Ruta de adjunto de contribuyente inválida.");
+        }
+        const relativePath = path.relative(__dirname, absolutePath).replace(/\\/g, "/");
+        const sha = await sha256File(absolutePath);
+        await client.query(`
+          INSERT INTO contribuyentes_adjuntos (
+            id_contribuyente, id_usuario, tipo_contexto, descripcion,
+            archivo_nombre, archivo_mime, archivo_bytes, archivo_sha256, archivo_path
+          )
+          VALUES ($1, $2, 'ALTA', $3, $4, $5, $6, $7, $8)
+        `, [
+          id,
+          req.user?.id_usuario || null,
+          "Adjunto de alta de contribuyente.",
+          originalName,
+          mime,
+          fileBytes,
+          sha,
+          relativePath
+        ]);
+      }
+    }
 
     await client.query("COMMIT");
     invalidateContribuyentesCache();
-    res.json({ mensaje: "Registrado", codigo: codigoMunicipal });
+    res.json({
+      mensaje: "Registrado",
+      codigo: codigoMunicipal,
+      adjuntos_registrados: uploadedFiles.length
+    });
 
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
+    cleanupUploadedTempFiles(uploadedFiles);
     if (err.message === "CODIGO_MUNICIPAL_OVERFLOW") {
       return res.status(500).json({ error: "No se pudo generar el código municipal: rango agotado." });
     }
@@ -5667,6 +6134,84 @@ app.get("/contribuyentes/cortes/evidencias/:id_evidencia/descargar", async (req,
   }
 });
 
+app.get("/contribuyentes/:id_contribuyente/adjuntos", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureContribuyentesAdjuntosTable(client);
+    const idContribuyente = Number(req.params?.id_contribuyente);
+    if (!Number.isInteger(idContribuyente) || idContribuyente <= 0) {
+      return res.status(400).json({ error: "ID de contribuyente inválido." });
+    }
+    const data = await client.query(`
+      SELECT
+        id_adjunto,
+        creado_en,
+        id_contribuyente,
+        tipo_contexto,
+        descripcion,
+        archivo_nombre,
+        archivo_mime,
+        archivo_bytes
+      FROM contribuyentes_adjuntos
+      WHERE id_contribuyente = $1
+      ORDER BY creado_en DESC, id_adjunto DESC
+    `, [idContribuyente]);
+    return res.json({
+      items: data.rows.map((row) => ({
+        id_adjunto: Number(row.id_adjunto || 0),
+        creado_en: row.creado_en || null,
+        id_contribuyente: Number(row.id_contribuyente || 0),
+        tipo_contexto: row.tipo_contexto || "ALTA",
+        descripcion: row.descripcion || "",
+        archivo_nombre: row.archivo_nombre || "",
+        archivo_mime: row.archivo_mime || "",
+        archivo_bytes: Number(row.archivo_bytes || 0),
+        descarga_url: `/contribuyentes/adjuntos/${Number(row.id_adjunto || 0)}/descargar`
+      }))
+    });
+  } catch (err) {
+    console.error("Error listando adjuntos de contribuyente:", err);
+    return res.status(500).json({ error: "Error listando adjuntos del contribuyente." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/contribuyentes/adjuntos/:id_adjunto/descargar", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureContribuyentesAdjuntosTable(client);
+    const idAdjunto = Number(req.params?.id_adjunto);
+    if (!Number.isInteger(idAdjunto) || idAdjunto <= 0) {
+      return res.status(400).json({ error: "ID de adjunto inválido." });
+    }
+    const data = await client.query(`
+      SELECT archivo_nombre, archivo_mime, archivo_path
+      FROM contribuyentes_adjuntos
+      WHERE id_adjunto = $1
+      LIMIT 1
+    `, [idAdjunto]);
+    if (data.rows.length === 0) {
+      return res.status(404).json({ error: "Adjunto no encontrado." });
+    }
+    const row = data.rows[0];
+    const absolutePath = path.resolve(__dirname, String(row.archivo_path || ""));
+    const uploadRoot = path.resolve(CONTRIBUYENTE_ADJUNTO_UPLOAD_DIR);
+    if (!absolutePath.startsWith(uploadRoot)) {
+      return res.status(400).json({ error: "Ruta de adjunto inválida." });
+    }
+    if (!fs.existsSync(absolutePath)) {
+      return res.status(404).json({ error: "Archivo adjunto no disponible." });
+    }
+    return res.download(absolutePath, row.archivo_nombre || `adjunto_${idAdjunto}`);
+  } catch (err) {
+    console.error("Error descargando adjunto de contribuyente:", err);
+    return res.status(500).json({ error: "Error descargando adjunto del contribuyente." });
+  } finally {
+    client.release();
+  }
+});
+
 app.delete("/contribuyentes/:id", async (req, res) => {
   const client = await pool.connect();
   try {
@@ -5979,6 +6524,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     const fechaBase = parseDateYearMonth(fechaCorte, parseDateYearMonth(hoyIso));
     const incluirAdelantados = normalizeSN(req.query?.incluir_adelantados, "N") === "S";
     const incluirFuturosExistentes = normalizeSN(req.query?.incluir_futuros_existentes, "N") === "S";
+    const aplicarFiltroPermisosFuturos = normalizeSN(req.query?.solo_futuros_habilitados, "S") === "S";
     const adelantadoMeses = Math.min(24, Math.max(1, parsePositiveInt(req.query?.adelantado_meses, 12)));
     const anioActual = Number(fechaBase.anio || getCurrentYear());
     const mesActual = Number(fechaBase.mes || getCurrentMonth());
@@ -5986,6 +6532,32 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
 
     await client.query("BEGIN");
     txStarted = true;
+
+    let permisosFuturosSet = null;
+    if (incluirAdelantados && aplicarFiltroPermisosFuturos) {
+      await ensureCajaPermisosAdelantadoTable(client);
+      const permisosRs = await client.query(`
+        SELECT periodo_num
+        FROM caja_permisos_adelantado
+        WHERE id_contribuyente = $1
+          AND estado = 'APROBADO'
+          AND periodo_num > $2
+      `, [idContribuyente, periodoActual]);
+      permisosFuturosSet = new Set(
+        permisosRs.rows
+          .map((row) => Number(row?.periodo_num || 0))
+          .filter((v) => Number.isInteger(v) && v > periodoActual)
+      );
+    }
+    const filtrarRowsPorPermisos = (rows = []) => {
+      if (!incluirAdelantados || !aplicarFiltroPermisosFuturos) return rows;
+      const permisos = permisosFuturosSet || new Set();
+      return rows.filter((row) => {
+        const periodoNum = (Number(row?.anio || 0) * 100) + Number(row?.mes || 0);
+        if (periodoNum <= periodoActual) return true;
+        return permisos.has(periodoNum);
+      });
+    };
 
     // Auto-corrección preventiva: sincroniza recibos pendientes sin pagos con la tarifa/servicios vigentes.
     // Así evitamos cobros inconsistentes (por ejemplo, montos legacy desfasados) en cualquier contribuyente.
@@ -6049,10 +6621,10 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       LIMIT 1
     `, [idContribuyente]);
     if (predio.rows.length === 0 || predio.rows[0].estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) {
-      const rows = pendientes.rows.map((row) => ({
+      const rows = filtrarRowsPorPermisos(pendientes.rows.map((row) => ({
         ...row,
         es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoActual
-      }));
+      })));
       await client.query("COMMIT");
       txStarted = false;
       return res.json(rows);
@@ -6071,10 +6643,10 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
         : 0
     };
     const totalBase = roundMonto2(subtotalBase.agua + subtotalBase.desague + subtotalBase.limpieza + subtotalBase.admin);
-    const rows = pendientes.rows.map((row) => ({
+    const rows = filtrarRowsPorPermisos(pendientes.rows.map((row) => ({
       ...row,
       es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoActual
-    }));
+    })));
     if (incluirFuturosExistentes) {
       await client.query("COMMIT");
       txStarted = false;
@@ -6122,6 +6694,12 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       const mes = dt.getMonth() + 1;
       const key = `${anio}-${mes}`;
       if (existing.has(key)) continue;
+      const periodoNum = (anio * 100) + mes;
+      if (periodoNum > periodoActual && incluirAdelantados && aplicarFiltroPermisosFuturos) {
+        if (!permisosFuturosSet || !permisosFuturosSet.has(periodoNum)) {
+          continue;
+        }
+      }
       rows.push({
         id_recibo: null,
         mes,
@@ -6147,6 +6725,179 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     }
     console.error("Error obteniendo recibos pendientes:", err.message);
     return res.status(500).send("Error");
+  } finally {
+    client.release();
+  }
+});
+
+app.post("/caja/permisos-adelantado/solicitar", async (req, res) => {
+  const client = await pool.connect();
+  let txStarted = false;
+  try {
+    const idContribuyente = parsePositiveInt(req.body?.id_contribuyente, 0);
+    if (!idContribuyente) {
+      return res.status(400).json({ error: "ID de contribuyente inválido." });
+    }
+    const anioBase = parsePositiveInt(req.body?.anio, 0);
+    const periodosRaw = Array.isArray(req.body?.periodos)
+      ? req.body.periodos
+      : (Array.isArray(req.body?.meses)
+        ? req.body.meses.map((mes) => ({ anio: anioBase, mes }))
+        : []);
+    const periodos = sanitizePeriodosAdelantados(periodosRaw);
+    if (periodos.length === 0) {
+      return res.status(400).json({ error: "Debe indicar al menos un periodo válido (mes/año)." });
+    }
+    const periodoActual = getCurrentPeriodoNum();
+    const periodosFuturos = periodos.filter((p) => Number(p.periodo_num || 0) > periodoActual);
+    if (periodosFuturos.length === 0) {
+      return res.status(400).json({ error: "Solo se pueden habilitar periodos futuros para Caja." });
+    }
+    const motivo = normalizeLimitedText(
+      req.body?.motivo,
+      500
+    ) || "Habilitacion desde ventanilla para cobro adelantado en Caja.";
+    const origen = normalizeLimitedText(req.body?.origen, 40).toUpperCase() || "VENTANILLA_REIMPRESION";
+
+    await client.query("BEGIN");
+    txStarted = true;
+    await ensureCajaPermisosAdelantadoTable(client);
+    const contribData = await client.query(`
+      SELECT id_contribuyente, codigo_municipal, nombre_completo
+      FROM contribuyentes
+      WHERE id_contribuyente = $1
+      LIMIT 1
+    `, [idContribuyente]);
+    if (contribData.rows.length === 0) {
+      await client.query("ROLLBACK");
+      txStarted = false;
+      return res.status(404).json({ error: "Contribuyente no encontrado." });
+    }
+
+    const creados = [];
+    for (const p of periodosFuturos) {
+      const upsert = await client.query(`
+        INSERT INTO caja_permisos_adelantado (
+          id_contribuyente, anio, mes, periodo_num, estado, origen, motivo, id_usuario_solicita, metadata
+        )
+        VALUES ($1, $2, $3, $4, 'APROBADO', $5, $6, $7, $8::jsonb)
+        ON CONFLICT (id_contribuyente, anio, mes)
+        DO UPDATE
+           SET periodo_num = EXCLUDED.periodo_num,
+               estado = 'APROBADO',
+               origen = EXCLUDED.origen,
+               motivo = EXCLUDED.motivo,
+               id_usuario_solicita = EXCLUDED.id_usuario_solicita,
+               metadata = COALESCE(caja_permisos_adelantado.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+               actualizado_en = NOW()
+        RETURNING id_permiso, anio, mes, periodo_num, estado, creado_en, actualizado_en
+      `, [
+        idContribuyente,
+        Number(p.anio),
+        Number(p.mes),
+        Number(p.periodo_num),
+        origen,
+        motivo,
+        req.user?.id_usuario || null,
+        JSON.stringify({
+          fuente: "ventanilla",
+          operacion: "reimpresion",
+          usuario: req.user?.username || req.user?.nombre || null
+        })
+      ]);
+      if (upsert.rows.length > 0) {
+        const row = upsert.rows[0];
+        creados.push({
+          id_permiso: Number(row.id_permiso || 0),
+          anio: Number(row.anio || 0),
+          mes: Number(row.mes || 0),
+          periodo_num: Number(row.periodo_num || 0),
+          estado: row.estado || "APROBADO",
+          creado_en: row.creado_en || null,
+          actualizado_en: row.actualizado_en || null
+        });
+      }
+    }
+
+    await registrarAuditoria(
+      client,
+      "CAJA_PERMISO_ADELANTADO",
+      `contribuyente=${contribData.rows[0].codigo_municipal || idContribuyente}; periodos=${creados.map((p) => `${String(p.mes).padStart(2, "0")}/${p.anio}`).join(",")}; origen=${origen}`,
+      req.user?.nombre || req.user?.username || "SISTEMA"
+    );
+
+    await client.query("COMMIT");
+    txStarted = false;
+
+    realtimeHub.broadcast("caja", "permiso_adelantado_habilitado", {
+      id_contribuyente: idContribuyente,
+      codigo_municipal: contribData.rows[0].codigo_municipal || null,
+      nombre_completo: contribData.rows[0].nombre_completo || null,
+      periodos: creados.map((p) => ({ anio: p.anio, mes: p.mes })),
+      total_periodos: creados.length,
+      origen
+    });
+
+    return res.json({
+      mensaje: `Se habilitaron ${creados.length} periodo(s) futuro(s) en Caja para el contribuyente.`,
+      id_contribuyente: idContribuyente,
+      periodos: creados
+    });
+  } catch (err) {
+    if (txStarted) {
+      try { await client.query("ROLLBACK"); } catch {}
+    }
+    console.error("Error registrando permisos adelantados de caja:", err);
+    return res.status(500).json({ error: "Error registrando permisos de meses adelantados para Caja." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/caja/permisos-adelantado/:id_contribuyente", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const idContribuyente = parsePositiveInt(req.params?.id_contribuyente, 0);
+    if (!idContribuyente) {
+      return res.status(400).json({ error: "ID de contribuyente inválido." });
+    }
+    await ensureCajaPermisosAdelantadoTable(client);
+    const ahoraPeriodo = getCurrentPeriodoNum();
+    const data = await client.query(`
+      SELECT
+        id_permiso,
+        creado_en,
+        actualizado_en,
+        id_contribuyente,
+        anio,
+        mes,
+        periodo_num,
+        estado,
+        origen,
+        motivo
+      FROM caja_permisos_adelantado
+      WHERE id_contribuyente = $1
+        AND estado = 'APROBADO'
+        AND periodo_num > $2
+      ORDER BY periodo_num ASC, id_permiso ASC
+    `, [idContribuyente, ahoraPeriodo]);
+    return res.json({
+      items: data.rows.map((row) => ({
+        id_permiso: Number(row.id_permiso || 0),
+        creado_en: row.creado_en || null,
+        actualizado_en: row.actualizado_en || null,
+        id_contribuyente: Number(row.id_contribuyente || 0),
+        anio: Number(row.anio || 0),
+        mes: Number(row.mes || 0),
+        periodo_num: Number(row.periodo_num || 0),
+        estado: row.estado || "APROBADO",
+        origen: row.origen || "",
+        motivo: row.motivo || ""
+      }))
+    });
+  } catch (err) {
+    console.error("Error listando permisos adelantados de caja:", err);
+    return res.status(500).json({ error: "Error listando permisos adelantados de Caja." });
   } finally {
     client.release();
   }
@@ -8142,6 +8893,7 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
       )
       SELECT
         c.codigo_municipal,
+        COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
         COUNT(*) FILTER (
           WHERE GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
         ) AS meses_deuda,
@@ -8153,7 +8905,7 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
        AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
       WHERE c.id_contribuyente = $1
-      GROUP BY c.codigo_municipal
+      GROUP BY c.codigo_municipal, COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION')
     `, [idContribuyente, anioActual, mesActual]);
 
     if (resumen.rows.length === 0) {
@@ -8163,8 +8915,14 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
 
     const fila = resumen.rows[0];
     const codigoMunicipal = fila.codigo_municipal || null;
+    const estadoConexion = String(fila.estado_conexion || "CON_CONEXION").trim().toUpperCase();
     const mesesDeuda = Number(fila.meses_deuda || 0);
     const deudaTotal = parseMonto(fila.deuda_total, 0);
+
+    if (estadoConexion !== "CON_CONEXION") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "El acta de corte solo aplica a contribuyentes con conexión activa." });
+    }
 
     if (mesesDeuda < 4) {
       await client.query("ROLLBACK");
@@ -8239,6 +8997,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
       SELECT
         c.id_contribuyente,
         c.codigo_municipal,
+        COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
         COUNT(*) FILTER (
           WHERE GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
         ) AS meses_deuda,
@@ -8250,7 +9009,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
        AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
       WHERE c.id_contribuyente = ANY($1::int[])
-      GROUP BY c.id_contribuyente, c.codigo_municipal
+      GROUP BY c.id_contribuyente, c.codigo_municipal, COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION')
     `, [ids, anioActual, mesActual]);
 
     const resumenById = new Map();
@@ -8270,8 +9029,20 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
         continue;
       }
       const codigoMunicipal = row.codigo_municipal || null;
+      const estadoConexion = String(row.estado_conexion || "CON_CONEXION").trim().toUpperCase();
       const mesesDeuda = Number(row.meses_deuda || 0);
       const deudaTotal = parseMonto(row.deuda_total, 0);
+
+      if (estadoConexion !== "CON_CONEXION") {
+        omitidas.push({
+          id_contribuyente: idContribuyente,
+          codigo_municipal: codigoMunicipal,
+          meses_deuda: mesesDeuda,
+          deuda_total: deudaTotal,
+          motivo: "Sin conexión activa."
+        });
+        continue;
+      }
 
       if (mesesDeuda < 4) {
         omitidas.push({
@@ -8535,9 +9306,20 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
   }
 });
 
-const TIPOS_REPORTE_CAJA = new Set(["diario", "semanal", "mensual", "anual"]);
+const TIPOS_REPORTE_CAJA = new Set(["diario", "semanal", "mensual", "anual", "rango"]);
 
-const obtenerRangoCaja = async (tipo, fechaReferencia) => {
+const obtenerRangoCaja = async (tipo, fechaReferencia, rangoManual = null) => {
+  if (tipo === "rango") {
+    let desde = normalizeDateOnly(rangoManual?.desde || fechaReferencia) || normalizeDateOnly(fechaReferencia) || toISODate();
+    let hasta = normalizeDateOnly(rangoManual?.hasta || desde) || desde;
+    if (desde > hasta) {
+      const tmp = desde;
+      desde = hasta;
+      hasta = tmp;
+    }
+    const hastaExclusivo = shiftIsoDateByDays(hasta, 1) || hasta;
+    return { desde, hasta: hastaExclusivo };
+  }
   const rango = await pool.query(`
     SELECT
       CASE
@@ -8560,7 +9342,7 @@ const construirSerieTemporalCaja = async (tipo, desde, hasta) => {
   let labelSql = "to_char(date_trunc('hour', p.fecha_pago), 'HH24:00')";
   let orderSql = "date_trunc('hour', p.fecha_pago)";
 
-  if (tipo === "semanal" || tipo === "mensual") {
+  if (tipo === "semanal" || tipo === "mensual" || tipo === "rango") {
     labelSql = "to_char(DATE(p.fecha_pago), 'DD/MM')";
     orderSql = "DATE(p.fecha_pago)";
   } else if (tipo === "anual") {
@@ -8587,15 +9369,17 @@ const construirSerieTemporalCaja = async (tipo, desde, hasta) => {
   }));
 };
 
-const construirResumenCaja = async (tipo, fechaReferencia) => {
-  const cacheKey = `${tipo}|${fechaReferencia}`;
+const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) => {
+  const cacheKey = tipo === "rango"
+    ? `${tipo}|${normalizeDateOnly(rangoManual?.desde) || ""}|${normalizeDateOnly(rangoManual?.hasta) || ""}`
+    : `${tipo}|${fechaReferencia}`;
   const now = Date.now();
   const cached = reportesCajaCache.get(cacheKey);
   if (cached && now < cached.expiresAt) {
     return cached.data;
   }
 
-  const rango = await obtenerRangoCaja(tipo, fechaReferencia);
+  const rango = await obtenerRangoCaja(tipo, fechaReferencia, rangoManual);
   const desde = rango.desde;
   const hasta = rango.hasta;
 
@@ -8700,7 +9484,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     : (Number.isFinite(pageSizeRaw) ? Math.min(500, Math.max(25, pageSizeRaw)) : 200);
   const offset = includeAllMovimientos ? 0 : (safePage - 1) * safePageSize;
 
-  const resumen = await construirResumenCaja(tipo, fechaReferencia);
+  const resumen = await construirResumenCaja(tipo, fechaReferencia, options.rangoManual || null);
   const desde = resumen.rango.desde;
   const hasta = resumen.rango.hasta_exclusivo;
   const cantidadMovimientos = Number(resumen.cantidad_movimientos || 0);
@@ -8975,14 +9759,33 @@ app.get("/caja/reporte", async (req, res) => {
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
     const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
     const hoy = toISODate();
-    const fecha = normalizeDateOnly(req.query.fecha) || hoy;
-    if (fecha > hoy) {
+    let fecha = normalizeDateOnly(req.query.fecha) || hoy;
+    let rangoManual = null;
+    if (tipo === "rango") {
+      let fechaDesde = normalizeDateOnly(req.query.fecha_desde || req.query.desde) || fecha;
+      let fechaHasta = normalizeDateOnly(req.query.fecha_hasta || req.query.hasta) || fecha;
+      if (fechaDesde > fechaHasta) {
+        const tmp = fechaDesde;
+        fechaDesde = fechaHasta;
+        fechaHasta = tmp;
+      }
+      if (fechaDesde > hoy || fechaHasta > hoy) {
+        return res.status(400).json({ error: "No se permite consultar rango de caja con fechas futuras." });
+      }
+      rangoManual = { desde: fechaDesde, hasta: fechaHasta };
+      fecha = fechaHasta;
+    } else if (fecha > hoy) {
       return res.status(400).json({ error: "No se permite consultar caja con fecha futura." });
     }
     const page = Number(req.query.page || 1);
     const pageSize = Number(req.query.page_size || 200);
     const mostrarCodigoImpresion = true;
-    const data = await construirReporteCaja(tipo, fecha, { page, pageSize, includeCodigoImpresion: mostrarCodigoImpresion });
+    const data = await construirReporteCaja(tipo, fecha, {
+      page,
+      pageSize,
+      includeCodigoImpresion: mostrarCodigoImpresion,
+      rangoManual
+    });
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: "Error reporte caja." });
@@ -8994,14 +9797,29 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
     const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
     const hoy = toISODate();
-    const fecha = normalizeDateOnly(req.query.fecha) || hoy;
-    if (fecha > hoy) {
+    let fecha = normalizeDateOnly(req.query.fecha) || hoy;
+    let rangoManual = null;
+    if (tipo === "rango") {
+      let fechaDesde = normalizeDateOnly(req.query.fecha_desde || req.query.desde) || fecha;
+      let fechaHasta = normalizeDateOnly(req.query.fecha_hasta || req.query.hasta) || fecha;
+      if (fechaDesde > fechaHasta) {
+        const tmp = fechaDesde;
+        fechaDesde = fechaHasta;
+        fechaHasta = tmp;
+      }
+      if (fechaDesde > hoy || fechaHasta > hoy) {
+        return res.status(400).json({ error: "No se permite exportar rango de caja con fechas futuras." });
+      }
+      rangoManual = { desde: fechaDesde, hasta: fechaHasta };
+      fecha = fechaHasta;
+    } else if (fecha > hoy) {
       return res.status(400).json({ error: "No se permite exportar caja con fecha futura." });
     }
     const mostrarCodigoImpresion = true;
     const data = await construirReporteCaja(tipo, fecha, {
       includeAllMovimientos: true,
-      includeCodigoImpresion: mostrarCodigoImpresion
+      includeCodigoImpresion: mostrarCodigoImpresion,
+      rangoManual
     });
 
     const workbook = new ExcelJS.Workbook();
@@ -9044,7 +9862,9 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
       });
     });
 
-    const fechaSafe = String(fecha).replace(/[^\d-]/g, "");
+    const fechaSafe = tipo === "rango"
+      ? `${String(data.rango?.desde || "").replace(/[^\d-]/g, "")}_${String(data.rango?.hasta_exclusivo || "").replace(/[^\d-]/g, "")}`
+      : String(fecha).replace(/[^\d-]/g, "");
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename=reporte_caja_${tipo}_${fechaSafe}.xlsx`);
     await workbook.xlsx.write(res);
@@ -12066,15 +12886,37 @@ app.post("/recibos/masivos", async (req, res) => {
   try {
     const { tipo_seleccion, ids_usuarios, id_calle, anio, mes, meses } = req.body;
     const incluirPagados = normalizeSN(req.body?.incluir_pagados, "N") === "S";
+    const permitirMesesFuturos = normalizeSN(req.body?.permitir_meses_futuros, "N") === "S";
+    const anioSeleccionado = parsePositiveInt(anio, 0);
+    if (!anioSeleccionado) {
+      return res.status(400).json({ error: "Año inválido para impresión/reimpresión." });
+    }
     const mesesSeleccionados = (Array.isArray(meses) ? meses : [mes])
       .map((m) => Number(m))
       .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
     if (mesesSeleccionados.length === 0) {
       return res.status(400).json({ error: "Seleccione al menos un mes valido." });
     }
+    const now = new Date();
+    const periodoEmitidoMaximo = now.getMonth() === 0
+      ? ((now.getFullYear() - 1) * 100) + 12
+      : (now.getFullYear() * 100) + now.getMonth();
+    const bloquearMesesNoEmitidos = !incluirPagados || !permitirMesesFuturos;
+    if (bloquearMesesNoEmitidos) {
+      const tieneMesNoEmitido = mesesSeleccionados.some((mesSel) =>
+        ((anioSeleccionado * 100) + Number(mesSel || 0)) > periodoEmitidoMaximo
+      );
+      if (tieneMesNoEmitido) {
+        return res.status(400).json({
+          error: incluirPagados
+            ? "Para reimpresión solo se permiten meses ya emitidos. Active 'habilitar meses futuros' para pago adelantado."
+            : "Para impresión mensual solo se permiten meses ya emitidos."
+        });
+      }
+    }
 
     let filtro = "";
-    const params = [anio, mesesSeleccionados]; 
+    const params = [anioSeleccionado, mesesSeleccionados];
 
     if (tipo_seleccion === 'calle') {
         filtro = "AND p.id_calle = $3";
@@ -12122,7 +12964,6 @@ app.post("/recibos/masivos", async (req, res) => {
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
       WHERE r.anio = $1
         AND r.mes = ANY($2::int[])
-        AND COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'
         ${incluirPagados ? "" : "AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0"}
         ${filtro}
       ORDER BY r.mes ASC, ca.nombre ASC, p.numero_casa ASC, c.nombre_completo ASC

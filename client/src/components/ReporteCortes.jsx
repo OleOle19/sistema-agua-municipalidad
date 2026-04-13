@@ -1,6 +1,11 @@
 import { forwardRef, useMemo } from "react";
 import { compareByDireccionAsc, getStreetDisplayName, getStreetGroupKey } from "../utils/cortesAddress";
 
+const parseAmount = (value) => {
+  const n = Number.parseFloat(value);
+  return Number.isFinite(n) ? n : 0;
+};
+
 const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) => {
   const lista = useMemo(() => {
     const rows = datos?.lista && Array.isArray(datos.lista)
@@ -29,16 +34,27 @@ const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) =>
   const estadoLabel = String(datos?.criterio?.estado_label || "Contribuyentes");
   const estadoObjetivo = String(datos?.criterio?.estado_objetivo || "").toUpperCase();
   const fechaGeneracion = datos?.generado_en ? new Date(datos.generado_en) : new Date();
-  const totalDeuda = lista.reduce((acc, curr) => acc + (parseFloat(curr.deuda_anio || 0) || 0), 0);
+  const totalDeuda = lista.reduce((acc, curr) => acc + parseAmount(curr.deuda_total ?? curr.deuda_anio), 0);
+  const totalAbono = lista.reduce((acc, curr) => acc + parseAmount(curr.abono_total ?? curr.abono_anio), 0);
   const mostrarDetalleCorte = estadoObjetivo === "CORTADO";
   const mostrarEvidencia = mostrarDetalleCorte && Boolean(datos?.mostrar_evidencia);
   const formato = String(datos?.formato || "print").toLowerCase();
+  const totalColumnas = 8 + (mostrarDetalleCorte ? 2 : 0) + (mostrarEvidencia ? 1 : 0);
 
   return (
     <div ref={ref} className="p-4 text-dark" style={{ width: "100%", fontFamily: "Arial, sans-serif", backgroundColor: "white" }}>
+      <div className="d-flex justify-content-center align-items-center gap-3 mb-3">
+        <img
+          src="/logo.png"
+          alt="Logo Municipalidad"
+          style={{ width: "54px", height: "54px", objectFit: "contain" }}
+        />
+        <div className="text-center">
+          <h3 className="fw-bold mb-1">REPORTE DE ESTADO DE CONEXION</h3>
+          <p className="text-muted mb-1">Municipalidad Distrital de Pueblo Nuevo</p>
+        </div>
+      </div>
       <div className="text-center mb-3">
-        <h3 className="fw-bold">REPORTE DE ESTADO DE CONEXION</h3>
-        <p className="text-muted mb-1">Municipalidad Distrital de Pueblo Nuevo</p>
         <p className="small mb-0">Fecha: {fechaGeneracion.toLocaleDateString()} {fechaGeneracion.toLocaleTimeString()}</p>
         <p className="small mb-0"><strong>Criterio:</strong> {criterio}</p>
         <p className="small mb-0"><strong>Estado:</strong> {estadoLabel}</p>
@@ -49,6 +65,8 @@ const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) =>
         <strong>REGISTROS:</strong> {lista.length}
         {" | "}
         <strong>TOTAL DEUDA:</strong> S/. {totalDeuda.toFixed(2)}
+        {" | "}
+        <strong>TOTAL ABONO:</strong> S/. {totalAbono.toFixed(2)}
         {mostrarEvidencia && (
           <>
             {" | "}
@@ -65,8 +83,9 @@ const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) =>
             <th>Contribuyente</th>
             <th>DNI</th>
             <th>Direccion</th>
-            <th>Meses</th>
-            <th>Deuda</th>
+            <th>Meses Deuda</th>
+            <th>Deuda Total</th>
+            <th>Abono Total</th>
             {mostrarDetalleCorte && <th>Fecha Corte</th>}
             {mostrarDetalleCorte && <th>Motivo</th>}
             {mostrarEvidencia && <th>Evidencia</th>}
@@ -74,7 +93,7 @@ const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) =>
         </thead>
         <tbody>
           {lista.length === 0 ? (
-            <tr><td colSpan={7 + (mostrarDetalleCorte ? 2 : 0) + (mostrarEvidencia ? 1 : 0)} className="text-center p-3">No hay datos para este criterio.</td></tr>
+            <tr><td colSpan={totalColumnas} className="text-center p-3">No hay datos para este criterio.</td></tr>
           ) : (
             (() => {
               let correlativo = 0;
@@ -82,7 +101,7 @@ const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) =>
                 if (entry.type === "street") {
                   return (
                     <tr key={entry.key}>
-                      <td colSpan={7 + (mostrarDetalleCorte ? 2 : 0) + (mostrarEvidencia ? 1 : 0)} className="fw-bold bg-light text-uppercase">
+                      <td colSpan={totalColumnas} className="fw-bold bg-light text-uppercase">
                         Calle: {entry.street}
                       </td>
                     </tr>
@@ -94,6 +113,8 @@ const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) =>
                 const fechaLabel = fechaCorte && !Number.isNaN(fechaCorte.getTime())
                   ? fechaCorte.toLocaleDateString("es-PE")
                   : "";
+                const deudaTotal = parseAmount(m.deuda_total ?? m.deuda_anio);
+                const abonoTotal = parseAmount(m.abono_total ?? m.abono_anio);
                 return (
                   <tr key={entry.key}>
                     <td className="text-center">{correlativo}</td>
@@ -102,8 +123,11 @@ const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) =>
                     <td className="text-center">{m.dni_ruc || "-"}</td>
                     <td>{m.direccion_completa}</td>
                     <td className={`text-center ${Number(m.meses_deuda || 0) > 0 ? "fw-bold text-danger" : ""}`}>{m.meses_deuda}</td>
-                    <td className={`text-end ${parseFloat(m.deuda_anio || 0) > 0 ? "fw-bold" : "text-muted"}`}>
-                      S/. {parseFloat(m.deuda_anio || 0).toFixed(2)}
+                    <td className={`text-end ${deudaTotal > 0 ? "fw-bold" : "text-muted"}`}>
+                      S/. {deudaTotal.toFixed(2)}
+                    </td>
+                    <td className={`text-end ${abonoTotal > 0 ? "fw-bold text-success" : "text-muted"}`}>
+                      S/. {abonoTotal.toFixed(2)}
                     </td>
                     {mostrarDetalleCorte && <td className="text-center">{fechaLabel}</td>}
                     {mostrarDetalleCorte && <td>{m.corte_motivo || m.estado_conexion_motivo_ultimo || ""}</td>}

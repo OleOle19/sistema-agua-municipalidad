@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+﻿import { useState, useEffect } from "react";
 import api from "../api";
 import { FaLayerGroup, FaBuilding, FaUsers, FaPrint } from "react-icons/fa";
 
@@ -17,6 +17,16 @@ const MONTH_OPTIONS = [
   { value: 12, label: "Dic" }
 ];
 
+const getPeriodoNum = (anio, mes) => (Number(anio || 0) * 100) + Number(mes || 0);
+const getUltimoPeriodoEmitido = () => {
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  if (currentMonth === 1) {
+    return { anio: now.getFullYear() - 1, mes: 12 };
+  }
+  return { anio: now.getFullYear(), mes: currentMonth - 1 };
+};
+
 const ModalImpresionMasiva = ({
   cerrarModal,
   alConfirmar,
@@ -27,13 +37,22 @@ const ModalImpresionMasiva = ({
   const [calles, setCalles] = useState([]);
   const [cargando, setCargando] = useState(false);
   const soloSeleccion = modoOperacion === "reimpresion";
+  const ultimoPeriodoEmitido = getUltimoPeriodoEmitido();
+  const maxPeriodoEmitidoNum = getPeriodoNum(ultimoPeriodoEmitido.anio, ultimoPeriodoEmitido.mes);
   const [modo, setModo] = useState(soloSeleccion ? "seleccion" : (idsSeleccionados.length > 0 ? "seleccion" : "calle"));
-  const currentYear = new Date().getFullYear();
   const [seleccion, setSeleccion] = useState({
     id_calle: "",
-    meses: [new Date().getMonth() + 1],
-    anio: currentYear
+    meses: [ultimoPeriodoEmitido.mes],
+    anio: ultimoPeriodoEmitido.anio
   });
+  const [permitirMesesFuturos, setPermitirMesesFuturos] = useState(false);
+
+  const anioSeleccionado = Number(seleccion.anio || ultimoPeriodoEmitido.anio);
+  const permitirMesesNoEmitidos = soloSeleccion && permitirMesesFuturos;
+  const esMesNoEmitido = (mes, anio = anioSeleccionado) => getPeriodoNum(anio, mes) > maxPeriodoEmitidoNum;
+  const opcionesMeses = !permitirMesesNoEmitidos
+    ? MONTH_OPTIONS.filter((m) => !esMesNoEmitido(m.value, anioSeleccionado))
+    : MONTH_OPTIONS;
 
   useEffect(() => {
     api.get("/calles").then((res) => setCalles(res.data)).catch((err) => console.error(err));
@@ -44,6 +63,20 @@ const ModalImpresionMasiva = ({
       setModo("seleccion");
     }
   }, [soloSeleccion]);
+
+  useEffect(() => {
+    if (permitirMesesNoEmitidos) return;
+    setSeleccion((prev) => {
+      const anioPrev = Number(prev.anio || ultimoPeriodoEmitido.anio);
+      const anioAjustado = anioPrev > ultimoPeriodoEmitido.anio ? ultimoPeriodoEmitido.anio : anioPrev;
+      const mesesPrev = Array.isArray(prev.meses) ? prev.meses : [];
+      const mesesFiltrados = mesesPrev.filter((m) => getPeriodoNum(anioAjustado, Number(m)) <= maxPeriodoEmitidoNum);
+      const cambioAnio = String(prev.anio) !== String(anioAjustado);
+      const cambioMeses = mesesFiltrados.length !== mesesPrev.length;
+      if (!cambioAnio && !cambioMeses) return prev;
+      return { ...prev, anio: anioAjustado, meses: mesesFiltrados };
+    });
+  }, [maxPeriodoEmitidoNum, permitirMesesNoEmitidos, ultimoPeriodoEmitido.anio]);
 
   const toggleMes = (mes) => {
     setSeleccion((prev) => {
@@ -65,21 +98,66 @@ const ModalImpresionMasiva = ({
     if (modo === "calle" && !seleccion.id_calle) return alert("Seleccione una calle");
     if (!seleccion.meses || seleccion.meses.length === 0) return alert("Seleccione al menos un mes");
 
+    const anioNum = Number(seleccion.anio || 0);
+    if (!Number.isInteger(anioNum) || anioNum < 1900) return alert("Ingrese un año válido.");
+    const mesesNormalizados = (seleccion.meses || [])
+      .map((m) => Number(m))
+      .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
+    const mesesNoEmitidosSeleccionados = mesesNormalizados.filter((m) => esMesNoEmitido(m, anioNum));
+    if (mesesNoEmitidosSeleccionados.length > 0 && !permitirMesesNoEmitidos) {
+      return alert("Solo se permiten meses ya emitidos. Active \"Habilitar meses futuros\" para adelantos.");
+    }
+
     setCargando(true);
     try {
       const payload = {
         ...seleccion,
-        meses: (seleccion.meses || []).map((m) => Number(m)).filter((m) => Number.isFinite(m)),
+        anio: anioNum,
+        meses: mesesNormalizados,
         tipo_seleccion: modo,
         ids_usuarios: idsSeleccionados,
-        incluir_pagados: soloSeleccion ? "S" : "N"
+        incluir_pagados: "S",
+        permitir_meses_futuros: (soloSeleccion && permitirMesesFuturos) ? "S" : "N"
       };
-      const res = await api.post("/recibos/masivos", payload);
-      const datosImpresion = (Array.isArray(res.data) ? res.data : []).map((row) => ({
-        ...row,
-        cargo_reimpresion: 0
-      }));
+
+      let mensajePermiso = "";
+      const debeSolicitarPermisoCaja = soloSeleccion
+        && permitirMesesNoEmitidos
+        && mesesNoEmitidosSeleccionados.length > 0
+        && Array.isArray(idsSeleccionados)
+        && idsSeleccionados.length === 1;
+
+      if (debeSolicitarPermisoCaja) {
+        const permisoRes = await api.post("/caja/permisos-adelantado/solicitar", {
+          id_contribuyente: Number(idsSeleccionados[0]),
+          anio: anioNum,
+          meses: mesesNoEmitidosSeleccionados,
+          origen: "VENTANILLA_REIMPRESION",
+          motivo: "Habilitacion de meses futuros desde reimpresion en ventanilla."
+        });
+        mensajePermiso = String(permisoRes?.data?.mensaje || "").trim();
+      }
+
+      let datosImpresion = [];
+      try {
+        const res = await api.post("/recibos/masivos", payload);
+        datosImpresion = (Array.isArray(res.data) ? res.data : []).map((row) => ({
+          ...row,
+          cargo_reimpresion: 0
+        }));
+      } catch (error) {
+        if (debeSolicitarPermisoCaja && Number(error?.response?.status || 0) === 404) {
+          alert(`${mensajePermiso || "Solicitud enviada a Caja."}\nNo se encontraron recibos para imprimir en los meses seleccionados.`);
+          cerrarModal();
+          return;
+        }
+        throw error;
+      }
+
       alConfirmar(datosImpresion);
+      if (mensajePermiso) {
+        alert(`${mensajePermiso}\nCaja ya puede cobrar esos meses para el contribuyente seleccionado.`);
+      }
       cerrarModal();
     } catch (error) {
       alert(error.response?.data?.error || "Error al buscar recibos.");
@@ -101,7 +179,7 @@ const ModalImpresionMasiva = ({
           <div className={headerClass}>
             <h5 className="modal-title">
               <FaPrint className="me-2"/>
-              {soloSeleccion ? "Reimpresion de Recibos" : "Impresion Mensual"}
+              {soloSeleccion ? "Reimpresión de Recibos" : "Impresión Mensual"}
             </h5>
             <button className={`btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`} onClick={cerrarModal}></button>
           </div>
@@ -110,7 +188,7 @@ const ModalImpresionMasiva = ({
               {!soloSeleccion && (
                 <div className={`d-flex justify-content-around mb-4 border-bottom pb-3 ${darkMode ? "border-secondary" : ""}`}>
                   <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "seleccion")}`} onClick={() => setModo("seleccion")} disabled={idsSeleccionados.length === 0}>
-                    <FaUsers className="mb-1 d-block mx-auto"/> Seleccion
+                    <FaUsers className="mb-1 d-block mx-auto"/> Selección
                   </button>
                   <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "calle")}`} onClick={() => setModo("calle")}>
                     <FaBuilding className="mb-1 d-block mx-auto"/> Por Calle
@@ -124,6 +202,19 @@ const ModalImpresionMasiva = ({
               {soloSeleccion && (
                 <div className={`alert alert-info ${darkMode ? "bg-dark text-white border-secondary" : ""}`}>
                   Reimpresión para el contribuyente seleccionado en pantalla.
+                  <div className="form-check form-switch mt-2 mb-0">
+                    <input
+                      className="form-check-input"
+                      type="checkbox"
+                      id="switch-meses-futuros-reimpresion"
+                      checked={permitirMesesFuturos}
+                      onChange={(e) => setPermitirMesesFuturos(e.target.checked)}
+                      disabled={cargando}
+                    />
+                    <label className="form-check-label" htmlFor="switch-meses-futuros-reimpresion">
+                      Habilitar meses futuros (solicita permiso para Caja)
+                    </label>
+                  </div>
                 </div>
               )}
 
@@ -142,7 +233,7 @@ const ModalImpresionMasiva = ({
                   <label className="form-label fw-bold">Meses</label>
                   <div className={`border rounded p-2 ${darkMode ? "border-secondary" : ""}`} style={{ maxHeight: "160px", overflowY: "auto" }}>
                     <div className="d-flex flex-wrap gap-2">
-                      {MONTH_OPTIONS.map((m) => (
+                      {opcionesMeses.map((m) => (
                         <label key={m.value} className="form-check form-check-inline m-0">
                           <input
                             className="form-check-input"
@@ -154,11 +245,23 @@ const ModalImpresionMasiva = ({
                         </label>
                       ))}
                     </div>
+                    {opcionesMeses.length === 0 && (
+                      <div className="small text-muted">
+                        No hay meses habilitados para ese año. Active "Habilitar meses futuros" para adelantos.
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="col-12">
                   <label className="form-label fw-bold">Año</label>
-                  <input type="number" className={inputClass} value={seleccion.anio} onChange={(e) => setSeleccion({ ...seleccion, anio: e.target.value })} />
+                  <input
+                    type="number"
+                    className={inputClass}
+                    min={ultimoPeriodoEmitido.anio - 30}
+                    max={permitirMesesNoEmitidos ? ultimoPeriodoEmitido.anio + 5 : ultimoPeriodoEmitido.anio}
+                    value={seleccion.anio}
+                    onChange={(e) => setSeleccion({ ...seleccion, anio: e.target.value })}
+                  />
                 </div>
               </div>
 
@@ -177,3 +280,5 @@ const ModalImpresionMasiva = ({
 };
 
 export default ModalImpresionMasiva;
+
+

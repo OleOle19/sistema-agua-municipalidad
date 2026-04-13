@@ -178,6 +178,7 @@ const ModalCorteConexion = ({
                 accept=".pdf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.doc,.docx,image/*,application/pdf"
                 onChange={handleFiles}
               />
+              <div className="form-text">Las evidencias quedan guardadas en el servidor municipal para auditoria del corte.</div>
             </div>
 
             {evidencias.length > 0 && (

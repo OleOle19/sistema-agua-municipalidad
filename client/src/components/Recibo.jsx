@@ -1,4 +1,4 @@
-import React, { forwardRef } from "react";
+﻿import React, { forwardRef } from "react";
 
 const mm = (value) => `${value}mm`;
 
@@ -28,40 +28,40 @@ const RECIBO_TEXTOS = {
 // Ajustes finos globales en mm para prueba/error con la impresora.
 // nudgeX/nudgeY mueven TODO el recibo.
 const CAL = {
-  nudgeX: 0,
+  nudgeX: 6,
   nudgeY: 0,
   // Coordenadas del bloque superior.
   top: {
     // IMPORTANTE: estos nombres deben mantenerse exactos (xMes, xAnio, xNumero).
     // Si escribes xMesS u otro nombre, no se reflejara ningun cambio.
-    xMes: 44.2,
-    xAnio: 80.2,
+    xMes: 54.2,
+    xAnio: 90.2,
     xNumero: 119.2,
     yCabecera: 27.8,
     xCodigo: 37.2,
-    yCodigo: 36.4,
+    yCodigo: 31.4,
     xNombre: 37.2,
-    yNombre: 40.0,
+    yNombre: 34.8,
     xDireccion: 37.2,
-    yDireccion: 45.0,
+    yDireccion: 38.2,
     xDistrito: 37.2,
-    yDistrito: 50.0,
-    xTipoServicio: 16.5,
+    yDistrito: 41.6,
+    xTipoServicio: 46.5,
     yTipoServicio: 59.7,
-    xConcepto: 17.0,
-    xImporte: 91.0,
+    xConcepto: 47.0,
+    xImporte: 121.0,
     yDetalleInicio: 65.5,
     detalleGap: 4.2,
-    xTotal: 91.0,
+    xTotal: 121.0,
     yTotal: 81.8,
     xNota: 16.8,
-    yNota: 92.7,
+    yNota: 82.7,
     xFechaTop: 104.0,
-    yFechaEmisionTop: 101.0,
-    yFechaCorteTop: 106.0,
+    yFechaEmisionTop: 91.0,
+    yFechaCorteTop: 96.0,
     fechaWidth: 18.0,
     debt: {
-      y: 115.8,
+      y: 105.8,
       boxW: 36.0,
       xAnterior: 19.8,
       xMes: 70.8
@@ -72,15 +72,15 @@ const CAL = {
     xMes: 23.0,
     xAnio: 64.0,
     xNumero: 108.0,
-    yCabecera: 170.5,
+    yCabecera: 145.5,
     xNombre: 40.0,
-    yNombre: 183.0,
+    yNombre: 158.0,
     xEmision: 40.0,
-    yEmision: 187.3,
+    yEmision: 162.3,
     xCorte: 40.0,
-    yCorte: 191.8,
+    yCorte: 166.8,
     xTotal: 106.5,
-    yTotal: 191.5
+    yTotal: 166.5
   }
 };
 
@@ -177,7 +177,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
         position: "relative",
         width: mm(RECIBO_SIZE_MM.width),
         height: mm(RECIBO_SIZE_MM.height),
-        margin: "0 auto",
+        margin: "0",
         overflow: "hidden",
         background: "transparent",
         textTransform: "uppercase"
@@ -347,3 +347,4 @@ const Recibo = forwardRef(({ datos }, ref) => {
 
 Recibo.displayName = "Recibo";
 export default Recibo;
+

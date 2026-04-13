@@ -6,63 +6,20 @@ const parseAmount = (value) => {
   const parsed = parseFloat(value);
   return Number.isFinite(parsed) ? parsed : 0;
 };
-const getMesCorto = (mes) => {
-  const meses = ["", "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
-  return meses[Number(mes)] || String(mes ?? "");
-};
 
 const RecibosMasivos = forwardRef(({ datos }, ref) => {
-  const listaConsolidada = React.useMemo(() => {
+  const listaRecibos = React.useMemo(() => {
     const listaRecibos = Array.isArray(datos) ? datos : [];
-    const grupos = new Map();
-
-    listaRecibos.forEach((item) => {
-      const key = item.id_predio ?? `${item.codigo_municipal}-${item.direccion_completa}`;
-      const actual = grupos.get(key);
-      if (!actual) {
-        grupos.set(key, {
-          ...item,
-          subtotal_agua: parseAmount(item.subtotal_agua),
-          subtotal_desague: parseAmount(item.subtotal_desague),
-          subtotal_limpieza: parseAmount(item.subtotal_limpieza),
-          subtotal_admin: parseAmount(item.subtotal_admin),
-          total_pagar: parseAmount(item.total_pagar),
-          cargo_reimpresion: parseAmount(item.cargo_reimpresion),
-          meses: new Set([Number(item.mes)])
-        });
-        return;
-      }
-
-      actual.subtotal_agua += parseAmount(item.subtotal_agua);
-      actual.subtotal_desague += parseAmount(item.subtotal_desague);
-      actual.subtotal_limpieza += parseAmount(item.subtotal_limpieza);
-      actual.subtotal_admin += parseAmount(item.subtotal_admin);
-      actual.total_pagar += parseAmount(item.total_pagar);
-      actual.cargo_reimpresion += parseAmount(item.cargo_reimpresion);
-      actual.meses.add(Number(item.mes));
-      // Conservamos el ultimo recibo para la numeracion.
-      actual.id_recibo = item.id_recibo;
-    });
-
-    return Array.from(grupos.values()).map((item) => {
-      const mesesOrdenados = Array.from(item.meses).filter((m) => Number.isFinite(m)).sort((a, b) => a - b);
-      const esMultiple = mesesOrdenados.length > 1;
-      const mesesLabel = mesesOrdenados.map((m) => getMesCorto(m)).join(",");
-      const ultimoMes = mesesOrdenados[mesesOrdenados.length - 1] ?? item.mes;
-      return {
-        ...item,
-        mes: ultimoMes,
-        mes_nombre: esMultiple ? "Pago Multiple" : undefined,
-        deuda_meses_label: esMultiple ? mesesLabel : undefined,
-        deuda_anio: esMultiple ? round2(item.total_pagar) : parseAmount(item.deuda_anio ?? 0),
-        subtotal_agua: round2(item.subtotal_agua),
-        subtotal_desague: round2(item.subtotal_desague),
-        subtotal_limpieza: round2(item.subtotal_limpieza),
-        subtotal_admin: round2(item.subtotal_admin),
-        total_pagar: round2(item.total_pagar),
-        cargo_reimpresion: round2(item.cargo_reimpresion)
-      };
-    });
+    return listaRecibos.map((item) => ({
+      ...item,
+      deuda_anio: parseAmount(item.deuda_anio ?? 0),
+      subtotal_agua: round2(parseAmount(item.subtotal_agua)),
+      subtotal_desague: round2(parseAmount(item.subtotal_desague)),
+      subtotal_limpieza: round2(parseAmount(item.subtotal_limpieza)),
+      subtotal_admin: round2(parseAmount(item.subtotal_admin)),
+      total_pagar: round2(parseAmount(item.total_pagar)),
+      cargo_reimpresion: round2(parseAmount(item.cargo_reimpresion))
+    }));
   }, [datos]);
 
   // One receipt per physical A5 sheet.
@@ -70,20 +27,20 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
     width: "145mm",
     height: "203mm",
     pageBreakAfter: "always",
-    display: "flex",
-    justifyContent: "center",
+    marginLeft: "auto",
+    marginRight: "0",
     backgroundColor: "white",
     overflow: "hidden"
   };
 
-  if (listaConsolidada.length === 0) return <div ref={ref}>No hay datos</div>;
+  if (listaRecibos.length === 0) return <div ref={ref}>No hay datos</div>;
 
   return (
     <div ref={ref}>
-      {listaConsolidada.map((item, index) => (
+      {listaRecibos.map((item, index) => (
         <div
-          key={index}
-          style={{ ...hojaStyle, pageBreakAfter: index === listaConsolidada.length - 1 ? "auto" : "always" }}
+          key={`${item?.id_recibo || "recibo"}-${item?.anio || ""}-${item?.mes || ""}-${index}`}
+          style={{ ...hojaStyle, pageBreakAfter: index === listaRecibos.length - 1 ? "auto" : "always" }}
         >
           <ReciboRender item={item} />
         </div>
