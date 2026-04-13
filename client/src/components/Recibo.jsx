@@ -8,6 +8,25 @@ const toNum = (value) => {
 };
 
 const formatMonto = (value) => toNum(value).toFixed(2);
+const normalizeReciboNumero = (value) => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const compact = raw.replace(/\s+/g, "").toUpperCase();
+  if (
+    compact.includes("NULL")
+    || compact.includes("UNDEFINED")
+    || compact.includes("NAN")
+    || compact === "0"
+  ) {
+    return "";
+  }
+  if (/^\d+$/.test(compact)) {
+    const numeric = Number.parseInt(compact, 10);
+    if (!Number.isFinite(numeric) || numeric <= 0) return "";
+    return String(numeric).padStart(6, "0");
+  }
+  return raw;
+};
 
 const RECIBO_SIZE_MM = {
   width: 145,
@@ -118,12 +137,14 @@ const Recibo = forwardRef(({ datos }, ref) => {
 
   const mesLabel = recibo.mes_nombre ?? getMesNombre(recibo.mes);
   const anioLabel = String(recibo.anio ?? "");
-  const codigoImpresion = String(recibo.codigo_impresion || "").trim();
-  const reciboNumero = codigoImpresion || (
-    Number.isInteger(Number(recibo.id_recibo))
-      ? String(recibo.id_recibo).padStart(6, "0")
-      : ""
-  );
+  const reciboNumero = [
+    recibo.numero_recibo,
+    recibo.codigo_impresion,
+    recibo.codigo_recibo,
+    recibo.id_recibo
+  ]
+    .map((candidate) => normalizeReciboNumero(candidate))
+    .find(Boolean) || "";
 
   const cargoReimpresion = toNum(recibo.cargo_reimpresion);
   // Conceptos editables del detalle del recibo.

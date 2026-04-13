@@ -6709,29 +6709,26 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       ...row,
       es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoEmitidoMaximo
     })));
-    if (incluirFuturosExistentes) {
-      await client.query("COMMIT");
-      txStarted = false;
-      return res.json(rows);
-    }
     if (totalBase <= 0) {
       await client.query("COMMIT");
       txStarted = false;
       return res.json(rows);
     }
 
+    const mesesAGenerar = incluirFuturosExistentes ? 1 : adelantadoMeses;
     const existing = new Set(
       rows.map((row) => `${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`)
     );
-    // Incluir tambien el mes de la fecha de corte (no solo el siguiente),
-    // para que periodos faltantes del mes actual se puedan cobrar/corregir.
+    // Siempre incluimos el mes de la fecha de corte si falta, aunque Caja
+    // solo haya pedido ver periodos futuros ya emitidos por ventanilla.
+    // La contingencia completa sigue controlando si se rellenan meses futuros extra.
     const startPeriodoDate = new Date(Date.UTC(anioActual, mesActual - 1, 1));
     const startPeriodo = {
       anio: startPeriodoDate.getUTCFullYear(),
       mes: startPeriodoDate.getUTCMonth() + 1
     };
     if (idContribuyente > 0) {
-      const endPeriodoDate = new Date(Date.UTC(startPeriodo.anio, (startPeriodo.mes - 1) + Math.max(0, adelantadoMeses - 1), 1));
+      const endPeriodoDate = new Date(Date.UTC(startPeriodo.anio, (startPeriodo.mes - 1) + Math.max(0, mesesAGenerar - 1), 1));
       const periodosExistentesRs = await client.query(`
         SELECT DISTINCT r.anio, r.mes
         FROM recibos r
@@ -6750,7 +6747,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
         existing.add(`${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`);
       }
     }
-    for (let i = 0; i < adelantadoMeses; i += 1) {
+    for (let i = 0; i < mesesAGenerar; i += 1) {
       const dt = new Date(startPeriodo.anio, (startPeriodo.mes - 1) + i, 1);
       const anio = dt.getFullYear();
       const mes = dt.getMonth() + 1;
@@ -13013,6 +13010,7 @@ app.post("/recibos/masivos", async (req, res) => {
         ${buildDireccionSql("ca", "p")} AS direccion_completa,
         p.numero_casa,
         ca.nombre as nombre_calle,
+        LPAD(r.id_recibo::text, 6, '0') AS numero_recibo,
         GREATEST(
           COALESCE(rp.deuda_total, 0) - GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0),
           0

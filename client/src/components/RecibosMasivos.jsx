@@ -71,6 +71,9 @@ const ReciboRender = ({ item }) => {
     },
     recibo: {
       id_recibo: item.id_recibo,
+      numero_recibo: item.numero_recibo,
+      codigo_impresion: item.codigo_impresion,
+      codigo_recibo: item.codigo_recibo,
       mes: item.mes,
       anio: item.anio,
       mes_nombre: item.mes_nombre,
