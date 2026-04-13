@@ -261,10 +261,10 @@ const Recibo = forwardRef(({ datos }, ref) => {
           left: x(CAL.top.xNota),
           top: y(CAL.top.yNota),
           fontSize: "2.5mm",
-          width: mm(95),
+          width: mm(68),
           whiteSpace: "pre-line",
           lineHeight: 1.05,
-          textAlign: "center"
+          textAlign: "left"
         }}
       >
         {RECIBO_TEXTOS.notaPago}
