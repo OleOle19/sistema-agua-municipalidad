@@ -128,14 +128,25 @@ const ModalImpresionMasiva = ({
         && idsSeleccionados.length === 1;
 
       if (debeSolicitarPermisoCaja) {
-        const permisoRes = await api.post("/caja/permisos-adelantado/solicitar", {
-          id_contribuyente: Number(idsSeleccionados[0]),
-          anio: anioNum,
-          meses: mesesNoEmitidosSeleccionados,
-          origen: "VENTANILLA_REIMPRESION",
-          motivo: "Habilitacion de meses futuros desde reimpresion en ventanilla."
-        });
-        mensajePermiso = String(permisoRes?.data?.mensaje || "").trim();
+        try {
+          const permisoRes = await api.post("/caja/permisos-adelantado/solicitar", {
+            id_contribuyente: Number(idsSeleccionados[0]),
+            anio: anioNum,
+            meses: mesesNoEmitidosSeleccionados,
+            origen: "VENTANILLA_REIMPRESION",
+            motivo: "Habilitacion de meses futuros desde reimpresion en ventanilla."
+          });
+          mensajePermiso = String(permisoRes?.data?.mensaje || "").trim();
+        } catch (permisoErr) {
+          const statusPermiso = Number(permisoErr?.response?.status || 0);
+          const errorPermiso = String(permisoErr?.response?.data?.error || "").trim();
+          const permisoNoRequerido = statusPermiso === 400
+            && /periodos?\s+futuros?/i.test(errorPermiso)
+            && /caja/i.test(errorPermiso);
+          if (!permisoNoRequerido) {
+            throw permisoErr;
+          }
+        }
       }
 
       let datosImpresion = [];
