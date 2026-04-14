@@ -1358,6 +1358,16 @@ const anexoCajaPageStyle = `
       const rowStyle = darkMode && rowTone !== "idle"
         ? undefined
         : HISTORIAL_ROW_STYLES[rowTone];
+      const montoCargoMes = (Number(h.subtotal_agua || 0)
+        + Number(h.subtotal_desague || 0)
+        + Number(h.subtotal_limpieza || 0)
+        + Number(h.subtotal_admin || 0));
+      const deudaVisual = rowTone === "futuro" && montoCargoMes > 0
+        ? montoCargoMes
+        : Number(h.deuda_mes || 0);
+      const deudaClassName = rowTone === "futuro"
+        ? "fw-bold text-primary"
+        : "fw-bold text-danger";
       return (
         <tr
           key={`${h.anio}-${h.mes}-${i}`}
@@ -1365,7 +1375,8 @@ const anexoCajaPageStyle = `
             ? {
               deuda: "table-danger",
               pagado: "table-success",
-              mixto: "table-warning"
+              mixto: "table-warning",
+              futuro: "table-info"
             }[rowTone]
             : undefined}
           style={rowStyle}
@@ -1375,7 +1386,7 @@ const anexoCajaPageStyle = `
           <td>{formatMonto(h.subtotal_desague)}</td>
           <td>{formatMonto(h.subtotal_limpieza)}</td>
           <td>{formatMonto(h.subtotal_admin)}</td>
-          <td className="fw-bold text-danger">{formatMonto(h.deuda_mes)}</td>
+          <td className={deudaClassName}>{formatMonto(deudaVisual)}</td>
           <td className="fw-bold text-success">{formatMonto(h.abono_mes)}</td>
         </tr>
       );
