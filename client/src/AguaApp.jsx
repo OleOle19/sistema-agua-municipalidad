@@ -72,11 +72,20 @@ const ESTADO_CONEXION_LABELS = {
 
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const SHOW_LEGACY_CAJA_MENU = false;
+const HISTORIAL_CACHE_VERSION = "futuros-v2";
+const HISTORIAL_ROW_COLORS = {
+  idle: "transparent",
+  deuda: "#fdecec",
+  pagado: "#e9f8ef",
+  mixto: "#fff4db",
+  futuro: "#e8f1ff"
+};
 const HISTORIAL_ROW_STYLES = {
-  idle: { backgroundColor: "transparent" },
-  deuda: { backgroundColor: "#fdecec" },
-  pagado: { backgroundColor: "#e9f8ef" },
-  mixto: { backgroundColor: "#fff4db" }
+  idle: { backgroundColor: "transparent", "--bs-table-bg": "transparent" },
+  deuda: { backgroundColor: HISTORIAL_ROW_COLORS.deuda, "--bs-table-bg": HISTORIAL_ROW_COLORS.deuda },
+  pagado: { backgroundColor: HISTORIAL_ROW_COLORS.pagado, "--bs-table-bg": HISTORIAL_ROW_COLORS.pagado },
+  mixto: { backgroundColor: HISTORIAL_ROW_COLORS.mixto, "--bs-table-bg": HISTORIAL_ROW_COLORS.mixto },
+  futuro: { backgroundColor: HISTORIAL_ROW_COLORS.futuro, "--bs-table-bg": HISTORIAL_ROW_COLORS.futuro }
 };
 const getLocalCampoAppUrl = () => `${API_BASE_URL}/campo-app/`;
 const normalizeCampoAppUrl = (value) => {
@@ -108,12 +117,25 @@ const badgeEstadoConexionClass = (estado) => {
   return "bg-success";
 };
 
-const getHistorialRowTone = (deuda, abono) => {
+const getHistorialRowTone = ({
+  deuda,
+  abono,
+  subtotalAgua,
+  subtotalDesague,
+  subtotalLimpieza,
+  subtotalAdmin,
+  hasFutureCharge = false
+} = {}) => {
   const deudaNum = Number.parseFloat(deuda) || 0;
   const abonoNum = Number.parseFloat(abono) || 0;
+  const totalCargo = (Number.parseFloat(subtotalAgua) || 0)
+    + (Number.parseFloat(subtotalDesague) || 0)
+    + (Number.parseFloat(subtotalLimpieza) || 0)
+    + (Number.parseFloat(subtotalAdmin) || 0);
   if (deudaNum > 0 && abonoNum > 0) return "mixto";
   if (deudaNum > 0) return "deuda";
   if (abonoNum > 0) return "pagado";
+  if (hasFutureCharge && totalCargo > 0.001) return "futuro";
   return "idle";
 };
 
@@ -517,6 +539,7 @@ const ModalArbitriosDetalle = ({
               <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.deuda}>Mes con deuda</span>
               <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.pagado}>Mes pagado</span>
               <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.mixto}>Mes con deuda y abono</span>
+              <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.futuro}>Mes futuro/proyectado</span>
             </div>
             <div className="table-responsive border rounded">
               <table className={`table table-sm table-bordered mb-0 ${darkMode ? "table-dark" : ""}`}>
@@ -1200,7 +1223,7 @@ const anexoCajaPageStyle = `
     }
   }, []);
   const cargarHistorial = async (id_contribuyente, anio = historialYear, force = false) => {
-    const cacheKey = `${id_contribuyente}:${anio}`;
+    const cacheKey = `${HISTORIAL_CACHE_VERSION}:${id_contribuyente}:${anio}`;
     if (!force && historialCacheRef.current.has(cacheKey)) {
       const cached = historialCacheRef.current.get(cacheKey);
       setHistorial(cached.rows);
@@ -1251,14 +1274,21 @@ const anexoCajaPageStyle = `
         subtotal_limpieza: 0,
         subtotal_admin: 0,
         deuda_mes: 0,
-        abono_mes: 0
+        abono_mes: 0,
+        has_future_charge: false
       };
+      const estadoRow = String(r.estado || "").trim().toUpperCase();
       current.subtotal_agua += parseFloat(r.subtotal_agua) || 0;
       current.subtotal_desague += parseFloat(r.subtotal_desague) || 0;
       current.subtotal_limpieza += parseFloat(r.subtotal_limpieza) || 0;
       current.subtotal_admin += parseFloat(r.subtotal_admin) || 0;
       current.deuda_mes += parseFloat(r.deuda_mes) || 0;
       current.abono_mes += parseFloat(r.abono_mes) || 0;
+      current.has_future_charge = current.has_future_charge
+        || Boolean(r.es_proyectado)
+        || estadoRow === "PROYECTADO"
+        || estadoRow === "NO_EXIGIBLE"
+        || estadoRow === "ADELANTADO";
       dataMap.set(key, current);
     });
 
@@ -1285,7 +1315,8 @@ const anexoCajaPageStyle = `
           subtotal_limpieza: 0,
           subtotal_admin: 0,
           deuda_mes: 0,
-          abono_mes: 0
+          abono_mes: 0,
+          has_future_charge: false
         };
         rows.push({ type: "month", ...data });
       }
@@ -1315,7 +1346,15 @@ const anexoCajaPageStyle = `
           </tr>
         );
       }
-      const rowTone = getHistorialRowTone(h.deuda_mes, h.abono_mes);
+      const rowTone = getHistorialRowTone({
+        deuda: h.deuda_mes,
+        abono: h.abono_mes,
+        subtotalAgua: h.subtotal_agua,
+        subtotalDesague: h.subtotal_desague,
+        subtotalLimpieza: h.subtotal_limpieza,
+        subtotalAdmin: h.subtotal_admin,
+        hasFutureCharge: h.has_future_charge
+      });
       const rowStyle = darkMode && rowTone !== "idle"
         ? undefined
         : HISTORIAL_ROW_STYLES[rowTone];
