@@ -867,6 +867,92 @@ const clampArray = (rows, max = 200) => {
   return rows.slice(0, Math.max(1, Math.min(1000, max)));
 };
 
+const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
+  const id = parsePositiveInt(idContribuyente, 0);
+  const anioNum = Number(anio || 0);
+  const mesNum = Number(mes || 0);
+  if (!id || anioNum < 1900 || mesNum < 1 || mesNum > 12) return null;
+
+  const predioRs = await db.query(`
+    SELECT
+      p.id_predio,
+      COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+      COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+      COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+      COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+      p.tarifa_agua,
+      p.tarifa_desague,
+      p.tarifa_limpieza,
+      p.tarifa_admin,
+      p.tarifa_extra,
+      COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
+    FROM predios p
+    JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
+    WHERE p.id_contribuyente = $1
+    ORDER BY p.id_predio ASC
+    LIMIT 1
+  `, [id]);
+  if (predioRs.rows.length === 0) return null;
+
+  const predio = predioRs.rows[0];
+  if (predio.estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) return null;
+
+  const activoSN = normalizeSN(predio.activo_sn, "S");
+  const aguaHabilitado = activoSN === "S" && normalizeSN(predio.agua_sn, "S") === "S";
+  const desagueHabilitado = activoSN === "S" && normalizeSN(predio.desague_sn, "S") === "S";
+  const limpiezaHabilitado = activoSN === "S" && normalizeSN(predio.limpieza_sn, "S") === "S";
+  const subtotalAgua = aguaHabilitado ? roundMonto2(parseMonto(predio.tarifa_agua, AUTO_DEUDA_BASE.agua)) : 0;
+  const subtotalDesague = desagueHabilitado ? roundMonto2(parseMonto(predio.tarifa_desague, AUTO_DEUDA_BASE.desague)) : 0;
+  const subtotalLimpieza = limpiezaHabilitado ? roundMonto2(parseMonto(predio.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza)) : 0;
+  const subtotalAdmin = activoSN === "S"
+    ? roundMonto2(parseMonto(predio.tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(predio.tarifa_extra, 0))
+    : 0;
+  const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin);
+  if (totalPagar <= 0) return null;
+
+  return {
+    id_recibo: null,
+    mes: mesNum,
+    anio: anioNum,
+    subtotal_agua: subtotalAgua,
+    subtotal_desague: subtotalDesague,
+    subtotal_limpieza: subtotalLimpieza,
+    subtotal_admin: subtotalAdmin,
+    total_pagar: totalPagar,
+    abono_mes: 0,
+    deuda_mes: 0,
+    estado: "PROYECTADO",
+    es_proyectado: true
+  };
+};
+
+const appendProjectedArbitriosRows = async (
+  db,
+  rows,
+  idContribuyente,
+  { incluirFuturos = false, anioActual, mesActual, filtrarAnio = false, anioFiltro = null } = {}
+) => {
+  const baseRows = Array.isArray(rows) ? [...rows] : [];
+  if (!incluirFuturos) return baseRows;
+
+  const anioObjetivo = Number(anioActual || 0);
+  const mesObjetivo = Number(mesActual || 0);
+  if (anioObjetivo < 1900 || mesObjetivo < 1 || mesObjetivo > 12) return baseRows;
+  if (filtrarAnio && Number(anioFiltro || 0) !== anioObjetivo) return baseRows;
+
+  const existePeriodo = baseRows.some((row) =>
+    Number(row?.anio || 0) === anioObjetivo && Number(row?.mes || 0) === mesObjetivo
+  );
+  if (existePeriodo) return baseRows;
+
+  const projectedRow = await buildProjectedArbitriosRow(db, idContribuyente, anioObjetivo, mesObjetivo);
+  if (!projectedRow) return baseRows;
+
+  baseRows.push(projectedRow);
+  baseRows.sort((a, b) => ((Number(a?.anio || 0) * 100 + Number(a?.mes || 0)) - (Number(b?.anio || 0) * 100 + Number(b?.mes || 0))));
+  return baseRows;
+};
+
 const recalcularRecibosFuturosPorServicios = async (
   client,
   idContribuyente,
@@ -9166,6 +9252,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
 });
 
 app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id_contribuyente } = req.params;
     const hoyIso = toISODate();
@@ -9181,7 +9268,7 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     const anio = filtrarAnio ? (Number(anioParam) || getCurrentYear()) : null;
     const incluirFuturos = normalizeSN(req.query?.incluir_futuros, "N") === "S";
 
-    const historial = await pool.query(`
+    const historial = await client.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
         r.total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
@@ -9215,11 +9302,20 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     `, filtrarAnio
       ? [id_contribuyente, anioActual, mesActual, fechaCorte, anio]
       : [id_contribuyente, anioActual, mesActual, fechaCorte]);
-    res.json(historial.rows);
+    const rows = await appendProjectedArbitriosRows(client, historial.rows, id_contribuyente, {
+      incluirFuturos,
+      anioActual,
+      mesActual,
+      filtrarAnio,
+      anioFiltro: anio
+    });
+    res.json(rows);
   } catch (err) { res.status(500).send("Error historial"); }
+  finally { client.release(); }
 });
 
 app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
+  const client = await pool.connect();
   try {
     const idContribuyente = parsePositiveInt(req.params?.id_contribuyente, 0);
     if (!idContribuyente) {
@@ -9230,11 +9326,12 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     const anioParam = String(req.query?.anio || "all").trim().toLowerCase();
     const filtrarAnio = anioParam !== "all";
     const anio = filtrarAnio ? Number(anioParam) : null;
+    const incluirFuturos = normalizeSN(req.query?.incluir_futuros, "N") === "S";
     if (filtrarAnio && (!Number.isInteger(anio) || anio <= 1900 || anio >= 9999)) {
       return res.status(400).json({ error: "Año inválido para exportación." });
     }
 
-    const contribuyenteRs = await pool.query(
+    const contribuyenteRs = await client.query(
       `SELECT codigo_municipal, nombre_completo
        FROM contribuyentes
        WHERE id_contribuyente = $1
@@ -9246,7 +9343,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       return res.status(404).json({ error: "Contribuyente no encontrado." });
     }
 
-    const historial = await pool.query(`
+    const historial = await client.query(`
       SELECT
         r.id_recibo,
         r.mes,
@@ -9278,6 +9375,13 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       ${filtrarAnio ? "AND r.anio = $4" : ""}
       ORDER BY r.anio ASC, r.mes ASC, r.id_recibo ASC
     `, filtrarAnio ? [idContribuyente, anioActual, mesActual, anio] : [idContribuyente, anioActual, mesActual]);
+    const historialRows = await appendProjectedArbitriosRows(client, historial.rows, idContribuyente, {
+      incluirFuturos,
+      anioActual,
+      mesActual,
+      filtrarAnio,
+      anioFiltro: anio
+    });
 
     const monthLabels = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
     const workbook = new ExcelJS.Workbook();
@@ -9290,7 +9394,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     wsResumen.addRow({ campo: "Codigo municipal", valor: contribuyente.codigo_municipal || "" });
     wsResumen.addRow({ campo: "Contribuyente", valor: contribuyente.nombre_completo || "" });
     wsResumen.addRow({ campo: "Filtro año", valor: filtrarAnio ? String(anio) : "Todos" });
-    wsResumen.addRow({ campo: "Total registros", valor: Number(historial.rows.length || 0) });
+    wsResumen.addRow({ campo: "Total registros", valor: Number(historialRows.length || 0) });
 
     const wsDetalle = workbook.addWorksheet("Arbitrios");
     wsDetalle.columns = [
@@ -9313,7 +9417,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     let totalDeuda = 0;
     let totalAbono = 0;
 
-    historial.rows.forEach((r) => {
+    historialRows.forEach((r) => {
       const agua = parseMonto(r.subtotal_agua, 0);
       const desague = parseMonto(r.subtotal_desague, 0);
       const limpieza = parseMonto(r.subtotal_limpieza, 0);
@@ -9361,6 +9465,8 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
   } catch (err) {
     console.error("Error exportando arbitrios:", err);
     return res.status(500).json({ error: "Error exportando arbitrios." });
+  } finally {
+    client.release();
   }
 });
 

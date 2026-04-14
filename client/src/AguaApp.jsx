@@ -1208,7 +1208,12 @@ const anexoCajaPageStyle = `
       return;
     }
     try {
-      const res = await api.get(`/recibos/historial/${id_contribuyente}?anio=${anio}`);
+      const res = await api.get(`/recibos/historial/${id_contribuyente}`, {
+        params: {
+          anio,
+          incluir_futuros: "S"
+        }
+      });
       const rows = Array.isArray(res.data) ? res.data : [];
       setHistorial(rows);
       if (anio === "all") {
@@ -1840,7 +1845,10 @@ const anexoCajaPageStyle = `
     try {
       setExportandoArbitriosExcel(true);
       const res = await api.get(`/exportar/arbitrios/${idContribuyente}`, {
-        params: { anio: historialYear },
+        params: {
+          anio: historialYear,
+          incluir_futuros: "S"
+        },
         responseType: "blob",
         timeout: 0
       });
