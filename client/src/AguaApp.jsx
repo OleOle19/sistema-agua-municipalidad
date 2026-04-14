@@ -72,13 +72,13 @@ const ESTADO_CONEXION_LABELS = {
 
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const SHOW_LEGACY_CAJA_MENU = false;
-const HISTORIAL_CACHE_VERSION = "futuros-v2";
+const HISTORIAL_CACHE_VERSION = "futuros-v3";
 const HISTORIAL_ROW_COLORS = {
   idle: "transparent",
-  deuda: "#fdecec",
-  pagado: "#e9f8ef",
-  mixto: "#fff4db",
-  futuro: "#e8f1ff"
+  deuda: "#f7cfd4",
+  pagado: "#cfeedd",
+  mixto: "#ffe3a3",
+  futuro: "#cfe1ff"
 };
 const HISTORIAL_ROW_STYLES = {
   idle: { backgroundColor: "transparent", "--bs-table-bg": "transparent" },
