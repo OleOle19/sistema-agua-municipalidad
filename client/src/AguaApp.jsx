@@ -72,6 +72,12 @@ const ESTADO_CONEXION_LABELS = {
 
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const SHOW_LEGACY_CAJA_MENU = false;
+const HISTORIAL_ROW_STYLES = {
+  idle: { backgroundColor: "transparent" },
+  deuda: { backgroundColor: "#fdecec" },
+  pagado: { backgroundColor: "#e9f8ef" },
+  mixto: { backgroundColor: "#fff4db" }
+};
 const getLocalCampoAppUrl = () => `${API_BASE_URL}/campo-app/`;
 const normalizeCampoAppUrl = (value) => {
   const raw = String(value || "").trim();
@@ -100,6 +106,15 @@ const badgeEstadoConexionClass = (estado) => {
   if (n === ESTADOS_CONEXION.CORTADO) return "bg-danger";
   if (n === ESTADOS_CONEXION.SIN_CONEXION) return "bg-secondary";
   return "bg-success";
+};
+
+const getHistorialRowTone = (deuda, abono) => {
+  const deudaNum = Number.parseFloat(deuda) || 0;
+  const abonoNum = Number.parseFloat(abono) || 0;
+  if (deudaNum > 0 && abonoNum > 0) return "mixto";
+  if (deudaNum > 0) return "deuda";
+  if (abonoNum > 0) return "pagado";
+  return "idle";
 };
 
 // Iconos
@@ -497,6 +512,11 @@ const ModalArbitriosDetalle = ({
               <div className="small">
                 {historialYear === "all" ? "Todos los años" : `Año ${historialYear}`} - {usuarioSeleccionado?.nombre_completo || "-"}
               </div>
+            </div>
+            <div className="d-flex flex-wrap justify-content-center gap-2 small mb-3">
+              <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.deuda}>Mes con deuda</span>
+              <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.pagado}>Mes pagado</span>
+              <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.mixto}>Mes con deuda y abono</span>
             </div>
             <div className="table-responsive border rounded">
               <table className={`table table-sm table-bordered mb-0 ${darkMode ? "table-dark" : ""}`}>
@@ -1290,8 +1310,22 @@ const anexoCajaPageStyle = `
           </tr>
         );
       }
+      const rowTone = getHistorialRowTone(h.deuda_mes, h.abono_mes);
+      const rowStyle = darkMode && rowTone !== "idle"
+        ? undefined
+        : HISTORIAL_ROW_STYLES[rowTone];
       return (
-        <tr key={`${h.anio}-${h.mes}-${i}`}>
+        <tr
+          key={`${h.anio}-${h.mes}-${i}`}
+          className={darkMode && rowTone !== "idle"
+            ? {
+              deuda: "table-danger",
+              pagado: "table-success",
+              mixto: "table-warning"
+            }[rowTone]
+            : undefined}
+          style={rowStyle}
+        >
           <td className="fw-bold text-start ps-3">{MONTH_LABELS[h.mes] || "-"}</td>
           <td>{formatMonto(h.subtotal_agua)}</td>
           <td>{formatMonto(h.subtotal_desague)}</td>
