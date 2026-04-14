@@ -13062,7 +13062,9 @@ app.post("/recibos/masivos", async (req, res) => {
     if (mesesSeleccionados.length === 0) {
       return res.status(400).json({ error: "Seleccione al menos un mes valido." });
     }
-    const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
+    const periodoEmitidoMaximo = incluirPagados
+      ? getCurrentPeriodoNum()
+      : getUltimoPeriodoEmitidoNum();
     const bloquearMesesNoEmitidos = !incluirPagados || !permitirMesesFuturos;
     if (bloquearMesesNoEmitidos) {
       const tieneMesNoEmitido = mesesSeleccionados.some((mesSel) =>
