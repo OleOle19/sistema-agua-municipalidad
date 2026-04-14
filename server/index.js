@@ -6800,18 +6800,29 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       return res.json(rows);
     }
 
-    const mesesAGenerar = incluirFuturosExistentes ? 1 : adelantadoMeses;
-    const existing = new Set(
-      rows.map((row) => `${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`)
-    );
-    // Siempre incluimos el mes de la fecha de corte si falta, aunque Caja
-    // solo haya pedido ver periodos futuros ya emitidos por ventanilla.
-    // La contingencia completa sigue controlando si se rellenan meses futuros extra.
     const startPeriodoDate = new Date(Date.UTC(anioActual, mesActual - 1, 1));
     const startPeriodo = {
       anio: startPeriodoDate.getUTCFullYear(),
       mes: startPeriodoDate.getUTCMonth() + 1
     };
+    let mesesAGenerar = incluirFuturosExistentes ? 1 : adelantadoMeses;
+    if (incluirAdelantados && aplicarFiltroPermisosFuturos && permisosFuturosSet && permisosFuturosSet.size > 0) {
+      const ultimoPeriodoPermitido = Math.max(...Array.from(permisosFuturosSet));
+      const anioFinal = Math.trunc(ultimoPeriodoPermitido / 100);
+      const mesFinal = ultimoPeriodoPermitido % 100;
+      if (anioFinal > 0 && mesFinal >= 1 && mesFinal <= 12) {
+        const mesesHastaUltimoPermiso = ((anioFinal - startPeriodo.anio) * 12) + (mesFinal - startPeriodo.mes) + 1;
+        if (mesesHastaUltimoPermiso > 0) {
+          mesesAGenerar = Math.max(mesesAGenerar, Math.min(24, mesesHastaUltimoPermiso));
+        }
+      }
+    }
+    const existing = new Set(
+      rows.map((row) => `${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`)
+    );
+    // Siempre incluimos el mes de la fecha de corte si falta. Si hay permisos
+    // de futuros aprobados, extendemos el rango hasta el ultimo mes permitido.
+    // La contingencia completa sigue controlando si se rellenan meses futuros extra.
     if (idContribuyente > 0) {
       const endPeriodoDate = new Date(Date.UTC(startPeriodo.anio, (startPeriodo.mes - 1) + Math.max(0, mesesAGenerar - 1), 1));
       const periodosExistentesRs = await client.query(`
