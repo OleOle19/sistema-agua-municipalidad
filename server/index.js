@@ -9233,7 +9233,7 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
 
     const fila = resumen.rows[0];
     const codigoMunicipal = fila.codigo_municipal || null;
-    const estadoConexion = String(fila.estado_conexion || "CON_CONEXION").trim().toUpperCase();
+    const estadoConexion = normalizeEstadoConexion(fila.estado_conexion);
     const mesesDeuda = Number(fila.meses_deuda || 0);
     const deudaTotal = parseMonto(fila.deuda_total, 0);
 
@@ -9347,7 +9347,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
         continue;
       }
       const codigoMunicipal = row.codigo_municipal || null;
-      const estadoConexion = String(row.estado_conexion || "CON_CONEXION").trim().toUpperCase();
+      const estadoConexion = normalizeEstadoConexion(row.estado_conexion);
       const mesesDeuda = Number(row.meses_deuda || 0);
       const deudaTotal = parseMonto(row.deuda_total, 0);
 

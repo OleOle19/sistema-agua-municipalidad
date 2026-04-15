@@ -40,88 +40,88 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
       minHeight: "auto",
       height: "auto",
       margin: 0,
-      padding: isCompact ? "4mm 5mm" : "12mm 14mm",
+      padding: isCompact ? "5.2mm 6.2mm" : "12mm 14mm",
       boxSizing: "border-box",
       background: "#fff",
       color: "#111",
       fontFamily: "\"Times New Roman\", Times, serif",
-      fontSize: isCompact ? "10.6px" : "13px",
-      lineHeight: isCompact ? 1.15 : 1.25,
+      fontSize: isCompact ? "12.2px" : "13px",
+      lineHeight: isCompact ? 1.24 : 1.25,
       breakInside: "avoid",
       pageBreakInside: "avoid"
     },
     top: {
       display: "grid",
-      gridTemplateColumns: isCompact ? "38px 1fr auto" : "72px 1fr auto",
+      gridTemplateColumns: isCompact ? "48px 1fr auto" : "72px 1fr auto",
       alignItems: "start",
-      columnGap: isCompact ? "6px" : "10px",
-      marginBottom: isCompact ? "6px" : "14px"
+      columnGap: isCompact ? "8px" : "10px",
+      marginBottom: isCompact ? "7px" : "14px"
     },
     logo: {
-      width: isCompact ? "34px" : "64px",
-      height: isCompact ? "34px" : "64px",
+      width: isCompact ? "43px" : "64px",
+      height: isCompact ? "43px" : "64px",
       objectFit: "contain"
     },
     entidad: {
       textAlign: "center",
       fontWeight: 700,
-      fontSize: isCompact ? "10px" : "14px",
+      fontSize: isCompact ? "11.2px" : "14px",
       marginBottom: isCompact ? "1px" : "2px",
       textTransform: "uppercase"
     },
     title: {
       textAlign: "center",
       fontWeight: 700,
-      fontSize: isCompact ? "15px" : "20px",
+      fontSize: isCompact ? "17px" : "20px",
       letterSpacing: "0.4px",
       marginTop: 0,
       marginBottom: "0",
       textTransform: "uppercase"
     },
     fecha: {
-      fontSize: isCompact ? "10px" : "14px",
+      fontSize: isCompact ? "11.4px" : "14px",
       fontWeight: 400,
       whiteSpace: "nowrap",
       marginTop: "3px"
     },
     datosFila: {
       display: "grid",
-      gridTemplateColumns: isCompact ? "96px 1fr" : "150px 1fr",
+      gridTemplateColumns: isCompact ? "114px 1fr" : "150px 1fr",
       columnGap: "8px",
       alignItems: "baseline"
     },
     label: {
       fontWeight: 700,
-      fontSize: isCompact ? "10px" : "14px",
+      fontSize: isCompact ? "11.6px" : "14px",
       textTransform: "uppercase"
     },
     value: {
       fontWeight: 700,
-      fontSize: isCompact ? "10px" : "14px",
+      fontSize: isCompact ? "11.6px" : "14px",
       textTransform: "uppercase"
     },
     valueNormal: {
       fontWeight: 400,
-      fontSize: isCompact ? "10px" : "14px",
+      fontSize: isCompact ? "11.4px" : "14px",
       textTransform: "uppercase"
     },
     paragraph: {
-      marginTop: isCompact ? "4px" : "8px",
-      marginBottom: isCompact ? "6px" : "12px",
-      fontSize: isCompact ? "10px" : "15px",
+      marginTop: isCompact ? "5px" : "8px",
+      marginBottom: isCompact ? "7px" : "12px",
+      fontSize: isCompact ? "11.4px" : "15px",
       textAlign: "justify",
-      lineHeight: isCompact ? 1.1 : 1.35
+      lineHeight: isCompact ? 1.25 : 1.35
     },
     table: {
       width: "100%",
       borderCollapse: "collapse",
       tableLayout: "fixed",
-      fontSize: isCompact ? "9px" : "13px",
-      marginTop: isCompact ? "3px" : "6px"
+      fontSize: isCompact ? "10.6px" : "13px",
+      marginTop: isCompact ? "4px" : "6px"
     },
     th: {
       border: "1px solid #444",
-      padding: isCompact ? "1px 3px" : "3px 4px",
+      padding: isCompact ? "2px 3px" : "3px 4px",
       textAlign: "center",
       fontWeight: 700
     },
@@ -129,21 +129,21 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
       borderLeft: "1px solid #444",
       borderRight: "1px solid #444",
       borderBottom: "1px dotted #888",
-      padding: isCompact ? "1px 3px" : "2px 4px",
+      padding: isCompact ? "2px 3px" : "2px 4px",
       textAlign: "center"
     },
     tdRight: {
       borderLeft: "1px solid #444",
       borderRight: "1px solid #444",
       borderBottom: "1px dotted #888",
-      padding: isCompact ? "1px 3px" : "2px 4px",
+      padding: isCompact ? "2px 3px" : "2px 4px",
       textAlign: "right"
     },
     tdStrong: {
       borderLeft: "1px solid #444",
       borderRight: "1px solid #444",
       borderBottom: "1px dotted #888",
-      padding: isCompact ? "1px 3px" : "2px 4px",
+      padding: isCompact ? "2px 3px" : "2px 4px",
       textAlign: "center",
       fontWeight: 700
     },
@@ -156,44 +156,44 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
     },
     totalLabel: {
       border: "1px solid #444",
-      padding: isCompact ? "2px 3px" : "5px 4px",
+      padding: isCompact ? "3px 3px" : "5px 4px",
       textAlign: "center",
       fontWeight: 700,
-      fontSize: isCompact ? "10px" : "15px"
+      fontSize: isCompact ? "11.3px" : "15px"
     },
     totalCell: {
       border: "1px solid #444",
-      padding: isCompact ? "2px 3px" : "5px 4px",
+      padding: isCompact ? "3px 3px" : "5px 4px",
       textAlign: "center",
       fontWeight: 700,
-      fontSize: isCompact ? "10px" : "15px"
+      fontSize: isCompact ? "11.3px" : "15px"
     },
     totalCellRight: {
       border: "1px solid #444",
-      padding: isCompact ? "2px 3px" : "5px 4px",
+      padding: isCompact ? "3px 3px" : "5px 4px",
       textAlign: "right",
       fontWeight: 700,
-      fontSize: isCompact ? "10px" : "15px"
+      fontSize: isCompact ? "11.3px" : "15px"
     },
     closingText: {
-      marginTop: isCompact ? "6px" : "12px",
-      fontSize: isCompact ? "10px" : "14px",
-      lineHeight: isCompact ? 1.1 : 1.35
+      marginTop: isCompact ? "7px" : "12px",
+      fontSize: isCompact ? "11.4px" : "14px",
+      lineHeight: isCompact ? 1.24 : 1.35
     },
     firmaRow: {
-      marginTop: isCompact ? "6px" : "16px",
+      marginTop: isCompact ? "8px" : "16px",
       display: "flex",
       justifyContent: "space-between",
       alignItems: "flex-end"
     },
     selloSpace: {
       width: "50mm",
-      height: isCompact ? "10mm" : "50mm"
+      height: isCompact ? "14mm" : "50mm"
     },
     administracion: {
       textAlign: "right",
-      fontSize: isCompact ? "10px" : "14px",
-      paddingRight: isCompact ? "16px" : "50px"
+      fontSize: isCompact ? "11.4px" : "14px",
+      paddingRight: isCompact ? "20px" : "50px"
     }
   };
 

@@ -972,16 +972,13 @@ const anexoCajaPageStyle = `
     if (idsObjetivo.length === 0) return alert("Seleccione al menos un contribuyente.");
 
     const objetivosConDeuda = idsObjetivo.filter((id) => {
-      const c = contribuyenteById.get(id);
+      const c = contribuyenteById.get(id) || contribuyenteById.get(String(id));
       if (!c) return false;
       const meses = Number(c.meses_deuda || 0);
       const estado = normalizeEstadoConexion(c.estado_conexion);
       return meses >= 4 && estado === ESTADOS_CONEXION.CON_CONEXION;
     });
-
-    if (objetivosConDeuda.length === 0) {
-      return alert("Los contribuyentes seleccionados deben tener conexión activa y 4 o más meses de deuda.");
-    }
+    const idsParaGenerar = objetivosConDeuda.length > 0 ? objetivosConDeuda : idsObjetivo;
 
     try {
       setGenerandoActaCorte(true);
@@ -989,7 +986,7 @@ const anexoCajaPageStyle = `
       let omitidas = [];
       try {
         const respuestaLote = await api.post("/actas-corte/generar-lote", {
-          ids_contribuyentes: objetivosConDeuda
+          ids_contribuyentes: idsParaGenerar
         });
         generadas = Array.isArray(respuestaLote?.data?.generadas) ? respuestaLote.data.generadas : [];
         omitidas = Array.isArray(respuestaLote?.data?.omitidas) ? respuestaLote.data.omitidas : [];
@@ -1000,7 +997,7 @@ const anexoCajaPageStyle = `
         if (!routeMissing) throw errorLote;
 
         const resultados = await Promise.all(
-          objetivosConDeuda.map(async (idContribuyente) => {
+          idsParaGenerar.map(async (idContribuyente) => {
             try {
               const resActa = await api.post("/actas-corte/generar", {
                 id_contribuyente: idContribuyente
