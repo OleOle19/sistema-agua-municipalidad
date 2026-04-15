@@ -76,16 +76,12 @@ const HISTORIAL_CACHE_VERSION = "futuros-v3";
 const HISTORIAL_ROW_COLORS = {
   idle: "transparent",
   deuda: "#f7cfd4",
-  pagado: "#cfeedd",
-  mixto: "#ffe3a3",
-  futuro: "#cfe1ff"
+  pagado: "#cfeedd"
 };
 const HISTORIAL_ROW_STYLES = {
   idle: { backgroundColor: "transparent", "--bs-table-bg": "transparent" },
   deuda: { backgroundColor: HISTORIAL_ROW_COLORS.deuda, "--bs-table-bg": HISTORIAL_ROW_COLORS.deuda },
-  pagado: { backgroundColor: HISTORIAL_ROW_COLORS.pagado, "--bs-table-bg": HISTORIAL_ROW_COLORS.pagado },
-  mixto: { backgroundColor: HISTORIAL_ROW_COLORS.mixto, "--bs-table-bg": HISTORIAL_ROW_COLORS.mixto },
-  futuro: { backgroundColor: HISTORIAL_ROW_COLORS.futuro, "--bs-table-bg": HISTORIAL_ROW_COLORS.futuro }
+  pagado: { backgroundColor: HISTORIAL_ROW_COLORS.pagado, "--bs-table-bg": HISTORIAL_ROW_COLORS.pagado }
 };
 const getLocalCampoAppUrl = () => `${API_BASE_URL}/campo-app/`;
 const normalizeCampoAppUrl = (value) => {
@@ -123,19 +119,12 @@ const getHistorialRowTone = ({
   subtotalAgua,
   subtotalDesague,
   subtotalLimpieza,
-  subtotalAdmin,
-  hasFutureCharge = false
+  subtotalAdmin
 } = {}) => {
   const deudaNum = Number.parseFloat(deuda) || 0;
   const abonoNum = Number.parseFloat(abono) || 0;
-  const totalCargo = (Number.parseFloat(subtotalAgua) || 0)
-    + (Number.parseFloat(subtotalDesague) || 0)
-    + (Number.parseFloat(subtotalLimpieza) || 0)
-    + (Number.parseFloat(subtotalAdmin) || 0);
-  if (deudaNum > 0 && abonoNum > 0) return "mixto";
   if (deudaNum > 0) return "deuda";
   if (abonoNum > 0) return "pagado";
-  if (hasFutureCharge && totalCargo > 0.001) return "futuro";
   return "idle";
 };
 
@@ -538,8 +527,6 @@ const ModalArbitriosDetalle = ({
             <div className="d-flex flex-wrap justify-content-center gap-2 small mb-3">
               <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.deuda}>Mes con deuda</span>
               <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.pagado}>Mes pagado</span>
-              <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.mixto}>Mes con deuda y abono</span>
-              <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.futuro}>Mes futuro/proyectado</span>
             </div>
             <div className="table-responsive border rounded">
               <table className={`table table-sm table-bordered mb-0 ${darkMode ? "table-dark" : ""}`}>
@@ -1352,8 +1339,7 @@ const anexoCajaPageStyle = `
         subtotalAgua: h.subtotal_agua,
         subtotalDesague: h.subtotal_desague,
         subtotalLimpieza: h.subtotal_limpieza,
-        subtotalAdmin: h.subtotal_admin,
-        hasFutureCharge: h.has_future_charge
+        subtotalAdmin: h.subtotal_admin
       });
       const rowStyle = darkMode && rowTone !== "idle"
         ? undefined
@@ -1374,9 +1360,7 @@ const anexoCajaPageStyle = `
           className={darkMode && rowTone !== "idle"
             ? {
               deuda: "table-danger",
-              pagado: "table-success",
-              mixto: "table-warning",
-              futuro: "table-info"
+              pagado: "table-success"
             }[rowTone]
             : undefined}
           style={rowStyle}

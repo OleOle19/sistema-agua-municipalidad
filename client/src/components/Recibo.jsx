@@ -147,13 +147,30 @@ const Recibo = forwardRef(({ datos }, ref) => {
     .find(Boolean) || "";
 
   const cargoReimpresion = toNum(recibo.cargo_reimpresion);
+  const periodos = Array.isArray(detalles?.periodos)
+    ? detalles.periodos
+        .map((p) => ({
+          mes: Number(p?.mes || 0),
+          anio: Number(p?.anio || 0),
+          monto: toNum(p?.monto),
+          label: String(p?.label || "").trim()
+        }))
+        .filter((p) => p.monto > 0)
+    : [];
+  const usePeriodDetail = Boolean(recibo?.es_agrupado_meses) && periodos.length > 0;
+
   // Conceptos editables del detalle del recibo.
-  const filasServicios = [
-    { concepto: "SERVICIO DE AGUA", monto: toNum(detalles.agua) },
-    { concepto: "SERVICIO DE DESAGUE", monto: toNum(detalles.desague) },
-    { concepto: "LIMPIEZA PUBLICA", monto: toNum(detalles.limpieza) },
-    { concepto: "GASTOS ADMINISTRATIVOS", monto: toNum(detalles.admin) }
-  ].filter((row) => row.monto > 0);
+  const filasServicios = usePeriodDetail
+    ? periodos.map((p) => ({
+      concepto: p.label || `${getMesNombre(p.mes)} ${p.anio > 0 ? p.anio : ""}`.trim(),
+      monto: p.monto
+    }))
+    : [
+      { concepto: "SERVICIO DE AGUA", monto: toNum(detalles.agua) },
+      { concepto: "SERVICIO DE DESAGUE", monto: toNum(detalles.desague) },
+      { concepto: "LIMPIEZA PUBLICA", monto: toNum(detalles.limpieza) },
+      { concepto: "GASTOS ADMINISTRATIVOS", monto: toNum(detalles.admin) }
+    ].filter((row) => row.monto > 0);
   if (cargoReimpresion > 0) {
     filasServicios.push({ concepto: "REIMPRESION", monto: cargoReimpresion });
   }
@@ -196,8 +213,25 @@ const Recibo = forwardRef(({ datos }, ref) => {
   const servicioRows = filasServicios.length > 0
     ? filasServicios
     : [{ concepto: "SERVICIOS", monto: totalRecibo }];
+  const detalleRows = usePeriodDetail ? servicioRows.slice(0, 12) : servicioRows.slice(0, 6);
+  const detalleGap = usePeriodDetail ? 2.9 : CAL.top.detalleGap;
+  const detalleFont = usePeriodDetail ? "2.6mm" : "3.0mm";
+  const detalleMaxWidth = usePeriodDetail ? mm(72) : mm(80);
+  const detalleStartY = usePeriodDetail ? 63.8 : CAL.top.yDetalleInicio;
+  const yTotalDetalle = usePeriodDetail
+    ? Math.min(100.2, detalleStartY + (Math.max(detalleRows.length, 1) * detalleGap) + 1.4)
+    : CAL.top.yTotal;
 
   const deudaAnualMonto = formatMonto(contribuyente.deuda_anio || 0);
+  const periodosDeudaBox = usePeriodDetail
+    ? periodos.slice(0, 3).map((p) => ({
+      label: p.label || `${getMesNombre(p.mes)} ${p.anio > 0 ? p.anio : ""}`.trim(),
+      monto: formatMonto(p.monto)
+    }))
+    : [];
+  const totalDeudaMesBox = periodosDeudaBox.length > 0
+    ? formatMonto(periodosDeudaBox.reduce((acc, p) => acc + toNum(p.monto), 0))
+    : "";
 
   return (
     <div
@@ -238,15 +272,15 @@ const Recibo = forwardRef(({ datos }, ref) => {
         {RECIBO_TEXTOS.tipoServicio}
       </div>
 
-      {servicioRows.slice(0, 6).map((row, idx) => (
+      {detalleRows.map((row, idx) => (
         <React.Fragment key={`${row.concepto}-${idx}`}>
           <div
             style={{
               ...baseText,
               left: xTop(CAL.top.xConcepto),
-              top: yTop(CAL.top.yDetalleInicio + (idx * CAL.top.detalleGap)),
-              fontSize: "3.0mm",
-              maxWidth: mm(80),
+              top: yTop(detalleStartY + (idx * detalleGap)),
+              fontSize: detalleFont,
+              maxWidth: detalleMaxWidth,
               whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis"
@@ -258,10 +292,10 @@ const Recibo = forwardRef(({ datos }, ref) => {
             style={{
               ...baseText,
               left: xTop(CAL.top.xImporte),
-              top: yTop(CAL.top.yDetalleInicio + (idx * CAL.top.detalleGap)),
+              top: yTop(detalleStartY + (idx * detalleGap)),
               width: mm(14),
               textAlign: "right",
-              fontSize: "3.0mm",
+              fontSize: detalleFont,
               fontWeight: 700
             }}
           >
@@ -274,7 +308,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
         style={{
           ...baseText,
           left: xTop(CAL.top.xTotal),
-          top: yTop(CAL.top.yTotal),
+          top: yTop(yTotalDetalle),
           width: mm(14),
           textAlign: "right",
           fontSize: "3.3mm",
@@ -347,14 +381,33 @@ const Recibo = forwardRef(({ datos }, ref) => {
           <span>{RECIBO_TEXTOS.tituloDeudaMes}</span>
           <span>{RECIBO_TEXTOS.labelDeuda}</span>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.5), textAlign: "center", fontWeight: 700 }}>
-          <span>&nbsp;</span>
-          <span>&nbsp;</span>
-        </div>
+        {periodosDeudaBox.length > 0 ? (
+          periodosDeudaBox.map((p, idx) => (
+            <div
+              key={`${p.label}-${idx}`}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                marginTop: mm(idx === 0 ? 0.5 : 0.35),
+                textAlign: "center",
+                fontWeight: 700,
+                fontSize: "2.55mm"
+              }}
+            >
+              <span>{p.label}</span>
+              <span>{p.monto}</span>
+            </div>
+          ))
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.5), textAlign: "center", fontWeight: 700 }}>
+            <span>&nbsp;</span>
+            <span>&nbsp;</span>
+          </div>
+        )}
         <div style={{ borderTop: "0.35mm solid #000", marginTop: mm(0.6) }} />
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.6), textAlign: "center", fontWeight: 700 }}>
           <span>Total</span>
-          <span>&nbsp;</span>
+          <span>{totalDeudaMesBox || "\u00A0"}</span>
         </div>
       </div>
 
