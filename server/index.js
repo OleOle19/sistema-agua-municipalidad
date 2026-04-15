@@ -940,24 +940,75 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
   const predio = predioRs.rows[0];
   if (predio.estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) return null;
 
+  const historialContribuyenteRs = await db.query(`
+    SELECT
+      t.subtotal_agua,
+      t.subtotal_desague,
+      t.subtotal_limpieza,
+      t.subtotal_admin,
+      t.subtotal_extra
+    FROM (
+      SELECT
+        r.anio,
+        r.mes,
+        SUM(COALESCE(r.subtotal_agua, 0)) AS subtotal_agua,
+        SUM(COALESCE(r.subtotal_desague, 0)) AS subtotal_desague,
+        SUM(COALESCE(r.subtotal_limpieza, 0)) AS subtotal_limpieza,
+        SUM(COALESCE(r.subtotal_admin, 0)) AS subtotal_admin,
+        SUM(COALESCE(p2.tarifa_extra, 0)) AS subtotal_extra
+      FROM recibos r
+      JOIN predios p2 ON p2.id_predio = r.id_predio
+      WHERE p2.id_contribuyente = $1
+        AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+      GROUP BY r.anio, r.mes
+      HAVING (
+        SUM(COALESCE(r.subtotal_agua, 0)) +
+        SUM(COALESCE(r.subtotal_desague, 0)) +
+        SUM(COALESCE(r.subtotal_limpieza, 0)) +
+        SUM(COALESCE(r.subtotal_admin, 0))
+      ) > 0
+      ORDER BY r.anio DESC, r.mes DESC
+      LIMIT 1
+    ) t
+  `, [id]);
+  const historialContribuyente = historialContribuyenteRs.rows[0] || null;
+
   const activoSN = normalizeSN(predio.activo_sn, "S");
   const aguaHabilitado = activoSN === "S" && normalizeSN(predio.agua_sn, "S") === "S";
   const desagueHabilitado = activoSN === "S" && normalizeSN(predio.desague_sn, "S") === "S";
   const limpiezaHabilitado = activoSN === "S" && normalizeSN(predio.limpieza_sn, "S") === "S";
   const subtotalAgua = aguaHabilitado
-    ? roundMonto2(parseMonto(predio.tarifa_agua, parseMonto(predio.agua_hist, AUTO_DEUDA_BASE.agua)))
+    ? roundMonto2(parseMonto(
+      predio.tarifa_agua,
+      parseMonto(
+        historialContribuyente?.subtotal_agua,
+        parseMonto(predio.agua_hist, AUTO_DEUDA_BASE.agua)
+      )
+    ))
     : 0;
   const subtotalDesague = desagueHabilitado
-    ? roundMonto2(parseMonto(predio.tarifa_desague, parseMonto(predio.desague_hist, AUTO_DEUDA_BASE.desague)))
+    ? roundMonto2(parseMonto(
+      predio.tarifa_desague,
+      parseMonto(
+        historialContribuyente?.subtotal_desague,
+        parseMonto(predio.desague_hist, AUTO_DEUDA_BASE.desague)
+      )
+    ))
     : 0;
   const subtotalLimpieza = limpiezaHabilitado
-    ? roundMonto2(parseMonto(predio.tarifa_limpieza, parseMonto(predio.limpieza_hist, AUTO_DEUDA_BASE.limpieza)))
+    ? roundMonto2(parseMonto(
+      predio.tarifa_limpieza,
+      parseMonto(
+        historialContribuyente?.subtotal_limpieza,
+        parseMonto(predio.limpieza_hist, AUTO_DEUDA_BASE.limpieza)
+      )
+    ))
     : 0;
   const subtotalAdmin = activoSN === "S"
-    ? roundMonto2(parseMonto(predio.tarifa_admin, AUTO_DEUDA_BASE.admin))
+    ? roundMonto2(parseMonto(predio.tarifa_admin, parseMonto(historialContribuyente?.subtotal_admin, AUTO_DEUDA_BASE.admin)))
     : 0;
   const subtotalExtra = activoSN === "S"
-    ? roundMonto2(parseMonto(predio.tarifa_extra, 0))
+    ? roundMonto2(parseMonto(predio.tarifa_extra, parseMonto(historialContribuyente?.subtotal_extra, 0)))
     : 0;
   const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
   if (totalPagar <= 0) return null;
