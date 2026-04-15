@@ -45,78 +45,78 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
       background: "#fff",
       color: "#111",
       fontFamily: "\"Times New Roman\", Times, serif",
-      fontSize: isCompact ? "12.2px" : "13px",
-      lineHeight: isCompact ? 1.24 : 1.25,
+      fontSize: isCompact ? "12.8px" : "13px",
+      lineHeight: isCompact ? 1.28 : 1.25,
       breakInside: "avoid",
       pageBreakInside: "avoid"
     },
     top: {
       display: "grid",
-      gridTemplateColumns: isCompact ? "48px 1fr auto" : "72px 1fr auto",
+      gridTemplateColumns: isCompact ? "38px 1fr auto" : "72px 1fr auto",
       alignItems: "start",
       columnGap: isCompact ? "8px" : "10px",
       marginBottom: isCompact ? "7px" : "14px"
     },
     logo: {
-      width: isCompact ? "43px" : "64px",
-      height: isCompact ? "43px" : "64px",
+      width: isCompact ? "34px" : "64px",
+      height: isCompact ? "34px" : "64px",
       objectFit: "contain"
     },
     entidad: {
       textAlign: "center",
       fontWeight: 700,
-      fontSize: isCompact ? "11.2px" : "14px",
+      fontSize: isCompact ? "12.2px" : "14px",
       marginBottom: isCompact ? "1px" : "2px",
       textTransform: "uppercase"
     },
     title: {
       textAlign: "center",
       fontWeight: 700,
-      fontSize: isCompact ? "17px" : "20px",
+      fontSize: isCompact ? "18px" : "20px",
       letterSpacing: "0.4px",
       marginTop: 0,
       marginBottom: "0",
       textTransform: "uppercase"
     },
     fecha: {
-      fontSize: isCompact ? "11.4px" : "14px",
+      fontSize: isCompact ? "12.2px" : "14px",
       fontWeight: 400,
       whiteSpace: "nowrap",
       marginTop: "3px"
     },
     datosFila: {
       display: "grid",
-      gridTemplateColumns: isCompact ? "114px 1fr" : "150px 1fr",
+      gridTemplateColumns: isCompact ? "96px 1fr" : "150px 1fr",
       columnGap: "8px",
       alignItems: "baseline"
     },
     label: {
       fontWeight: 700,
-      fontSize: isCompact ? "11.6px" : "14px",
+      fontSize: isCompact ? "12.6px" : "14px",
       textTransform: "uppercase"
     },
     value: {
       fontWeight: 700,
-      fontSize: isCompact ? "11.6px" : "14px",
+      fontSize: isCompact ? "12.6px" : "14px",
       textTransform: "uppercase"
     },
     valueNormal: {
       fontWeight: 400,
-      fontSize: isCompact ? "11.4px" : "14px",
+      fontSize: isCompact ? "12.2px" : "14px",
       textTransform: "uppercase"
     },
     paragraph: {
       marginTop: isCompact ? "5px" : "8px",
       marginBottom: isCompact ? "7px" : "12px",
-      fontSize: isCompact ? "11.4px" : "15px",
+      fontSize: isCompact ? "12.3px" : "15px",
       textAlign: "justify",
-      lineHeight: isCompact ? 1.25 : 1.35
+      lineHeight: isCompact ? 1.3 : 1.35
     },
     table: {
       width: "100%",
       borderCollapse: "collapse",
       tableLayout: "fixed",
-      fontSize: isCompact ? "10.6px" : "13px",
+      fontSize: isCompact ? "11.4px" : "13px",
       marginTop: isCompact ? "4px" : "6px"
     },
     th: {
@@ -159,26 +159,26 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
       padding: isCompact ? "3px 3px" : "5px 4px",
       textAlign: "center",
       fontWeight: 700,
-      fontSize: isCompact ? "11.3px" : "15px"
+      fontSize: isCompact ? "12.2px" : "15px"
     },
     totalCell: {
       border: "1px solid #444",
       padding: isCompact ? "3px 3px" : "5px 4px",
       textAlign: "center",
       fontWeight: 700,
-      fontSize: isCompact ? "11.3px" : "15px"
+      fontSize: isCompact ? "12.2px" : "15px"
     },
     totalCellRight: {
       border: "1px solid #444",
       padding: isCompact ? "3px 3px" : "5px 4px",
       textAlign: "right",
       fontWeight: 700,
-      fontSize: isCompact ? "11.3px" : "15px"
+      fontSize: isCompact ? "12.2px" : "15px"
     },
     closingText: {
       marginTop: isCompact ? "7px" : "12px",
-      fontSize: isCompact ? "11.4px" : "14px",
-      lineHeight: isCompact ? 1.24 : 1.35
+      fontSize: isCompact ? "12.2px" : "14px",
+      lineHeight: isCompact ? 1.28 : 1.35
     },
     firmaRow: {
       marginTop: isCompact ? "8px" : "16px",
@@ -192,7 +192,7 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
     },
     administracion: {
       textAlign: "right",
-      fontSize: isCompact ? "11.4px" : "14px",
+      fontSize: isCompact ? "12.2px" : "14px",
       paddingRight: isCompact ? "20px" : "50px"
     }
   };
