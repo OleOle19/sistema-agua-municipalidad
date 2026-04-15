@@ -506,6 +506,15 @@ const CAJA_HORA_INICIO = normalizeHoraHM(process.env.CAJA_HORA_INICIO, "07:00");
 const CAJA_HORA_FIN = normalizeHoraHM(process.env.CAJA_HORA_FIN, "19:00");
 const CAJA_AUTO_CIERRE_HORA = normalizeHoraHM(process.env.CAJA_AUTO_CIERRE_HORA, "16:00");
 const CAJA_AUTO_CIERRE_CHECK_MS = Math.max(60 * 1000, Number(process.env.CAJA_AUTO_CIERRE_CHECK_MS || (5 * 60 * 1000)));
+const AUTO_BACKUP_TIMEZONE = process.env.AUTO_BACKUP_TIMEZONE || APP_TIMEZONE;
+const AUTO_BACKUP_ACTIVO = process.env.AUTO_BACKUP_ACTIVO !== "0";
+const AUTO_BACKUP_HORA = normalizeHoraHM(process.env.AUTO_BACKUP_HORA, "23:55");
+const AUTO_BACKUP_CHECK_MS = Math.max(60 * 1000, Number(process.env.AUTO_BACKUP_CHECK_MS || (5 * 60 * 1000)));
+const AUTO_BACKUP_DIR = String(process.env.AUTO_BACKUP_DIR || path.join(__dirname, "..", "backups")).trim();
+const AUTO_BACKUP_RETENTION_DAYS = Math.min(
+  3650,
+  Math.max(1, Number(process.env.AUTO_BACKUP_RETENTION_DAYS || 30))
+);
 const loginIpRateMap = new Map();
 const loginUserFailMap = new Map();
 
@@ -862,6 +871,16 @@ const parseOptionalServicioSN = (value) => {
   if (normalized !== "S" && normalized !== "N") return "__INVALID__";
   return normalized;
 };
+const splitAdminExtraDisplay = (subtotalAdminRaw, extraTarifaRaw) => {
+  const subtotalAdminNum = roundMonto2(parseMonto(subtotalAdminRaw, 0));
+  const extraTarifaNum = Math.max(0, roundMonto2(parseMonto(extraTarifaRaw, 0)));
+  const subtotalExtra = roundMonto2(Math.min(subtotalAdminNum, extraTarifaNum));
+  const subtotalAdmin = roundMonto2(Math.max(subtotalAdminNum - subtotalExtra, 0));
+  return {
+    subtotal_admin: subtotalAdmin,
+    subtotal_extra: subtotalExtra
+  };
+};
 const clampArray = (rows, max = 200) => {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, Math.max(1, Math.min(1000, max)));
@@ -905,9 +924,12 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
   const subtotalDesague = desagueHabilitado ? roundMonto2(parseMonto(predio.tarifa_desague, AUTO_DEUDA_BASE.desague)) : 0;
   const subtotalLimpieza = limpiezaHabilitado ? roundMonto2(parseMonto(predio.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza)) : 0;
   const subtotalAdmin = activoSN === "S"
-    ? roundMonto2(parseMonto(predio.tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(predio.tarifa_extra, 0))
+    ? roundMonto2(parseMonto(predio.tarifa_admin, AUTO_DEUDA_BASE.admin))
     : 0;
-  const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin);
+  const subtotalExtra = activoSN === "S"
+    ? roundMonto2(parseMonto(predio.tarifa_extra, 0))
+    : 0;
+  const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
   if (totalPagar <= 0) return null;
 
   return {
@@ -918,6 +940,8 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
     subtotal_desague: subtotalDesague,
     subtotal_limpieza: subtotalLimpieza,
     subtotal_admin: subtotalAdmin,
+    subtotal_extra: subtotalExtra,
+    tarifa_extra_actual: subtotalExtra,
     total_pagar: totalPagar,
     abono_mes: 0,
     deuda_mes: 0,
@@ -951,6 +975,19 @@ const appendProjectedArbitriosRows = async (
   baseRows.push(projectedRow);
   baseRows.sort((a, b) => ((Number(a?.anio || 0) * 100 + Number(a?.mes || 0)) - (Number(b?.anio || 0) * 100 + Number(b?.mes || 0))));
   return baseRows;
+};
+const normalizeHistorialArbitriosRows = (rows = []) => {
+  return (Array.isArray(rows) ? rows : []).map((row) => {
+    const split = splitAdminExtraDisplay(
+      row?.subtotal_admin,
+      row?.subtotal_extra ?? row?.tarifa_extra_actual ?? 0
+    );
+    return {
+      ...row,
+      subtotal_admin: split.subtotal_admin,
+      subtotal_extra: split.subtotal_extra
+    };
+  });
 };
 
 const recalcularRecibosFuturosPorServicios = async (
@@ -1007,7 +1044,12 @@ const recalcularRecibosFuturosPorServicios = async (
               ${sqlSnEsSi("p.agua_sn", "S")}
               OR COALESCE(r.subtotal_agua, 0) > 0
             )
-            THEN COALESCE(p.tarifa_agua, NULLIF(COALESCE(r.subtotal_agua, 0), 0), $2::numeric)
+            THEN COALESCE(
+              p.tarifa_agua,
+              NULLIF(COALESCE(hist.agua_hist, 0), 0),
+              NULLIF(COALESCE(r.subtotal_agua, 0), 0),
+              $2::numeric
+            )
           ELSE 0::numeric
         END AS nuevo_agua,
         CASE
@@ -1016,7 +1058,12 @@ const recalcularRecibosFuturosPorServicios = async (
               ${sqlSnEsSi("p.desague_sn", "S")}
               OR COALESCE(r.subtotal_desague, 0) > 0
             )
-            THEN COALESCE(p.tarifa_desague, NULLIF(COALESCE(r.subtotal_desague, 0), 0), $3::numeric)
+            THEN COALESCE(
+              p.tarifa_desague,
+              NULLIF(COALESCE(hist.desague_hist, 0), 0),
+              NULLIF(COALESCE(r.subtotal_desague, 0), 0),
+              $3::numeric
+            )
           ELSE 0::numeric
         END AS nuevo_desague,
         CASE
@@ -1025,7 +1072,12 @@ const recalcularRecibosFuturosPorServicios = async (
               ${sqlSnEsSi("p.limpieza_sn", "S")}
               OR COALESCE(r.subtotal_limpieza, 0) > 0
             )
-            THEN COALESCE(p.tarifa_limpieza, NULLIF(COALESCE(r.subtotal_limpieza, 0), 0), $4::numeric)
+            THEN COALESCE(
+              p.tarifa_limpieza,
+              NULLIF(COALESCE(hist.limpieza_hist, 0), 0),
+              NULLIF(COALESCE(r.subtotal_limpieza, 0), 0),
+              $4::numeric
+            )
           ELSE 0::numeric
         END AS nuevo_limpieza,
         CASE
@@ -1035,8 +1087,38 @@ const recalcularRecibosFuturosPorServicios = async (
         END AS nuevo_admin
       FROM recibos r
       INNER JOIN predios p ON p.id_predio = r.id_predio
+      LEFT JOIN LATERAL (
+        SELECT
+          (
+            SELECT COALESCE(rh.subtotal_agua, 0)
+            FROM recibos rh
+            WHERE rh.id_predio = r.id_predio
+              AND rh.id_recibo <> r.id_recibo
+              AND COALESCE(rh.subtotal_agua, 0) > 0
+            ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+            LIMIT 1
+          ) AS agua_hist,
+          (
+            SELECT COALESCE(rh.subtotal_desague, 0)
+            FROM recibos rh
+            WHERE rh.id_predio = r.id_predio
+              AND rh.id_recibo <> r.id_recibo
+              AND COALESCE(rh.subtotal_desague, 0) > 0
+            ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+            LIMIT 1
+          ) AS desague_hist,
+          (
+            SELECT COALESCE(rh.subtotal_limpieza, 0)
+            FROM recibos rh
+            WHERE rh.id_predio = r.id_predio
+              AND rh.id_recibo <> r.id_recibo
+              AND COALESCE(rh.subtotal_limpieza, 0) > 0
+            ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+            LIMIT 1
+          ) AS limpieza_hist
+      ) hist ON TRUE
       WHERE p.id_contribuyente = $1
-        AND r.estado = 'PENDIENTE'
+        AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
         AND (
           $7::boolean = true
           OR ((r.anio::int * 100) + r.mes::int) >= $6::int
@@ -9265,7 +9347,10 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
 app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
   const client = await pool.connect();
   try {
-    const { id_contribuyente } = req.params;
+    const idContribuyente = parsePositiveInt(req.params?.id_contribuyente, 0);
+    if (!idContribuyente) {
+      return res.status(400).json({ error: "ID de contribuyente inválido." });
+    }
     const hoyIso = toISODate();
     const fechaCorte = normalizeDateOnly(req.query?.fecha_corte || req.query?.fecha || req.query?.fecha_pago) || hoyIso;
     if (fechaCorte > hoyIso) {
@@ -9278,9 +9363,14 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     const filtrarAnio = anioParam !== 'all';
     const anio = filtrarAnio ? (Number(anioParam) || getCurrentYear()) : null;
     const incluirFuturos = normalizeSN(req.query?.incluir_futuros, "N") === "S";
+    await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
+      incluirPendientesHistoricos: true,
+      desdePeriodoNum: 0
+    });
 
     const historial = await client.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
+        COALESCE(p2.tarifa_extra, 0) AS tarifa_extra_actual,
         r.total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
         p.id_ultimo_pago,
@@ -9296,6 +9386,7 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
           ELSE 'PENDIENTE'
         END as estado
       FROM recibos r
+      JOIN predios p2 ON p2.id_predio = r.id_predio
       LEFT JOIN (
         SELECT
           id_recibo,
@@ -9311,15 +9402,16 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
       ${filtrarAnio ? 'AND r.anio = $5' : ''}
       ORDER BY r.anio ASC, r.mes ASC
     `, filtrarAnio
-      ? [id_contribuyente, anioActual, mesActual, fechaCorte, anio]
-      : [id_contribuyente, anioActual, mesActual, fechaCorte]);
-    const rows = await appendProjectedArbitriosRows(client, historial.rows, id_contribuyente, {
+      ? [idContribuyente, anioActual, mesActual, fechaCorte, anio]
+      : [idContribuyente, anioActual, mesActual, fechaCorte]);
+    const rowsRaw = await appendProjectedArbitriosRows(client, historial.rows, idContribuyente, {
       incluirFuturos,
       anioActual,
       mesActual,
       filtrarAnio,
       anioFiltro: anio
     });
+    const rows = normalizeHistorialArbitriosRows(rowsRaw);
     res.json(rows);
   } catch (err) { res.status(500).send("Error historial"); }
   finally { client.release(); }
@@ -9341,6 +9433,10 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     if (filtrarAnio && (!Number.isInteger(anio) || anio <= 1900 || anio >= 9999)) {
       return res.status(400).json({ error: "Año inválido para exportación." });
     }
+    await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
+      incluirPendientesHistoricos: true,
+      desdePeriodoNum: 0
+    });
 
     const contribuyenteRs = await client.query(
       `SELECT codigo_municipal, nombre_completo
@@ -9363,6 +9459,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
         r.subtotal_desague,
         r.subtotal_limpieza,
         r.subtotal_admin,
+        COALESCE(p2.tarifa_extra, 0) AS tarifa_extra_actual,
         r.total_pagar,
         COALESCE(p.total_pagado, 0) AS abono_mes,
         CASE
@@ -9376,6 +9473,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
           ELSE 'PENDIENTE'
         END AS estado
       FROM recibos r
+      JOIN predios p2 ON p2.id_predio = r.id_predio
       LEFT JOIN (
         SELECT id_recibo, SUM(monto_pagado) AS total_pagado
         FROM pagos
@@ -9386,13 +9484,14 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       ${filtrarAnio ? "AND r.anio = $4" : ""}
       ORDER BY r.anio ASC, r.mes ASC, r.id_recibo ASC
     `, filtrarAnio ? [idContribuyente, anioActual, mesActual, anio] : [idContribuyente, anioActual, mesActual]);
-    const historialRows = await appendProjectedArbitriosRows(client, historial.rows, idContribuyente, {
+    const historialRowsRaw = await appendProjectedArbitriosRows(client, historial.rows, idContribuyente, {
       incluirFuturos,
       anioActual,
       mesActual,
       filtrarAnio,
       anioFiltro: anio
     });
+    const historialRows = normalizeHistorialArbitriosRows(historialRowsRaw);
 
     const monthLabels = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
     const workbook = new ExcelJS.Workbook();
@@ -9415,6 +9514,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       { header: "DESAGUE", key: "subtotal_desague", width: 14 },
       { header: "LIMPIEZA", key: "subtotal_limpieza", width: 14 },
       { header: "ADMIN", key: "subtotal_admin", width: 14 },
+      { header: "EXTRA", key: "subtotal_extra", width: 14 },
       { header: "DEUDA", key: "deuda_mes", width: 14 },
       { header: "ABONO", key: "abono_mes", width: 14 },
       { header: "ESTADO", key: "estado", width: 14 }
@@ -9425,6 +9525,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     let totalDesague = 0;
     let totalLimpieza = 0;
     let totalAdmin = 0;
+    let totalExtra = 0;
     let totalDeuda = 0;
     let totalAbono = 0;
 
@@ -9433,12 +9534,14 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       const desague = parseMonto(r.subtotal_desague, 0);
       const limpieza = parseMonto(r.subtotal_limpieza, 0);
       const admin = parseMonto(r.subtotal_admin, 0);
+      const extra = parseMonto(r.subtotal_extra, 0);
       const deuda = parseMonto(r.deuda_mes, 0);
       const abono = parseMonto(r.abono_mes, 0);
       totalAgua += agua;
       totalDesague += desague;
       totalLimpieza += limpieza;
       totalAdmin += admin;
+      totalExtra += extra;
       totalDeuda += deuda;
       totalAbono += abono;
       wsDetalle.addRow({
@@ -9448,6 +9551,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
         subtotal_desague: Number(desague.toFixed(2)),
         subtotal_limpieza: Number(limpieza.toFixed(2)),
         subtotal_admin: Number(admin.toFixed(2)),
+        subtotal_extra: Number(extra.toFixed(2)),
         deuda_mes: Number(deuda.toFixed(2)),
         abono_mes: Number(abono.toFixed(2)),
         estado: String(r.estado || "")
@@ -9461,6 +9565,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       subtotal_desague: Number(totalDesague.toFixed(2)),
       subtotal_limpieza: Number(totalLimpieza.toFixed(2)),
       subtotal_admin: Number(totalAdmin.toFixed(2)),
+      subtotal_extra: Number(totalExtra.toFixed(2)),
       deuda_mes: Number(totalDeuda.toFixed(2)),
       abono_mes: Number(totalAbono.toFixed(2)),
       estado: ""
@@ -12977,7 +13082,7 @@ app.get("/comparaciones/legacy/:id/exportar", async (req, res) => {
 // ==========================================
 // BACKUP
 // ==========================================
-app.get("/admin/backup", authenticateToken, requireSuperAdmin, (req, res) => {
+const getBackupConfig = () => {
   const DB_USER = String(process.env.DB_USER || "").trim();
   const DB_HOST = String(process.env.DB_HOST || "").trim();
   const DB_NAME = String(process.env.DB_NAME || "").trim();
@@ -12985,14 +13090,97 @@ app.get("/admin/backup", authenticateToken, requireSuperAdmin, (req, res) => {
   const DB_PASSWORD = String(process.env.DB_PASSWORD || "");
   const PG_DUMP_PATH = String(process.env.PG_DUMP_PATH || "").trim();
   if (!DB_USER || !DB_HOST || !DB_NAME || !DB_PORT || !DB_PASSWORD) {
-    return res.status(500).json({ error: "Configuración de base de datos incompleta para backup." });
+    throw new Error("Configuración de base de datos incompleta para backup.");
   }
   if (!PG_DUMP_PATH) {
-    return res.status(500).json({ error: "PG_DUMP_PATH no configurado." });
+    throw new Error("PG_DUMP_PATH no configurado.");
+  }
+  return {
+    DB_USER,
+    DB_HOST,
+    DB_NAME,
+    DB_PORT,
+    DB_PASSWORD,
+    PG_DUMP_PATH
+  };
+};
+
+const getFechaHoraBackup = (date = new Date(), timeZone = APP_TIMEZONE) => {
+  const { anio, mes, dia, hora, minuto, segundo } = getFechaPartesZona(date, timeZone);
+  return {
+    fecha: `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(dia).padStart(2, "0")}`,
+    fechaHora: `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(dia).padStart(2, "0")}_${String(hora).padStart(2, "0")}-${String(minuto).padStart(2, "0")}-${String(segundo).padStart(2, "0")}`
+  };
+};
+
+const ejecutarPgDump = ({ outputPath, backupConfig }) => {
+  return new Promise((resolve, reject) => {
+    const config = backupConfig || getBackupConfig();
+    const dump = spawn(config.PG_DUMP_PATH, [
+      "-U", config.DB_USER,
+      "-h", config.DB_HOST,
+      "-p", config.DB_PORT,
+      "-F", "p",
+      "-f", outputPath,
+      config.DB_NAME
+    ], {
+      env: { ...process.env, PGPASSWORD: config.DB_PASSWORD }
+    });
+    let stderrChunk = "";
+    dump.stderr.on("data", (data) => {
+      stderrChunk += String(data || "");
+    });
+    dump.on("error", () => {
+      reject(new Error("No se pudo ejecutar pg_dump."));
+    });
+    dump.on("close", (code) => {
+      if (code !== 0) {
+        console.error(`[BACKUP] pg_dump terminó con código ${code}.`, stderrChunk.trim());
+        reject(new Error("Error generando backup."));
+        return;
+      }
+      resolve();
+    });
+  });
+};
+
+const cleanupBackupsAntiguos = (backupDir, retentionDays = 30) => {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) return 0;
+  if (!fs.existsSync(backupDir)) return 0;
+  const limiteMs = retentionDays * 24 * 60 * 60 * 1000;
+  const ahora = Date.now();
+  let eliminados = 0;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(backupDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    if (!entry?.isFile?.()) continue;
+    if (!/^backup_agua_.*\.sql$/i.test(String(entry.name || ""))) continue;
+    const filePath = path.join(backupDir, entry.name);
+    try {
+      const stats = fs.statSync(filePath);
+      if ((ahora - stats.mtimeMs) > limiteMs) {
+        fs.unlinkSync(filePath);
+        eliminados += 1;
+      }
+    } catch {}
+  }
+  return eliminados;
+};
+
+app.get("/admin/backup", authenticateToken, requireSuperAdmin, async (req, res) => {
+  let backupConfig;
+  try {
+    backupConfig = getBackupConfig();
+  } catch (err) {
+    return res.status(500).json({ error: err.message || "Configuración de backup inválida." });
   }
 
-  const fecha = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const filename = `backup_agua_${fecha}.sql`;
+  const { fechaHora } = getFechaHoraBackup(new Date(), APP_TIMEZONE);
+  const filename = `backup_agua_${fechaHora}.sql`;
   const dumpTemp = path.join(
     os.tmpdir(),
     `tmp_${filename}_${crypto.randomBytes(4).toString("hex")}.sql`
@@ -13003,55 +13191,38 @@ app.get("/admin/backup", authenticateToken, requireSuperAdmin, (req, res) => {
     } catch {}
   };
 
-  const dump = spawn(PG_DUMP_PATH, [
-    '-U', DB_USER,
-    '-h', DB_HOST,
-    '-p', DB_PORT,
-    '-F', 'p',
-    '-f', dumpTemp,
-    DB_NAME
-  ], {
-    env: { ...process.env, PGPASSWORD: DB_PASSWORD }
-  });
-  let stderrChunk = "";
-  dump.stderr.on('data', (data) => {
-    stderrChunk += String(data || "");
-  });
-  dump.on('error', () => {
+  try {
+    await ejecutarPgDump({ outputPath: dumpTemp, backupConfig });
+  } catch (err) {
     cleanupTemp();
-    if (!res.headersSent) {
+    if (!res.headersSent && String(err?.message || "").includes("No se pudo ejecutar pg_dump")) {
       return res.status(500).json({ error: "No se pudo ejecutar pg_dump." });
     }
-  });
-  dump.on("close", (code) => {
-    if (code !== 0) {
-      console.error(`[BACKUP] pg_dump terminó con código ${code}.`, stderrChunk.trim());
-      cleanupTemp();
-      if (!res.headersSent) {
-        return res.status(500).json({ error: "Error generando backup." });
-      }
-      return;
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "Error generando backup." });
     }
-    if (!fs.existsSync(dumpTemp)) {
-      if (!res.headersSent) {
-        return res.status(500).json({ error: "No se pudo generar archivo de backup." });
-      }
-      return;
+    return;
+  }
+  if (!fs.existsSync(dumpTemp)) {
+    cleanupTemp();
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "No se pudo generar archivo de backup." });
     }
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', 'application/sql');
-    const reader = fs.createReadStream(dumpTemp);
-    reader.on("error", () => {
-      cleanupTemp();
-      if (!res.headersSent) {
-        return res.status(500).json({ error: "No se pudo enviar backup." });
-      }
-      try { res.end(); } catch {}
-    });
-    reader.on("close", cleanupTemp);
-    res.on("close", cleanupTemp);
-    reader.pipe(res);
+    return;
+  }
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("Content-Type", "application/sql");
+  const reader = fs.createReadStream(dumpTemp);
+  reader.on("error", () => {
+    cleanupTemp();
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "No se pudo enviar backup." });
+    }
+    try { res.end(); } catch {}
   });
+  reader.on("close", cleanupTemp);
+  res.on("close", cleanupTemp);
+  reader.pipe(res);
 });
 
 // ==========================================
@@ -13866,6 +14037,98 @@ const getHoraMinuto = (hhmm = "16:00") => {
   };
 };
 
+let autoBackupEnCurso = false;
+let ultimoDiaAutoBackup = "";
+let autoBackupConfigNotificada = false;
+const getAutoBackupDir = () => {
+  const configured = String(AUTO_BACKUP_DIR || "").trim();
+  if (configured) {
+    if (path.isAbsolute(configured)) return configured;
+    return path.resolve(__dirname, configured);
+  }
+  return path.join(__dirname, "..", "backups");
+};
+const existeBackupAutomaticoDelDia = (backupDir, fechaDia) => {
+  if (!fs.existsSync(backupDir)) return false;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(backupDir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  const regex = new RegExp(`^backup_agua_${fechaDia}_\\d{2}-\\d{2}-\\d{2}\\.sql$`, "i");
+  return entries.some((entry) => entry?.isFile?.() && regex.test(String(entry.name || "")));
+};
+const crearBackupAutomaticoDiario = async () => {
+  if (!AUTO_BACKUP_ACTIVO || autoBackupEnCurso) return;
+  const partesHoy = getFechaPartesZona(new Date(), AUTO_BACKUP_TIMEZONE);
+  const meta = getHoraMinuto(AUTO_BACKUP_HORA);
+  const yaEsHora = (partesHoy.hora > meta.hora) || (partesHoy.hora === meta.hora && partesHoy.minuto >= meta.minuto);
+  if (!yaEsHora) return;
+
+  const fechaHoy = `${String(partesHoy.anio).padStart(4, "0")}-${String(partesHoy.mes).padStart(2, "0")}-${String(partesHoy.dia).padStart(2, "0")}`;
+  if (ultimoDiaAutoBackup === fechaHoy) return;
+
+  autoBackupEnCurso = true;
+  try {
+    const backupConfig = getBackupConfig();
+    autoBackupConfigNotificada = false;
+    const backupDir = getAutoBackupDir();
+    fs.mkdirSync(backupDir, { recursive: true });
+    if (existeBackupAutomaticoDelDia(backupDir, fechaHoy)) {
+      ultimoDiaAutoBackup = fechaHoy;
+      return;
+    }
+
+    const { fechaHora } = getFechaHoraBackup(new Date(), AUTO_BACKUP_TIMEZONE);
+    const filename = `backup_agua_${fechaHora}.sql`;
+    const destino = path.join(backupDir, filename);
+    await ejecutarPgDump({ outputPath: destino, backupConfig });
+    if (!fs.existsSync(destino)) {
+      throw new Error("No se pudo generar archivo de backup.");
+    }
+
+    const bytes = Number(fs.statSync(destino).size || 0);
+    const eliminados = cleanupBackupsAntiguos(backupDir, AUTO_BACKUP_RETENTION_DAYS);
+    ultimoDiaAutoBackup = fechaHoy;
+    console.log(`[AUTO_BACKUP] OK ${fechaHoy}: ${filename} (${bytes} bytes). Eliminados=${eliminados}.`);
+    registrarAuditoria(
+      null,
+      "AUTO_BACKUP_DIARIO",
+      `fecha=${fechaHoy}; archivo=${filename}; bytes=${bytes}; retention_dias=${AUTO_BACKUP_RETENTION_DAYS}; eliminados=${eliminados}`
+    ).catch(() => {});
+  } catch (err) {
+    const msg = String(err?.message || err || "Error desconocido");
+    const esConfig = msg.includes("Configuración de base de datos incompleta para backup.")
+      || msg.includes("PG_DUMP_PATH no configurado.");
+    if (esConfig) {
+      if (!autoBackupConfigNotificada) {
+        console.error(`[AUTO_BACKUP] Configuración inválida: ${msg}`);
+        autoBackupConfigNotificada = true;
+      }
+      return;
+    }
+    console.error(`[AUTO_BACKUP] Error en backup diario: ${msg}`);
+  } finally {
+    autoBackupEnCurso = false;
+  }
+};
+const iniciarTareaAutoBackup = () => {
+  if (!AUTO_BACKUP_ACTIVO) {
+    console.log("[AUTO_BACKUP] Desactivada por configuración.");
+    return;
+  }
+  console.log(`[AUTO_BACKUP] Activa. Hora=${AUTO_BACKUP_HORA} TZ=${AUTO_BACKUP_TIMEZONE} Dir=${getAutoBackupDir()} Retención=${AUTO_BACKUP_RETENTION_DAYS} días.`);
+  crearBackupAutomaticoDiario().catch((err) => {
+    console.error("[AUTO_BACKUP] Error inicial:", err?.message || err);
+  });
+  setInterval(() => {
+    crearBackupAutomaticoDiario().catch((err) => {
+      console.error("[AUTO_BACKUP] Error en ciclo:", err?.message || err);
+    });
+  }, AUTO_BACKUP_CHECK_MS);
+};
+
 const registrarAutoCierreCajaDiario = async () => {
   if (autoCierreCajaEnCurso) return;
 
@@ -14145,6 +14408,7 @@ const onServerStarted = (label, host, port) => {
   });
   iniciarTareaAutoDeuda();
   iniciarTareaAutoCierreCaja();
+  iniciarTareaAutoBackup();
 };
 
 const setupRealtimeWs = (server, serverLabel) => {

@@ -113,14 +113,7 @@ const badgeEstadoConexionClass = (estado) => {
   return "bg-success";
 };
 
-const getHistorialRowTone = ({
-  deuda,
-  abono,
-  subtotalAgua,
-  subtotalDesague,
-  subtotalLimpieza,
-  subtotalAdmin
-} = {}) => {
+const getHistorialRowTone = ({ deuda, abono } = {}) => {
   const deudaNum = Number.parseFloat(deuda) || 0;
   const abonoNum = Number.parseFloat(abono) || 0;
   if (deudaNum > 0) return "deuda";
@@ -532,7 +525,7 @@ const ModalArbitriosDetalle = ({
               <table className={`table table-sm table-bordered mb-0 ${darkMode ? "table-dark" : ""}`}>
                 <thead className="text-center">
                   <tr>
-                    {["Mes", "Agua", "Desague", "Limpieza", "Admin"].map((title) => (
+                    {["Mes", "Agua", "Desague", "Limpieza", "Admin", "Extra"].map((title) => (
                       <th key={title}>{title}</th>
                     ))}
                     <th className="text-danger">Deuda</th>
@@ -719,7 +712,7 @@ function AguaApp({ onBackToSelector = null }) {
       let agua = round2(Number(r.subtotal_agua || 0) * factor);
       let desague = round2(Number(r.subtotal_desague || 0) * factor);
       let limpieza = round2(Number(r.subtotal_limpieza || 0) * factor);
-      let admin = round2(Number(r.subtotal_admin || 0) * factor);
+      let admin = round2((Number(r.subtotal_admin || 0) + Number(r.subtotal_extra || 0)) * factor);
       const sumaComponentes = round2(agua + desague + limpieza + admin);
       const ajuste = round2(deudaMes - sumaComponentes);
       if (ajuste !== 0) admin = round2(admin + ajuste);
@@ -1260,6 +1253,7 @@ const anexoCajaPageStyle = `
         subtotal_desague: 0,
         subtotal_limpieza: 0,
         subtotal_admin: 0,
+        subtotal_extra: 0,
         deuda_mes: 0,
         abono_mes: 0,
         has_future_charge: false
@@ -1269,6 +1263,7 @@ const anexoCajaPageStyle = `
       current.subtotal_desague += parseFloat(r.subtotal_desague) || 0;
       current.subtotal_limpieza += parseFloat(r.subtotal_limpieza) || 0;
       current.subtotal_admin += parseFloat(r.subtotal_admin) || 0;
+      current.subtotal_extra += parseFloat(r.subtotal_extra) || 0;
       current.deuda_mes += parseFloat(r.deuda_mes) || 0;
       current.abono_mes += parseFloat(r.abono_mes) || 0;
       current.has_future_charge = current.has_future_charge
@@ -1301,6 +1296,7 @@ const anexoCajaPageStyle = `
           subtotal_desague: 0,
           subtotal_limpieza: 0,
           subtotal_admin: 0,
+          subtotal_extra: 0,
           deuda_mes: 0,
           abono_mes: 0,
           has_future_charge: false
@@ -1318,16 +1314,16 @@ const anexoCajaPageStyle = `
 
   const historialBodyRows = useMemo(() => {
     if (!usuarioSeleccionado) {
-      return <tr><td colSpan="7" className="p-3">Seleccione usuario arriba</td></tr>;
+      return <tr><td colSpan="8" className="p-3">Seleccione usuario arriba</td></tr>;
     }
     if (historialTabla.length === 0) {
-      return <tr><td colSpan="7" className="p-3">Sin movimientos</td></tr>;
+      return <tr><td colSpan="8" className="p-3">Sin movimientos</td></tr>;
     }
     return historialTabla.map((h, i) => {
       if (h.type === "year") {
         return (
           <tr key={`year-${h.anio}`}>
-            <td colSpan="7" className={`text-start fw-bold ${darkMode ? "bg-dark text-white" : "bg-light"}`} style={{ paddingLeft: "12px" }}>
+            <td colSpan="8" className={`text-start fw-bold ${darkMode ? "bg-dark text-white" : "bg-light"}`} style={{ paddingLeft: "12px" }}>
               Año {h.anio}
             </td>
           </tr>
@@ -1335,25 +1331,13 @@ const anexoCajaPageStyle = `
       }
       const rowTone = getHistorialRowTone({
         deuda: h.deuda_mes,
-        abono: h.abono_mes,
-        subtotalAgua: h.subtotal_agua,
-        subtotalDesague: h.subtotal_desague,
-        subtotalLimpieza: h.subtotal_limpieza,
-        subtotalAdmin: h.subtotal_admin
+        abono: h.abono_mes
       });
       const rowStyle = darkMode && rowTone !== "idle"
         ? undefined
         : HISTORIAL_ROW_STYLES[rowTone];
-      const montoCargoMes = (Number(h.subtotal_agua || 0)
-        + Number(h.subtotal_desague || 0)
-        + Number(h.subtotal_limpieza || 0)
-        + Number(h.subtotal_admin || 0));
-      const deudaVisual = rowTone === "futuro" && montoCargoMes > 0
-        ? montoCargoMes
-        : Number(h.deuda_mes || 0);
-      const deudaClassName = rowTone === "futuro"
-        ? "fw-bold text-primary"
-        : "fw-bold text-danger";
+      const deudaVisual = Number(h.deuda_mes || 0);
+      const deudaClassName = "fw-bold text-danger";
       return (
         <tr
           key={`${h.anio}-${h.mes}-${i}`}
@@ -1370,6 +1354,7 @@ const anexoCajaPageStyle = `
           <td>{formatMonto(h.subtotal_desague)}</td>
           <td>{formatMonto(h.subtotal_limpieza)}</td>
           <td>{formatMonto(h.subtotal_admin)}</td>
+          <td>{formatMonto(h.subtotal_extra)}</td>
           <td className={deudaClassName}>{formatMonto(deudaVisual)}</td>
           <td className="fw-bold text-success">{formatMonto(h.abono_mes)}</td>
         </tr>
