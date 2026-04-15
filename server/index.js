@@ -904,6 +904,30 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
       p.tarifa_limpieza,
       p.tarifa_admin,
       p.tarifa_extra,
+      (
+        SELECT COALESCE(rh.subtotal_agua, 0)
+        FROM recibos rh
+        WHERE rh.id_predio = p.id_predio
+          AND COALESCE(rh.subtotal_agua, 0) > 0
+        ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+        LIMIT 1
+      ) AS agua_hist,
+      (
+        SELECT COALESCE(rh.subtotal_desague, 0)
+        FROM recibos rh
+        WHERE rh.id_predio = p.id_predio
+          AND COALESCE(rh.subtotal_desague, 0) > 0
+        ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+        LIMIT 1
+      ) AS desague_hist,
+      (
+        SELECT COALESCE(rh.subtotal_limpieza, 0)
+        FROM recibos rh
+        WHERE rh.id_predio = p.id_predio
+          AND COALESCE(rh.subtotal_limpieza, 0) > 0
+        ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+        LIMIT 1
+      ) AS limpieza_hist,
       COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
     FROM predios p
     JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
@@ -920,9 +944,15 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
   const aguaHabilitado = activoSN === "S" && normalizeSN(predio.agua_sn, "S") === "S";
   const desagueHabilitado = activoSN === "S" && normalizeSN(predio.desague_sn, "S") === "S";
   const limpiezaHabilitado = activoSN === "S" && normalizeSN(predio.limpieza_sn, "S") === "S";
-  const subtotalAgua = aguaHabilitado ? roundMonto2(parseMonto(predio.tarifa_agua, AUTO_DEUDA_BASE.agua)) : 0;
-  const subtotalDesague = desagueHabilitado ? roundMonto2(parseMonto(predio.tarifa_desague, AUTO_DEUDA_BASE.desague)) : 0;
-  const subtotalLimpieza = limpiezaHabilitado ? roundMonto2(parseMonto(predio.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza)) : 0;
+  const subtotalAgua = aguaHabilitado
+    ? roundMonto2(parseMonto(predio.tarifa_agua, parseMonto(predio.agua_hist, AUTO_DEUDA_BASE.agua)))
+    : 0;
+  const subtotalDesague = desagueHabilitado
+    ? roundMonto2(parseMonto(predio.tarifa_desague, parseMonto(predio.desague_hist, AUTO_DEUDA_BASE.desague)))
+    : 0;
+  const subtotalLimpieza = limpiezaHabilitado
+    ? roundMonto2(parseMonto(predio.tarifa_limpieza, parseMonto(predio.limpieza_hist, AUTO_DEUDA_BASE.limpieza)))
+    : 0;
   const subtotalAdmin = activoSN === "S"
     ? roundMonto2(parseMonto(predio.tarifa_admin, AUTO_DEUDA_BASE.admin))
     : 0;
