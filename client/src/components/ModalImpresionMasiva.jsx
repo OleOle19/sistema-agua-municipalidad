@@ -188,6 +188,18 @@ const ModalImpresionMasiva = ({
 
     setCargando(true);
     try {
+      if (soloSeleccion && idContribuyenteSeleccionado > 0) {
+        const mesesEmitibles = mesesNormalizados.filter((m) => !esMesNoEmitido(m, anioNum));
+        for (const mesEmitible of mesesEmitibles) {
+          await api.post("/recibos/generar-masivo", {
+            tipo_seleccion: "seleccion",
+            ids_usuarios: [idContribuyenteSeleccionado],
+            anio: anioNum,
+            mes: Number(mesEmitible)
+          });
+        }
+      }
+
       const payload = {
         ...seleccion,
         anio: anioNum,
