@@ -481,68 +481,76 @@ const ModalArbitriosDetalle = ({
   historialBodyRows,
   onExportarExcel,
   exportandoExcel
-}) => (
-  <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
-    <div className="modal-dialog modal-xl modal-dialog-scrollable">
-      <div className="modal-content">
-        <div className={`modal-header ${darkMode ? "bg-dark text-white" : "bg-primary text-white"}`}>
-          <h5 className="modal-title">Arbitrios municipales - detalle</h5>
-          <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
-        </div>
-        <div className="modal-body">
-          <div className="d-flex justify-content-between align-items-center mb-3 no-print">
-            <div className="fw-semibold">{usuarioSeleccionado?.nombre_completo || "-"}</div>
-            <div className="d-flex gap-2 align-items-center">
-              <select
-                className={`form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
-                style={{ width: "110px" }}
-                value={historialYear}
-                onChange={onYearChange}
-              >
-                <option value="all">Año</option>
-                {yearsForSelect.map((y) => (
-                  <option key={y} value={y}>{y}</option>
-                ))}
-              </select>
-              <button type="button" className="btn btn-outline-success btn-sm" onClick={onExportarExcel} disabled={exportandoExcel}>
-                <FaPrint className="me-1" />
-                {exportandoExcel ? "Exportando..." : "Exportar Excel"}
-              </button>
-            </div>
+}) => {
+  const nombreContribuyente = usuarioSeleccionado?.nombre_completo || "-";
+  const periodoLabel = historialYear === "all" ? "Todos los años" : `Año ${historialYear}`;
+  return (
+    <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
+      <div className="modal-dialog modal-xl modal-dialog-scrollable">
+        <div className="modal-content">
+          <div className={`modal-header ${darkMode ? "bg-dark text-white" : "bg-primary text-white"}`}>
+            <h5 className="modal-title">Arbitrios municipales - detalle</h5>
+            <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
           </div>
-          <div>
-            <div className="text-center mb-2">
-              <div className="fw-bold">REPORTE DE ARBITRIOS MUNICIPALES</div>
-              <div className="small">
-                {historialYear === "all" ? "Todos los años" : `Año ${historialYear}`} - {usuarioSeleccionado?.nombre_completo || "-"}
+          <div className="modal-body">
+            <div className="d-flex justify-content-end align-items-center mb-3 no-print">
+              <div className="d-flex gap-2 align-items-center">
+                <select
+                  className={`form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
+                  style={{ width: "110px" }}
+                  value={historialYear}
+                  onChange={onYearChange}
+                >
+                  <option value="all">Año</option>
+                  {yearsForSelect.map((y) => (
+                    <option key={y} value={y}>{y}</option>
+                  ))}
+                </select>
+                <button type="button" className="btn btn-outline-success btn-sm" onClick={onExportarExcel} disabled={exportandoExcel}>
+                  <FaPrint className="me-1" />
+                  {exportandoExcel ? "Exportando..." : "Exportar Excel"}
+                </button>
               </div>
             </div>
-            <div className="d-flex flex-wrap justify-content-center gap-2 small mb-3">
-              <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.deuda}>Mes con deuda</span>
-              <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.pagado}>Mes pagado</span>
-            </div>
-            <div className="table-responsive border rounded">
-              <table className={`table table-sm table-bordered mb-0 ${darkMode ? "table-dark" : ""}`}>
-                <thead className="text-center">
-                  <tr>
-                    {["Mes", "Agua", "Desague", "Limpieza", "Admin", "Extra"].map((title) => (
-                      <th key={title}>{title}</th>
-                    ))}
-                    <th className="text-danger">Deuda</th>
-                    <th className="text-success">Abono</th>
-                  </tr>
-                </thead>
-                <tbody className="text-center">
-                  {historialBodyRows}
-                </tbody>
-              </table>
+            <div>
+              <div className="text-center mb-2">
+                <img
+                  src="/logo.png"
+                  alt="Logo Municipalidad"
+                  style={{ width: "54px", height: "54px", objectFit: "contain" }}
+                  className="mb-2"
+                />
+                <div className="fw-bold">REPORTE DE ARBITRIOS MUNICIPALES</div>
+                <div className="small">{periodoLabel}</div>
+                <div className="fw-semibold">{nombreContribuyente}</div>
+              </div>
+              <div className="d-flex flex-wrap justify-content-center gap-2 small mb-3">
+                <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.deuda}>Mes con deuda</span>
+                <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.pagado}>Mes pagado</span>
+              </div>
+              <div className="table-responsive border rounded">
+                <table className={`table table-sm table-bordered mb-0 ${darkMode ? "table-dark" : ""}`}>
+                  <thead className="text-center">
+                    <tr>
+                      {["Mes", "Agua", "Desague", "Limpieza", "Admin", "Extra"].map((title) => (
+                        <th key={title}>{title}</th>
+                      ))}
+                      <th className="text-danger">Deuda</th>
+                      <th className="text-success">Abono</th>
+                    </tr>
+                  </thead>
+                  <tbody className="text-center">
+                    {historialBodyRows}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
 
 const areSetsEqual = (a, b) => {
   if (a === b) return true;
@@ -1720,6 +1728,16 @@ const anexoCajaPageStyle = `
       return 0;
     });
   }, [contribuyentesIndexados, busquedaDeferred, orden, filtroEstadoConexion]);
+  const dashboardTotals = useMemo(() => {
+    const totalUsuarios = datosProcesados.length;
+    const totalMorosos = datosProcesados.reduce((acc, c) => (
+      acc + (Number(c?._mesesNum || 0) >= 2 ? 1 : 0)
+    ), 0);
+    return {
+      total_usuarios: totalUsuarios,
+      total_morosos: totalMorosos
+    };
+  }, [datosProcesados]);
   const indexById = useMemo(() => {
     const map = new Map();
     datosProcesados.forEach((c, idx) => map.set(c.id_contribuyente, idx));
@@ -2069,7 +2087,13 @@ const anexoCajaPageStyle = `
               />
             </div>
             
-            <div className="mx-3 my-3 flex-shrink-0"><DashboardStats triggerUpdate={refreshDashboard} darkMode={darkMode} /></div>
+            <div className="mx-3 my-3 flex-shrink-0">
+              <DashboardStats
+                triggerUpdate={refreshDashboard}
+                darkMode={darkMode}
+                totalsOverride={dashboardTotals}
+              />
+            </div>
             
             {/* TABLA PRINCIPAL */}
             <div className={`flex-grow-1 mx-3 mb-3 shadow-sm d-flex flex-column ${bgCard}`} style={{ flexBasis: "45%", overflow: "hidden", ...cardStyle }}>

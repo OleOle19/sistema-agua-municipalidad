@@ -17,8 +17,12 @@ const StatCard = ({ titulo, valor, color, icon, darkMode }) => (
   </div>
 );
 
-const DashboardStats = ({ triggerUpdate, darkMode }) => {
+const DashboardStats = ({ triggerUpdate, darkMode, totalsOverride = null }) => {
   const [stats, setStats] = useState({ recaudado_hoy: 0, total_usuarios: 0, total_morosos: 0 });
+  const totalUsuarios = Number(totalsOverride?.total_usuarios);
+  const totalMorosos = Number(totalsOverride?.total_morosos);
+  const totalUsuariosLabel = Number.isFinite(totalUsuarios) ? totalUsuarios : stats.total_usuarios;
+  const totalMorososLabel = Number.isFinite(totalMorosos) ? totalMorosos : stats.total_morosos;
 
   useEffect(() => {
     let cancelled = false;
@@ -47,14 +51,14 @@ const DashboardStats = ({ triggerUpdate, darkMode }) => {
       />
       <StatCard
         titulo="Total Usuarios"
-        valor={stats.total_usuarios}
+        valor={totalUsuariosLabel}
         color="primary"
         icon={<FaUsers />}
         darkMode={darkMode}
       />
       <StatCard
         titulo="Morosos (2+ Meses)"
-        valor={stats.total_morosos}
+        valor={totalMorososLabel}
         color="danger"
         icon={<FaExclamationCircle />}
         darkMode={darkMode}

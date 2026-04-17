@@ -9576,6 +9576,17 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
 
     const monthLabels = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
     const workbook = new ExcelJS.Workbook();
+    const logoCandidates = [
+      path.join(__dirname, "..", "client", "public", "logo.png"),
+      path.join(__dirname, "..", "client", "dist", "logo.png")
+    ];
+    const logoPath = logoCandidates.find((candidate) => {
+      try {
+        return fs.existsSync(candidate);
+      } catch {
+        return false;
+      }
+    }) || null;
     const wsResumen = workbook.addWorksheet("Resumen");
     wsResumen.columns = [
       { header: "CAMPO", key: "campo", width: 30 },
@@ -9600,7 +9611,42 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       { header: "ABONO", key: "abono_mes", width: 14 },
       { header: "ESTADO", key: "estado", width: 14 }
     ];
-    wsDetalle.getRow(1).font = { bold: true };
+    wsDetalle.spliceRows(1, 0, [], [], [], []);
+    const headerRow = 5;
+    const tituloRow = 2;
+    const periodoRow = 3;
+    const contribuyenteRow = 4;
+    const periodoLabel = filtrarAnio ? `Año ${anio}` : "Todos los años";
+    const contribuyenteNombre = String(contribuyente.nombre_completo || "-").trim() || "-";
+
+    wsDetalle.mergeCells(`A${tituloRow}:J${tituloRow}`);
+    wsDetalle.mergeCells(`A${periodoRow}:J${periodoRow}`);
+    wsDetalle.mergeCells(`A${contribuyenteRow}:J${contribuyenteRow}`);
+    wsDetalle.getCell(`A${tituloRow}`).value = "REPORTE DE ARBITRIOS MUNICIPALES";
+    wsDetalle.getCell(`A${periodoRow}`).value = periodoLabel;
+    wsDetalle.getCell(`A${contribuyenteRow}`).value = contribuyenteNombre;
+    wsDetalle.getCell(`A${tituloRow}`).font = { bold: true, size: 14 };
+    wsDetalle.getCell(`A${periodoRow}`).font = { size: 11, color: { argb: "FF555555" } };
+    wsDetalle.getCell(`A${contribuyenteRow}`).font = { bold: true, size: 12 };
+    wsDetalle.getCell(`A${tituloRow}`).alignment = { horizontal: "center", vertical: "middle" };
+    wsDetalle.getCell(`A${periodoRow}`).alignment = { horizontal: "center", vertical: "middle" };
+    wsDetalle.getCell(`A${contribuyenteRow}`).alignment = { horizontal: "center", vertical: "middle" };
+    wsDetalle.getRow(tituloRow).height = 24;
+    wsDetalle.getRow(periodoRow).height = 20;
+    wsDetalle.getRow(contribuyenteRow).height = 20;
+
+    if (logoPath) {
+      const logoImageId = workbook.addImage({
+        filename: logoPath,
+        extension: "png"
+      });
+      wsDetalle.addImage(logoImageId, {
+        tl: { col: 0.15, row: 0.1 },
+        ext: { width: 56, height: 56 }
+      });
+    }
+
+    wsDetalle.getRow(headerRow).font = { bold: true };
 
     let totalAgua = 0;
     let totalDesague = 0;
@@ -9652,6 +9698,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       estado: ""
     });
     totalRow.font = { bold: true };
+    wsDetalle.views = [{ state: "frozen", ySplit: headerRow }];
 
     const codigoSafe = String(contribuyente.codigo_municipal || `id_${idContribuyente}`).replace(/[^\w-]/g, "");
     const filtroSafe = filtrarAnio ? String(anio) : "todos";
