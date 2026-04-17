@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import api from "../api";
-import { FaShieldAlt, FaFileExcel } from "react-icons/fa";
+import { FaShieldAlt, FaFileExcel, FaSearch, FaSyncAlt } from "react-icons/fa";
 
 const ACTION_LABELS = {
   ORDEN_COBRO_COBRADA: "Orden de cobro cobrada",
@@ -62,6 +62,31 @@ const getActionBadgeClass = (accion) => {
   if (txt.includes("PUT") || txt.includes("PATCH") || txt.includes("UPDATE")) return "bg-warning text-dark";
   if (txt.includes("GET") || txt.includes("EXPORT")) return "bg-info text-dark";
   return "bg-success";
+};
+
+const normalizeAuditSearch = (value) => String(value || "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLowerCase()
+  .replace(/[^a-z0-9\s]/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const getActionMethod = (accion) => {
+  const raw = String(accion || "").trim();
+  const match = raw.match(/^(GET|POST|PUT|PATCH|DELETE)\b/i);
+  return match ? match[1].toUpperCase() : "SISTEMA";
+};
+
+const isSensitiveAction = (accion) => {
+  const txt = String(accion || "").toUpperCase();
+  return txt.includes("DELETE")
+    || txt.includes("ANULAR")
+    || txt.includes("PASSWORD")
+    || txt.includes("BACKUP")
+    || txt.includes("CERR")
+    || txt.includes("CORTE")
+    || txt.includes("ELIMIN");
 };
 
 const toFriendlyHttpAction = (method, pathRaw) => {
@@ -182,25 +207,50 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
   const [logs, setLogs] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [exportando, setExportando] = useState(false);
-
-  useEffect(() => {
-    const cargarLogs = async () => {
-      try {
-        const res = await api.get("/auditoria");
-        setLogs(res.data);
-      } catch {
-        console.error("Error cargando auditoria");
-      } finally {
-        setCargando(false);
-      }
-    };
-    cargarLogs();
-  }, []);
+  const [filtroTexto, setFiltroTexto] = useState("");
+  const [filtroMetodo, setFiltroMetodo] = useState("TODOS");
+  const [soloSensibles, setSoloSensibles] = useState(false);
 
   const formatFecha = (isoString) => {
     const date = new Date(isoString);
     return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
   };
+
+  const cargarLogs = useCallback(async () => {
+    try {
+      setCargando(true);
+      const res = await api.get("/auditoria");
+      setLogs(Array.isArray(res.data) ? res.data : []);
+    } catch {
+      console.error("Error cargando auditoria");
+      setLogs([]);
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    cargarLogs();
+  }, [cargarLogs]);
+
+  const logsFiltrados = useMemo(() => {
+    const needle = normalizeAuditSearch(filtroTexto);
+    return logs.filter((log) => {
+      const method = getActionMethod(log.accion);
+      if (filtroMetodo !== "TODOS" && method !== filtroMetodo) return false;
+      if (soloSensibles && !isSensitiveAction(log.accion)) return false;
+      if (!needle) return true;
+      const friendlyAction = toFriendlyAction(log.accion);
+      const haystack = normalizeAuditSearch([
+        log.usuario || "SISTEMA",
+        log.accion || "",
+        friendlyAction,
+        log.detalle || "",
+        formatFecha(log.fecha)
+      ].join(" "));
+      return haystack.includes(needle);
+    });
+  }, [logs, filtroTexto, filtroMetodo, soloSensibles]);
 
   const descargarExcel = async () => {
     try {
@@ -232,6 +282,8 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
   const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-secondary text-white"}`;
   const closeBtnClass = `btn-close ${darkMode ? "btn-close-white" : ""}`;
   const tableClass = `table mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
+  const filtroInputClass = `form-control form-control-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
+  const filtroSelectClass = `form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
   const detalleCardStyle = darkMode
     ? { backgroundColor: "#20262c", border: "1px solid #495057" }
     : { backgroundColor: "#f8f9fa", border: "1px solid #dee2e6" };
@@ -245,6 +297,53 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
             <button type="button" className={closeBtnClass} onClick={cerrarModal}></button>
           </div>
           <div className="modal-body p-0">
+            <div className={`p-3 border-bottom ${darkMode ? "border-secondary" : ""}`}>
+              <div className="row g-2 align-items-center">
+                <div className="col-lg-6">
+                  <div className="input-group input-group-sm">
+                    <span className={`input-group-text ${darkMode ? "bg-dark text-white border-secondary" : ""}`}><FaSearch /></span>
+                    <input
+                      type="text"
+                      className={filtroInputClass}
+                      placeholder="Buscar por usuario, accion o detalle..."
+                      value={filtroTexto}
+                      onChange={(e) => setFiltroTexto(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="col-lg-2 col-md-4">
+                  <select className={filtroSelectClass} value={filtroMetodo} onChange={(e) => setFiltroMetodo(e.target.value)}>
+                    <option value="TODOS">Todos</option>
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                    <option value="DELETE">DELETE</option>
+                    <option value="SISTEMA">Sistema</option>
+                  </select>
+                </div>
+                <div className="col-lg-2 col-md-4">
+                  <div className="form-check form-switch mt-1">
+                    <input
+                      className="form-check-input"
+                      type="checkbox"
+                      id="auditoria-sensibles"
+                      checked={soloSensibles}
+                      onChange={(e) => setSoloSensibles(e.target.checked)}
+                    />
+                    <label className="form-check-label small" htmlFor="auditoria-sensibles">Solo sensibles</label>
+                  </div>
+                </div>
+                <div className="col-lg-2 col-md-4 text-md-end">
+                  <button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={cargarLogs} disabled={cargando}>
+                    <FaSyncAlt className="me-1" /> Recargar
+                  </button>
+                </div>
+              </div>
+              <div className="small mt-2 opacity-75">
+                Mostrando {logsFiltrados.length} de {logs.length} registro(s)
+              </div>
+            </div>
             <div className="table-responsive" style={{ maxHeight: "60vh" }}>
               <table className={tableClass} style={{ minWidth: "980px" }}>
                 <colgroup>
@@ -264,10 +363,10 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                 <tbody>
                   {cargando ? (
                     <tr><td colSpan="4" className="text-center p-3">Cargando bitacora...</td></tr>
-                  ) : logs.length === 0 ? (
-                    <tr><td colSpan="4" className="text-center p-3">No hay registros.</td></tr>
+                  ) : logsFiltrados.length === 0 ? (
+                    <tr><td colSpan="4" className="text-center p-3">{logs.length === 0 ? "No hay registros." : "No hay registros para este filtro."}</td></tr>
                   ) : (
-                    logs.map((log) => {
+                    logsFiltrados.map((log) => {
                       const accionSimple = toFriendlyAction(log.accion);
                       const detalleRows = parseDetalle(log.detalle);
                       return (
