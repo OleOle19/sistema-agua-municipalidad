@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import api from "../api";
 import { FaLayerGroup, FaBuilding, FaUsers, FaPrint } from "react-icons/fa";
 
@@ -18,9 +18,16 @@ const MONTH_OPTIONS = [
 ];
 
 const getPeriodoNum = (anio, mes) => (Number(anio || 0) * 100) + Number(mes || 0);
-const getUltimoPeriodoEmitido = () => {
+const formatPeriodoLabel = (anio, mes) => {
+  const month = MONTH_OPTIONS.find((m) => Number(m.value) === Number(mes));
+  return `${month?.label || String(mes || "-")} ${String(anio || "-")}`;
+};
+const getUltimoPeriodoDisponible = (incluirMesActual = false) => {
   const now = new Date();
   const currentMonth = now.getMonth() + 1;
+  if (incluirMesActual) {
+    return { anio: now.getFullYear(), mes: currentMonth };
+  }
   if (currentMonth === 1) {
     return { anio: now.getFullYear() - 1, mes: 12 };
   }
@@ -37,7 +44,7 @@ const ModalImpresionMasiva = ({
   const [calles, setCalles] = useState([]);
   const [cargando, setCargando] = useState(false);
   const soloSeleccion = modoOperacion === "reimpresion";
-  const ultimoPeriodoEmitido = getUltimoPeriodoEmitido();
+  const ultimoPeriodoEmitido = getUltimoPeriodoDisponible(soloSeleccion);
   const maxPeriodoEmitidoNum = getPeriodoNum(ultimoPeriodoEmitido.anio, ultimoPeriodoEmitido.mes);
   const [modo, setModo] = useState(soloSeleccion ? "seleccion" : (idsSeleccionados.length > 0 ? "seleccion" : "calle"));
   const [seleccion, setSeleccion] = useState({
@@ -46,9 +53,12 @@ const ModalImpresionMasiva = ({
     anio: ultimoPeriodoEmitido.anio
   });
   const [permitirMesesFuturos, setPermitirMesesFuturos] = useState(false);
+  const [periodosHistorial, setPeriodosHistorial] = useState([]);
+  const [cargandoHistorial, setCargandoHistorial] = useState(false);
 
   const anioSeleccionado = Number(seleccion.anio || ultimoPeriodoEmitido.anio);
   const permitirMesesNoEmitidos = soloSeleccion && permitirMesesFuturos;
+  const idContribuyenteSeleccionado = Number(Array.isArray(idsSeleccionados) ? idsSeleccionados[0] : 0);
   const esMesNoEmitido = (mes, anio = anioSeleccionado) => getPeriodoNum(anio, mes) > maxPeriodoEmitidoNum;
   const opcionesMeses = !permitirMesesNoEmitidos
     ? MONTH_OPTIONS.filter((m) => !esMesNoEmitido(m.value, anioSeleccionado))
@@ -77,6 +87,60 @@ const ModalImpresionMasiva = ({
       return { ...prev, anio: anioAjustado, meses: mesesFiltrados };
     });
   }, [maxPeriodoEmitidoNum, permitirMesesNoEmitidos, ultimoPeriodoEmitido.anio]);
+
+  useEffect(() => {
+    let cancelado = false;
+    const cargarHistorial = async () => {
+      if (!soloSeleccion) return;
+      const idContribuyente = idContribuyenteSeleccionado;
+      if (!idContribuyente) {
+        setPeriodosHistorial([]);
+        return;
+      }
+      setCargandoHistorial(true);
+      try {
+        const res = await api.get(`/recibos/historial/${idContribuyente}`, {
+          params: { anio: "all" }
+        });
+        if (cancelado) return;
+        const historial = Array.isArray(res?.data) ? res.data : [];
+        const periodos = historial
+          .filter((row) => Number(row?.id_recibo || 0) > 0)
+          .map((row) => ({
+            anio: Number(row?.anio || 0),
+            mes: Number(row?.mes || 0)
+          }))
+          .filter((row) => row.anio >= 1900 && row.mes >= 1 && row.mes <= 12)
+          .sort((a, b) => ((b.anio * 100 + b.mes) - (a.anio * 100 + a.mes)));
+        const unicos = [];
+        const seen = new Set();
+        for (const p of periodos) {
+          const key = `${p.anio}-${p.mes}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          unicos.push(p);
+        }
+        setPeriodosHistorial(unicos);
+        if (unicos.length > 0) {
+          const ultimo = unicos[0];
+          setSeleccion((prev) => ({
+            ...prev,
+            anio: Number(ultimo.anio),
+            meses: [Number(ultimo.mes)]
+          }));
+        }
+      } catch {
+        if (cancelado) return;
+        setPeriodosHistorial([]);
+      } finally {
+        if (!cancelado) setCargandoHistorial(false);
+      }
+    };
+    cargarHistorial();
+    return () => {
+      cancelado = true;
+    };
+  }, [soloSeleccion, idContribuyenteSeleccionado]);
 
   const toggleMes = (mes) => {
     setSeleccion((prev) => {
@@ -107,6 +171,20 @@ const ModalImpresionMasiva = ({
     if (mesesNoEmitidosSeleccionados.length > 0 && !permitirMesesNoEmitidos) {
       return alert("Solo se permiten meses ya emitidos. Active \"Habilitar meses futuros\" para adelantos.");
     }
+    if (soloSeleccion && !permitirMesesNoEmitidos && periodosHistorial.length > 0) {
+      const setPeriodos = new Set(periodosHistorial.map((p) => `${p.anio}-${p.mes}`));
+      const sinRecibo = mesesNormalizados.filter((m) => !setPeriodos.has(`${anioNum}-${m}`));
+      if (sinRecibo.length > 0) {
+        const sugeridos = periodosHistorial
+          .slice(0, 4)
+          .map((p) => formatPeriodoLabel(p.anio, p.mes))
+          .join(", ");
+        return alert(
+          `No hay recibo emitido para ${sinRecibo.map((m) => formatPeriodoLabel(anioNum, m)).join(", ")}.\n` +
+          (sugeridos ? `Pruebe con: ${sugeridos}.` : "Seleccione otro periodo emitido.")
+        );
+      }
+    }
 
     setCargando(true);
     try {
@@ -128,25 +206,14 @@ const ModalImpresionMasiva = ({
         && idsSeleccionados.length === 1;
 
       if (debeSolicitarPermisoCaja) {
-        try {
-          const permisoRes = await api.post("/caja/permisos-adelantado/solicitar", {
-            id_contribuyente: Number(idsSeleccionados[0]),
-            anio: anioNum,
-            meses: mesesNoEmitidosSeleccionados,
-            origen: "VENTANILLA_REIMPRESION",
-            motivo: "Habilitacion de meses futuros desde reimpresion en ventanilla."
-          });
-          mensajePermiso = String(permisoRes?.data?.mensaje || "").trim();
-        } catch (permisoErr) {
-          const statusPermiso = Number(permisoErr?.response?.status || 0);
-          const errorPermiso = String(permisoErr?.response?.data?.error || "").trim();
-          const permisoNoRequerido = statusPermiso === 400
-            && /periodos?\s+futuros?/i.test(errorPermiso)
-            && /caja/i.test(errorPermiso);
-          if (!permisoNoRequerido) {
-            throw permisoErr;
-          }
-        }
+        const permisoRes = await api.post("/caja/permisos-adelantado/solicitar", {
+          id_contribuyente: Number(idsSeleccionados[0]),
+          anio: anioNum,
+          meses: mesesNoEmitidosSeleccionados,
+          origen: "VENTANILLA_REIMPRESION",
+          motivo: "Habilitacion de meses futuros desde reimpresion en ventanilla."
+        });
+        mensajePermiso = String(permisoRes?.data?.mensaje || "").trim();
       }
 
       let datosImpresion = [];
@@ -158,8 +225,11 @@ const ModalImpresionMasiva = ({
         }));
       } catch (error) {
         if (debeSolicitarPermisoCaja && Number(error?.response?.status || 0) === 404) {
-          alert(`${mensajePermiso || "Solicitud enviada a Caja."}\nNo se encontraron recibos para imprimir en los meses seleccionados.`);
-          cerrarModal();
+          alert(
+            `${mensajePermiso || "Solicitud enviada a Caja."}\n` +
+            "No se encontraron recibos para imprimir en los meses seleccionados.\n" +
+            "Para reimpresión, seleccione un mes ya emitido."
+          );
           return;
         }
         throw error;
@@ -222,12 +292,20 @@ const ModalImpresionMasiva = ({
                       onChange={(e) => setPermitirMesesFuturos(e.target.checked)}
                       disabled={cargando}
                     />
-                    <label className="form-check-label" htmlFor="switch-meses-futuros-reimpresion">
-                      Habilitar meses futuros (solicita permiso para Caja)
-                    </label>
-                  </div>
+                  <label className="form-check-label" htmlFor="switch-meses-futuros-reimpresion">
+                    Habilitar meses futuros (solicita permiso para Caja)
+                  </label>
                 </div>
-              )}
+                {cargandoHistorial && (
+                  <div className="small mt-2">Cargando historial de recibos emitidos...</div>
+                )}
+                {!cargandoHistorial && periodosHistorial.length > 0 && (
+                  <div className="small mt-2">
+                    Ultimo recibo emitido detectado: <strong>{formatPeriodoLabel(periodosHistorial[0].anio, periodosHistorial[0].mes)}</strong>
+                  </div>
+                )}
+              </div>
+            )}
 
               {modo === "calle" && (
                 <div className="mb-3">
@@ -278,7 +356,7 @@ const ModalImpresionMasiva = ({
 
               <div className="d-flex justify-content-end gap-2">
                 <button type="button" className="btn btn-secondary" onClick={cerrarModal}>Cancelar</button>
-                <button type="submit" className="btn btn-primary" disabled={cargando}>
+                <button type="submit" className="btn btn-primary" disabled={cargando || (soloSeleccion && cargandoHistorial)}>
                   {cargando ? "Procesando..." : (soloSeleccion ? "Reimprimir" : "Imprimir")}
                 </button>
               </div>
@@ -291,5 +369,3 @@ const ModalImpresionMasiva = ({
 };
 
 export default ModalImpresionMasiva;
-
-
