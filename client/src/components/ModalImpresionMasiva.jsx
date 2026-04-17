@@ -171,21 +171,6 @@ const ModalImpresionMasiva = ({
     if (mesesNoEmitidosSeleccionados.length > 0 && !permitirMesesNoEmitidos) {
       return alert("Solo se permiten meses ya emitidos. Active \"Habilitar meses futuros\" para adelantos.");
     }
-    if (soloSeleccion && !permitirMesesNoEmitidos && periodosHistorial.length > 0) {
-      const setPeriodos = new Set(periodosHistorial.map((p) => `${p.anio}-${p.mes}`));
-      const sinRecibo = mesesNormalizados.filter((m) => !setPeriodos.has(`${anioNum}-${m}`));
-      if (sinRecibo.length > 0) {
-        const sugeridos = periodosHistorial
-          .slice(0, 4)
-          .map((p) => formatPeriodoLabel(p.anio, p.mes))
-          .join(", ");
-        return alert(
-          `No hay recibo emitido para ${sinRecibo.map((m) => formatPeriodoLabel(anioNum, m)).join(", ")}.\n` +
-          (sugeridos ? `Pruebe con: ${sugeridos}.` : "Seleccione otro periodo emitido.")
-        );
-      }
-    }
-
     setCargando(true);
     try {
       if (soloSeleccion && idContribuyenteSeleccionado > 0) {

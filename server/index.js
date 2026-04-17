@@ -13403,6 +13403,81 @@ app.post("/recibos/masivos", async (req, res) => {
       }
     }
 
+    // Reimpresion: si el periodo ya es emitible y no existe recibo, lo registramos aqui.
+    // Asi ventanilla puede reimprimir sin depender de que el recibo haya sido creado antes.
+    if (incluirPagados && tipo_seleccion === "seleccion") {
+      const idsObjetivo = Array.from(new Set((Array.isArray(ids_usuarios) ? ids_usuarios : [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isInteger(id) && id > 0)));
+      const mesesEmitibles = Array.from(new Set(mesesSeleccionados
+        .map((m) => Number(m))
+        .filter((m) => Number.isInteger(m) && m >= 1 && m <= 12)
+        .filter((m) => ((anioSeleccionado * 100) + m) <= periodoEmitidoMaximo)));
+      if (idsObjetivo.length > 0 && mesesEmitibles.length > 0) {
+        const autoEmitidos = await client.query(`
+          INSERT INTO recibos (
+            id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, total_pagar, estado
+          )
+          SELECT
+            p.id_predio,
+            $1::int AS anio,
+            m.mes,
+            CASE
+              WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, ${AUTO_DEUDA_BASE.agua})
+              ELSE 0
+            END AS subtotal_agua,
+            CASE
+              WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, ${AUTO_DEUDA_BASE.desague})
+              ELSE 0
+            END AS subtotal_desague,
+            CASE
+              WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza})
+              ELSE 0
+            END AS subtotal_limpieza,
+            CASE
+              WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) + COALESCE(p.tarifa_extra, 0)
+              ELSE 0
+            END AS subtotal_admin,
+            (
+              CASE
+                WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, ${AUTO_DEUDA_BASE.agua})
+                ELSE 0
+              END
+              + CASE
+                WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, ${AUTO_DEUDA_BASE.desague})
+                ELSE 0
+              END
+              + CASE
+                WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza})
+                ELSE 0
+              END
+              + CASE
+                WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) + COALESCE(p.tarifa_extra, 0)
+                ELSE 0
+              END
+            ) AS total_pagar,
+            'PENDIENTE' AS estado
+          FROM predios p
+          JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
+          JOIN unnest($2::int[]) AS m(mes) ON true
+          WHERE p.id_contribuyente = ANY($3::int[])
+            AND ${sqlSnEsSi("p.activo_sn", "S")}
+            AND COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'
+            AND (($1::int * 100) + m.mes) <= $4::int
+          ON CONFLICT DO NOTHING
+          RETURNING id_recibo
+        `, [anioSeleccionado, mesesEmitibles, idsObjetivo, periodoEmitidoMaximo]);
+        if (Number(autoEmitidos?.rowCount || 0) > 0) {
+          invalidateContribuyentesCache();
+          realtimeHub.broadcast("deuda", "recibo_generado", {
+            id_contribuyente: null,
+            total_recibos: Number(autoEmitidos.rowCount || 0),
+            origen: "recibos_masivos_reimpresion_auto"
+          });
+        }
+      }
+    }
+
     let filtro = "";
     const params = [anioSeleccionado, mesesSeleccionados];
 
