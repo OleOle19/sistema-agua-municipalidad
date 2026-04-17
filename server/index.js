@@ -5212,6 +5212,18 @@ const parseIdsContribuyentesFromQuery = (rawValue) => {
   return Array.from(new Set(parts)).slice(0, 5000);
 };
 
+const resolvePeriodoCorteNoFuturo = (periodo = {}) => {
+  const anioSolicitado = Number(periodo?.anio_corte || getCurrentYear());
+  const mesSolicitado = Number(periodo?.mes_corte || getCurrentMonth());
+  const periodoSolicitadoNum = (anioSolicitado * 100) + mesSolicitado;
+  const periodoActualNum = getCurrentPeriodoNum();
+  const periodoCorteNum = Math.min(periodoSolicitadoNum, periodoActualNum);
+  return {
+    anio: Math.trunc(periodoCorteNum / 100),
+    mes: periodoCorteNum % 100
+  };
+};
+
 const sortReporteEstadoConexionRows = (rows = [], ordenCampo = "direccion", ordenDireccion = "asc") => {
   const direction = ordenDireccion === "desc" ? -1 : 1;
   const collator = new Intl.Collator("es", { sensitivity: "base", numeric: true });
@@ -5254,8 +5266,9 @@ const obtenerReporteEstadoConexionRows = async ({
   periodo = parsePeriodoReporteConexion({ tipo_periodo: "mes" }),
   idsContribuyentes = []
 } = {}) => {
-  const anioCorte = Number(periodo?.anio_corte || getCurrentYear());
-  const mesCorte = Number(periodo?.mes_corte || getCurrentMonth());
+  const corte = resolvePeriodoCorteNoFuturo(periodo);
+  const anioCorte = Number(corte.anio || getCurrentYear());
+  const mesCorte = Number(corte.mes || getCurrentMonth());
 
   const where = [];
   const params = [anioCorte, mesCorte];
@@ -5369,8 +5382,9 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
   periodo = parsePeriodoReporteConexion({ tipo_periodo: "todo" }),
   idsContribuyentes = []
 } = {}) => {
-  const anioCorte = Number(periodo?.anio_corte || getCurrentYear());
-  const mesCorte = Number(periodo?.mes_corte || getCurrentMonth());
+  const corte = resolvePeriodoCorteNoFuturo(periodo);
+  const anioCorte = Number(corte.anio || getCurrentYear());
+  const mesCorte = Number(corte.mes || getCurrentMonth());
   const fechaHasta = normalizeDateOnly(periodo?.fecha_hasta) || toISODate();
 
   const where = [];
