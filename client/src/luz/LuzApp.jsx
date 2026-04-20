@@ -152,6 +152,7 @@ const createEmptySuministroForm = () => ({
   id_zona: "",
   zona_nombre: "",
   nro_medidor: "",
+  nro_medidor_real: "",
   nombre_usuario: "",
   direccion: "",
   estado: "ACTIVO"
@@ -181,7 +182,7 @@ const createImportState = () => ({
 
 const reciboLuzPageStyle = `
   @page {
-    size: A4 landscape;
+    size: 210mm 297mm;
     margin: 0;
   }
   @media print {
@@ -593,6 +594,7 @@ function LuzApp({ onBackToSelector }) {
       id_zona: String(suministroSeleccionado.id_zona || ""),
       zona_nombre: suministroSeleccionado.zona || "",
       nro_medidor: suministroSeleccionado.nro_medidor || "",
+      nro_medidor_real: suministroSeleccionado.nro_medidor_real || "",
       nombre_usuario: suministroSeleccionado.nombre_usuario || "",
       direccion: suministroSeleccionado.direccion || "",
       estado: suministroSeleccionado.estado || "ACTIVO"
@@ -624,6 +626,7 @@ function LuzApp({ onBackToSelector }) {
       id_zona: String(row.id_zona || ""),
       zona_nombre: row.zona || "",
       nro_medidor: row.nro_medidor || "",
+      nro_medidor_real: row.nro_medidor_real || "",
       nombre_usuario: row.nombre_usuario || "",
       direccion: row.direccion || "",
       estado: row.estado || "ACTIVO"
@@ -640,6 +643,7 @@ function LuzApp({ onBackToSelector }) {
 
     const payload = {
       nro_medidor: String(suministroForm.nro_medidor || "").trim(),
+      nro_medidor_real: String(suministroForm.nro_medidor_real || "").trim(),
       nombre_usuario: String(suministroForm.nombre_usuario || "").trim(),
       direccion: String(suministroForm.direccion || "").trim(),
       estado: suministroForm.estado || "ACTIVO"
@@ -1101,7 +1105,7 @@ function LuzApp({ onBackToSelector }) {
                           >
                             <td>{row.zona}</td>
                             <td className="fw-semibold">{row.nro_medidor || "-"}</td>
-                            <td className="text-muted">-</td>
+                            <td className="text-muted">{row.nro_medidor_real || "-"}</td>
                             <td>
                               <div className="fw-semibold">{row.nombre_usuario}</div>
                               {String(row.direccion || "").trim() && (
@@ -1168,7 +1172,12 @@ function LuzApp({ onBackToSelector }) {
                         </div>
                         <div className="mb-2">
                           <label className="form-label">Nro medidor (pendiente de validacion)</label>
-                          <input className="form-control" value="" disabled readOnly placeholder="Por confirmar con municipalidad" />
+                          <input
+                            className="form-control"
+                            value={suministroForm.nro_medidor_real}
+                            onChange={(e) => setSuministroForm((prev) => ({ ...prev, nro_medidor_real: e.target.value }))}
+                            placeholder="Digite nro de medidor real"
+                          />
                         </div>
                         <div className="mb-2">
                           <label className="form-label">Nombre usuario</label>
@@ -1231,7 +1240,7 @@ function LuzApp({ onBackToSelector }) {
                       <div className="card-body">
                         <div className="fw-semibold mb-1">{suministroSeleccionado.nombre_usuario}</div>
                         <div className="small text-muted">ID: {suministroSeleccionado.nro_medidor}</div>
-                        <div className="small text-muted">Medidor: -</div>
+                        <div className="small text-muted">Medidor: {suministroSeleccionado.nro_medidor_real || "-"}</div>
                         <div className="small text-muted">Zona: {suministroSeleccionado.zona}</div>
                         <div className="small text-muted">Deuda: {formatMoney(suministroSeleccionado.deuda_total)}</div>
                         <div className="small text-muted">Meses deuda: {suministroSeleccionado.meses_deuda}</div>
@@ -1814,10 +1823,10 @@ function LuzApp({ onBackToSelector }) {
         </div>
       </div>
 
-      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "297mm", background: "#fff" }}>
+      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "210mm", background: "#fff" }}>
         <ReciboLuz ref={reciboRef} datos={reciboImpresion} />
       </div>
-      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "297mm", background: "#fff" }}>
+      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "210mm", background: "#fff" }}>
         <RecibosLuzLote ref={recibosLoteRef} items={recibosLoteImpresion} />
       </div>
     </div>

@@ -516,6 +516,7 @@ const ensureCharcapeSplit = async () => {
 
 const ensureDefaults = async () => {
   await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
+  await pool.query("ALTER TABLE suministros ADD COLUMN IF NOT EXISTS nro_medidor_real VARCHAR(80) NULL");
   await ensureCampoVisitasTable(pool);
   await pool.query(
     `INSERT INTO config_fechas (id_config, dias_vencimiento, dias_corte)
@@ -1487,6 +1488,7 @@ router.get("/suministros", authenticateLuzToken, requireRole("CONSULTA"), async 
       where.push(`(
         UPPER(s.nombre_usuario) LIKE $${params.length}
         OR UPPER(s.nro_medidor) LIKE $${params.length}
+        OR UPPER(COALESCE(s.nro_medidor_real, '')) LIKE $${params.length}
         OR UPPER(COALESCE(s.direccion, '')) LIKE $${params.length}
         OR UPPER(z.nombre) LIKE $${params.length}
       )`);
@@ -1513,6 +1515,7 @@ router.get("/suministros", authenticateLuzToken, requireRole("CONSULTA"), async 
         s.id_zona,
         z.nombre AS zona,
         s.nro_medidor,
+        s.nro_medidor_real,
         s.nombre_usuario,
         s.direccion,
         s.estado,
@@ -1547,6 +1550,7 @@ router.get("/suministros", authenticateLuzToken, requireRole("CONSULTA"), async 
       id_zona: Number(r.id_zona),
       zona: splitCharcapeZoneName(r.zona, r.nro_medidor) || r.zona,
       nro_medidor: r.nro_medidor,
+      nro_medidor_real: r.nro_medidor_real || "",
       nombre_usuario: r.nombre_usuario,
       direccion: r.direccion || "",
       estado: r.estado,
@@ -1564,6 +1568,7 @@ router.post("/suministros", authenticateLuzToken, requireRole("ADMIN_SEC"), asyn
   const client = await pool.connect();
   try {
     const nroMedidor = normalizeText(req.body?.nro_medidor, 80);
+    const nroMedidorReal = normalizeText(req.body?.nro_medidor_real || req.body?.medidor_real, 80) || null;
     const nombreUsuario = normalizeText(req.body?.nombre_usuario, 220);
     const direccion = normalizeText(req.body?.direccion, 300) || null;
     const estado = normalizeEstadoSuministro(req.body?.estado);
@@ -1576,13 +1581,13 @@ router.post("/suministros", authenticateLuzToken, requireRole("ADMIN_SEC"), asyn
     const zona = await resolveZoneId(client, req.body || {});
 
     const inserted = await client.query(
-      `INSERT INTO suministros (id_zona, nro_medidor, nombre_usuario, direccion, estado)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id_suministro, id_zona, nro_medidor, nombre_usuario, direccion, estado`,
-      [zona.id_zona, nroMedidor, nombreUsuario, direccion, estado]
+      `INSERT INTO suministros (id_zona, nro_medidor, nro_medidor_real, nombre_usuario, direccion, estado)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id_suministro, id_zona, nro_medidor, nro_medidor_real, nombre_usuario, direccion, estado`,
+      [zona.id_zona, nroMedidor, nroMedidorReal, nombreUsuario, direccion, estado]
     );
 
-    await registrarAuditoria(client, req.user?.username, "SUMINISTRO_CREAR", `id=${inserted.rows[0].id_suministro}; zona=${zona.nombre}; medidor=${nroMedidor}`);
+    await registrarAuditoria(client, req.user?.username, "SUMINISTRO_CREAR", `id=${inserted.rows[0].id_suministro}; zona=${zona.nombre}; id_usuario=${nroMedidor}; medidor_real=${nroMedidorReal || "-"}`);
     await client.query("COMMIT");
 
     return res.json({
@@ -1616,6 +1621,7 @@ router.put("/suministros/:id", authenticateLuzToken, requireRole("ADMIN_SEC"), a
     if (!idSuministro) return res.status(400).json({ error: "ID inválido." });
 
     const nroMedidor = normalizeText(req.body?.nro_medidor, 80);
+    const nroMedidorReal = normalizeText(req.body?.nro_medidor_real || req.body?.medidor_real, 80) || null;
     const nombreUsuario = normalizeText(req.body?.nombre_usuario, 220);
     const direccion = normalizeText(req.body?.direccion, 300) || null;
     const estado = normalizeEstadoSuministro(req.body?.estado);
@@ -1631,13 +1637,14 @@ router.put("/suministros/:id", authenticateLuzToken, requireRole("ADMIN_SEC"), a
       `UPDATE suministros
        SET id_zona = $1,
            nro_medidor = $2,
-           nombre_usuario = $3,
-           direccion = $4,
-           estado = $5,
+           nro_medidor_real = $3,
+           nombre_usuario = $4,
+           direccion = $5,
+           estado = $6,
            actualizado_en = NOW()
-       WHERE id_suministro = $6
-       RETURNING id_suministro, id_zona, nro_medidor, nombre_usuario, direccion, estado`,
-      [zona.id_zona, nroMedidor, nombreUsuario, direccion, estado, idSuministro]
+       WHERE id_suministro = $7
+       RETURNING id_suministro, id_zona, nro_medidor, nro_medidor_real, nombre_usuario, direccion, estado`,
+      [zona.id_zona, nroMedidor, nroMedidorReal, nombreUsuario, direccion, estado, idSuministro]
     );
 
     if (!updated.rows[0]) {
@@ -1645,7 +1652,7 @@ router.put("/suministros/:id", authenticateLuzToken, requireRole("ADMIN_SEC"), a
       return res.status(404).json({ error: "Suministro no encontrado." });
     }
 
-    await registrarAuditoria(client, req.user?.username, "SUMINISTRO_EDITAR", `id=${idSuministro}; zona=${zona.nombre}; medidor=${nroMedidor}`);
+    await registrarAuditoria(client, req.user?.username, "SUMINISTRO_EDITAR", `id=${idSuministro}; zona=${zona.nombre}; id_usuario=${nroMedidor}; medidor_real=${nroMedidorReal || "-"}`);
     await client.query("COMMIT");
 
     return res.json({

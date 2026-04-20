@@ -9,7 +9,7 @@ const RecibosLuzLote = forwardRef(({ items = [] }, ref) => {
   }
 
   return (
-    <div ref={ref} style={{ width: "297mm", minHeight: "210mm", padding: "4mm", background: "#fff" }}>
+    <div ref={ref} style={{ width: "210mm", minHeight: "297mm", padding: "4mm", background: "#fff" }}>
       {items.map((datos, idx) => {
         const isEndOfPage = ((idx + 1) % RECIBOS_POR_HOJA) === 0;
         const isLast = idx === (items.length - 1);

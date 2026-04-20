@@ -64,6 +64,7 @@ const ReciboLuzCard = ({ datos }) => {
           <div style={{ borderRight: "1px solid #222", padding: "1.4mm 1.8mm", fontSize: "8.3px", lineHeight: 1.3 }}>
             <div><strong>Usuario:</strong> {suministro.nombre_usuario || "-"}</div>
             <div><strong>ID:</strong> {suministro.nro_medidor || "-"}</div>
+            <div><strong>Medidor:</strong> {suministro.nro_medidor_real || "-"}</div>
             <div><strong>Zona:</strong> {suministro.zona || "-"}</div>
             <div><strong>Periodo:</strong> {formatPeriodo(recibo.anio, recibo.mes)}</div>
           </div>
@@ -112,7 +113,7 @@ const ReciboLuz = forwardRef(({ datos }, ref) => {
   if (!datos) return <div ref={ref}></div>;
 
   return (
-    <div ref={ref} style={{ width: "297mm", minHeight: "210mm", padding: "4mm", fontFamily: "Arial, sans-serif", color: "#111", background: "#fff" }}>
+    <div ref={ref} style={{ width: "210mm", minHeight: "297mm", padding: "4mm", fontFamily: "Arial, sans-serif", color: "#111", background: "#fff" }}>
       <ReciboLuzCard datos={datos} />
     </div>
   );
