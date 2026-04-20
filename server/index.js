@@ -7050,11 +7050,13 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       });
     };
 
-    // Auto-corrección preventiva: sincroniza recibos pendientes sin pagos con la tarifa/servicios vigentes.
-    // Así evitamos cobros inconsistentes (por ejemplo, montos legacy desfasados) en cualquier contribuyente.
+    // Solo sincroniza periodos futuros; no tocar deudas ya emitidas para respetar montos reales registrados.
+    const periodoSiguiente = mesActual === 12
+      ? ((anioActual + 1) * 100) + 1
+      : (anioActual * 100) + (mesActual + 1);
     await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-      incluirPendientesHistoricos: true,
-      desdePeriodoNum: 0
+      incluirPendientesHistoricos: false,
+      desdePeriodoNum: periodoSiguiente
     });
 
     const whereParts = [
@@ -9625,10 +9627,6 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     const filtrarAnio = anioParam !== 'all';
     const anio = filtrarAnio ? (Number(anioParam) || getCurrentYear()) : null;
     const incluirFuturos = normalizeSN(req.query?.incluir_futuros, "N") === "S";
-    await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-      incluirPendientesHistoricos: true,
-      desdePeriodoNum: 0
-    });
 
     const historial = await client.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
@@ -9695,10 +9693,6 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     if (filtrarAnio && (!Number.isInteger(anio) || anio <= 1900 || anio >= 9999)) {
       return res.status(400).json({ error: "Año inválido para exportación." });
     }
-    await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-      incluirPendientesHistoricos: true,
-      desdePeriodoNum: 0
-    });
 
     const contribuyenteRs = await client.query(
       `SELECT codigo_municipal, nombre_completo
