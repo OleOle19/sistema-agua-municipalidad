@@ -2749,6 +2749,82 @@ const ensureComparacionesLegacyTables = async (client) => {
 
 const ensureDataIntegrityGuards = async (client) => {
   await client.query(`
+    ALTER TABLE recibos
+    DROP CONSTRAINT IF EXISTS chk_luz_recibos_energia
+  `);
+  await client.query(`
+    ALTER TABLE recibos
+    DROP CONSTRAINT IF EXISTS chk_luz_recibos_total
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'recibos'
+          AND column_name = 'id_suministro'
+      ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'recibos'
+          AND column_name = 'energia_activa'
+      ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'recibos'
+          AND column_name = 'consumo_kwh'
+      ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'recibos'
+          AND column_name = 'tarifa_kwh'
+      ) THEN
+        ALTER TABLE recibos
+        ADD CONSTRAINT chk_luz_recibos_energia
+        CHECK (
+          id_suministro IS NULL
+          OR energia_activa = ROUND((consumo_kwh * tarifa_kwh)::numeric, 2)
+        ) NOT VALID;
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'recibos'
+          AND column_name = 'id_suministro'
+      ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'recibos'
+          AND column_name = 'energia_activa'
+      ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'recibos'
+          AND column_name = 'mantenimiento'
+      ) THEN
+        ALTER TABLE recibos
+        ADD CONSTRAINT chk_luz_recibos_total
+        CHECK (
+          id_suministro IS NULL
+          OR total_pagar = ROUND((energia_activa + mantenimiento)::numeric, 2)
+        ) NOT VALID;
+      END IF;
+    END $$;
+  `);
+  await client.query(`
     DO $$
     BEGIN
       IF NOT EXISTS (
@@ -6686,6 +6762,10 @@ app.post("/recibos", async (req, res) => {
   const client = await pool.connect();
   try {
     const { id_contribuyente, anio, mes, montos } = req.body;
+    const idContribuyente = parsePositiveInt(id_contribuyente, 0);
+    if (!idContribuyente) {
+      return res.status(400).json({ error: "Contribuyente invalido." });
+    }
     const periodo = validateReciboPeriodoNoFuturo(anio, mes);
     if (!periodo.ok) {
       return res.status(400).json({ error: periodo.error });
@@ -6708,7 +6788,7 @@ app.post("/recibos", async (req, res) => {
       JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
       WHERE p.id_contribuyente = $1
       LIMIT 1
-    `, [id_contribuyente]);
+    `, [idContribuyente]);
     if (predio.rows.length === 0) return res.status(400).json({ error: "Usuario sin predio." });
     if (predio.rows[0].estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) {
       return res.status(400).json({ error: "El contribuyente no tiene conexion activa para generar deuda." });
@@ -6798,7 +6878,7 @@ app.post("/recibos", async (req, res) => {
     await client.query("COMMIT");
     invalidateContribuyentesCache();
     realtimeHub.broadcast("deuda", "recibo_generado", {
-      id_contribuyente: Number(id_contribuyente || 0),
+      id_contribuyente: idContribuyente,
       id_recibo: Number(reciboRow?.id_recibo || 0),
       origen: "recibos"
     });
@@ -6812,7 +6892,18 @@ app.post("/recibos", async (req, res) => {
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
     if (err.code === '23505') return res.status(400).json({ error: "Ya existe recibo para ese mes." });
-    res.status(500).send("Error");
+    if (err.code === "22P02") return res.status(400).json({ error: "Datos invalidos para registrar deuda." });
+    if (err.code === "23514") {
+      const constraint = String(err.constraint || "").trim();
+      if (constraint.startsWith("chk_luz_recibos_")) {
+        return res.status(400).json({
+          error: "Validacion de recibos incompatible con Agua. Reinicie backend para aplicar ajuste de compatibilidad."
+        });
+      }
+      return res.status(400).json({ error: "Validacion de datos rechazada por la base de datos." });
+    }
+    console.error("Error POST /recibos:", err);
+    res.status(500).json({ error: "Error interno registrando deuda." });
   } finally {
     client.release();
   }

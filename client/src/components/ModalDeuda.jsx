@@ -110,7 +110,12 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
       alGuardar();
       cerrarModal();
     } catch (error) {
-      alert(error.response?.data?.error || "Error al registrar deuda");
+      const errorBackend = error?.response?.data;
+      const mensajeError = errorBackend?.error
+        || (typeof errorBackend === "string" ? errorBackend : "")
+        || error?.message
+        || "Error al registrar deuda";
+      alert(mensajeError);
     } finally {
       setCargando(false);
     }
