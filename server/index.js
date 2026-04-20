@@ -6817,6 +6817,7 @@ app.post("/recibos", async (req, res) => {
     }
 
     await client.query("BEGIN");
+    await client.query("SAVEPOINT sp_recibo_insert");
     let reciboRow = null;
     let fueRegularizado = false;
     try {
@@ -6825,9 +6826,11 @@ app.post("/recibos", async (req, res) => {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'PENDIENTE') RETURNING *`,
         [predio.rows[0].id_predio, periodo.anio, periodo.mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin, totalPagar]
       );
+      await client.query("RELEASE SAVEPOINT sp_recibo_insert");
       reciboRow = nuevoRecibo.rows?.[0] || null;
     } catch (errInsert) {
       if (errInsert.code !== "23505") throw errInsert;
+      await client.query("ROLLBACK TO SAVEPOINT sp_recibo_insert");
 
       const existente = await client.query(
         `SELECT
@@ -6893,6 +6896,14 @@ app.post("/recibos", async (req, res) => {
     try { await client.query("ROLLBACK"); } catch {}
     if (err.code === '23505') return res.status(400).json({ error: "Ya existe recibo para ese mes." });
     if (err.code === "22P02") return res.status(400).json({ error: "Datos invalidos para registrar deuda." });
+    if (err.code === "23502") {
+      return res.status(400).json({
+        error: `Falta dato obligatorio en recibo (${String(err.column || "columna_desconocida")}).`
+      });
+    }
+    if (err.code === "23503") {
+      return res.status(400).json({ error: "Referencia invalida al registrar deuda." });
+    }
     if (err.code === "23514") {
       const constraint = String(err.constraint || "").trim();
       if (constraint.startsWith("chk_luz_recibos_")) {
