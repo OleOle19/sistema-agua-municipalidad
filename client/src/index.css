@@ -40,6 +40,12 @@ body {
 
 .module-entry {
   transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+  border-radius: 14px;
+  min-height: 172px;
+}
+
+.module-selector-grid > [class*="col-"] {
+  display: flex;
 }
 
 .module-entry:not(:disabled):hover,
@@ -81,4 +87,18 @@ body {
   background-color: rgba(25, 135, 84, 0.1);
   box-shadow: 0 0 0 3px rgba(25, 135, 84, 0.16);
   color: #ffffff !important;
+}
+
+.module-entry--campo:not(:disabled):hover .module-entry__icon,
+.module-entry--campo:not(:disabled):focus-visible .module-entry__icon {
+  border-color: #0f172a;
+  background-color: rgba(15, 23, 42, 0.1);
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.12);
+  color: #111111 !important;
+}
+
+@media (max-width: 767.98px) {
+  .module-entry {
+    min-height: 148px;
+  }
 }

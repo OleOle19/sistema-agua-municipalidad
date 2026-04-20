@@ -105,6 +105,11 @@ const parseEntero = (value, fallback = 0) => {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+const parseIdNumerico = (value) => {
+  const digits = String(value || "").replace(/\D/g, "");
+  const parsed = Number.parseInt(digits, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 const getPeriodoAnterior = (anio, mes) => {
   const anioNum = parseEntero(anio, 0);
   const mesNum = parseEntero(mes, 0);
@@ -274,6 +279,21 @@ function LuzApp({ onBackToSelector }) {
     () => [...suministros].sort(compareMedidorAsc),
     [suministros]
   );
+  const nextIdUsuarioSugerido = useMemo(() => {
+    if (suministroForm.id_suministro) return "";
+    const idZona = Number.parseInt(String(suministroForm.id_zona || ""), 10);
+    const zonaNombre = String(suministroForm.zona_nombre || "").trim().toUpperCase();
+    const mismosZona = suministros.filter((row) => {
+      if (idZona > 0) return Number.parseInt(String(row.id_zona || ""), 10) === idZona;
+      if (!zonaNombre) return false;
+      return String(row.zona || "").trim().toUpperCase() === zonaNombre;
+    });
+    const maxId = mismosZona.reduce((acc, row) => {
+      const n = parseIdNumerico(row?.nro_medidor);
+      return n > acc ? n : acc;
+    }, 0);
+    return String(maxId + 1);
+  }, [suministroForm.id_suministro, suministroForm.id_zona, suministroForm.zona_nombre, suministros]);
 
   const yearsHistorial = useMemo(() => {
     const set = new Set();
@@ -586,6 +606,25 @@ function LuzApp({ onBackToSelector }) {
       return prev.filter((id) => existentes.has(Number(id || 0)));
     });
   }, [suministros]);
+
+  useEffect(() => {
+    if (suministroForm.id_suministro) return;
+    if (!nextIdUsuarioSugerido) return;
+    setSuministroForm((prev) => {
+      if (prev.id_suministro) return prev;
+      const prevId = String(prev.nro_medidor || "").trim();
+      const prevDir = String(prev.direccion || "").trim();
+      const shouldSyncDireccion = !prevDir || prevDir === prevId;
+      if (prevId === nextIdUsuarioSugerido && (!shouldSyncDireccion || prevDir === nextIdUsuarioSugerido)) {
+        return prev;
+      }
+      return {
+        ...prev,
+        nro_medidor: nextIdUsuarioSugerido,
+        direccion: shouldSyncDireccion ? nextIdUsuarioSugerido : prev.direccion
+      };
+    });
+  }, [nextIdUsuarioSugerido, suministroForm.id_suministro]);
 
   const cargarFormularioDesdeSeleccionado = () => {
     if (!suministroSeleccionado) return;
@@ -1162,13 +1201,17 @@ function LuzApp({ onBackToSelector }) {
                           </div>
                         )}
                         <div className="mb-2">
-                          <label className="form-label">ID usuario (antes medidor)</label>
+                          <label className="form-label">ID usuario (autogenerado por zona)</label>
                           <input
                             className="form-control"
                             value={suministroForm.nro_medidor}
                             onChange={(e) => setSuministroForm((prev) => ({ ...prev, nro_medidor: e.target.value }))}
+                            readOnly={!suministroForm.id_suministro}
                             required
                           />
+                          {!suministroForm.id_suministro && (
+                            <div className="form-text">Se calcula segun orden creciente de IDs en zona seleccionada.</div>
+                          )}
                         </div>
                         <div className="mb-2">
                           <label className="form-label">Nro medidor (pendiente de validacion)</label>

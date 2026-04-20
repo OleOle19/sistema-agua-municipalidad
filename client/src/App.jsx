@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { FaTint, FaBolt, FaCashRegister } from "react-icons/fa";
+import { FaTint, FaBolt, FaCashRegister, FaMobileAlt } from "react-icons/fa";
+import { API_BASE_URL } from "./api";
 import AguaApp from "./AguaApp";
 import LuzApp from "./luz/LuzApp";
 import CajaMunicipalApp from "./caja/CajaMunicipalApp";
@@ -17,6 +18,7 @@ const clearAllModuleSessions = () => {
     try { localStorage.removeItem(key); } catch {}
   });
 };
+const getCampoAppUrl = () => `${API_BASE_URL}/campo-app/`;
 
 const normalizeRole = (role) => {
   const raw = String(role || "").trim().toUpperCase();
@@ -63,6 +65,7 @@ const readStoredModule = () => {
 function App() {
   const [modulo, setModulo] = useState(readStoredModule);
   const [selectorAviso, setSelectorAviso] = useState("");
+  const campoAppUrl = useMemo(getCampoAppUrl, []);
   const rolActual = readStoredRole();
   const cajaPermitida = !rolActual || canEnterCajaModuleByRole(rolActual);
 
@@ -106,7 +109,7 @@ function App() {
 
   return (
     <div className="d-flex align-items-center justify-content-center min-vh-100 bg-light p-3">
-      <div className="card shadow-sm" style={{ maxWidth: "880px", width: "100%" }}>
+      <div className="card shadow-sm" style={{ maxWidth: "1120px", width: "100%" }}>
         <div className="card-body p-4 p-md-5">
           <h2 className="fw-bold mb-2">Municipalidad Distrital de Pueblo Nuevo</h2>
           <p className="text-muted mb-4">Seleccione el sistema al que desea ingresar.</p>
@@ -114,8 +117,8 @@ function App() {
             <div className="alert alert-warning py-2">{selectorAviso}</div>
           )}
 
-          <div className="row g-3">
-            <div className="col-12 col-md-4">
+          <div className="row g-4 module-selector-grid">
+            <div className="col-12 col-md-6 col-xl-3">
               <button
                 className="btn btn-outline-primary w-100 h-100 text-start p-4 module-entry module-entry--agua"
                 onClick={() => actions.seleccionar("agua")}
@@ -130,7 +133,7 @@ function App() {
               </button>
             </div>
 
-            <div className="col-12 col-md-4">
+            <div className="col-12 col-md-6 col-xl-3">
               <button
                 className="btn btn-outline-warning w-100 h-100 text-start p-4 module-entry module-entry--luz"
                 onClick={() => actions.seleccionar("luz")}
@@ -145,7 +148,7 @@ function App() {
               </button>
             </div>
 
-            <div className="col-12 col-md-4">
+            <div className="col-12 col-md-6 col-xl-3">
               <button
                 className="btn btn-outline-success w-100 h-100 text-start p-4 module-entry module-entry--caja"
                 onClick={() => actions.seleccionar("caja")}
@@ -163,6 +166,21 @@ function App() {
                   </div>
                 </div>
               </button>
+            </div>
+
+            <div className="col-12 col-md-6 col-xl-3">
+              <a
+                className="btn btn-outline-info w-100 h-100 text-start p-4 module-entry module-entry--campo d-flex align-items-center"
+                href={campoAppUrl}
+              >
+                <div className="d-flex align-items-center gap-3">
+                  <span className="fs-2 text-info module-entry__icon"><FaMobileAlt /></span>
+                    <div>
+                      <div className="fw-bold fs-5">App Campo</div>
+                      <div className="small text-muted">Brigada Agua y Luz. Corroboracion y visitas.</div>
+                    </div>
+                  </div>
+                </a>
             </div>
           </div>
         </div>

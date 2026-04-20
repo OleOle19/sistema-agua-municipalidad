@@ -517,6 +517,26 @@ const ensureCharcapeSplit = async () => {
 const ensureDefaults = async () => {
   await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
   await pool.query("ALTER TABLE suministros ADD COLUMN IF NOT EXISTS nro_medidor_real VARCHAR(80) NULL");
+  // Reglas antiguas bloquean nuevo cálculo de lectura mensual.
+  await pool.query("ALTER TABLE recibos DROP CONSTRAINT IF EXISTS chk_luz_recibos_lecturas");
+  await pool.query("ALTER TABLE recibos DROP CONSTRAINT IF EXISTS chk_luz_recibos_consumo");
+  await pool.query(
+    `DO $$
+     BEGIN
+       IF NOT EXISTS (
+         SELECT 1 FROM pg_constraint WHERE conname = 'chk_luz_recibos_lectura_actual_nonneg'
+       ) THEN
+         ALTER TABLE recibos
+         ADD CONSTRAINT chk_luz_recibos_lectura_actual_nonneg CHECK (lectura_actual >= 0);
+       END IF;
+       IF NOT EXISTS (
+         SELECT 1 FROM pg_constraint WHERE conname = 'chk_luz_recibos_consumo_nonneg'
+       ) THEN
+         ALTER TABLE recibos
+         ADD CONSTRAINT chk_luz_recibos_consumo_nonneg CHECK (consumo_kwh >= 0);
+       END IF;
+     END $$;`
+  );
   await ensureCampoVisitasTable(pool);
   await pool.query(
     `INSERT INTO config_fechas (id_config, dias_vencimiento, dias_corte)
@@ -649,6 +669,27 @@ const resolveZoneId = async (client, payload = {}) => {
     [zoneNameRaw]
   );
   return { id_zona: Number(inserted.rows[0].id_zona), nombre: inserted.rows[0].nombre };
+};
+
+const getNextUserIdByZone = async (client, idZona) => {
+  const rs = await client.query(
+    `SELECT COALESCE(
+       MAX(
+         CASE
+           WHEN regexp_replace(COALESCE(nro_medidor, ''), '[^0-9]', '', 'g') <> ''
+             THEN (regexp_replace(COALESCE(nro_medidor, ''), '[^0-9]', '', 'g'))::bigint
+           ELSE 0
+         END
+       ),
+       0
+     ) AS max_id
+     FROM suministros
+     WHERE id_zona = $1`,
+    [idZona]
+  );
+  const maxId = Number.parseInt(String(rs.rows?.[0]?.max_id ?? "0"), 10);
+  const nextId = Number.isFinite(maxId) ? maxId + 1 : 1;
+  return String(nextId);
 };
 
 const getLecturaAnterior = async (client, idSuministro, anio, mes) => {
@@ -1567,24 +1608,25 @@ router.get("/suministros", authenticateLuzToken, requireRole("CONSULTA"), async 
 router.post("/suministros", authenticateLuzToken, requireRole("ADMIN_SEC"), async (req, res) => {
   const client = await pool.connect();
   try {
-    const nroMedidor = normalizeText(req.body?.nro_medidor, 80);
     const nroMedidorReal = normalizeText(req.body?.nro_medidor_real || req.body?.medidor_real, 80) || null;
     const nombreUsuario = normalizeText(req.body?.nombre_usuario, 220);
     const direccion = normalizeText(req.body?.direccion, 300) || null;
     const estado = normalizeEstadoSuministro(req.body?.estado);
 
-    if (!nroMedidor || !nombreUsuario) {
-      return res.status(400).json({ error: "Nro medidor y nombre son obligatorios." });
+    if (!nombreUsuario) {
+      return res.status(400).json({ error: "Nombre de usuario es obligatorio." });
     }
 
     await client.query("BEGIN");
     const zona = await resolveZoneId(client, req.body || {});
+    const nroMedidor = await getNextUserIdByZone(client, zona.id_zona);
+    const direccionFinal = direccion || nroMedidor;
 
     const inserted = await client.query(
       `INSERT INTO suministros (id_zona, nro_medidor, nro_medidor_real, nombre_usuario, direccion, estado)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id_suministro, id_zona, nro_medidor, nro_medidor_real, nombre_usuario, direccion, estado`,
-      [zona.id_zona, nroMedidor, nroMedidorReal, nombreUsuario, direccion, estado]
+      [zona.id_zona, nroMedidor, nroMedidorReal, nombreUsuario, direccionFinal, estado]
     );
 
     await registrarAuditoria(client, req.user?.username, "SUMINISTRO_CREAR", `id=${inserted.rows[0].id_suministro}; zona=${zona.nombre}; id_usuario=${nroMedidor}; medidor_real=${nroMedidorReal || "-"}`);
