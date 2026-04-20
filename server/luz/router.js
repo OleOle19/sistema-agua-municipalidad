@@ -109,6 +109,13 @@ const LUZ_CARGO_FIJO_DEFAULT = Number.parseFloat(process.env.LUZ_CARGO_FIJO_DEFA
 const LUZ_DIAS_VENCIMIENTO_DEFAULT = Math.max(0, Number.parseInt(process.env.LUZ_DIAS_VENCIMIENTO_DEFAULT || "6", 10) || 6);
 const LUZ_DIAS_CORTE_DEFAULT = Math.max(LUZ_DIAS_VENCIMIENTO_DEFAULT, Number.parseInt(process.env.LUZ_DIAS_CORTE_DEFAULT || "10", 10) || 10);
 const MAX_RECHAZOS_IMPORTACION = Math.max(50, Number.parseInt(process.env.MAX_RECHAZOS_IMPORTACION || "500", 10) || 500);
+const CAMPO_TIPO_VISITA = {
+  CORROBORAR_MEDIDOR: "CORROBORAR_MEDIDOR",
+  VISITA_MENSUAL: "VISITA_MENSUAL"
+};
+const ZONA_CHARCAPE = "CHARCAPE";
+const ZONA_AAHH_CHARCAPE = "AA.HH CHARCAPE";
+const LUZ_CAJA_INTERNA_HABILITADA = false;
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -394,8 +401,122 @@ const registrarAuditoria = async (clientOrPool, usuario, accion, detalle) => {
   }
 };
 
+const ensureCampoVisitasTable = async (db) => {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS campo_visitas (
+      id_visita BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      id_suministro BIGINT NOT NULL REFERENCES suministros(id_suministro),
+      id_usuario_registra INTEGER NULL,
+      tipo_visita VARCHAR(40) NOT NULL,
+      nro_medidor_reportado VARCHAR(80) NOT NULL,
+      lectura_actual NUMERIC(12, 2) NULL,
+      foto_medidor_base64 TEXT NOT NULL,
+      observacion TEXT NULL,
+      inspector VARCHAR(120) NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+  await db.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_campo_visitas_tipo'
+      ) THEN
+        ALTER TABLE campo_visitas
+        ADD CONSTRAINT chk_campo_visitas_tipo
+        CHECK (tipo_visita IN ('CORROBORAR_MEDIDOR', 'VISITA_MENSUAL'));
+      END IF;
+    END $$;
+  `);
+  await db.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_campo_visitas_lectura'
+      ) THEN
+        ALTER TABLE campo_visitas
+        ADD CONSTRAINT chk_campo_visitas_lectura
+        CHECK (lectura_actual IS NULL OR lectura_actual >= 0);
+      END IF;
+    END $$;
+  `);
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS idx_campo_visitas_suministro_fecha
+    ON campo_visitas (id_suministro, creado_en DESC, id_visita DESC)
+  `);
+};
+
+const ensureCharcapeSplit = async () => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const zones = await client.query("SELECT id_zona, nombre FROM zonas");
+    const rows = Array.isArray(zones.rows) ? zones.rows : [];
+    const charcapeRows = rows.filter((z) => normalizeZoneKey(z.nombre) === "CHARCAPE");
+    if (!charcapeRows.length) {
+      await client.query("COMMIT");
+      return;
+    }
+    const zoneByKey = new Map(rows.map((z) => [normalizeZoneKey(z.nombre), z]));
+    let zoneCharcape = zoneByKey.get("CHARCAPE");
+    let zoneAahh = zoneByKey.get("AAHHCHARCAPE");
+    if (!zoneAahh) {
+      const inserted = await client.query(
+        "INSERT INTO zonas (nombre, activo) VALUES ($1, TRUE) RETURNING id_zona, nombre",
+        [ZONA_AAHH_CHARCAPE]
+      );
+      zoneAahh = inserted.rows[0];
+    }
+    if (!zoneCharcape) zoneCharcape = charcapeRows[0];
+    const relatedZoneIds = rows
+      .filter((z) => {
+        const key = normalizeZoneKey(z.nombre);
+        return key === "CHARCAPE" || key === "AAHHCHARCAPE";
+      })
+      .map((z) => Number(z.id_zona))
+      .filter((id) => Number.isFinite(id) && id > 0);
+    if (!relatedZoneIds.includes(Number(zoneCharcape.id_zona))) relatedZoneIds.push(Number(zoneCharcape.id_zona));
+    if (!relatedZoneIds.includes(Number(zoneAahh.id_zona))) relatedZoneIds.push(Number(zoneAahh.id_zona));
+    if (!relatedZoneIds.length) {
+      await client.query("COMMIT");
+      return;
+    }
+
+    // Orden importante por solape 80-83: se aplica al final hacia AA.HH Charcape.
+    await client.query(
+      `
+      UPDATE suministros s
+      SET id_zona = $1
+      WHERE s.id_zona = ANY($2::int[])
+        AND NULLIF(regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g'), '') IS NOT NULL
+        AND (NULLIF(regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g'), '')::int BETWEEN 1 AND 83)
+      `,
+      [Number(zoneCharcape.id_zona), relatedZoneIds]
+    );
+    await client.query(
+      `
+      UPDATE suministros s
+      SET id_zona = $1
+      WHERE s.id_zona = ANY($2::int[])
+        AND NULLIF(regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g'), '') IS NOT NULL
+        AND (NULLIF(regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g'), '')::int BETWEEN 80 AND 158)
+      `,
+      [Number(zoneAahh.id_zona), relatedZoneIds]
+    );
+
+    await client.query("COMMIT");
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    throw err;
+  } finally {
+    client.release();
+  }
+};
+
 const ensureDefaults = async () => {
   await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
+  await ensureCampoVisitasTable(pool);
   await pool.query(
     `INSERT INTO config_fechas (id_config, dias_vencimiento, dias_corte)
      VALUES (1, $1, $2)
@@ -419,6 +540,16 @@ const ensureDefaultsOnce = async () => {
     });
   }
   await defaultsPromise;
+};
+let charcapeSplitPromise = null;
+const ensureCharcapeSplitOnce = async () => {
+  if (!charcapeSplitPromise) {
+    charcapeSplitPromise = ensureCharcapeSplit().catch((err) => {
+      charcapeSplitPromise = null;
+      throw err;
+    });
+  }
+  await charcapeSplitPromise;
 };
 
 const getTarifaActiva = async (clientOrPool) => {
@@ -474,6 +605,29 @@ const getConfigFechas = async (clientOrPool) => {
 };
 
 const normalizeZoneName = (value) => normalizeText(value, 120).normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
+const normalizeZoneKey = (value) => normalizeZoneName(value).replace(/[^A-Z0-9]/g, "");
+const parseMedidorNumericValue = (value) => {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return 0;
+  const parsed = Number.parseInt(digits, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+const splitCharcapeZoneName = (zoneName, medidorRaw) => {
+  const key = normalizeZoneKey(zoneName);
+  const isCharcapeLike = key === "CHARCAPE" || key === "AAHHCHARCAPE";
+  if (!isCharcapeLike) return String(zoneName || "").trim();
+  const medidorNum = parseMedidorNumericValue(medidorRaw);
+  if (medidorNum >= 80 && medidorNum <= 158) return ZONA_AAHH_CHARCAPE;
+  if (medidorNum >= 1 && medidorNum <= 83) return ZONA_CHARCAPE;
+  return key === "AAHHCHARCAPE" ? ZONA_AAHH_CHARCAPE : ZONA_CHARCAPE;
+};
+const rejectIfLuzCajaInternaDisabled = (res) => {
+  if (LUZ_CAJA_INTERNA_HABILITADA) return false;
+  res.status(410).json({
+    error: "Caja interna de Luz deshabilitada. Ventanilla Luz solo emite e imprime recibos; el cobro se realiza en sistema externo de caja."
+  });
+  return true;
+};
 
 const resolveZoneId = async (client, payload = {}) => {
   const idZona = parsePositiveInt(payload.id_zona, 0);
@@ -546,10 +700,12 @@ const getLecturaMesAnteriorExacta = async (client, idSuministro, anio, mes) => {
 const computeRecibo = ({ lecturaAnterior, lecturaActual, tarifaKwh, cargoFijo }) => {
   const lecturaAnt = round2(parseMonto(lecturaAnterior, 0));
   const lecturaAct = round2(parseMonto(lecturaActual, 0));
-  if (lecturaAct < lecturaAnt) {
-    throw new Error("LECTURA_INVALIDA");
+  if (lecturaAct < 0) {
+    throw new Error("LECTURA_ACTUAL_INVALIDA");
   }
-  const consumo = round2(lecturaAct - lecturaAnt);
+  // En luz municipal la lectura anterior funciona como referencia visual;
+  // el cobro del mes se calcula con la lectura actual registrada.
+  const consumo = lecturaAct;
   const tarifa = round2(parseMonto(tarifaKwh, LUZ_TARIFA_KWH_DEFAULT));
   const fijo = round2(parseMonto(cargoFijo, LUZ_CARGO_FIJO_DEFAULT));
   const energia = round2(consumo * tarifa);
@@ -632,6 +788,7 @@ const getCurrentPeriodoNum = () => {
 router.use(async (req, res, next) => {
   try {
     await ensureDefaultsOnce();
+    await ensureCharcapeSplitOnce();
     return next();
   } catch (err) {
     console.error("[LUZ] Error inicializando defaults:", err.message);
@@ -1056,7 +1213,191 @@ router.delete("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"),
   }
 });
 
-router.get("/zonas", authenticateLuzToken, requireRole("CONSULTA"), async (req, res) => {
+router.get("/campo/suministros", authenticateLuzToken, requireRole("BRIGADA"), async (req, res) => {
+  try {
+    const q = normalizeText(req.query?.q || req.query?.buscar || "", 120).toUpperCase();
+    const idZona = parsePositiveInt(req.query?.id_zona, 0);
+    const limitRaw = parsePositiveInt(req.query?.limit, 180);
+    const limit = Math.min(Math.max(limitRaw, 1), 500);
+    const params = [];
+    const where = [];
+
+    if (idZona > 0) {
+      params.push(idZona);
+      where.push(`s.id_zona = $${params.length}`);
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      where.push(`(
+        UPPER(COALESCE(s.nro_medidor, '')) LIKE $${params.length}
+        OR UPPER(COALESCE(s.nombre_usuario, '')) LIKE $${params.length}
+        OR UPPER(COALESCE(z.nombre, '')) LIKE $${params.length}
+      )`);
+    }
+
+    params.push(limit);
+    const rows = await pool.query(
+      `
+      SELECT
+        s.id_suministro,
+        s.nro_medidor,
+        s.nombre_usuario,
+        z.nombre AS zona,
+        cv.creado_en AS ultima_visita_en,
+        cv.tipo_visita AS ultima_visita_tipo,
+        cv.lectura_actual AS ultima_lectura
+      FROM suministros s
+      JOIN zonas z ON z.id_zona = s.id_zona
+      LEFT JOIN LATERAL (
+        SELECT c.creado_en, c.tipo_visita, c.lectura_actual
+        FROM campo_visitas c
+        WHERE c.id_suministro = s.id_suministro
+        ORDER BY c.creado_en DESC, c.id_visita DESC
+        LIMIT 1
+      ) cv ON TRUE
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY
+        CASE
+          WHEN regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g') <> '' THEN 0
+          ELSE 1
+        END ASC,
+        CASE
+          WHEN regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g') <> ''
+            THEN NULLIF(regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g'), '')::numeric
+          ELSE NULL
+        END ASC NULLS LAST,
+        UPPER(COALESCE(s.nro_medidor, '')) ASC,
+        UPPER(COALESCE(s.nombre_usuario, '')) ASC
+      LIMIT $${params.length}
+      `,
+      params
+    );
+
+    return res.json(rows.rows.map((r) => {
+      const zonaSeparada = splitCharcapeZoneName(r.zona, r.nro_medidor);
+      const ultimaVisitaTipo = String(r.ultima_visita_tipo || "").trim().toUpperCase();
+      return {
+        id_suministro: Number(r.id_suministro),
+        id_contribuyente: String(r.nro_medidor || "").trim(),
+        nro_medidor: String(r.nro_medidor || "").trim(),
+        nombre_completo: String(r.nombre_usuario || "").trim(),
+        zona: zonaSeparada || r.zona,
+        ultima_visita_en: r.ultima_visita_en || null,
+        ultima_visita_tipo: ultimaVisitaTipo || null,
+        ultima_lectura: r.ultima_lectura === null || r.ultima_lectura === undefined
+          ? null
+          : round2(parseMonto(r.ultima_lectura, 0))
+      };
+    }));
+  } catch (err) {
+    console.error("[LUZ] Error listando campo/suministros:", err.message);
+    return res.status(500).json({ error: "Error listando suministros para campo." });
+  }
+});
+
+router.post("/campo/visitas", authenticateLuzToken, requireRole("BRIGADA"), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const idSuministro = parsePositiveInt(req.body?.id_suministro, 0);
+    const tipoVisitaRaw = String(req.body?.tipo_visita || CAMPO_TIPO_VISITA.CORROBORAR_MEDIDOR).trim().toUpperCase();
+    const tipoVisita = tipoVisitaRaw === CAMPO_TIPO_VISITA.VISITA_MENSUAL
+      ? CAMPO_TIPO_VISITA.VISITA_MENSUAL
+      : CAMPO_TIPO_VISITA.CORROBORAR_MEDIDOR;
+    const nroMedidorReportado = normalizeText(req.body?.nro_medidor_reportado || req.body?.id_contribuyente || "", 80);
+    const fotoMedidor = String(req.body?.foto_medidor_base64 || "").trim();
+    const observacion = normalizeText(req.body?.observacion || req.body?.observacion_campo || "", 1200) || null;
+    const inspector = normalizeText(req.body?.inspector || req.user?.nombre || req.user?.username || "", 120) || null;
+    const metadata = req.body?.metadata && typeof req.body.metadata === "object" ? req.body.metadata : {};
+    const lecturaActualRaw = req.body?.lectura_actual;
+    const lecturaActualParsed = round2(parseMonto(lecturaActualRaw, NaN));
+    const lecturaActual = Number.isFinite(lecturaActualParsed) ? lecturaActualParsed : null;
+
+    if (!idSuministro) return res.status(400).json({ error: "Suministro inválido." });
+    if (!nroMedidorReportado) return res.status(400).json({ error: "Debe registrar el ID/medidor observado." });
+    if (!fotoMedidor || !/^data:image\//i.test(fotoMedidor)) {
+      return res.status(400).json({ error: "Debe adjuntar foto válida del medidor." });
+    }
+    if (fotoMedidor.length > 2200000) {
+      return res.status(413).json({ error: "La foto es demasiado grande. Intente con menor resolución." });
+    }
+    if (tipoVisita === CAMPO_TIPO_VISITA.VISITA_MENSUAL && (lecturaActual === null || lecturaActual < 0)) {
+      return res.status(400).json({ error: "Para visita mensual debe registrar lectura actual válida." });
+    }
+
+    await client.query("BEGIN");
+    const suministro = await client.query(
+      `SELECT s.id_suministro, s.nro_medidor, s.nombre_usuario, z.nombre AS zona
+       FROM suministros s
+       JOIN zonas z ON z.id_zona = s.id_zona
+       WHERE s.id_suministro = $1
+       LIMIT 1`,
+      [idSuministro]
+    );
+    if (!suministro.rows[0]) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Suministro no encontrado." });
+    }
+
+    const ins = await client.query(
+      `INSERT INTO campo_visitas (
+         id_suministro, id_usuario_registra, tipo_visita, nro_medidor_reportado,
+         lectura_actual, foto_medidor_base64, observacion, inspector, metadata
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+       RETURNING id_visita, creado_en`,
+      [
+        idSuministro,
+        Number(req.user?.id_usuario || 0) || null,
+        tipoVisita,
+        nroMedidorReportado,
+        tipoVisita === CAMPO_TIPO_VISITA.VISITA_MENSUAL ? lecturaActual : null,
+        fotoMedidor,
+        observacion,
+        inspector,
+        JSON.stringify(metadata || {})
+      ]
+    );
+
+    const zonaSeparada = splitCharcapeZoneName(suministro.rows[0].zona, suministro.rows[0].nro_medidor);
+    await registrarAuditoria(
+      client,
+      req.user?.username,
+      "CAMPO_LUZ_VISITA_REGISTRADA",
+      `id_visita=${ins.rows[0].id_visita}; id_suministro=${idSuministro}; tipo=${tipoVisita}; medidor=${nroMedidorReportado}`
+    );
+    await client.query("COMMIT");
+
+    return res.json({
+      mensaje: tipoVisita === CAMPO_TIPO_VISITA.CORROBORAR_MEDIDOR
+        ? "Corroboracion de medidor registrada."
+        : "Visita mensual registrada.",
+      visita: {
+        id_visita: Number(ins.rows[0].id_visita),
+        creado_en: ins.rows[0].creado_en,
+        tipo_visita: tipoVisita,
+        id_suministro: idSuministro,
+        id_contribuyente: String(suministro.rows[0].nro_medidor || "").trim(),
+        nro_medidor_reportado: nroMedidorReportado,
+        lectura_actual: tipoVisita === CAMPO_TIPO_VISITA.VISITA_MENSUAL ? lecturaActual : null,
+        inspector,
+        observacion
+      },
+      suministro: {
+        id_suministro: idSuministro,
+        id_contribuyente: String(suministro.rows[0].nro_medidor || "").trim(),
+        nombre_completo: String(suministro.rows[0].nombre_usuario || "").trim(),
+        zona: zonaSeparada || suministro.rows[0].zona
+      }
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("[LUZ] Error registrando campo/visita:", err.message);
+    return res.status(500).json({ error: "Error registrando visita de campo." });
+  } finally {
+    client.release();
+  }
+});
+
+router.get("/zonas", authenticateLuzToken, requireRole("BRIGADA"), async (req, res) => {
   try {
     const rows = await pool.query(
       `SELECT z.id_zona, z.nombre, z.activo,
@@ -1204,7 +1545,7 @@ router.get("/suministros", authenticateLuzToken, requireRole("CONSULTA"), async 
     return res.json(data.rows.map((r) => ({
       id_suministro: Number(r.id_suministro),
       id_zona: Number(r.id_zona),
-      zona: r.zona,
+      zona: splitCharcapeZoneName(r.zona, r.nro_medidor) || r.zona,
       nro_medidor: r.nro_medidor,
       nombre_usuario: r.nombre_usuario,
       direccion: r.direccion || "",
@@ -1565,7 +1906,7 @@ router.post("/recibos", authenticateLuzToken, requireRole("ADMIN_SEC"), async (r
     if (err.message === "SUMINISTRO_NO_ENCONTRADO") return res.status(404).json({ error: "Suministro no encontrado." });
     if (err.message === "SUMINISTRO_INACTIVO") return res.status(400).json({ error: "Suministro inactivo. No se puede generar deuda." });
     if (err.message === "LECTURA_ACTUAL_REQUERIDA") return res.status(400).json({ error: "Lectura actual es obligatoria." });
-    if (err.message === "LECTURA_INVALIDA") return res.status(400).json({ error: "Lectura actual no puede ser menor que lectura anterior." });
+    if (err.message === "LECTURA_ACTUAL_INVALIDA") return res.status(400).json({ error: "Lectura actual no puede ser negativa." });
     console.error("[LUZ] Error generando recibo:", err.message);
     return res.status(500).json({ error: "Error generando recibo." });
   } finally {
@@ -1708,6 +2049,7 @@ router.get("/recibos/pendientes/:id_suministro", authenticateLuzToken, requireRo
 });
 
 router.post("/caja/ordenes-cobro", authenticateCajaMunicipalToken, requireRole("ADMIN_SEC"), async (req, res) => {
+  if (rejectIfLuzCajaInternaDisabled(res)) return;
   const client = await pool.connect();
   try {
     const idSuministro = parsePositiveInt(req.body?.id_suministro, 0);
@@ -1895,6 +2237,7 @@ router.post("/caja/ordenes-cobro", authenticateCajaMunicipalToken, requireRole("
 });
 
 router.get("/caja/ordenes-cobro/pendientes", authenticateCajaMunicipalToken, requireRole("CAJERO"), async (req, res) => {
+  if (rejectIfLuzCajaInternaDisabled(res)) return;
   try {
     const idSuministro = parsePositiveInt(req.query?.id_suministro, 0);
     const params = [];
@@ -1949,6 +2292,7 @@ router.get("/caja/ordenes-cobro/pendientes", authenticateCajaMunicipalToken, req
   }
 });
 router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, requireRole("CAJERO"), async (req, res) => {
+  if (rejectIfLuzCajaInternaDisabled(res)) return;
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params?.id, 0);
@@ -2074,6 +2418,7 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, re
 });
 
 router.post("/caja/ordenes-cobro/:id/anular", authenticateCajaMunicipalToken, requireRole("ADMIN_SEC"), async (req, res) => {
+  if (rejectIfLuzCajaInternaDisabled(res)) return;
   const client = await pool.connect();
   try {
     const idOrden = parsePositiveInt(req.params?.id, 0);
@@ -2114,6 +2459,7 @@ router.post("/caja/ordenes-cobro/:id/anular", authenticateCajaMunicipalToken, re
 });
 
 router.get("/caja/reporte", authenticateCajaMunicipalToken, requireRole("CAJERO"), async (req, res) => {
+  if (rejectIfLuzCajaInternaDisabled(res)) return;
   try {
     const tipoRaw = normalizeText(req.query?.tipo || "diario", 20).toLowerCase();
     const tipo = ["diario", "mensual", "anual"].includes(tipoRaw) ? tipoRaw : "diario";
@@ -2250,6 +2596,14 @@ router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), uplo
     const seen = new Set();
     let totalLeidas = 0;
     let totalImportadas = 0;
+    const zoneCache = new Map();
+    const resolveZoneCached = async (zoneNameRaw) => {
+      const zoneName = normalizeZoneName(zoneNameRaw || "SIN ZONA");
+      if (zoneCache.has(zoneName)) return zoneCache.get(zoneName);
+      const zone = await resolveZoneId(client, { zona_nombre: zoneName });
+      zoneCache.set(zoneName, zone);
+      return zone;
+    };
 
     for (const ws of wb.worksheets) {
       const zonaSheet = normalizeZoneName(ws.name || "SIN ZONA");
@@ -2282,8 +2636,6 @@ router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), uplo
         continue;
       }
 
-      const zona = await resolveZoneId(client, { zona_nombre: zonaSheet });
-
       for (let r = headerRow + 1; r <= ws.rowCount; r++) {
         const row = ws.getRow(r);
         const medidor = normalizeText(cellText(row.getCell(colMedidor)), 80);
@@ -2301,7 +2653,7 @@ router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), uplo
 
         if (!medidor || !nombre) {
           pushRechazo("datos_invalidos", {
-            zona: zona.nombre,
+            zona: zonaSheet,
             linea: r,
             nro_medidor: medidor || null,
             nombre: nombre || null,
@@ -2309,6 +2661,9 @@ router.post("/importar/padron", authenticateLuzToken, requireRole("ADMIN"), uplo
           });
           continue;
         }
+
+        const zonaNombre = splitCharcapeZoneName(zonaSheet, medidor) || zonaSheet;
+        const zona = await resolveZoneCached(zonaNombre);
 
         const key = `${zona.id_zona}::${medidor}`;
         if (seen.has(key)) {
@@ -2452,6 +2807,7 @@ router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN"), up
       const row = ws.getRow(r);
       const zona = normalizeZoneName(cellText(row.getCell(colZona)));
       const nroMedidor = normalizeText(cellText(row.getCell(colMedidor)), 80);
+      const zonaLookup = splitCharcapeZoneName(zona, nroMedidor) || zona;
       const anio = parsePositiveInt(cellText(row.getCell(colAnio)), 0);
       const mes = parsePositiveInt(cellText(row.getCell(colMes)), 0);
       const lecturaActualRaw = cellText(row.getCell(colLecturaActual));
@@ -2493,7 +2849,7 @@ router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN"), up
          WHERE UPPER(TRIM(z.nombre)) = $1
            AND UPPER(TRIM(s.nro_medidor)) = $2
          LIMIT 1`,
-        [zona, nroMedidor.toUpperCase()]
+        [zonaLookup, nroMedidor.toUpperCase()]
       );
 
       if (!suministro.rows[0]) {
@@ -2529,14 +2885,14 @@ router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN"), up
             mes,
             motivo: "Ya existe recibo para ese periodo."
           });
-        } else if (errFila.message === "LECTURA_INVALIDA") {
+        } else if (errFila.message === "LECTURA_ACTUAL_INVALIDA") {
           pushRechazo("lectura_invalida", {
             linea: r,
             zona,
             nro_medidor: nroMedidor,
             anio,
             mes,
-            motivo: "Lectura actual menor a lectura anterior."
+            motivo: "Lectura actual no puede ser negativa."
           });
         } else if (errFila.message === "SUMINISTRO_INACTIVO") {
           pushRechazo("lectura_invalida", {

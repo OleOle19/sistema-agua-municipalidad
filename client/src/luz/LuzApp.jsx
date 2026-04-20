@@ -2,8 +2,6 @@
 import { useReactToPrint } from "react-to-print";
 import {
   FaBolt,
-  FaCalendarAlt,
-  FaCashRegister,
   FaCog,
   FaFileImport,
   FaHistory,
@@ -20,6 +18,7 @@ import {
 import LoginPage from "../components/LoginPage";
 import luzApi from "./apiLuz";
 import ReciboLuz from "./ReciboLuz";
+import RecibosLuzLote from "./RecibosLuzLote";
 import UsuariosLuzPanel from "./UsuariosLuzPanel";
 
 const ROLE_ORDER = {
@@ -138,6 +137,15 @@ const formatFechaHora = (value) => {
   if (Number.isNaN(dt.getTime())) return String(value);
   return dt.toLocaleString("es-PE");
 };
+const formatFechaCorta = (value) => {
+  if (!value) return "-";
+  const text = String(value).trim();
+  const m = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  const dt = new Date(text);
+  if (Number.isNaN(dt.getTime())) return text;
+  return dt.toLocaleDateString("es-PE");
+};
 
 const createEmptySuministroForm = () => ({
   id_suministro: null,
@@ -171,6 +179,25 @@ const createImportState = () => ({
   subiendo: ""
 });
 
+const reciboLuzPageStyle = `
+  @page {
+    size: A4 landscape;
+    margin: 0;
+  }
+  @media print {
+    html, body {
+      margin: 0;
+      padding: 0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      background: #fff !important;
+    }
+    #root {
+      background: #fff !important;
+    }
+  }
+`;
+
 function LuzApp({ onBackToSelector }) {
   const [usuarioSistema, setUsuarioSistema] = useState(readStoredLuzUser);
   const [tab, setTab] = useState("padron");
@@ -199,20 +226,9 @@ function LuzApp({ onBackToSelector }) {
   });
   const [emitiendoRecibo, setEmitiendoRecibo] = useState(false);
 
-  const [ordenObservacion, setOrdenObservacion] = useState("");
-  const [ordenesPendientes, setOrdenesPendientes] = useState([]);
-  const [soloOrdenesDelSeleccionado, setSoloOrdenesDelSeleccionado] = useState(true);
-  const [loadingOrdenes, setLoadingOrdenes] = useState(false);
-  const [ordenEnProceso, setOrdenEnProceso] = useState(0);
-
   const [tarifasForm, setTarifasForm] = useState({ tarifa_kwh: "1.00", cargo_fijo: "6.50" });
   const [fechasForm, setFechasForm] = useState({ dias_vencimiento: "6", dias_corte: "10" });
   const [guardandoConfig, setGuardandoConfig] = useState("");
-
-  const [reporteTipo, setReporteTipo] = useState("diario");
-  const [reporteFecha, setReporteFecha] = useState(toIsoDate());
-  const [reporteCaja, setReporteCaja] = useState(null);
-  const [loadingReporte, setLoadingReporte] = useState(false);
 
   const [importacion, setImportacion] = useState(createImportState);
   const [auditoriaRows, setAuditoriaRows] = useState([]);
@@ -222,12 +238,24 @@ function LuzApp({ onBackToSelector }) {
   const [reciboImpresion, setReciboImpresion] = useState(null);
   const reciboRef = useRef(null);
   const imprimiendoRef = useRef(false);
+  const [filtroZonaImpresion, setFiltroZonaImpresion] = useState("");
+  const [periodoImpresion, setPeriodoImpresion] = useState(() => {
+    const now = new Date();
+    return {
+      anio: String(now.getFullYear()),
+      mes: String(now.getMonth() + 1)
+    };
+  });
+  const [idsSuministrosImpresion, setIdsSuministrosImpresion] = useState([]);
+  const [recibosLoteImpresion, setRecibosLoteImpresion] = useState([]);
+  const [procesandoImpresionLote, setProcesandoImpresionLote] = useState(false);
+  const recibosLoteRef = useRef(null);
+  const imprimiendoLoteRef = useRef(false);
 
   const rolActual = normalizeRole(usuarioSistema?.rol);
   const permisos = useMemo(() => ({
     role: rolActual,
     roleLabel: ROLE_LABELS[rolActual] || ROLE_LABELS.CONSULTA,
-    canCaja: hasMinRole(rolActual, "CAJERO"),
     canEmitirRecibo: hasMinRole(rolActual, "ADMIN_SEC"),
     canEditarPadron: hasMinRole(rolActual, "ADMIN_SEC"),
     canBorrarPadron: hasMinRole(rolActual, "ADMIN"),
@@ -259,10 +287,9 @@ function LuzApp({ onBackToSelector }) {
     () => pendientes.reduce((acc, item) => acc + parseMonto(item.deuda_mes), 0),
     [pendientes]
   );
-
-  const totalOrdenesPendientes = useMemo(
-    () => ordenesPendientes.reduce((acc, item) => acc + parseMonto(item.total_orden), 0),
-    [ordenesPendientes]
+  const idsSuministrosImpresionSet = useMemo(
+    () => new Set(idsSuministrosImpresion.map((id) => Number(id || 0))),
+    [idsSuministrosImpresion]
   );
 
   const showFlash = useCallback((type, text) => {
@@ -294,15 +321,27 @@ function LuzApp({ onBackToSelector }) {
     setSelectedSuministroId(null);
     setHistorial([]);
     setPendientes([]);
-    setOrdenesPendientes([]);
+    setIdsSuministrosImpresion([]);
+    setRecibosLoteImpresion([]);
   }, []);
 
   const handlePrintRecibo = useReactToPrint({
     contentRef: reciboRef,
     documentTitle: "Recibo_Luz",
+    pageStyle: reciboLuzPageStyle,
     onAfterPrint: () => {
       imprimiendoRef.current = false;
       setReciboImpresion(null);
+    }
+  });
+
+  const handlePrintRecibosLote = useReactToPrint({
+    contentRef: recibosLoteRef,
+    documentTitle: "Recibos_Luz_Lote",
+    pageStyle: reciboLuzPageStyle,
+    onAfterPrint: () => {
+      imprimiendoLoteRef.current = false;
+      setRecibosLoteImpresion([]);
     }
   });
 
@@ -317,6 +356,18 @@ function LuzApp({ onBackToSelector }) {
     });
     return () => cancelAnimationFrame(raf);
   }, [handlePrintRecibo, reciboImpresion]);
+
+  useEffect(() => {
+    if (!recibosLoteImpresion.length) return;
+    if (imprimiendoLoteRef.current) return;
+    const raf = requestAnimationFrame(() => {
+      if (recibosLoteRef.current) {
+        imprimiendoLoteRef.current = true;
+        handlePrintRecibosLote();
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [handlePrintRecibosLote, recibosLoteImpresion]);
 
   const cargarZonas = useCallback(async () => {
     try {
@@ -436,22 +487,6 @@ function LuzApp({ onBackToSelector }) {
     }
   }, []);
 
-  const cargarOrdenesPendientes = useCallback(async () => {
-    setLoadingOrdenes(true);
-    try {
-      const params = {};
-      if (soloOrdenesDelSeleccionado && Number(selectedSuministroId) > 0) {
-        params.id_suministro = Number(selectedSuministroId);
-      }
-      const res = await luzApi.get("/caja/ordenes-cobro/pendientes", { params });
-      setOrdenesPendientes(Array.isArray(res.data) ? res.data : []);
-    } catch (err) {
-      handleApiError(err, "No se pudo cargar ordenes pendientes.");
-    } finally {
-      setLoadingOrdenes(false);
-    }
-  }, [handleApiError, selectedSuministroId, soloOrdenesDelSeleccionado]);
-
   const cargarConfig = useCallback(async () => {
     try {
       const [tarifas, fechas] = await Promise.all([
@@ -470,21 +505,6 @@ function LuzApp({ onBackToSelector }) {
       handleApiError(err, "No se pudo cargar configuracion.");
     }
   }, [handleApiError]);
-
-  const cargarReporte = useCallback(async () => {
-    if (!permisos.canCaja) return;
-    setLoadingReporte(true);
-    try {
-      const res = await luzApi.get("/caja/reporte", {
-        params: { tipo: reporteTipo, fecha: reporteFecha }
-      });
-      setReporteCaja(res.data || null);
-    } catch (err) {
-      handleApiError(err, "No se pudo generar reporte de caja.");
-    } finally {
-      setLoadingReporte(false);
-    }
-  }, [handleApiError, permisos.canCaja, reporteFecha, reporteTipo]);
 
   const cargarAuditoria = useCallback(async () => {
     setLoadingAuditoria(true);
@@ -511,12 +531,6 @@ function LuzApp({ onBackToSelector }) {
     cargarSuministros();
     cargarConfig();
   }, [cargarConfig, cargarSuministros, cargarZonas, usuarioSistema]);
-
-  useEffect(() => {
-    if (!usuarioSistema || tab !== "caja" || !permisos.canCaja) return;
-    cargarOrdenesPendientes();
-    cargarReporte();
-  }, [cargarOrdenesPendientes, cargarReporte, permisos.canCaja, tab, usuarioSistema]);
 
   useEffect(() => {
     if (tab !== "recibos") return;
@@ -549,25 +563,6 @@ function LuzApp({ onBackToSelector }) {
   }, [cargarLecturaAnterior, reciboForm.anio, reciboForm.mes, selectedSuministroId, tab, usuarioSistema]);
 
   useEffect(() => {
-    if (tab !== "caja") return;
-    if (!soloOrdenesDelSeleccionado || !permisos.canCaja || !usuarioSistema) return;
-    cargarOrdenesPendientes();
-  }, [cargarOrdenesPendientes, permisos.canCaja, soloOrdenesDelSeleccionado, selectedSuministroId, tab, usuarioSistema]);
-
-  useEffect(() => {
-    if (!usuarioSistema || tab !== "caja" || !permisos.canCaja) return undefined;
-    const timer = setInterval(() => {
-      cargarOrdenesPendientes();
-      cargarReporte();
-      if (selectedSuministroId) {
-        cargarHistorial(selectedSuministroId);
-        cargarPendientes(selectedSuministroId);
-      }
-    }, 10000);
-    return () => clearInterval(timer);
-  }, [cargarHistorial, cargarOrdenesPendientes, cargarPendientes, cargarReporte, permisos.canCaja, selectedSuministroId, tab, usuarioSistema]);
-
-  useEffect(() => {
     if (!usuarioSistema || tab !== "auditoria") return;
     cargarAuditoria();
   }, [cargarAuditoria, tab, usuarioSistema]);
@@ -583,6 +578,13 @@ function LuzApp({ onBackToSelector }) {
     const exists = suministros.some((s) => Number(s.id_suministro) === Number(selectedSuministroId));
     if (!exists) setSelectedSuministroId(null);
   }, [selectedSuministroId, suministros]);
+
+  useEffect(() => {
+    setIdsSuministrosImpresion((prev) => {
+      const existentes = new Set(suministros.map((row) => Number(row.id_suministro || 0)));
+      return prev.filter((id) => existentes.has(Number(id || 0)));
+    });
+  }, [suministros]);
 
   const cargarFormularioDesdeSeleccionado = () => {
     if (!suministroSeleccionado) return;
@@ -684,7 +686,7 @@ function LuzApp({ onBackToSelector }) {
       setSelectedSuministroId(null);
       setHistorial([]);
       setPendientes([]);
-      await Promise.all([cargarSuministros(), cargarZonas(), cargarOrdenesPendientes()]);
+      await Promise.all([cargarSuministros(), cargarZonas()]);
     } catch (err) {
       handleApiError(err, "No se pudo eliminar suministro.");
     }
@@ -694,10 +696,6 @@ function LuzApp({ onBackToSelector }) {
     e.preventDefault();
     if (!permisos.canEmitirRecibo || !suministroSeleccionado) return;
     const lecturaAnteriorTxt = String(reciboForm.lectura_anterior || "").trim();
-    if (!lecturaAnteriorInfo.encontrada && !lecturaAnteriorTxt) {
-      showFlash("warning", "No existe lectura del mes anterior. Ingrese la lectura anterior manualmente.");
-      return;
-    }
 
     const payload = {
       id_suministro: Number(suministroSeleccionado.id_suministro),
@@ -716,7 +714,7 @@ function LuzApp({ onBackToSelector }) {
     setEmitiendoRecibo(true);
     try {
       const res = await luzApi.post("/recibos", payload);
-      showFlash("success", res.data?.mensaje || "Recibo generado.");
+      showFlash("success", res.data?.mensaje || "Lectura registrada.");
       const suministroRecibo = {
         ...suministroSeleccionado,
         ...(res.data?.suministro || {})
@@ -729,11 +727,10 @@ function LuzApp({ onBackToSelector }) {
       await Promise.all([
         cargarSuministros(),
         cargarHistorial(suministroSeleccionado.id_suministro),
-        cargarPendientes(suministroSeleccionado.id_suministro),
-        cargarOrdenesPendientes()
+        cargarPendientes(suministroSeleccionado.id_suministro)
       ]);
     } catch (err) {
-      handleApiError(err, "No se pudo emitir recibo.");
+      handleApiError(err, "No se pudo registrar lectura.");
     } finally {
       setEmitiendoRecibo(false);
     }
@@ -753,50 +750,108 @@ function LuzApp({ onBackToSelector }) {
     });
   };
 
-  const emitirOrdenCobro = async () => {
+  const toggleSuministroImpresion = useCallback((idSuministro) => {
+    const id = Number(idSuministro || 0);
+    if (!id) return;
+    setIdsSuministrosImpresion((prev) => {
+      if (prev.includes(id)) return prev.filter((it) => it !== id);
+      return [...prev, id];
+    });
+  }, []);
+
+  const seleccionarTodosSuministrosImpresion = useCallback(() => {
+    setIdsSuministrosImpresion(
+      suministrosOrdenados
+        .map((row) => Number(row.id_suministro || 0))
+        .filter((id) => id > 0)
+    );
+  }, [suministrosOrdenados]);
+
+  const limpiarSuministrosImpresion = useCallback(() => {
+    setIdsSuministrosImpresion([]);
+  }, []);
+
+  const obtenerObjetivosImpresion = useCallback((modo) => {
+    const modoNorm = String(modo || "").toLowerCase();
+    if (modoNorm === "seleccion") {
+      const ids = new Set(idsSuministrosImpresion.map((id) => Number(id || 0)).filter((id) => id > 0));
+      return suministrosOrdenados.filter((row) => ids.has(Number(row.id_suministro || 0)));
+    }
+    if (modoNorm === "zona") {
+      const idZona = Number.parseInt(String(filtroZonaImpresion || ""), 10);
+      if (!Number.isFinite(idZona) || idZona <= 0) return [];
+      return suministrosOrdenados.filter((row) => Number.parseInt(String(row.id_zona || ""), 10) === idZona);
+    }
+    return suministrosOrdenados;
+  }, [filtroZonaImpresion, idsSuministrosImpresion, suministrosOrdenados]);
+
+  const imprimirRecibosLote = useCallback(async (modo) => {
     if (!permisos.canEmitirRecibo) return;
-    if (!suministroSeleccionado) {
-      showFlash("warning", "Seleccione un suministro.");
+
+    const anio = parseEntero(periodoImpresion.anio, 0);
+    const mes = parseEntero(periodoImpresion.mes, 0);
+    if (!anio || mes < 1 || mes > 12) {
+      showFlash("warning", "Periodo de impresion invalido.");
       return;
     }
-    try {
-      const res = await luzApi.post("/caja/ordenes-cobro", {
-        id_suministro: suministroSeleccionado.id_suministro,
-        observacion: String(ordenObservacion || "").trim()
-      });
-      showFlash("success", res.data?.mensaje || "Orden emitida.");
-      setOrdenObservacion("");
-      await Promise.all([
-        cargarOrdenesPendientes(),
-        cargarPendientes(suministroSeleccionado.id_suministro),
-        cargarSuministros()
-      ]);
-    } catch (err) {
-      handleApiError(err, "No se pudo emitir orden de cobro.");
-    }
-  };
 
-  const cobrarOrden = async (idOrden) => {
-    if (!permisos.canCaja) return;
-    const ok = window.confirm(`Cobrar orden ${idOrden}?`);
-    if (!ok) return;
-    setOrdenEnProceso(idOrden);
-    try {
-      const res = await luzApi.post(`/caja/ordenes-cobro/${idOrden}/cobrar`);
-      showFlash("success", res.data?.mensaje || "Cobro registrado.");
-      await Promise.all([
-        cargarOrdenesPendientes(),
-        cargarSuministros(),
-        cargarReporte(),
-        selectedSuministroId ? cargarHistorial(selectedSuministroId) : Promise.resolve(),
-        selectedSuministroId ? cargarPendientes(selectedSuministroId) : Promise.resolve()
-      ]);
-    } catch (err) {
-      handleApiError(err, "No se pudo cobrar orden.");
-    } finally {
-      setOrdenEnProceso(0);
+    const objetivos = obtenerObjetivosImpresion(modo);
+    if (objetivos.length === 0) {
+      if (String(modo || "").toLowerCase() === "zona") {
+        showFlash("warning", "No hay contribuyentes en zona seleccionada.");
+        return;
+      }
+      if (String(modo || "").toLowerCase() === "seleccion") {
+        showFlash("warning", "Seleccione al menos un contribuyente para impresion.");
+        return;
+      }
+      showFlash("warning", "No hay contribuyentes para impresion.");
+      return;
     }
-  };
+
+    setProcesandoImpresionLote(true);
+    try {
+      const filas = await Promise.all(
+        objetivos.map(async (suministro) => {
+          const idSuministro = Number(suministro.id_suministro || 0);
+          if (!idSuministro) return null;
+          try {
+            const res = await luzApi.get(`/recibos/historial/${idSuministro}`, { params: { anio } });
+            const historialRows = Array.isArray(res.data) ? res.data : [];
+            const candidatos = historialRows
+              .filter((row) => Number(row?.anio) === anio && Number(row?.mes) === mes)
+              .sort((a, b) => Number(b?.id_recibo || 0) - Number(a?.id_recibo || 0));
+            if (!candidatos.length) return null;
+            return {
+              recibo: candidatos[0],
+              suministro
+            };
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      const recibos = filas
+        .filter(Boolean)
+        .sort((a, b) => compareMedidorAsc(a?.suministro, b?.suministro));
+
+      if (!recibos.length) {
+        showFlash("warning", `No hay recibos emitidos para ${formatPeriodo(anio, mes)} en seleccion solicitada.`);
+        return;
+      }
+
+      const faltantes = objetivos.length - recibos.length;
+      setRecibosLoteImpresion(recibos);
+      if (faltantes > 0) {
+        showFlash("warning", `Listo para imprimir ${recibos.length} recibo(s). ${faltantes} contribuyente(s) sin recibo en periodo.`);
+      } else {
+        showFlash("success", `Listo para imprimir ${recibos.length} recibo(s) de ${formatPeriodo(anio, mes)}.`);
+      }
+    } finally {
+      setProcesandoImpresionLote(false);
+    }
+  }, [obtenerObjetivosImpresion, permisos.canEmitirRecibo, periodoImpresion.anio, periodoImpresion.mes, showFlash]);
 
   const guardarTarifas = async (e) => {
     e.preventDefault();
@@ -1020,7 +1075,7 @@ function LuzApp({ onBackToSelector }) {
                         <tr>
                           <th style={{ minWidth: "120px" }}>Zona</th>
                           <th style={{ minWidth: "120px" }}>ID</th>
-                          <th style={{ minWidth: "120px" }}>Medidor</th>
+                          <th style={{ minWidth: "140px" }}>Medidor real</th>
                           <th style={{ minWidth: "260px" }}>Usuario</th>
                           <th style={{ minWidth: "100px" }}>Estado</th>
                           <th className="text-end text-nowrap" style={{ minWidth: "120px" }}>Deuda</th>
@@ -1049,7 +1104,9 @@ function LuzApp({ onBackToSelector }) {
                             <td className="text-muted">-</td>
                             <td>
                               <div className="fw-semibold">{row.nombre_usuario}</div>
-                              <div className="small text-muted">{row.direccion || "-"}</div>
+                              {String(row.direccion || "").trim() && (
+                                <div className="small text-muted">{row.direccion}</div>
+                              )}
                             </td>
                             <td>
                               <span className={`badge ${row.estado === "ACTIVO" ? "bg-success" : row.estado === "CORTADO" ? "bg-danger" : "bg-secondary"}`}>
@@ -1188,10 +1245,10 @@ function LuzApp({ onBackToSelector }) {
               <div className="row g-3">
                 <div className="col-12 col-xl-4">
                   <div className="card border">
-                    <div className="card-header fw-semibold">Emision manual por lectura</div>
+                    <div className="card-header fw-semibold">Registro mensual de lectura</div>
                     <div className="card-body">
                       {!suministroSeleccionado ? (
-                        <div className="text-muted small">Seleccione un suministro en Padron para emitir recibo.</div>
+                        <div className="text-muted small">Seleccione un suministro en Padron para registrar lectura mensual.</div>
                       ) : (
                         <>
                           <div className="small mb-3">
@@ -1234,9 +1291,7 @@ function LuzApp({ onBackToSelector }) {
                                   step="0.01"
                                   value={reciboForm.lectura_anterior}
                                   onChange={(e) => setReciboForm((prev) => ({ ...prev, lectura_anterior: e.target.value }))}
-                                  readOnly={lecturaAnteriorInfo.encontrada}
                                   disabled={lecturaAnteriorInfo.loading}
-                                  required={!lecturaAnteriorInfo.encontrada}
                                 />
                                 <div className="form-text">
                                   {lecturaAnteriorInfo.loading && "Buscando lectura del mes anterior..."}
@@ -1244,9 +1299,9 @@ function LuzApp({ onBackToSelector }) {
                                     <>Auto desde {formatPeriodoCorto(lecturaAnteriorInfo.periodoAnterior.anio, lecturaAnteriorInfo.periodoAnterior.mes)}.</>
                                   )}
                                   {!lecturaAnteriorInfo.loading && !lecturaAnteriorInfo.encontrada && lecturaAnteriorInfo.periodoAnterior && (
-                                    <>No hay registro en {formatPeriodoCorto(lecturaAnteriorInfo.periodoAnterior.anio, lecturaAnteriorInfo.periodoAnterior.mes)}. Ingrese manualmente.</>
+                                    <>Sin registro en {formatPeriodoCorto(lecturaAnteriorInfo.periodoAnterior.anio, lecturaAnteriorInfo.periodoAnterior.mes)}. Puede dejar valor referencial vacio o ingresarlo manual.</>
                                   )}
-                                  {!lecturaAnteriorInfo.loading && !lecturaAnteriorInfo.periodoAnterior && "Ingrese año y mes válidos."}
+                                  {!lecturaAnteriorInfo.loading && !lecturaAnteriorInfo.periodoAnterior && "Ingrese año y mes validos."}
                                   {!lecturaAnteriorInfo.loading && lecturaAnteriorInfo.error && ` ${lecturaAnteriorInfo.error}`}
                                 </div>
                               </div>
@@ -1305,7 +1360,7 @@ function LuzApp({ onBackToSelector }) {
                               disabled={!permisos.canEmitirRecibo || emitiendoRecibo}
                             >
                               <FaReceipt />
-                              {emitiendoRecibo ? "Generando..." : "Generar recibo"}
+                              {emitiendoRecibo ? "Registrando..." : "Registrar lectura"}
                             </button>
                           </form>
                         </>
@@ -1347,59 +1402,130 @@ function LuzApp({ onBackToSelector }) {
                     </div>
                   </div>
 
-                  <div className="card border mt-3">
-                    <div className="card-header fw-semibold d-flex align-items-center gap-2">
-                      <FaCashRegister />
-                      Derivar a Caja Municipal
-                    </div>
-                    <div className="card-body">
-                      <div className="small text-muted mb-2">
-                        Caja de Luz se centraliza en la caja municipal unica para todos los servicios.
-                      </div>
-                      {!suministroSeleccionado ? (
-                        <div className="small text-muted">Seleccione un suministro en Padron.</div>
-                      ) : (
-                        <>
-                          <div className="small mb-1"><strong>Usuario:</strong> {suministroSeleccionado.nombre_usuario}</div>
-                          <div className="small mb-1"><strong>ID:</strong> {suministroSeleccionado.nro_medidor}</div>
-                          <div className="small mb-2"><strong>Pendiente:</strong> {formatMoney(totalPendienteSeleccionado)}</div>
-                          <label className="form-label">Observacion</label>
-                          <textarea
-                            rows="2"
-                            className="form-control"
-                            value={ordenObservacion}
-                            onChange={(e) => setOrdenObservacion(e.target.value)}
-                          />
-                          <button
-                            className="btn btn-primary mt-3"
-                            onClick={emitirOrdenCobro}
-                            disabled={!permisos.canEmitirRecibo || totalPendienteSeleccionado <= 0}
-                          >
-                            Emitir orden para caja municipal
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
                 </div>
 
                 <div className="col-12 col-xl-8">
-                  <div className="d-flex flex-wrap gap-2 align-items-center mb-2">
-                    <button className="btn btn-outline-primary btn-sm d-flex align-items-center gap-2" onClick={() => cargarHistorial()}>
-                      <FaSyncAlt />
-                      Recargar historial
-                    </button>
-                    <select
-                      className="form-select form-select-sm"
-                      style={{ maxWidth: "160px" }}
-                      value={historialAnio}
-                      onChange={(e) => setHistorialAnio(e.target.value)}
-                    >
-                      <option value="all">Todos los años</option>
-                      {yearsHistorial.map((y) => (
-                        <option key={y} value={y}>{y}</option>
-                      ))}
-                    </select>
+                  <div className="card border mb-2">
+                    <div className="card-body p-2">
+                      <div className="d-flex flex-wrap gap-2 align-items-end">
+                        <button className="btn btn-outline-primary btn-sm d-flex align-items-center gap-2" onClick={() => cargarHistorial()}>
+                          <FaSyncAlt />
+                          Recargar historial
+                        </button>
+                        <div>
+                          <label className="form-label form-label-sm mb-1 small text-muted">Historial</label>
+                          <select
+                            className="form-select form-select-sm"
+                            style={{ minWidth: "150px" }}
+                            value={historialAnio}
+                            onChange={(e) => setHistorialAnio(e.target.value)}
+                          >
+                            <option value="all">Todos los años</option>
+                            {yearsHistorial.map((y) => (
+                              <option key={y} value={y}>{y}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="form-label form-label-sm mb-1 small text-muted">Año impresión</label>
+                          <input
+                            type="number"
+                            min="2000"
+                            max="2200"
+                            className="form-control form-control-sm"
+                            style={{ width: "110px" }}
+                            value={periodoImpresion.anio}
+                            onChange={(e) => setPeriodoImpresion((prev) => ({ ...prev, anio: e.target.value }))}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label form-label-sm mb-1 small text-muted">Mes impresión</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="12"
+                            className="form-control form-control-sm"
+                            style={{ width: "90px" }}
+                            value={periodoImpresion.mes}
+                            onChange={(e) => setPeriodoImpresion((prev) => ({ ...prev, mes: e.target.value }))}
+                          />
+                        </div>
+                        <button
+                          className="btn btn-outline-dark btn-sm d-flex align-items-center gap-2"
+                          disabled={procesandoImpresionLote}
+                          onClick={() => imprimirRecibosLote("todos")}
+                        >
+                          <FaPrint />
+                          {procesandoImpresionLote ? "Preparando..." : "Imprimir todos"}
+                        </button>
+                      </div>
+
+                      <div className="row g-2 mt-1">
+                        <div className="col-12 col-lg-5">
+                          <div className="d-flex gap-2 align-items-end">
+                            <div className="flex-grow-1">
+                              <label className="form-label form-label-sm mb-1 small text-muted">Zona</label>
+                              <select
+                                className="form-select form-select-sm"
+                                value={filtroZonaImpresion}
+                                onChange={(e) => setFiltroZonaImpresion(e.target.value)}
+                              >
+                                <option value="">Seleccione zona...</option>
+                                {zonas.map((z) => (
+                                  <option key={z.id_zona} value={z.id_zona}>{z.nombre}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <button
+                              className="btn btn-outline-dark btn-sm d-flex align-items-center gap-2"
+                              disabled={procesandoImpresionLote}
+                              onClick={() => imprimirRecibosLote("zona")}
+                            >
+                              <FaPrint />
+                              Imprimir zona
+                            </button>
+                          </div>
+                        </div>
+                        <div className="col-12 col-lg-7">
+                          <div className="d-flex flex-wrap gap-2 align-items-center">
+                            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={seleccionarTodosSuministrosImpresion}>
+                              Seleccionar todos
+                            </button>
+                            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={limpiarSuministrosImpresion}>
+                              Limpiar
+                            </button>
+                            <button
+                              className="btn btn-outline-dark btn-sm d-flex align-items-center gap-2"
+                              disabled={procesandoImpresionLote || idsSuministrosImpresion.length === 0}
+                              onClick={() => imprimirRecibosLote("seleccion")}
+                            >
+                              <FaPrint />
+                              Imprimir seleccion ({idsSuministrosImpresion.length})
+                            </button>
+                          </div>
+                          <div className="border rounded p-2 mt-2" style={{ maxHeight: "130px", overflowY: "auto" }}>
+                            {suministrosOrdenados.length === 0 && (
+                              <div className="small text-muted">Sin contribuyentes en padron.</div>
+                            )}
+                            {suministrosOrdenados.map((row) => {
+                              const idSuministro = Number(row.id_suministro || 0);
+                              return (
+                                <label key={`chk-print-${idSuministro}`} className="d-flex align-items-center gap-2 small mb-1">
+                                  <input
+                                    type="checkbox"
+                                    checked={idsSuministrosImpresionSet.has(idSuministro)}
+                                    onChange={() => toggleSuministroImpresion(idSuministro)}
+                                  />
+                                  <span>
+                                    {row.zona || "-"} | {row.nro_medidor || "-"} | {row.nombre_usuario || "Contribuyente"}
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                   <div className="table-responsive border rounded" style={{ maxHeight: "70vh" }}>
                     <table className="table table-sm table-hover align-middle mb-0">
@@ -1437,9 +1563,9 @@ function LuzApp({ onBackToSelector }) {
                               </span>
                             </td>
                             <td className="small">
-                              <div>E: {row.fecha_emision || "-"}</div>
-                              <div>V: {row.fecha_vencimiento || "-"}</div>
-                              <div>C: {row.fecha_corte || "-"}</div>
+                              <div>E: {formatFechaCorta(row.fecha_emision)}</div>
+                              <div>V: {formatFechaCorta(row.fecha_vencimiento)}</div>
+                              <div>C: {formatFechaCorta(row.fecha_corte)}</div>
                             </td>
                             <td className="text-center">
                               <button className="btn btn-outline-dark btn-sm" onClick={() => imprimirDesdeHistorial(row)}>
@@ -1451,180 +1577,6 @@ function LuzApp({ onBackToSelector }) {
                       </tbody>
                     </table>
                   </div>
-                </div>
-              </div>
-            )}
-            {tab === "caja" && (
-              <div className="row g-3">
-                <div className="col-12 col-xl-4">
-                  <div className="card border">
-                    <div className="card-header fw-semibold">Emitir orden de cobro</div>
-                    <div className="card-body">
-                      {!suministroSeleccionado ? (
-                        <div className="text-muted small">Seleccione un suministro en Padron.</div>
-                      ) : (
-                        <>
-                          <div className="small mb-2"><strong>Usuario:</strong> {suministroSeleccionado.nombre_usuario}</div>
-                          <div className="small mb-2"><strong>Medidor:</strong> {suministroSeleccionado.nro_medidor}</div>
-                          <div className="small mb-2"><strong>Pendiente:</strong> {formatMoney(totalPendienteSeleccionado)}</div>
-                          <label className="form-label mt-2">Observacion</label>
-                          <textarea
-                            rows="2"
-                            className="form-control"
-                            value={ordenObservacion}
-                            onChange={(e) => setOrdenObservacion(e.target.value)}
-                          />
-                          <button
-                            className="btn btn-primary mt-3"
-                            onClick={emitirOrdenCobro}
-                            disabled={!permisos.canEmitirRecibo || totalPendienteSeleccionado <= 0}
-                          >
-                            Emitir orden con todos los pendientes
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="card border mt-3">
-                    <div className="card-header fw-semibold d-flex justify-content-between align-items-center">
-                      <span>Reporte caja</span>
-                      <button className="btn btn-outline-primary btn-sm" onClick={cargarReporte} disabled={!permisos.canCaja || loadingReporte}>
-                        <FaSyncAlt />
-                      </button>
-                    </div>
-                    <div className="card-body">
-                      <div className="row g-2 mb-3">
-                        <div className="col-6">
-                          <label className="form-label">Tipo</label>
-                          <select className="form-select" value={reporteTipo} onChange={(e) => setReporteTipo(e.target.value)}>
-                            <option value="diario">Diario</option>
-                            <option value="mensual">Mensual</option>
-                            <option value="anual">Anual</option>
-                          </select>
-                        </div>
-                        <div className="col-6">
-                          <label className="form-label">Fecha</label>
-                          <input
-                            type="date"
-                            className="form-control"
-                            value={reporteFecha}
-                            onChange={(e) => setReporteFecha(e.target.value)}
-                          />
-                        </div>
-                      </div>
-                      <button className="btn btn-outline-primary btn-sm" disabled={!permisos.canCaja || loadingReporte} onClick={cargarReporte}>
-                        <FaCalendarAlt className="me-1" />
-                        Consultar
-                      </button>
-                      {reporteCaja && (
-                        <div className="mt-3 small">
-                          <div><strong>Rango:</strong> {reporteCaja?.rango?.desde || "-"} a {reporteCaja?.rango?.hasta_exclusivo || "-"}</div>
-                          <div><strong>Movimientos:</strong> {reporteCaja?.cantidad_movimientos || 0}</div>
-                          <div><strong>Total:</strong> {formatMoney(reporteCaja?.total)}</div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="col-12 col-xl-8">
-                  <div className="d-flex flex-wrap gap-2 align-items-center mb-2">
-                    <button className="btn btn-outline-primary btn-sm d-flex align-items-center gap-2" onClick={cargarOrdenesPendientes}>
-                      <FaSyncAlt />
-                      Recargar ordenes
-                    </button>
-                    <div className="form-check">
-                      <input
-                        className="form-check-input"
-                        type="checkbox"
-                        id="soloSeleccionado"
-                        checked={soloOrdenesDelSeleccionado}
-                        onChange={(e) => setSoloOrdenesDelSeleccionado(e.target.checked)}
-                      />
-                      <label className="form-check-label" htmlFor="soloSeleccionado">
-                        Solo suministro seleccionado
-                      </label>
-                    </div>
-                    <div className="ms-auto fw-semibold">
-                      Total pendiente en caja: {formatMoney(totalOrdenesPendientes)}
-                    </div>
-                  </div>
-                  <div className="table-responsive border rounded" style={{ maxHeight: "48vh" }}>
-                    <table className="table table-sm table-hover align-middle mb-0">
-                      <thead className="table-light sticky-top">
-                        <tr>
-                          <th>Orden</th>
-                          <th>Fecha</th>
-                          <th>Suministro</th>
-                          <th className="text-end">Total</th>
-                          <th className="text-center">Items</th>
-                          <th className="text-center">Acciones</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {loadingOrdenes && <tr><td colSpan="6" className="text-center py-3">Cargando...</td></tr>}
-                        {!loadingOrdenes && ordenesPendientes.length === 0 && (
-                          <tr><td colSpan="6" className="text-center py-3 text-muted">Sin ordenes pendientes</td></tr>
-                        )}
-                        {!loadingOrdenes && ordenesPendientes.map((ord) => (
-                          <tr key={ord.id_orden}>
-                            <td>#{ord.id_orden}</td>
-                            <td>{formatFechaHora(ord.creado_en)}</td>
-                            <td>
-                              <div className="fw-semibold">{ord.suministro?.nombre_usuario}</div>
-                              <div className="small text-muted">{ord.suministro?.zona} | {ord.suministro?.nro_medidor}</div>
-                            </td>
-                            <td className="text-end">{formatMoney(ord.total_orden)}</td>
-                            <td className="text-center">{Array.isArray(ord.items) ? ord.items.length : 0}</td>
-                            <td className="text-center">
-                              <div className="btn-group btn-group-sm">
-                                <button
-                                  className="btn btn-success"
-                                  disabled={!permisos.canCaja || ordenEnProceso === ord.id_orden}
-                                  onClick={() => cobrarOrden(ord.id_orden)}
-                                >
-                                  Cobrar
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {reporteCaja && (
-                    <div className="table-responsive border rounded mt-3" style={{ maxHeight: "28vh" }}>
-                      <table className="table table-sm mb-0">
-                        <thead className="table-light sticky-top">
-                          <tr>
-                            <th>Fecha</th>
-                            <th>Orden</th>
-                            <th>Periodo</th>
-                            <th>Usuario</th>
-                            <th>Medidor</th>
-                            <th className="text-end">Monto</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(reporteCaja.movimientos || []).length === 0 && (
-                            <tr><td colSpan="6" className="text-center py-2 text-muted">Sin movimientos para el rango.</td></tr>
-                          )}
-                          {(reporteCaja.movimientos || []).map((mov) => (
-                            <tr key={mov.id_pago}>
-                              <td>{mov.fecha} {mov.hora}</td>
-                              <td>{mov.id_orden_cobro ? `#${mov.id_orden_cobro}` : "-"}</td>
-                              <td>{formatPeriodo(mov.anio, mov.mes)}</td>
-                              <td>{mov.nombre_usuario}</td>
-                              <td>{mov.nro_medidor}</td>
-                              <td className="text-end">{formatMoney(mov.monto_pagado)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
                 </div>
               </div>
             )}
@@ -1747,7 +1699,7 @@ function LuzApp({ onBackToSelector }) {
                     <div className="card-header fw-semibold">Importar lecturas masivas</div>
                     <div className="card-body">
                       <div className="small text-muted mb-2">
-                        Plantilla: zona, nro_medidor, año, mes, lectura_actual, observación(opcional).
+                        Plantilla: zona, id_usuario (columna nro_medidor), año, mes, lectura_actual, observación(opcional).
                       </div>
                       <input
                         type="file"
@@ -1785,7 +1737,7 @@ function LuzApp({ onBackToSelector }) {
                                 <th>Tipo</th>
                                 <th>Linea</th>
                                 <th>Zona</th>
-                                <th>Medidor</th>
+                                <th>ID usuario</th>
                                 <th>Año/Mes</th>
                                 <th>Motivo</th>
                               </tr>
@@ -1862,8 +1814,11 @@ function LuzApp({ onBackToSelector }) {
         </div>
       </div>
 
-      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "210mm", background: "#fff" }}>
+      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "297mm", background: "#fff" }}>
         <ReciboLuz ref={reciboRef} datos={reciboImpresion} />
+      </div>
+      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "297mm", background: "#fff" }}>
+        <RecibosLuzLote ref={recibosLoteRef} items={recibosLoteImpresion} />
       </div>
     </div>
   );
