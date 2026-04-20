@@ -6683,13 +6683,14 @@ const buildOrdenCobroResponse = (row) => {
 };
 
 app.post("/recibos", async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id_contribuyente, anio, mes, montos } = req.body;
     const periodo = validateReciboPeriodoNoFuturo(anio, mes);
     if (!periodo.ok) {
       return res.status(400).json({ error: periodo.error });
     }
-    const predio = await pool.query(`
+    const predio = await client.query(`
       SELECT
         p.id_predio,
         p.id_tarifa,
@@ -6735,21 +6736,85 @@ app.post("/recibos", async (req, res) => {
       return res.status(400).json({ error: "Debe seleccionar al menos un servicio." });
     }
 
-    const nuevoRecibo = await pool.query(
-      `INSERT INTO recibos (id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, total_pagar, estado)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'PENDIENTE') RETURNING *`,
-      [predio.rows[0].id_predio, periodo.anio, periodo.mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin, totalPagar]
-    );
+    await client.query("BEGIN");
+    let reciboRow = null;
+    let fueRegularizado = false;
+    try {
+      const nuevoRecibo = await client.query(
+        `INSERT INTO recibos (id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, total_pagar, estado)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'PENDIENTE') RETURNING *`,
+        [predio.rows[0].id_predio, periodo.anio, periodo.mes, subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin, totalPagar]
+      );
+      reciboRow = nuevoRecibo.rows?.[0] || null;
+    } catch (errInsert) {
+      if (errInsert.code !== "23505") throw errInsert;
+
+      const existente = await client.query(
+        `SELECT
+           r.id_recibo,
+           r.total_pagar,
+           COALESCE(p.total_pagado, 0) AS total_pagado
+         FROM recibos r
+         LEFT JOIN (
+           SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+           FROM pagos
+           GROUP BY id_recibo
+         ) p ON p.id_recibo = r.id_recibo
+         WHERE r.id_predio = $1
+           AND r.anio = $2
+           AND r.mes = $3
+         ORDER BY r.id_recibo DESC
+         LIMIT 1
+         FOR UPDATE OF r`,
+        [predio.rows[0].id_predio, periodo.anio, periodo.mes]
+      );
+      const row = existente.rows?.[0];
+      if (!row) throw errInsert;
+
+      const totalExistente = parseMonto(row.total_pagar, 0);
+      const totalPagado = parseMonto(row.total_pagado, 0);
+      const regularizable = totalPagado <= 0.0001 && totalExistente <= 0.0001;
+      if (!regularizable) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "Ya existe recibo para ese mes." });
+      }
+
+      const actualizado = await client.query(
+        `UPDATE recibos
+         SET subtotal_agua = $1,
+             subtotal_desague = $2,
+             subtotal_limpieza = $3,
+             subtotal_admin = $4,
+             total_pagar = $5,
+             estado = 'PENDIENTE'
+         WHERE id_recibo = $6
+         RETURNING *`,
+        [subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin, totalPagar, row.id_recibo]
+      );
+      reciboRow = actualizado.rows?.[0] || null;
+      fueRegularizado = true;
+    }
+
+    await client.query("COMMIT");
     invalidateContribuyentesCache();
     realtimeHub.broadcast("deuda", "recibo_generado", {
       id_contribuyente: Number(id_contribuyente || 0),
-      id_recibo: Number(nuevoRecibo.rows?.[0]?.id_recibo || 0),
+      id_recibo: Number(reciboRow?.id_recibo || 0),
       origen: "recibos"
     });
-    res.json(nuevoRecibo.rows[0]);
+    if (fueRegularizado) {
+      return res.json({
+        ...reciboRow,
+        mensaje: "Recibo existente regularizado y deuda restaurada."
+      });
+    }
+    return res.json(reciboRow);
   } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
     if (err.code === '23505') return res.status(400).json({ error: "Ya existe recibo para ese mes." });
     res.status(500).send("Error");
+  } finally {
+    client.release();
   }
 });
 
