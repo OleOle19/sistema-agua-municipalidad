@@ -776,10 +776,7 @@ const computeRecibo = ({ lecturaAnterior, lecturaActual, tarifaKwh, cargoFijo })
   if (lecturaAct < 0) {
     throw new Error("LECTURA_ACTUAL_INVALIDA");
   }
-  if (lecturaAct < lecturaAnt) {
-    throw new Error("LECTURA_ACTUAL_MENOR_ANTERIOR");
-  }
-  const consumo = round2(lecturaAct - lecturaAnt);
+  const consumo = lecturaAct;
   const tarifa = round2(parseMonto(tarifaKwh, LUZ_TARIFA_KWH_DEFAULT));
   const fijo = round2(parseMonto(cargoFijo, LUZ_CARGO_FIJO_DEFAULT));
   const energia = round2(consumo * tarifa);
@@ -1991,9 +1988,6 @@ router.post("/recibos", authenticateLuzToken, requireRole("ADMIN_SEC"), async (r
     if (err.message === "SUMINISTRO_INACTIVO") return res.status(400).json({ error: "Suministro inactivo. No se puede generar deuda." });
     if (err.message === "LECTURA_ACTUAL_REQUERIDA") return res.status(400).json({ error: "Lectura actual es obligatoria." });
     if (err.message === "LECTURA_ACTUAL_INVALIDA") return res.status(400).json({ error: "Lectura actual no puede ser negativa." });
-    if (err.message === "LECTURA_ACTUAL_MENOR_ANTERIOR") {
-      return res.status(400).json({ error: "Lectura actual debe ser mayor o igual que la lectura anterior." });
-    }
     console.error("[LUZ] Error generando recibo:", err.message);
     return res.status(500).json({ error: "Error generando recibo." });
   } finally {
