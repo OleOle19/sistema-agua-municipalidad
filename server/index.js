@@ -881,6 +881,27 @@ const splitAdminExtraDisplay = (subtotalAdminRaw, extraTarifaRaw) => {
     subtotal_extra: subtotalExtra
   };
 };
+const buildTarifaActualReciboSql = (predioAlias = "p2") => `(
+  (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.agua_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_agua, ${AUTO_DEUDA_BASE.agua}) ELSE 0 END)
+  + (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.desague_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_desague, ${AUTO_DEUDA_BASE.desague}) ELSE 0 END)
+  + (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.limpieza_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza}) ELSE 0 END)
+  + (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) + COALESCE(${predioAlias}.tarifa_extra, 0) ELSE 0 END)
+)`;
+const buildTotalPagarReferenciaSql = ({
+  reciboAlias = "r",
+  predioAlias = "p2",
+  pagosAlias = "p"
+} = {}) => {
+  const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
+  return `(CASE
+    WHEN COALESCE(${pagosAlias}.total_pagado, 0) > 0
+      AND (${tarifaActualSql}) > 0
+      AND COALESCE(${reciboAlias}.total_pagar, 0) > (${tarifaActualSql}) + 0.001
+      AND COALESCE(${pagosAlias}.total_pagado, 0) >= (${tarifaActualSql}) - 0.001
+    THEN ROUND((${tarifaActualSql})::numeric, 2)
+    ELSE COALESCE(${reciboAlias}.total_pagar, 0)
+  END)`;
+};
 const clampArray = (rows, max = 200) => {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, Math.max(1, Math.min(1000, max)));
@@ -7059,9 +7080,14 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       desdePeriodoNum: periodoSiguiente
     });
 
+    const totalPagarReferenciaPendSql = buildTotalPagarReferenciaSql({
+      reciboAlias: "r",
+      predioAlias: "p2",
+      pagosAlias: "p"
+    });
     const whereParts = [
       "r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)",
-      "(r.total_pagar - COALESCE(p.total_pagado, 0)) > 0"
+      `(${totalPagarReferenciaPendSql} - COALESCE(p.total_pagado, 0)) > 0`
     ];
     const params = [idContribuyente, fechaCorte];
     if (!incluirAdelantados) {
@@ -7070,15 +7096,16 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     }
     const pendientes = await client.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
-        r.total_pagar,
+        ${totalPagarReferenciaPendSql} AS total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
-        GREATEST(r.total_pagar - COALESCE(p.total_pagado, 0), 0) as deuda_mes,
+        GREATEST(${totalPagarReferenciaPendSql} - COALESCE(p.total_pagado, 0), 0) as deuda_mes,
         CASE
-          WHEN COALESCE(p.total_pagado, 0) >= r.total_pagar THEN 'PAGADO'
+          WHEN COALESCE(p.total_pagado, 0) >= ${totalPagarReferenciaPendSql} THEN 'PAGADO'
           WHEN COALESCE(p.total_pagado, 0) > 0 THEN 'PARCIAL'
           ELSE 'PENDIENTE'
         END as estado
       FROM recibos r
+      JOIN predios p2 ON p2.id_predio = r.id_predio
       LEFT JOIN (
         SELECT id_recibo, SUM(monto_pagado) as total_pagado
         FROM pagos
@@ -9627,20 +9654,25 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     const filtrarAnio = anioParam !== 'all';
     const anio = filtrarAnio ? (Number(anioParam) || getCurrentYear()) : null;
     const incluirFuturos = normalizeSN(req.query?.incluir_futuros, "N") === "S";
+    const totalPagarReferenciaHistorialSql = buildTotalPagarReferenciaSql({
+      reciboAlias: "r",
+      predioAlias: "p2",
+      pagosAlias: "p"
+    });
 
     const historial = await client.query(`
       SELECT r.id_recibo, r.mes, r.anio, r.subtotal_agua, r.subtotal_desague, r.subtotal_limpieza, r.subtotal_admin,
         COALESCE(p2.tarifa_extra, 0) AS tarifa_extra_actual,
-        r.total_pagar,
+        ${totalPagarReferenciaHistorialSql} AS total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
         p.id_ultimo_pago,
         p.fecha_ultimo_pago,
         CASE
           WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 0
-          ELSE GREATEST(r.total_pagar - COALESCE(p.total_pagado, 0), 0)
+          ELSE GREATEST(${totalPagarReferenciaHistorialSql} - COALESCE(p.total_pagado, 0), 0)
         END as deuda_mes,
         CASE
-          WHEN COALESCE(p.total_pagado, 0) >= r.total_pagar THEN 'PAGADO'
+          WHEN COALESCE(p.total_pagado, 0) >= ${totalPagarReferenciaHistorialSql} THEN 'PAGADO'
           WHEN COALESCE(p.total_pagado, 0) > 0 THEN 'PARCIAL'
           WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 'NO_EXIGIBLE'
           ELSE 'PENDIENTE'
@@ -9690,6 +9722,11 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     const filtrarAnio = anioParam !== "all";
     const anio = filtrarAnio ? Number(anioParam) : null;
     const incluirFuturos = normalizeSN(req.query?.incluir_futuros, "N") === "S";
+    const totalPagarReferenciaExportSql = buildTotalPagarReferenciaSql({
+      reciboAlias: "r",
+      predioAlias: "p2",
+      pagosAlias: "p"
+    });
     if (filtrarAnio && (!Number.isInteger(anio) || anio <= 1900 || anio >= 9999)) {
       return res.status(400).json({ error: "Año inválido para exportación." });
     }
@@ -9716,15 +9753,15 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
         r.subtotal_limpieza,
         r.subtotal_admin,
         COALESCE(p2.tarifa_extra, 0) AS tarifa_extra_actual,
-        r.total_pagar,
+        ${totalPagarReferenciaExportSql} AS total_pagar,
         COALESCE(p.total_pagado, 0) AS abono_mes,
         CASE
           WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 0
-          ELSE GREATEST(r.total_pagar - COALESCE(p.total_pagado, 0), 0)
+          ELSE GREATEST(${totalPagarReferenciaExportSql} - COALESCE(p.total_pagado, 0), 0)
         END AS deuda_mes,
         CASE
           WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 'NO_EXIGIBLE'
-          WHEN COALESCE(p.total_pagado, 0) >= r.total_pagar THEN 'PAGADO'
+          WHEN COALESCE(p.total_pagado, 0) >= ${totalPagarReferenciaExportSql} THEN 'PAGADO'
           WHEN COALESCE(p.total_pagado, 0) > 0 THEN 'PARCIAL'
           ELSE 'PENDIENTE'
         END AS estado

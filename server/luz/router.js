@@ -116,6 +116,12 @@ const CAMPO_TIPO_VISITA = {
 const ZONA_CHARCAPE = "CHARCAPE";
 const ZONA_AAHH_CHARCAPE = "AA.HH CHARCAPE";
 const LUZ_CAJA_INTERNA_HABILITADA = true;
+const LUZ_PUBLIC_BOOTSTRAP_PATHS = new Set([
+  "/health",
+  "/auth/login",
+  "/auth/registro",
+  "/auth/cambiar-password"
+]);
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -515,36 +521,52 @@ const ensureCharcapeSplit = async () => {
 };
 
 const ensureDefaults = async () => {
-  await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
-  await pool.query("ALTER TABLE suministros ADD COLUMN IF NOT EXISTS nro_medidor_real VARCHAR(80) NULL");
-  // Reglas antiguas bloquean nuevo cálculo de lectura mensual.
-  await pool.query("ALTER TABLE recibos DROP CONSTRAINT IF EXISTS chk_luz_recibos_lecturas");
-  await pool.query("ALTER TABLE recibos DROP CONSTRAINT IF EXISTS chk_luz_recibos_consumo");
-  await pool.query(
+  const runSafe = async (sql, params = []) => {
+    try {
+      await pool.query(sql, params);
+    } catch (err) {
+      const code = String(err?.code || "");
+      if (code === "42P01" || code === "42703" || code === "42704") return;
+      throw err;
+    }
+  };
+
+  await runSafe("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
+  await runSafe("ALTER TABLE suministros ADD COLUMN IF NOT EXISTS nro_medidor_real VARCHAR(80) NULL");
+  await runSafe("ALTER TABLE recibos DROP CONSTRAINT IF EXISTS chk_luz_recibos_lecturas");
+  await runSafe("ALTER TABLE recibos DROP CONSTRAINT IF EXISTS chk_luz_recibos_consumo");
+  await runSafe(
     `DO $$
      BEGIN
+       IF to_regclass('public.recibos') IS NULL THEN
+         RETURN;
+       END IF;
        IF NOT EXISTS (
          SELECT 1 FROM pg_constraint WHERE conname = 'chk_luz_recibos_lectura_actual_nonneg'
        ) THEN
          ALTER TABLE recibos
-         ADD CONSTRAINT chk_luz_recibos_lectura_actual_nonneg CHECK (lectura_actual >= 0);
+         ADD CONSTRAINT chk_luz_recibos_lectura_actual_nonneg CHECK (lectura_actual >= 0) NOT VALID;
        END IF;
        IF NOT EXISTS (
          SELECT 1 FROM pg_constraint WHERE conname = 'chk_luz_recibos_consumo_nonneg'
        ) THEN
          ALTER TABLE recibos
-         ADD CONSTRAINT chk_luz_recibos_consumo_nonneg CHECK (consumo_kwh >= 0);
+         ADD CONSTRAINT chk_luz_recibos_consumo_nonneg CHECK (consumo_kwh >= 0) NOT VALID;
        END IF;
      END $$;`
   );
-  await ensureCampoVisitasTable(pool);
-  await pool.query(
+  try {
+    await ensureCampoVisitasTable(pool);
+  } catch (err) {
+    if (String(err?.code || "") !== "42P01") throw err;
+  }
+  await runSafe(
     `INSERT INTO config_fechas (id_config, dias_vencimiento, dias_corte)
      VALUES (1, $1, $2)
      ON CONFLICT (id_config) DO NOTHING`,
     [LUZ_DIAS_VENCIMIENTO_DEFAULT, LUZ_DIAS_CORTE_DEFAULT]
   );
-  await pool.query(
+  await runSafe(
     `INSERT INTO tarifas_config (tarifa_kwh, cargo_fijo, activo, creado_por)
      SELECT $1, $2, TRUE, 'SISTEMA'
      WHERE NOT EXISTS (SELECT 1 FROM tarifas_config WHERE activo = TRUE)`,
@@ -632,6 +654,15 @@ const parseMedidorNumericValue = (value) => {
   if (!digits) return 0;
   const parsed = Number.parseInt(digits, 10);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+const isLuzPublicBootstrapPath = (pathRaw) => {
+  const pathNorm = String(pathRaw || "").trim().toLowerCase();
+  if (!pathNorm) return false;
+  if (LUZ_PUBLIC_BOOTSTRAP_PATHS.has(pathNorm)) return true;
+  for (const basePath of LUZ_PUBLIC_BOOTSTRAP_PATHS) {
+    if (pathNorm.startsWith(`${basePath}/`)) return true;
+  }
+  return false;
 };
 const splitCharcapeZoneName = (zoneName, medidorRaw) => {
   const key = normalizeZoneKey(zoneName);
@@ -745,9 +776,10 @@ const computeRecibo = ({ lecturaAnterior, lecturaActual, tarifaKwh, cargoFijo })
   if (lecturaAct < 0) {
     throw new Error("LECTURA_ACTUAL_INVALIDA");
   }
-  // En luz municipal la lectura anterior funciona como referencia visual;
-  // el cobro del mes se calcula con la lectura actual registrada.
-  const consumo = lecturaAct;
+  if (lecturaAct < lecturaAnt) {
+    throw new Error("LECTURA_ACTUAL_MENOR_ANTERIOR");
+  }
+  const consumo = round2(lecturaAct - lecturaAnt);
   const tarifa = round2(parseMonto(tarifaKwh, LUZ_TARIFA_KWH_DEFAULT));
   const fijo = round2(parseMonto(cargoFijo, LUZ_CARGO_FIJO_DEFAULT));
   const energia = round2(consumo * tarifa);
@@ -834,6 +866,9 @@ router.use(async (req, res, next) => {
     return next();
   } catch (err) {
     console.error("[LUZ] Error inicializando defaults:", err.message);
+    if (isLuzPublicBootstrapPath(req.path)) {
+      return next();
+    }
     return res.status(500).json({ error: "Error inicializando configuración de luz." });
   }
 });
@@ -1956,6 +1991,9 @@ router.post("/recibos", authenticateLuzToken, requireRole("ADMIN_SEC"), async (r
     if (err.message === "SUMINISTRO_INACTIVO") return res.status(400).json({ error: "Suministro inactivo. No se puede generar deuda." });
     if (err.message === "LECTURA_ACTUAL_REQUERIDA") return res.status(400).json({ error: "Lectura actual es obligatoria." });
     if (err.message === "LECTURA_ACTUAL_INVALIDA") return res.status(400).json({ error: "Lectura actual no puede ser negativa." });
+    if (err.message === "LECTURA_ACTUAL_MENOR_ANTERIOR") {
+      return res.status(400).json({ error: "Lectura actual debe ser mayor o igual que la lectura anterior." });
+    }
     console.error("[LUZ] Error generando recibo:", err.message);
     return res.status(500).json({ error: "Error generando recibo." });
   } finally {

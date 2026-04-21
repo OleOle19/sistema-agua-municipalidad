@@ -807,17 +807,23 @@ function LuzApp({ onBackToSelector }) {
     e.preventDefault();
     if (!permisos.canEmitirRecibo || !suministroSeleccionado) return;
     const lecturaAnteriorTxt = String(reciboForm.lectura_anterior || "").trim();
+    const lecturaAnteriorNum = lecturaAnteriorTxt ? parseMonto(reciboForm.lectura_anterior) : 0;
+    const lecturaActualNum = parseMonto(reciboForm.lectura_actual);
+    if (lecturaAnteriorTxt && lecturaActualNum < lecturaAnteriorNum) {
+      showFlash("warning", "Lectura actual debe ser mayor o igual que lectura anterior.");
+      return;
+    }
 
     const payload = {
       id_suministro: Number(suministroSeleccionado.id_suministro),
       anio: Number.parseInt(reciboForm.anio, 10),
       mes: Number.parseInt(reciboForm.mes, 10),
-      lectura_actual: parseMonto(reciboForm.lectura_actual),
+      lectura_actual: lecturaActualNum,
       fecha_emision: reciboForm.fecha_emision || toIsoDate(),
       observacion: String(reciboForm.observacion || "").trim()
     };
     if (lecturaAnteriorTxt) {
-      payload.lectura_anterior = parseMonto(reciboForm.lectura_anterior);
+      payload.lectura_anterior = lecturaAnteriorNum;
     }
     if (String(reciboForm.fecha_vencimiento || "").trim()) payload.fecha_vencimiento = reciboForm.fecha_vencimiento;
     if (String(reciboForm.fecha_corte || "").trim()) payload.fecha_corte = reciboForm.fecha_corte;
@@ -1446,6 +1452,7 @@ function LuzApp({ onBackToSelector }) {
                                 <input
                                   type="number"
                                   className="form-control"
+                                  min={String(lecturaAnteriorInfo.loading ? 0 : Math.max(0, parseMonto(reciboForm.lectura_anterior)))}
                                   step="0.01"
                                   value={reciboForm.lectura_actual}
                                   onChange={(e) => setReciboForm((prev) => ({ ...prev, lectura_actual: e.target.value }))}
