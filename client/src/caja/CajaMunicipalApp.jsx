@@ -156,6 +156,12 @@ const MAX_DIAS_CORRECCION_PAGO = 7;
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const formatMoney = (value) => `S/. ${parseMonto(value).toFixed(2)}`;
 const MESES_ES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+const formatFechaHora = (value) => {
+  if (!value) return "-";
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return String(value);
+  return dt.toLocaleString("es-PE");
+};
 
 const round2 = (value) => Math.round((parseMonto(value) + Number.EPSILON) * 100) / 100;
 const getCobroAguaRowKey = (row = {}) => {
@@ -418,6 +424,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const [recibosPagadosReimpresionLuz, setRecibosPagadosReimpresionLuz] = useState([]);
   const [idReciboReimpresionLuz, setIdReciboReimpresionLuz] = useState(0);
   const [reciboLuzImpresion, setReciboLuzImpresion] = useState(null);
+  const [mostrarReporteCajaLuz, setMostrarReporteCajaLuz] = useState(false);
+  const [fechaReporteLuz, setFechaReporteLuz] = useState(toIsoDate());
   const reciboLuzRef = useRef(null);
   const imprimiendoReciboLuzRef = useRef(false);
 
@@ -504,6 +512,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setRecibosPagadosReimpresionLuz([]);
     setIdReciboReimpresionLuz(0);
     setReciboLuzImpresion(null);
+    setMostrarReporteCajaLuz(false);
+    setFechaReporteLuz(toIsoDate());
     setUltimoAnexoCaja(null);
     setImprimiendoAnexoCaja(false);
   }, []);
@@ -559,18 +569,19 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
   }, [permisos.canCaja]);
 
-  const cargarReporteLuz = useCallback(async () => {
+  const cargarReporteLuz = useCallback(async (fechaRef = fechaReporteLuz) => {
     if (!permisos.canCaja) return;
     setLoadingReporteLuz(true);
     try {
-      const res = await cajaLuzApi.get("/caja/reporte", { params: { tipo: "diario", fecha: toIsoDate() } });
+      const fecha = isValidIsoDate(fechaRef) ? fechaRef : toIsoDate();
+      const res = await cajaLuzApi.get("/caja/reporte", { params: { tipo: "diario", fecha } });
       setReporteLuz(res.data || null);
     } catch (err) {
       handleApiError(err, "No se pudo cargar reporte de luz.");
     } finally {
       setLoadingReporteLuz(false);
     }
-  }, [handleApiError, permisos.canCaja]);
+  }, [fechaReporteLuz, handleApiError, permisos.canCaja]);
 
   const recargarAgua = useCallback(async () => {
     await Promise.all([cargarResumenAgua(), cargarConteoAgua()]);
@@ -579,11 +590,11 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const recargarLuz = useCallback(async () => {
     setLoadingLuz(true);
     try {
-      await cargarReporteLuz();
+      await cargarReporteLuz(fechaReporteLuz);
     } finally {
       setLoadingLuz(false);
     }
-  }, [cargarReporteLuz]);
+  }, [cargarReporteLuz, fechaReporteLuz]);
 
   useEffect(() => {
     if (!usuarioSistema) return;
@@ -670,7 +681,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     try {
       let base = padronContribuyentesLuz;
       if (!Array.isArray(base) || base.length === 0) {
-        const res = await cajaLuzApi.get("/suministros");
+        const res = await cajaLuzApi.get("/caja/suministros");
         base = Array.isArray(res.data) ? res.data : [];
         setPadronContribuyentesLuz(base);
       }
@@ -711,7 +722,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setMostrarModalCobroLuz(true);
     setLoadingPendientesCobroLuz(true);
     try {
-      const res = await cajaLuzApi.get(`/recibos/pendientes/${idSuministro}`);
+      const res = await cajaLuzApi.get(`/caja/recibos/pendientes/${idSuministro}`);
       const pendientes = (Array.isArray(res.data) ? res.data : [])
         .map((row) => ({
           ...row,
@@ -754,7 +765,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
     setLoadingHistorialReimpresionLuz(true);
     try {
-      const res = await cajaLuzApi.get(`/recibos/historial/${idSuministro}`, { params: { anio: "all" } });
+      const res = await cajaLuzApi.get(`/caja/recibos/historial/${idSuministro}`, { params: { anio: "all" } });
       const historial = Array.isArray(res.data) ? res.data : [];
       const pagados = historial
         .filter((row) => String(row?.estado || "").toUpperCase() === "PAGADO")
@@ -1637,16 +1648,24 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   </button>
                 </>
               ) : (
-                <button
-                  className="btn btn-outline-primary d-flex align-items-center justify-content-center"
-                  onClick={recargarLuz}
-                  disabled={loadingLuz || loadingReporteLuz}
-                  title={(loadingLuz || loadingReporteLuz) ? "Actualizando..." : "Recargar luz"}
-                  aria-label="Recargar luz"
-                  style={{ width: "42px", height: "38px" }}
-                >
-                  <FaSyncAlt />
-                </button>
+                <>
+                  <button
+                    className="btn btn-outline-primary d-flex align-items-center justify-content-center"
+                    onClick={recargarLuz}
+                    disabled={loadingLuz || loadingReporteLuz}
+                    title={(loadingLuz || loadingReporteLuz) ? "Actualizando..." : "Recargar luz"}
+                    aria-label="Recargar luz"
+                    style={{ width: "42px", height: "38px" }}
+                  >
+                    <FaSyncAlt />
+                  </button>
+                  <button
+                    className="btn btn-outline-secondary d-flex align-items-center gap-2"
+                    onClick={() => setMostrarReporteCajaLuz(true)}
+                  >
+                    Ver reporte
+                  </button>
+                </>
               )}
             </div>
 
@@ -2350,6 +2369,90 @@ function CajaMunicipalApp({ onBackToSelector }) {
           origen="caja"
           usuarioSistema={usuarioSistema}
         />
+      )}
+
+      {mostrarReporteCajaLuz && (
+        <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.45)" }}>
+          <div className="modal-dialog modal-xl modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">Reporte Caja Luz</h5>
+                <button
+                  type="button"
+                  className="btn-close"
+                  onClick={() => setMostrarReporteCajaLuz(false)}
+                ></button>
+              </div>
+              <div className="modal-body">
+                <div className="row g-2 align-items-end mb-3">
+                  <div className="col-12 col-sm-4 col-lg-3">
+                    <label className="form-label form-label-sm mb-1">Fecha</label>
+                    <input
+                      type="date"
+                      className="form-control form-control-sm"
+                      value={fechaReporteLuz}
+                      max={toIsoDate()}
+                      onChange={(e) => setFechaReporteLuz(e.target.value)}
+                    />
+                  </div>
+                  <div className="col-auto">
+                    <button
+                      className="btn btn-outline-primary btn-sm"
+                      onClick={() => cargarReporteLuz(fechaReporteLuz)}
+                      disabled={loadingReporteLuz}
+                    >
+                      {loadingReporteLuz ? "Consultando..." : "Consultar"}
+                    </button>
+                  </div>
+                  <div className="col-12 col-sm-8 col-lg">
+                    <div className="small text-muted">
+                      Total: <strong>{formatMoney(reporteLuz?.total || 0)}</strong> | Movimientos: <strong>{Number(reporteLuz?.cantidad_movimientos || 0)}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="table-responsive border rounded" style={{ maxHeight: "58vh" }}>
+                  <table className="table table-sm table-hover align-middle mb-0">
+                    <thead className="table-light sticky-top">
+                      <tr>
+                        <th>Fecha/hora</th>
+                        <th>Zona</th>
+                        <th>ID usuario</th>
+                        <th>Contribuyente</th>
+                        <th>Periodo</th>
+                        <th className="text-end">Monto</th>
+                        <th className="text-end">Orden</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {!loadingReporteLuz && (!Array.isArray(reporteLuz?.movimientos) || reporteLuz.movimientos.length === 0) && (
+                        <tr>
+                          <td colSpan="7" className="text-center py-3 text-muted">Sin movimientos para la fecha seleccionada.</td>
+                        </tr>
+                      )}
+                      {Array.isArray(reporteLuz?.movimientos) && reporteLuz.movimientos.map((row) => (
+                        <tr key={`rep-luz-${Number(row?.id_pago || 0)}`}>
+                          <td>{formatFechaHora(row?.fecha_pago)}</td>
+                          <td>{row?.zona || "-"}</td>
+                          <td>{row?.nro_medidor || "-"}</td>
+                          <td>{row?.nombre_usuario || "-"}</td>
+                          <td>{String(row?.mes || "").padStart(2, "0")}/{row?.anio || "-"}</td>
+                          <td className="text-end">{formatMoney(row?.monto_pagado || 0)}</td>
+                          <td className="text-end">{row?.id_orden_cobro ? `#${row.id_orden_cobro}` : "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-secondary" onClick={() => setMostrarReporteCajaLuz(false)}>
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       <div style={{ position: "fixed", left: "-9999px", top: 0 }}>

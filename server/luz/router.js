@@ -2097,6 +2097,389 @@ router.get("/recibos/pendientes/:id_suministro", authenticateLuzToken, requireRo
   }
 });
 
+router.get("/caja/suministros", authenticateCajaMunicipalToken, requireRole("CAJERO"), async (req, res) => {
+  if (rejectIfLuzCajaInternaDisabled(res)) return;
+  try {
+    const q = normalizeText(req.query?.q || req.query?.buscar || "", 120).toUpperCase();
+    const idZona = parsePositiveInt(req.query?.id_zona, 0);
+    const estado = normalizeText(req.query?.estado || "", 20).toUpperCase();
+
+    const params = [];
+    const where = [];
+
+    if (idZona > 0) {
+      params.push(idZona);
+      where.push(`s.id_zona = $${params.length}`);
+    }
+    if (estado && ["ACTIVO", "CORTADO", "INACTIVO"].includes(estado)) {
+      params.push(estado);
+      where.push(`s.estado = $${params.length}`);
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      where.push(`(
+        UPPER(s.nombre_usuario) LIKE $${params.length}
+        OR UPPER(s.nro_medidor) LIKE $${params.length}
+        OR UPPER(COALESCE(s.nro_medidor_real, '')) LIKE $${params.length}
+        OR UPPER(COALESCE(s.direccion, '')) LIKE $${params.length}
+        OR UPPER(z.nombre) LIKE $${params.length}
+      )`);
+    }
+
+    const sql = `
+      WITH pagos_agg AS (
+        SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+        FROM pagos
+        GROUP BY id_recibo
+      ),
+      resumen AS (
+        SELECT
+          r.id_suministro,
+          SUM(GREATEST(r.total_pagar - COALESCE(p.total_pagado, 0), 0)) AS deuda_total,
+          SUM(COALESCE(p.total_pagado, 0)) AS abono_total,
+          COUNT(*) FILTER (WHERE (r.total_pagar - COALESCE(p.total_pagado, 0)) > 0) AS meses_deuda
+        FROM recibos r
+        LEFT JOIN pagos_agg p ON p.id_recibo = r.id_recibo
+        GROUP BY r.id_suministro
+      )
+      SELECT
+        s.id_suministro,
+        s.id_zona,
+        z.nombre AS zona,
+        s.nro_medidor,
+        s.nro_medidor_real,
+        s.nombre_usuario,
+        s.direccion,
+        s.estado,
+        COALESCE(rs.deuda_total, 0) AS deuda_total,
+        COALESCE(rs.abono_total, 0) AS abono_total,
+        COALESCE(rs.meses_deuda, 0)::int AS meses_deuda
+      FROM suministros s
+      JOIN zonas z ON z.id_zona = s.id_zona
+      LEFT JOIN resumen rs ON rs.id_suministro = s.id_suministro
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY
+        CASE
+          WHEN regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g') <> '' THEN 0
+          ELSE 1
+        END ASC,
+        CASE
+          WHEN regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g') <> ''
+            THEN NULLIF(regexp_replace(COALESCE(s.nro_medidor, ''), '[^0-9]', '', 'g'), '')::numeric
+          ELSE NULL
+        END ASC NULLS LAST,
+        UPPER(COALESCE(s.nro_medidor, '')) ASC,
+        UPPER(z.nombre) ASC,
+        UPPER(s.nombre_usuario) ASC
+      LIMIT 1500
+    `;
+
+    const data = await pool.query(sql, params);
+    return res.json(data.rows.map((r) => ({
+      id_suministro: Number(r.id_suministro),
+      id_zona: Number(r.id_zona),
+      zona: splitCharcapeZoneName(r.zona, r.nro_medidor) || r.zona,
+      nro_medidor: r.nro_medidor,
+      nro_medidor_real: r.nro_medidor_real || "",
+      nombre_usuario: r.nombre_usuario,
+      direccion: r.direccion || "",
+      estado: r.estado,
+      deuda_total: round2(parseMonto(r.deuda_total, 0)),
+      abono_total: round2(parseMonto(r.abono_total, 0)),
+      meses_deuda: Number(r.meses_deuda || 0)
+    })));
+  } catch (err) {
+    console.error("[LUZ] Error listando suministros de caja:", err.message);
+    return res.status(500).json({ error: "Error listando suministros para caja." });
+  }
+});
+
+router.get("/caja/recibos/historial/:id_suministro", authenticateCajaMunicipalToken, requireRole("CAJERO"), async (req, res) => {
+  if (rejectIfLuzCajaInternaDisabled(res)) return;
+  try {
+    const idSuministro = parsePositiveInt(req.params?.id_suministro, 0);
+    if (!idSuministro) return res.status(400).json({ error: "ID suministro inválido." });
+
+    const anioParam = String(req.query?.anio || "all").toLowerCase();
+    const filtrarAnio = anioParam !== "all";
+    const anio = parsePositiveInt(anioParam, 0);
+
+    const params = [idSuministro];
+    let anioFilterSql = "";
+    if (filtrarAnio && anio > 0) {
+      params.push(anio);
+      anioFilterSql = ` AND r.anio = $${params.length} `;
+    }
+
+    const data = await pool.query(
+      `WITH pagos_agg AS (
+         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+         FROM pagos
+         GROUP BY id_recibo
+       )
+       SELECT
+         r.id_recibo,
+         r.anio,
+         r.mes,
+         r.lectura_anterior,
+         r.lectura_actual,
+         r.consumo_kwh,
+         r.tarifa_kwh,
+         r.energia_activa,
+         r.mantenimiento,
+         r.total_pagar,
+         r.fecha_emision,
+         r.fecha_vencimiento,
+         r.fecha_corte,
+         COALESCE(pa.total_pagado, 0) AS abono_mes,
+         GREATEST(r.total_pagar - COALESCE(pa.total_pagado, 0), 0) AS deuda_mes,
+         CASE
+           WHEN COALESCE(pa.total_pagado, 0) >= r.total_pagar THEN 'PAGADO'
+           WHEN COALESCE(pa.total_pagado, 0) > 0 THEN 'PARCIAL'
+           ELSE 'PENDIENTE'
+         END AS estado
+       FROM recibos r
+       LEFT JOIN pagos_agg pa ON pa.id_recibo = r.id_recibo
+       WHERE r.id_suministro = $1
+       ${anioFilterSql}
+       ORDER BY r.anio ASC, r.mes ASC, r.id_recibo ASC`,
+      params
+    );
+
+    return res.json(data.rows);
+  } catch (err) {
+    console.error("[LUZ] Error historial recibos caja:", err.message);
+    return res.status(500).json({ error: "Error listando historial de recibos para caja." });
+  }
+});
+
+router.get("/caja/recibos/pendientes/:id_suministro", authenticateCajaMunicipalToken, requireRole("CAJERO"), async (req, res) => {
+  if (rejectIfLuzCajaInternaDisabled(res)) return;
+  try {
+    const idSuministro = parsePositiveInt(req.params?.id_suministro, 0);
+    if (!idSuministro) return res.status(400).json({ error: "ID suministro inválido." });
+
+    const data = await pool.query(
+      `WITH pagos_agg AS (
+         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+         FROM pagos
+         GROUP BY id_recibo
+       )
+       SELECT
+         r.id_recibo,
+         r.anio,
+         r.mes,
+         r.lectura_anterior,
+         r.lectura_actual,
+         r.consumo_kwh,
+         r.energia_activa,
+         r.mantenimiento,
+         r.total_pagar,
+         COALESCE(pa.total_pagado, 0) AS abono_mes,
+         GREATEST(r.total_pagar - COALESCE(pa.total_pagado, 0), 0) AS deuda_mes
+       FROM recibos r
+       LEFT JOIN pagos_agg pa ON pa.id_recibo = r.id_recibo
+       WHERE r.id_suministro = $1
+         AND GREATEST(r.total_pagar - COALESCE(pa.total_pagado, 0), 0) > 0
+       ORDER BY r.anio ASC, r.mes ASC, r.id_recibo ASC`,
+      [idSuministro]
+    );
+
+    return res.json(data.rows);
+  } catch (err) {
+    console.error("[LUZ] Error pendientes recibos caja:", err.message);
+    return res.status(500).json({ error: "Error listando recibos pendientes para caja." });
+  }
+});
+
+router.post("/ordenes-cobro", authenticateLuzToken, requireRole("ADMIN_SEC"), async (req, res) => {
+  if (rejectIfLuzCajaInternaDisabled(res)) return;
+  const client = await pool.connect();
+  try {
+    const idSuministro = parsePositiveInt(req.body?.id_suministro, 0);
+    const observacion = normalizeText(req.body?.observacion, 500) || null;
+    if (!idSuministro) return res.status(400).json({ error: "Suministro inválido." });
+
+    let items = parseOrderItems(req.body?.items || []);
+
+    await client.query("BEGIN");
+
+    const suministro = await client.query(
+      `SELECT s.id_suministro, s.nro_medidor, s.nombre_usuario, z.nombre AS zona
+       FROM suministros s
+       JOIN zonas z ON z.id_zona = s.id_zona
+       WHERE s.id_suministro = $1
+       LIMIT 1`,
+      [idSuministro]
+    );
+    if (!suministro.rows[0]) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Suministro no encontrado." });
+    }
+
+    if (items.length === 0) {
+      const pendientes = await client.query(
+        `WITH pagos_agg AS (
+           SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+           FROM pagos
+           GROUP BY id_recibo
+         )
+         SELECT
+           r.id_recibo,
+           r.anio,
+           r.mes,
+           r.consumo_kwh,
+           r.energia_activa,
+           r.mantenimiento,
+           GREATEST(r.total_pagar - COALESCE(pa.total_pagado, 0), 0) AS saldo
+         FROM recibos r
+         LEFT JOIN pagos_agg pa ON pa.id_recibo = r.id_recibo
+         WHERE r.id_suministro = $1
+           AND GREATEST(r.total_pagar - COALESCE(pa.total_pagado, 0), 0) > 0
+         ORDER BY r.anio, r.mes`,
+        [idSuministro]
+      );
+      items = pendientes.rows.map((r) => ({
+        id_recibo: Number(r.id_recibo),
+        monto_autorizado: round2(parseMonto(r.saldo, 0)),
+        anio: Number(r.anio),
+        mes: Number(r.mes),
+        consumo_kwh: round2(parseMonto(r.consumo_kwh, 0)),
+        energia_activa: round2(parseMonto(r.energia_activa, 0)),
+        mantenimiento: round2(parseMonto(r.mantenimiento, 0))
+      }));
+    }
+
+    if (items.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "No hay recibos pendientes para generar orden." });
+    }
+
+    const idsRecibos = items.map((r) => Number(r.id_recibo));
+
+    const solapada = await client.query(
+      `SELECT oc.id_orden
+       FROM ordenes_cobro oc
+       WHERE oc.estado = 'PENDIENTE'
+         AND oc.id_suministro = $1
+         AND EXISTS (
+           SELECT 1
+           FROM jsonb_array_elements(oc.recibos_json) elem
+           WHERE (elem->>'id_recibo') ~ '^[0-9]+$'
+             AND ((elem->>'id_recibo')::bigint = ANY($2::bigint[]))
+         )
+       LIMIT 1`,
+      [idSuministro, idsRecibos]
+    );
+
+    if (solapada.rows[0]) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: `Ya existe orden pendiente (${solapada.rows[0].id_orden}) con recibos seleccionados.` });
+    }
+
+    const recibosRows = await client.query(
+      `WITH pagos_agg AS (
+         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
+         FROM pagos
+         WHERE id_recibo = ANY($2::bigint[])
+         GROUP BY id_recibo
+       )
+       SELECT
+         r.id_recibo,
+         r.anio,
+         r.mes,
+         r.total_pagar,
+         r.consumo_kwh,
+         r.energia_activa,
+         r.mantenimiento,
+         COALESCE(pa.total_pagado, 0) AS total_pagado
+       FROM recibos r
+       LEFT JOIN pagos_agg pa ON pa.id_recibo = r.id_recibo
+       WHERE r.id_suministro = $1
+         AND r.id_recibo = ANY($2::bigint[])
+       FOR UPDATE OF r`,
+      [idSuministro, idsRecibos]
+    );
+
+    if (recibosRows.rows.length !== idsRecibos.length) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Uno o más recibos no pertenecen al suministro." });
+    }
+
+    const mapRecibos = new Map(recibosRows.rows.map((r) => [Number(r.id_recibo), r]));
+    const detalle = [];
+    for (const item of items) {
+      const row = mapRecibos.get(Number(item.id_recibo));
+      if (!row) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: `Recibo inválido: ${item.id_recibo}` });
+      }
+      const saldo = round2(Math.max(parseMonto(row.total_pagar, 0) - parseMonto(row.total_pagado, 0), 0));
+      if (saldo <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: `Recibo ${item.id_recibo} sin saldo.` });
+      }
+      const monto = round2(item.monto_autorizado > 0 ? item.monto_autorizado : saldo);
+      if (monto <= 0 || monto > saldo + 0.001) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: `Monto autorizado inválido para recibo ${item.id_recibo}.` });
+      }
+      detalle.push({
+        id_recibo: Number(item.id_recibo),
+        anio: Number(row.anio),
+        mes: Number(row.mes),
+        monto_autorizado: monto,
+        saldo_al_emitir: saldo,
+        consumo_kwh: round2(parseMonto(row.consumo_kwh, 0)),
+        energia_activa: round2(parseMonto(row.energia_activa, 0)),
+        mantenimiento: round2(parseMonto(row.mantenimiento, 0))
+      });
+    }
+
+    const totalOrden = round2(detalle.reduce((acc, it) => acc + round2(it.monto_autorizado), 0));
+    if (totalOrden <= 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Total de orden inválido." });
+    }
+
+    const insert = await client.query(
+      `INSERT INTO ordenes_cobro (
+        estado, id_usuario_emite, id_suministro, total_orden, recibos_json, observacion
+      ) VALUES (
+        'PENDIENTE', $1, $2, $3, $4::jsonb, $5
+      )
+      RETURNING id_orden, estado, creado_en, total_orden`,
+      [req.user?.id_usuario || null, idSuministro, totalOrden, JSON.stringify(detalle), observacion]
+    );
+
+    await registrarAuditoria(client, req.user?.username, "ORDEN_LUZ_EMITIDA", `id_orden=${insert.rows[0].id_orden}; suministro=${idSuministro}; total=${totalOrden.toFixed(2)}; recibos=${detalle.length}`);
+    await client.query("COMMIT");
+
+    return res.json({
+      mensaje: "Orden de cobro emitida.",
+      orden: {
+        id_orden: Number(insert.rows[0].id_orden),
+        estado: insert.rows[0].estado,
+        creado_en: insert.rows[0].creado_en,
+        total_orden: round2(parseMonto(insert.rows[0].total_orden, totalOrden)),
+        id_suministro: idSuministro,
+        items: detalle,
+        suministro: {
+          nro_medidor: suministro.rows[0].nro_medidor,
+          nombre_usuario: suministro.rows[0].nombre_usuario,
+          zona: suministro.rows[0].zona
+        }
+      }
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("[LUZ] Error emitiendo orden de cobro (ventanilla):", err.message);
+    return res.status(500).json({ error: "Error emitiendo orden de cobro." });
+  } finally {
+    client.release();
+  }
+});
+
 router.post("/caja/ordenes-cobro", authenticateCajaMunicipalToken, requireRole("ADMIN_SEC"), async (req, res) => {
   if (rejectIfLuzCajaInternaDisabled(res)) return;
   const client = await pool.connect();
@@ -2504,6 +2887,96 @@ router.post("/caja/ordenes-cobro/:id/anular", authenticateCajaMunicipalToken, re
     return res.status(500).json({ error: "Error anulando orden." });
   } finally {
     client.release();
+  }
+});
+
+router.get("/reportes/cobranza", authenticateLuzToken, requireRole("ADMIN_SEC"), async (req, res) => {
+  if (rejectIfLuzCajaInternaDisabled(res)) return;
+  try {
+    const tipoRaw = normalizeText(req.query?.tipo || "diario", 20).toLowerCase();
+    const tipo = ["diario", "mensual", "anual"].includes(tipoRaw) ? tipoRaw : "diario";
+    const hoy = toISODate();
+    const fechaRef = normalizeText(req.query?.fecha || hoy, 20) || hoy;
+    if (fechaRef > hoy) {
+      return res.status(400).json({ error: "No se permite consultar caja con fecha futura." });
+    }
+
+    const range = await pool.query(
+      `SELECT
+         CASE
+           WHEN $1 = 'diario' THEN $2::date
+           WHEN $1 = 'mensual' THEN date_trunc('month', $2::date)::date
+           ELSE date_trunc('year', $2::date)::date
+         END AS desde,
+         CASE
+           WHEN $1 = 'diario' THEN ($2::date + INTERVAL '1 day')::date
+           WHEN $1 = 'mensual' THEN (date_trunc('month', $2::date) + INTERVAL '1 month')::date
+           ELSE (date_trunc('year', $2::date) + INTERVAL '1 year')::date
+         END AS hasta`,
+      [tipo, fechaRef]
+    );
+    const desde = range.rows[0]?.desde;
+    const hasta = range.rows[0]?.hasta;
+
+    const resumen = await pool.query(
+      `SELECT
+         COUNT(*)::int AS cantidad,
+         COALESCE(SUM(monto_pagado), 0)::numeric AS total
+       FROM pagos
+       WHERE fecha_pago >= $1::date
+         AND fecha_pago < $2::date`,
+      [desde, hasta]
+    );
+
+    const movimientos = await pool.query(
+      `SELECT
+         p.id_pago,
+         p.fecha_pago,
+         to_char(p.fecha_pago, 'YYYY-MM-DD') AS fecha,
+         to_char(p.fecha_pago, 'HH24:MI:SS') AS hora,
+         p.monto_pagado,
+         r.id_recibo,
+         r.anio,
+         r.mes,
+         s.nro_medidor,
+         s.nombre_usuario,
+         z.nombre AS zona,
+         p.id_orden_cobro
+       FROM pagos p
+       JOIN recibos r ON r.id_recibo = p.id_recibo
+       JOIN suministros s ON s.id_suministro = r.id_suministro
+       JOIN zonas z ON z.id_zona = s.id_zona
+       WHERE p.fecha_pago >= $1::date
+         AND p.fecha_pago < $2::date
+       ORDER BY p.fecha_pago DESC, p.id_pago DESC
+       LIMIT 800`,
+      [desde, hasta]
+    );
+
+    return res.json({
+      tipo,
+      fecha_referencia: fechaRef,
+      rango: { desde, hasta_exclusivo: hasta },
+      total: round2(parseMonto(resumen.rows[0]?.total, 0)).toFixed(2),
+      cantidad_movimientos: Number(resumen.rows[0]?.cantidad || 0),
+      movimientos: movimientos.rows.map((m) => ({
+        id_pago: Number(m.id_pago),
+        fecha_pago: m.fecha_pago,
+        fecha: m.fecha,
+        hora: m.hora,
+        monto_pagado: round2(parseMonto(m.monto_pagado, 0)),
+        id_recibo: Number(m.id_recibo),
+        anio: Number(m.anio),
+        mes: Number(m.mes),
+        nro_medidor: m.nro_medidor,
+        nombre_usuario: m.nombre_usuario,
+        zona: m.zona,
+        id_orden_cobro: m.id_orden_cobro ? Number(m.id_orden_cobro) : null
+      }))
+    });
+  } catch (err) {
+    console.error("[LUZ] Error reporte cobranza ventanilla:", err.message);
+    return res.status(500).json({ error: "Error generando reporte de cobranza." });
   }
 });
 

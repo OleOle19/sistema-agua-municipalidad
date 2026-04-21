@@ -2,6 +2,7 @@
 import { useReactToPrint } from "react-to-print";
 import {
   FaBolt,
+  FaChartBar,
   FaCog,
   FaFileImport,
   FaHistory,
@@ -95,6 +96,15 @@ const toIsoDate = (date = new Date()) => {
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+};
+const isValidIsoDate = (isoDate) => {
+  const text = String(isoDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
+  const [year, month, day] = text.split("-").map((v) => Number(v));
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  return probe.getUTCFullYear() === year
+    && (probe.getUTCMonth() + 1) === month
+    && probe.getUTCDate() === day;
 };
 
 const parseMonto = (value) => {
@@ -258,6 +268,10 @@ function LuzApp({ onBackToSelector }) {
   const recibosLoteRef = useRef(null);
   const imprimiendoLoteRef = useRef(false);
 
+  const [fechaReporteCobranza, setFechaReporteCobranza] = useState(toIsoDate());
+  const [reporteCobranza, setReporteCobranza] = useState(null);
+  const [loadingReporteCobranza, setLoadingReporteCobranza] = useState(false);
+
   const rolActual = normalizeRole(usuarioSistema?.rol);
   const permisos = useMemo(() => ({
     role: rolActual,
@@ -268,7 +282,8 @@ function LuzApp({ onBackToSelector }) {
     canImportarPadron: hasMinRole(rolActual, "ADMIN"),
     canImportarLecturas: hasMinRole(rolActual, "ADMIN"),
     canConfigurar: hasMinRole(rolActual, "ADMIN_SEC"),
-    canManageUsers: hasMinRole(rolActual, "ADMIN")
+    canManageUsers: hasMinRole(rolActual, "ADMIN"),
+    canViewReportes: hasMinRole(rolActual, "CAJERO")
   }), [rolActual]);
 
   const suministroSeleccionado = useMemo(
@@ -546,6 +561,53 @@ function LuzApp({ onBackToSelector }) {
     }
   }, [auditoriaFiltro, handleApiError, showFlash]);
 
+  const cargarReporteCobranza = useCallback(async (fechaRef = fechaReporteCobranza) => {
+    if (!permisos.canViewReportes) return;
+    const fecha = String(fechaRef || "").trim();
+    if (!isValidIsoDate(fecha)) {
+      showFlash("warning", "Fecha de reporte invalida.");
+      return;
+    }
+    setLoadingReporteCobranza(true);
+    try {
+      const res = await luzApi.get("/reportes/cobranza", {
+        params: {
+          tipo: "diario",
+          fecha
+        }
+      });
+      setReporteCobranza(res.data || null);
+    } catch (err) {
+      handleApiError(err, "No se pudo cargar reporte de cobranza.");
+    } finally {
+      setLoadingReporteCobranza(false);
+    }
+  }, [fechaReporteCobranza, handleApiError, permisos.canViewReportes, showFlash]);
+
+  const enviarOrdenCajaDesdeRecibo = useCallback(async ({ recibo, suministro }) => {
+    const idSuministro = Number(suministro?.id_suministro || 0);
+    const idRecibo = Number(recibo?.id_recibo || 0);
+    if (!idSuministro || !idRecibo) return;
+    const saldoPendiente = parseMonto(recibo?.deuda_mes ?? (parseMonto(recibo?.total_pagar) - parseMonto(recibo?.abono_mes)));
+    if (saldoPendiente <= 0.001) return;
+    try {
+      await luzApi.post("/ordenes-cobro", {
+        id_suministro: idSuministro,
+        items: [
+          {
+            id_recibo: idRecibo,
+            monto_autorizado: saldoPendiente
+          }
+        ],
+        observacion: "Emitida automaticamente desde ventanilla de luz al imprimir."
+      });
+    } catch (err) {
+      const status = Number(err?.response?.status || 0);
+      if (status === 409) return;
+      handleApiError(err, "No se pudo enviar orden de cobro a caja.");
+    }
+  }, [handleApiError]);
+
   useEffect(() => {
     if (!usuarioSistema) return;
     cargarZonas();
@@ -593,6 +655,12 @@ function LuzApp({ onBackToSelector }) {
     if (permisos.canImportarPadron) return;
     setTab("padron");
   }, [permisos.canImportarPadron, tab]);
+
+  useEffect(() => {
+    if (!usuarioSistema || tab !== "reportes") return;
+    if (!permisos.canViewReportes) return;
+    cargarReporteCobranza(fechaReporteCobranza);
+  }, [cargarReporteCobranza, fechaReporteCobranza, permisos.canViewReportes, tab, usuarioSistema]);
 
   useEffect(() => {
     if (!selectedSuministroId) return;
@@ -762,6 +830,10 @@ function LuzApp({ onBackToSelector }) {
         ...suministroSeleccionado,
         ...(res.data?.suministro || {})
       };
+      await enviarOrdenCajaDesdeRecibo({
+        recibo: res.data?.recibo || null,
+        suministro: suministroRecibo
+      });
       setReciboImpresion({
         recibo: res.data?.recibo || null,
         suministro: suministroRecibo
@@ -779,8 +851,12 @@ function LuzApp({ onBackToSelector }) {
     }
   };
 
-  const imprimirDesdeHistorial = (row) => {
+  const imprimirDesdeHistorial = async (row) => {
     if (!row || !suministroSeleccionado) return;
+    await enviarOrdenCajaDesdeRecibo({
+      recibo: row,
+      suministro: suministroSeleccionado
+    });
     setReciboImpresion({
       recibo: {
         ...row,
@@ -1045,6 +1121,14 @@ function LuzApp({ onBackToSelector }) {
               Config
             </button>
           </li>
+          {permisos.canViewReportes && (
+            <li className="nav-item">
+              <button className={`nav-link ${tab === "reportes" ? "active" : ""}`} onClick={() => setTab("reportes")}>
+                <FaChartBar className="me-1" />
+                Reportes
+              </button>
+            </li>
+          )}
           {permisos.canImportarPadron && (
             <li className="nav-item">
               <button className={`nav-link ${tab === "importar" ? "active" : ""}`} onClick={() => setTab("importar")}>
@@ -1699,6 +1783,91 @@ function LuzApp({ onBackToSelector }) {
                           Guardar fechas
                         </button>
                       </form>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {tab === "reportes" && permisos.canViewReportes && (
+              <div className="row g-3">
+                <div className="col-12">
+                  <div className="card border">
+                    <div className="card-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
+                      <strong>Reporte diario de cobranza (luz)</strong>
+                      <div className="d-flex flex-wrap gap-2 align-items-center">
+                        <input
+                          type="date"
+                          className="form-control form-control-sm"
+                          style={{ width: "170px" }}
+                          value={fechaReporteCobranza}
+                          max={toIsoDate()}
+                          onChange={(e) => setFechaReporteCobranza(e.target.value)}
+                        />
+                        <button
+                          className="btn btn-outline-primary btn-sm d-flex align-items-center gap-2"
+                          onClick={() => cargarReporteCobranza(fechaReporteCobranza)}
+                          disabled={loadingReporteCobranza}
+                        >
+                          <FaSyncAlt />
+                          {loadingReporteCobranza ? "Consultando..." : "Consultar"}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="card-body">
+                      <div className="row g-2 mb-3">
+                        <div className="col-12 col-md-4">
+                          <div className="rounded p-3 bg-success text-white">
+                            <div className="small fw-semibold opacity-75">TOTAL RECAUDADO</div>
+                            <div className="fs-4 fw-bold">{formatMoney(reporteCobranza?.total || 0)}</div>
+                          </div>
+                        </div>
+                        <div className="col-12 col-md-4">
+                          <div className="rounded p-3 bg-primary text-white">
+                            <div className="small fw-semibold opacity-75">MOVIMIENTOS</div>
+                            <div className="fs-4 fw-bold">{Number(reporteCobranza?.cantidad_movimientos || 0)}</div>
+                          </div>
+                        </div>
+                        <div className="col-12 col-md-4">
+                          <div className="rounded p-3 bg-dark text-white">
+                            <div className="small fw-semibold opacity-75">FECHA CONSULTA</div>
+                            <div className="fs-5 fw-bold">{reporteCobranza?.fecha_referencia || fechaReporteCobranza}</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="table-responsive border rounded" style={{ maxHeight: "62vh" }}>
+                        <table className="table table-sm table-hover align-middle mb-0">
+                          <thead className="table-light sticky-top">
+                            <tr>
+                              <th>Fecha/hora</th>
+                              <th>Zona</th>
+                              <th>ID usuario</th>
+                              <th>Contribuyente</th>
+                              <th>Periodo</th>
+                              <th className="text-end">Monto</th>
+                              <th className="text-end">Orden</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {!loadingReporteCobranza && (!Array.isArray(reporteCobranza?.movimientos) || reporteCobranza.movimientos.length === 0) && (
+                              <tr>
+                                <td colSpan="7" className="text-center py-3 text-muted">Sin movimientos para la fecha consultada.</td>
+                              </tr>
+                            )}
+                            {Array.isArray(reporteCobranza?.movimientos) && reporteCobranza.movimientos.map((row) => (
+                              <tr key={`rep-vent-luz-${Number(row?.id_pago || 0)}`}>
+                                <td>{formatFechaHora(row?.fecha_pago)}</td>
+                                <td>{row?.zona || "-"}</td>
+                                <td>{row?.nro_medidor || "-"}</td>
+                                <td>{row?.nombre_usuario || "-"}</td>
+                                <td>{String(row?.mes || "").padStart(2, "0")}/{row?.anio || "-"}</td>
+                                <td className="text-end">{formatMoney(row?.monto_pagado || 0)}</td>
+                                <td className="text-end">{row?.id_orden_cobro ? `#${row.id_orden_cobro}` : "-"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </div>
                 </div>
