@@ -1,6 +1,7 @@
 import React, { forwardRef } from "react";
 
 const MONTH_NAMES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+const RECIBO_FONT_FAMILY = "\"Segoe UI\", Calibri, Arial, sans-serif";
 
 const parseNum = (value) => {
   const parsed = Number.parseFloat(value);
@@ -63,15 +64,15 @@ const ReciboLuzCard = ({ datos }) => {
   const total = formatMonto(recibo.total_pagar);
 
   return (
-    <div style={{ border: "1.2px solid #111", width: "100%", minHeight: "65.5mm", fontFamily: "\"Times New Roman\", serif", color: "#111", background: "#fff" }}>
+    <div style={{ border: "1.2px solid #111", width: "100%", minHeight: "65.5mm", fontFamily: RECIBO_FONT_FAMILY, color: "#111", background: "#fff" }}>
       <div style={{ padding: "2.2mm 2mm 1.4mm", borderBottom: "1px solid #111" }}>
-        <div style={{ fontSize: "4.2mm", fontWeight: 700, lineHeight: 1.05, letterSpacing: "0.2px", textTransform: "uppercase" }}>
+        <div style={{ fontSize: "4mm", fontWeight: 700, lineHeight: 1.1, letterSpacing: "0.12px", textTransform: "uppercase" }}>
           Municipalidad Distrital de Pueblo Nuevo  RUC Nro 20192401004
         </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "58% 42%", borderBottom: "1px solid #111", minHeight: "20.5mm" }}>
-        <div style={{ padding: "1.5mm 2mm 1.3mm", fontSize: "3.85mm", lineHeight: 1.17 }}>
+        <div style={{ padding: "1.5mm 2mm 1.3mm", fontSize: "3.75mm", lineHeight: 1.2 }}>
           <div style={{ display: "grid", gridTemplateColumns: "33mm 1fr", marginBottom: "0.8mm" }}>
             <span style={{ textTransform: "uppercase" }}>Recibo Nro:</span>
             <strong>{reciboNumero}</strong>
@@ -92,7 +93,7 @@ const ReciboLuzCard = ({ datos }) => {
             <div style={{ width: "16mm", height: "16mm", border: "1px solid #222", borderRadius: "50%", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: "#fff", margin: "0 auto" }}>
               <img src="/logo.png" alt="Logo Municipalidad" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
             </div>
-            <div style={{ border: "1px solid #222", textAlign: "center", fontSize: "3.45mm", fontWeight: 700, lineHeight: 1.12, padding: "1.6mm 1.1mm", textTransform: "uppercase" }}>
+            <div style={{ border: "1px solid #222", textAlign: "center", fontSize: "3.2mm", fontWeight: 700, lineHeight: 1.16, padding: "1.6mm 1.1mm", textTransform: "uppercase" }}>
               Administracion del servicio de energia electrica de la Municipalidad Distrital de Pueblo Nuevo
             </div>
           </div>
@@ -171,7 +172,7 @@ const ReciboLuz = forwardRef(({ datos }, ref) => {
   if (!datos) return <div ref={ref}></div>;
 
   return (
-    <div ref={ref} style={{ width: "210mm", minHeight: "297mm", padding: "4mm", fontFamily: "\"Times New Roman\", serif", color: "#111", background: "#fff" }}>
+    <div ref={ref} style={{ width: "210mm", minHeight: "297mm", padding: "4mm", fontFamily: RECIBO_FONT_FAMILY, color: "#111", background: "#fff" }}>
       <ReciboLuzCard datos={datos} />
     </div>
   );
