@@ -5226,9 +5226,14 @@ const normalizeReporteOrdenDireccion = (value, fallback = "asc") => {
 
 const getLastDayOfMonth = (anio, mes) => new Date(Date.UTC(anio, mes, 0)).getUTCDate();
 
+const getCurrentIsoMonth = () => {
+  const hoy = normalizeDateOnly(toISODate()) || toISODate();
+  return String(hoy).slice(0, 7);
+};
+
 const parsePeriodoReporteConexion = (query = {}) => {
   const tipoRaw = String(query?.tipo_periodo || "").trim().toLowerCase();
-  const tipo = ["dia", "mes", "anio", "rango", "todo"].includes(tipoRaw) ? tipoRaw : "mes";
+  const tipo = ["dia", "mes", "anio", "rango", "todo", "proyeccion"].includes(tipoRaw) ? tipoRaw : "mes";
   const hoy = normalizeDateOnly(toISODate()) || toISODate();
 
   if (tipo === "dia") {
@@ -5296,6 +5301,26 @@ const parsePeriodoReporteConexion = (query = {}) => {
       anio_corte: anio,
       mes_corte: mes,
       periodo: "TODO"
+    };
+  }
+
+  if (tipo === "proyeccion") {
+    const periodoRaw = String(query?.periodo || query?.fecha_referencia || "").trim();
+    const periodo = /^\d{4}-\d{2}$/.test(periodoRaw) ? periodoRaw : getCurrentIsoMonth();
+    const [anio, mes] = periodo.split("-").map((v) => Number(v));
+    const mesesRaw = Number(query?.meses_proyeccion || query?.meses || 1);
+    const mesesProyeccion = Number.isFinite(mesesRaw)
+      ? Math.min(24, Math.max(1, Math.trunc(mesesRaw)))
+      : 1;
+    const lastDay = getLastDayOfMonth(anio, mes);
+    return {
+      tipo,
+      fecha_desde: `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-01`,
+      fecha_hasta: `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
+      anio_corte: anio,
+      mes_corte: mes,
+      periodo,
+      meses_proyeccion: mesesProyeccion
     };
   }
 
@@ -5503,6 +5528,117 @@ const obtenerReporteEstadoConexionRows = async ({
   });
 };
 
+const obtenerReporteProyeccionEstadoConexion = async ({
+  periodo = parsePeriodoReporteConexion({ tipo_periodo: "proyeccion" }),
+  idsContribuyentes = []
+} = {}) => {
+  const fechaReferenciaMes = /^\d{4}-\d{2}$/.test(String(periodo?.periodo || ""))
+    ? String(periodo.periodo)
+    : getCurrentIsoMonth();
+  const mesesRaw = Number(periodo?.meses_proyeccion || 1);
+  const mesesProyeccion = Number.isFinite(mesesRaw)
+    ? Math.min(24, Math.max(1, Math.trunc(mesesRaw)))
+    : 1;
+  const where = ["COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'"];
+  const params = [];
+  const ids = Array.from(new Set((Array.isArray(idsContribuyentes) ? idsContribuyentes : [])
+    .map((v) => Number(v))
+    .filter((v) => Number.isInteger(v) && v > 0))).slice(0, 5000);
+  if (ids.length > 0) {
+    params.push(ids);
+    where.push(`c.id_contribuyente = ANY($${params.length}::int[])`);
+  }
+
+  const query = `
+    WITH predios_activos AS (
+      SELECT
+        p.id_contribuyente,
+        COUNT(*) FILTER (WHERE ${sqlSnEsSi("p.activo_sn", "S")})::int AS total_predios,
+        SUM(
+          (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, 0) ELSE 0 END)
+          + (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, 0) ELSE 0 END)
+          + (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, 0) ELSE 0 END)
+          + (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, 0) + COALESCE(p.tarifa_extra, 0) ELSE 0 END)
+        ) AS monto_mensual_base
+      FROM predios p
+      GROUP BY p.id_contribuyente
+    ),
+    direccion_principal AS (
+      SELECT x.id_contribuyente, x.direccion_completa
+      FROM (
+        SELECT
+          p.id_contribuyente,
+          ${buildDireccionSql("ca", "p")} AS direccion_completa,
+          ROW_NUMBER() OVER (PARTITION BY p.id_contribuyente ORDER BY p.id_predio ASC) AS rn
+        FROM predios p
+        LEFT JOIN calles ca ON ca.id_calle = p.id_calle
+      ) x
+      WHERE x.rn = 1
+    )
+    SELECT
+      c.id_contribuyente,
+      c.codigo_municipal,
+      c.nombre_completo,
+      COALESCE(NULLIF(TRIM(dp.direccion_completa), ''), '-') AS direccion_completa,
+      COALESCE(pa.total_predios, 0) AS total_predios,
+      COALESCE(pa.monto_mensual_base, 0) AS monto_mensual_base
+    FROM contribuyentes c
+    JOIN predios_activos pa ON pa.id_contribuyente = c.id_contribuyente
+    LEFT JOIN direccion_principal dp ON dp.id_contribuyente = c.id_contribuyente
+    WHERE ${where.join(" AND ")}
+      AND COALESCE(pa.total_predios, 0) > 0
+  `;
+
+  const rs = await pool.query(query, params);
+  const rows = rs.rows.map((row) => {
+    const montoMensual = roundMonto2(parseMonto(row.monto_mensual_base, 0));
+    return {
+      id_contribuyente: Number(row.id_contribuyente || 0),
+      codigo_municipal: row.codigo_municipal || "",
+      nombre_completo: row.nombre_completo || "",
+      direccion_completa: row.direccion_completa || "-",
+      estado_conexion: "CON_CONEXION",
+      total_predios: Number(row.total_predios || 0),
+      monto_mensual: montoMensual,
+      monto_periodo: roundMonto2(montoMensual * mesesProyeccion),
+      monto_referencia: montoMensual,
+      total_proyectado: roundMonto2(montoMensual * mesesProyeccion),
+      meses_deuda: 0,
+      deuda_total: 0,
+      abono_total: 0
+    };
+  });
+
+  const totalMensual = roundMonto2(rows.reduce((acc, row) => acc + parseMonto(row.monto_mensual, 0), 0));
+  const totalProyectado = roundMonto2(rows.reduce((acc, row) => acc + parseMonto(row.total_proyectado, 0), 0));
+  const inicioBase = shiftIsoDateByMonths(`${fechaReferenciaMes}-01`, 1) || `${fechaReferenciaMes}-01`;
+  const finExclusivo = shiftIsoDateByMonths(inicioBase, mesesProyeccion) || inicioBase;
+  const detalleMensual = [];
+  for (let idx = 0; idx < mesesProyeccion; idx += 1) {
+    const fechaMes = shiftIsoDateByMonths(inicioBase, idx) || inicioBase;
+    detalleMensual.push({
+      periodo: buildReporteConexionProjectionMonthLabel(fechaMes),
+      fecha_inicio_mes: fechaMes,
+      total: totalMensual
+    });
+  }
+
+  return {
+    rows,
+    proyeccion: {
+      fecha_referencia_mes: fechaReferenciaMes,
+      meses_proyeccion: mesesProyeccion,
+      rango: {
+        desde: inicioBase,
+        hasta_exclusivo: finExclusivo
+      },
+      total_mensual: totalMensual,
+      total_proyectado: totalProyectado,
+      detalle_mensual: detalleMensual
+    }
+  };
+};
+
 const obtenerReporteEstadoConexionDetalleMensualRows = async ({
   estadoFiltro = "TODOS",
   periodo = parsePeriodoReporteConexion({ tipo_periodo: "todo" }),
@@ -5618,9 +5754,37 @@ app.get("/contribuyentes/reporte-estado-conexion", async (req, res) => {
   try {
     const estado = normalizeReporteEstadoConexionFilter(req.query?.estado);
     const periodo = parsePeriodoReporteConexion(req.query);
+    const validationError = validatePeriodoReporteConexion(periodo);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
     const idsContribuyentes = parseIdsContribuyentesFromQuery(req.query?.ids);
     const ordenarPor = normalizeReporteOrdenCampo(req.query?.ordenar_por, "direccion");
     const orden = normalizeReporteOrdenDireccion(req.query?.orden, "asc");
+    if (periodo.tipo === "proyeccion") {
+      if (!hasMinRole(req.user?.rol, "ADMIN_SEC")) {
+        return res.status(403).json({ error: "Acceso denegado. La proyeccion futura es solo para administradores." });
+      }
+      if (estado !== "CON_CONEXION") {
+        return res.status(400).json({ error: "La proyeccion futura solo aplica para conexiones activas." });
+      }
+      const data = await obtenerReporteProyeccionEstadoConexion({ periodo, idsContribuyentes });
+      const rowsOrdenadas = sortReporteEstadoConexionRows(data.rows, ordenarPor, orden);
+      return res.json({
+        meta: {
+          estado: "CON_CONEXION",
+          tipo_periodo: periodo.tipo,
+          periodo: periodo.periodo,
+          fecha_desde: periodo.fecha_desde,
+          fecha_hasta: periodo.fecha_hasta,
+          ordenar_por: ordenarPor,
+          orden,
+          meses_proyeccion: Number(periodo.meses_proyeccion || 1)
+        },
+        proyeccion: data.proyeccion,
+        rows: rowsOrdenadas
+      });
+    }
     const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, periodo, idsContribuyentes });
     const rowsOrdenadas = sortReporteEstadoConexionRows(rows, ordenarPor, orden);
     return res.json({
@@ -5645,11 +5809,24 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
   try {
     const estado = normalizeReporteEstadoConexionFilter(req.query?.estado);
     const periodo = parsePeriodoReporteConexion(req.query);
+    const validationError = validatePeriodoReporteConexion(periodo);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
     const idsContribuyentes = parseIdsContribuyentesFromQuery(req.query?.ids);
     const ordenarPor = normalizeReporteOrdenCampo(req.query?.ordenar_por, "direccion");
     const orden = normalizeReporteOrdenDireccion(req.query?.orden, "asc");
-    const rows = await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, periodo, idsContribuyentes });
-    const rowsOrdenadas = sortReporteEstadoConexionRows(rows, ordenarPor, orden);
+    const esProyeccion = periodo.tipo === "proyeccion";
+    if (esProyeccion && !hasMinRole(req.user?.rol, "ADMIN_SEC")) {
+      return res.status(403).json({ error: "Acceso denegado. La proyeccion futura es solo para administradores." });
+    }
+    if (esProyeccion && estado !== "CON_CONEXION") {
+      return res.status(400).json({ error: "La proyeccion futura solo aplica para conexiones activas." });
+    }
+    const data = esProyeccion
+      ? await obtenerReporteProyeccionEstadoConexion({ periodo, idsContribuyentes })
+      : { rows: await obtenerReporteEstadoConexionRows({ estadoFiltro: estado, periodo, idsContribuyentes }) };
+    const rowsOrdenadas = sortReporteEstadoConexionRows(data.rows, ordenarPor, orden);
 
     const wb = new ExcelJS.Workbook();
     const wsResumen = wb.addWorksheet("Resumen");
@@ -5658,63 +5835,124 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
       { header: "VALOR", key: "valor", width: 42 }
     ];
     wsResumen.getRow(1).font = { bold: true };
-    wsResumen.addRow({ campo: "Estado objetivo", valor: estado === "TODOS" ? "Todos" : estado });
+    wsResumen.addRow({ campo: "Estado objetivo", valor: (esProyeccion ? "CON_CONEXION" : estado) === "TODOS" ? "Todos" : (esProyeccion ? "CON_CONEXION" : estado) });
     wsResumen.addRow({ campo: "Tipo periodo", valor: periodo.tipo || "mes" });
     wsResumen.addRow({ campo: "Desde", valor: periodo.fecha_desde || "" });
     wsResumen.addRow({ campo: "Hasta", valor: periodo.fecha_hasta || "" });
     wsResumen.addRow({ campo: "Total registros", valor: Number(rowsOrdenadas.length || 0) });
-    wsResumen.addRow({
-      campo: "Total deuda",
-      valor: Number(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.deuda_total, 0), 0).toFixed(2))
-    });
-    wsResumen.addRow({
-      campo: "Total abono",
-      valor: Number(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.abono_total, 0), 0).toFixed(2))
-    });
+    if (esProyeccion) {
+      wsResumen.addRow({ campo: "Mes referencia", valor: data?.proyeccion?.fecha_referencia_mes || periodo.periodo || "" });
+      wsResumen.addRow({ campo: "Meses proyectados", valor: Number(data?.proyeccion?.meses_proyeccion || 0) });
+      wsResumen.addRow({ campo: "Base mensual", valor: Number(parseMonto(data?.proyeccion?.total_mensual, 0).toFixed(2)) });
+      wsResumen.addRow({ campo: "Total proyectado", valor: Number(parseMonto(data?.proyeccion?.total_proyectado, 0).toFixed(2)) });
 
-    const ws = wb.addWorksheet(periodo.tipo === "todo" ? "Contribuyentes" : "Detalle");
-    ws.columns = [
-      { header: "CODIGO", key: "codigo_municipal", width: 14 },
-      { header: "CONTRIBUYENTE", key: "nombre_completo", width: 42 },
-      { header: "DIRECCION", key: "direccion_completa", width: 44 },
-      { header: "ESTADO", key: "estado_conexion", width: 18 },
-      { header: "Meses Deuda", key: "meses_deuda", width: 14 },
-      { header: "Deuda Total", key: "deuda_total", width: 16 },
-      { header: "Abono Total", key: "abono_total", width: 16 }
-    ];
-    ws.getRow(1).font = { bold: true };
-    rowsOrdenadas.forEach((row) => {
-      ws.addRow({
-        codigo_municipal: row.codigo_municipal,
-        nombre_completo: row.nombre_completo,
-        direccion_completa: row.direccion_completa,
-        estado_conexion: row.estado_conexion,
-        meses_deuda: row.meses_deuda,
-        deuda_total: row.deuda_total,
-        abono_total: row.abono_total
+      const ws = wb.addWorksheet("Proyeccion");
+      ws.columns = [
+        { header: "CODIGO", key: "codigo_municipal", width: 14 },
+        { header: "CONTRIBUYENTE", key: "nombre_completo", width: 42 },
+        { header: "DIRECCION", key: "direccion_completa", width: 44 },
+        { header: "PREDIOS ACTIVOS", key: "total_predios", width: 16 },
+        { header: "BASE MENSUAL", key: "monto_mensual", width: 16 },
+        { header: "TOTAL PROYECTADO", key: "total_proyectado", width: 18 }
+      ];
+      ws.getRow(1).font = { bold: true };
+      rowsOrdenadas.forEach((row) => {
+        ws.addRow({
+          codigo_municipal: row.codigo_municipal,
+          nombre_completo: row.nombre_completo,
+          direccion_completa: row.direccion_completa,
+          total_predios: Number(row.total_predios || 0),
+          monto_mensual: parseMonto(row.monto_mensual, 0),
+          total_proyectado: parseMonto(row.total_proyectado, 0)
+        });
       });
-    });
-    const totalMeses = rowsOrdenadas.reduce((acc, item) => acc + Number(item?.meses_deuda || 0), 0);
-    const totalDeuda = roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.deuda_total, 0), 0));
-    const totalAbono = roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.abono_total, 0), 0));
-    const totalRow = ws.addRow({
-      codigo_municipal: "",
-      nombre_completo: "TOTAL",
-      direccion_completa: "",
-      estado_conexion: "",
-      meses_deuda: totalMeses,
-      deuda_total: totalDeuda,
-      abono_total: totalAbono
-    });
-    totalRow.font = { bold: true };
-    for (let i = 2; i <= ws.rowCount; i += 1) {
-      ws.getCell(`F${i}`).numFmt = "#,##0.00";
-      ws.getCell(`G${i}`).numFmt = "#,##0.00";
-      ws.getCell(`H${i}`).numFmt = "#,##0.00";
-    }
-    ws.views = [{ state: "frozen", ySplit: 1 }];
+      const totalRow = ws.addRow({
+        codigo_municipal: "",
+        nombre_completo: "TOTAL",
+        direccion_completa: "",
+        total_predios: rowsOrdenadas.reduce((acc, item) => acc + Number(item?.total_predios || 0), 0),
+        monto_mensual: roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.monto_mensual, 0), 0)),
+        total_proyectado: roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.total_proyectado, 0), 0))
+      });
+      totalRow.font = { bold: true };
+      for (let i = 2; i <= ws.rowCount; i += 1) {
+        ws.getCell(`E${i}`).numFmt = "#,##0.00";
+        ws.getCell(`F${i}`).numFmt = "#,##0.00";
+      }
+      ws.views = [{ state: "frozen", ySplit: 1 }];
 
-    if (periodo.tipo === "todo") {
+      const wsMeses = wb.addWorksheet("Detalle Mensual");
+      wsMeses.columns = [
+        { header: "PERIODO", key: "periodo", width: 16 },
+        { header: "INICIO MES", key: "fecha_inicio_mes", width: 16 },
+        { header: "TOTAL ESTIMADO", key: "total", width: 18 }
+      ];
+      wsMeses.getRow(1).font = { bold: true };
+      (data?.proyeccion?.detalle_mensual || []).forEach((row) => {
+        wsMeses.addRow({
+          periodo: row.periodo || "",
+          fecha_inicio_mes: row.fecha_inicio_mes || "",
+          total: parseMonto(row.total, 0)
+        });
+      });
+      for (let i = 2; i <= wsMeses.rowCount; i += 1) {
+        wsMeses.getCell(`C${i}`).numFmt = "#,##0.00";
+      }
+      wsMeses.views = [{ state: "frozen", ySplit: 1 }];
+    } else {
+      wsResumen.addRow({
+        campo: "Total deuda",
+        valor: Number(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.deuda_total, 0), 0).toFixed(2))
+      });
+      wsResumen.addRow({
+        campo: "Total abono",
+        valor: Number(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.abono_total, 0), 0).toFixed(2))
+      });
+
+      const ws = wb.addWorksheet(periodo.tipo === "todo" ? "Contribuyentes" : "Detalle");
+      ws.columns = [
+        { header: "CODIGO", key: "codigo_municipal", width: 14 },
+        { header: "CONTRIBUYENTE", key: "nombre_completo", width: 42 },
+        { header: "DIRECCION", key: "direccion_completa", width: 44 },
+        { header: "ESTADO", key: "estado_conexion", width: 18 },
+        { header: "Meses Deuda", key: "meses_deuda", width: 14 },
+        { header: "Deuda Total", key: "deuda_total", width: 16 },
+        { header: "Abono Total", key: "abono_total", width: 16 }
+      ];
+      ws.getRow(1).font = { bold: true };
+      rowsOrdenadas.forEach((row) => {
+        ws.addRow({
+          codigo_municipal: row.codigo_municipal,
+          nombre_completo: row.nombre_completo,
+          direccion_completa: row.direccion_completa,
+          estado_conexion: row.estado_conexion,
+          meses_deuda: row.meses_deuda,
+          deuda_total: row.deuda_total,
+          abono_total: row.abono_total
+        });
+      });
+      const totalMeses = rowsOrdenadas.reduce((acc, item) => acc + Number(item?.meses_deuda || 0), 0);
+      const totalDeuda = roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.deuda_total, 0), 0));
+      const totalAbono = roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.abono_total, 0), 0));
+      const totalRow = ws.addRow({
+        codigo_municipal: "",
+        nombre_completo: "TOTAL",
+        direccion_completa: "",
+        estado_conexion: "",
+        meses_deuda: totalMeses,
+        deuda_total: totalDeuda,
+        abono_total: totalAbono
+      });
+      totalRow.font = { bold: true };
+      for (let i = 2; i <= ws.rowCount; i += 1) {
+        ws.getCell(`F${i}`).numFmt = "#,##0.00";
+        ws.getCell(`G${i}`).numFmt = "#,##0.00";
+        ws.getCell(`H${i}`).numFmt = "#,##0.00";
+      }
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+    }
+
+    if (periodo.tipo === "todo" && !esProyeccion) {
       const monthLabels = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
       const detalleRows = await obtenerReporteEstadoConexionDetalleMensualRows({
         estadoFiltro: estado,
@@ -5799,12 +6037,12 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
       wsDetalle.views = [{ state: "frozen", ySplit: 1 }];
     }
 
-    const estadoTag = estado === "TODOS" ? "TODOS" : estado;
-    const periodoTag = String(periodo.periodo || "")
-      .replace(/[^0-9]/g, "")
-      .slice(0, 16) || "periodo";
+    const estadoTag = esProyeccion ? "CON_CONEXION" : (estado === "TODOS" ? "TODOS" : estado);
+    const periodoTag = esProyeccion
+      ? `${String(periodo.periodo || "").replace(/[^0-9]/g, "").slice(0, 16) || "periodo"}_${Number(periodo.meses_proyeccion || 1)}m`
+      : (String(periodo.periodo || "").replace(/[^0-9]/g, "").slice(0, 16) || "periodo");
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename=reporte_estado_conexion_${estadoTag}_${periodoTag}.xlsx`);
+    res.setHeader("Content-Disposition", `attachment; filename=${esProyeccion ? "reporte_proyeccion_conexion_activa" : "reporte_estado_conexion"}_${estadoTag}_${periodoTag}.xlsx`);
     await wb.xlsx.write(res);
     res.end();
   } catch (err) {
@@ -10483,6 +10721,43 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   };
 };
 
+const validatePeriodoReporteConexion = (periodo = {}) => {
+  const hoy = normalizeDateOnly(toISODate()) || toISODate();
+  const mesActual = getCurrentIsoMonth();
+  const anioActual = getCurrentYear();
+  if (periodo?.tipo === "todo") return "";
+  if (periodo?.tipo === "dia") {
+    return String(periodo?.fecha_desde || "") > hoy
+      ? "No se permite consultar reportes de conexiones con fecha futura."
+      : "";
+  }
+  if (periodo?.tipo === "rango") {
+    return String(periodo?.fecha_desde || "") > hoy || String(periodo?.fecha_hasta || "") > hoy
+      ? "No se permite consultar reportes de conexiones con fechas futuras."
+      : "";
+  }
+  if (periodo?.tipo === "anio") {
+    return Number(periodo?.anio_corte || 0) > anioActual
+      ? "No se permite consultar reportes de conexiones con anio futuro."
+      : "";
+  }
+  if (periodo?.tipo === "proyeccion") {
+    return String(periodo?.periodo || "") > mesActual
+      ? "No se permite usar un mes de referencia futuro para proyeccion."
+      : "";
+  }
+  return String(periodo?.periodo || "") > mesActual
+    ? "No se permite consultar reportes de conexiones con mes futuro."
+    : "";
+};
+
+const buildReporteConexionProjectionMonthLabel = (isoDateRaw) => {
+  const iso = normalizeDateOnly(isoDateRaw);
+  if (!iso) return "";
+  const [anio, mes] = iso.split("-");
+  return `${mes}/${anio}`;
+};
+
 const buildConteoEfectivoResumen = async (fechaReferencia = toISODate()) => {
   const fecha = normalizeDateOnly(fechaReferencia) || toISODate();
   const aggregate = await pool.query(`
@@ -10614,6 +10889,9 @@ app.get("/caja/reporte", async (req, res) => {
   try {
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
     const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
+    if (tipo === "proyeccion") {
+      return res.status(403).json({ error: "La proyeccion futura ahora se genera desde Reporte de Conexion Activa." });
+    }
     const hoy = toISODate();
     let fecha = normalizeDateOnly(req.query.fecha) || hoy;
     let rangoManual = null;
@@ -10654,6 +10932,9 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
   try {
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
     const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
+    if (tipo === "proyeccion") {
+      return res.status(403).json({ error: "La proyeccion futura ahora se genera desde Reporte de Conexion Activa." });
+    }
     const hoy = toISODate();
     let fecha = normalizeDateOnly(req.query.fecha) || hoy;
     let rangoManual = null;

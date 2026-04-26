@@ -74,13 +74,17 @@ const buildPeriodoQuery = ({
   periodoMes,
   periodoAnio,
   periodoDesde,
-  periodoHasta
+  periodoHasta,
+  mesesProyeccion
 }) => {
   if (tipoPeriodo === "todo") {
     return { tipo_periodo: "todo" };
   }
   if (tipoPeriodo === "dia") {
     return { tipo_periodo: "dia", fecha: periodoDia };
+  }
+  if (tipoPeriodo === "proyeccion") {
+    return { tipo_periodo: "proyeccion", periodo: periodoMes, meses_proyeccion: mesesProyeccion };
   }
   if (tipoPeriodo === "anio") {
     return { tipo_periodo: "anio", anio: periodoAnio };
@@ -110,6 +114,13 @@ const describePeriodo = ({
   return `Mes: ${periodoMes || "-"}`;
 };
 
+const describePeriodoExtendido = (params = {}) => {
+  if (params?.tipoPeriodo === "proyeccion") {
+    return `Proyeccion: base ${params?.periodoMes || "-"} | ${Number(params?.mesesProyeccion || 0)} mes(es)`;
+  }
+  return describePeriodo(params);
+};
+
 const parseAmount = (value) => {
   const n = Number.parseFloat(value);
   return Number.isFinite(n) ? n : 0;
@@ -121,7 +132,8 @@ const ModalReporteCortes = ({
   selectedIds = [],
   onImprimir,
   darkMode,
-  estadoObjetivo = ESTADOS_CONEXION.CORTADO
+  estadoObjetivo = ESTADOS_CONEXION.CORTADO,
+  canUseProyeccionFutura = true
 }) => {
   const estadoFiltro = Object.prototype.hasOwnProperty.call(STATUS_META, estadoObjetivo)
     ? estadoObjetivo
@@ -141,9 +153,11 @@ const ModalReporteCortes = ({
   const [periodoAnio, setPeriodoAnio] = useState(currentYearValue());
   const [periodoDesde, setPeriodoDesde] = useState(currentDateValue());
   const [periodoHasta, setPeriodoHasta] = useState(currentDateValue());
+  const [mesesProyeccion, setMesesProyeccion] = useState(1);
   const [reporteRows, setReporteRows] = useState([]);
   const [cargandoReporte, setCargandoReporte] = useState(false);
   const [errorReporte, setErrorReporte] = useState("");
+  const [proyeccionData, setProyeccionData] = useState(null);
 
   const usuariosBase = useMemo(() => {
     const rows = Array.isArray(contribuyentes) ? contribuyentes : [];
@@ -152,6 +166,15 @@ const ModalReporteCortes = ({
       .slice()
       .sort(compareByDireccionAsc);
   }, [contribuyentes, estadoFiltro]);
+
+  const permiteProyeccion = estadoFiltro === ESTADOS_CONEXION.CON_CONEXION && canUseProyeccionFutura;
+  const isProyeccion = tipoPeriodo === "proyeccion";
+
+  useEffect(() => {
+    if (!permiteProyeccion && tipoPeriodo === "proyeccion") {
+      setTipoPeriodo("mes");
+    }
+  }, [permiteProyeccion, tipoPeriodo]);
 
   useEffect(() => {
     const filtrados = new Set(usuariosBase.map((m) => Number(m.id_contribuyente)));
@@ -196,15 +219,18 @@ const ModalReporteCortes = ({
               periodoMes,
               periodoAnio,
               periodoDesde,
-              periodoHasta
+              periodoHasta,
+              mesesProyeccion
             })
           }
         });
         if (cancelado) return;
         setReporteRows(Array.isArray(res?.data?.rows) ? res.data.rows : []);
+        setProyeccionData(res?.data?.proyeccion || null);
       } catch (error) {
         if (cancelado) return;
         setReporteRows([]);
+        setProyeccionData(null);
         setErrorReporte(error?.response?.data?.error || "No se pudo actualizar la información del reporte.");
       } finally {
         if (!cancelado) setCargandoReporte(false);
@@ -214,7 +240,7 @@ const ModalReporteCortes = ({
     return () => {
       cancelado = true;
     };
-  }, [estadoFiltro, tipoPeriodo, periodoDia, periodoMes, periodoAnio, periodoDesde, periodoHasta]);
+  }, [estadoFiltro, tipoPeriodo, periodoDia, periodoMes, periodoAnio, periodoDesde, periodoHasta, mesesProyeccion]);
 
   const toggleManual = (id) => {
     setManualIds((prev) => {
@@ -240,6 +266,9 @@ const ModalReporteCortes = ({
     const mesesDeuda = Number(detalle?.meses_deuda ?? row?.meses_deuda ?? 0) || 0;
     const deudaTotal = parseAmount(detalle?.deuda_total ?? row?.deuda_total ?? row?.deuda_anio ?? 0);
     const abonoTotal = parseAmount(detalle?.abono_total ?? row?.abono_total ?? row?.abono_anio ?? 0);
+    const montoMensual = parseAmount(detalle?.monto_mensual ?? row?.monto_mensual ?? row?.monto_referencia ?? 0);
+    const totalProyectado = parseAmount(detalle?.total_proyectado ?? row?.total_proyectado ?? row?.monto_periodo ?? 0);
+    const totalPredios = Number(detalle?.total_predios ?? row?.total_predios ?? 0) || 0;
     return {
       ...detalle,
       ...row,
@@ -247,7 +276,12 @@ const ModalReporteCortes = ({
       deuda_total: deudaTotal,
       deuda_anio: deudaTotal,
       abono_total: abonoTotal,
-      abono_anio: abonoTotal
+      abono_anio: abonoTotal,
+      monto_mensual: montoMensual,
+      monto_referencia: montoMensual,
+      monto_periodo: totalProyectado,
+      total_proyectado: totalProyectado,
+      total_predios: totalPredios
     };
   };
 
@@ -287,11 +321,22 @@ const ModalReporteCortes = ({
     [seleccionEnriquecida]
   );
 
+  const totalMensualProyeccion = useMemo(
+    () => seleccionEnriquecida.reduce((acc, item) => acc + parseAmount(item.monto_mensual), 0),
+    [seleccionEnriquecida]
+  );
+
+  const totalProyectado = useMemo(
+    () => seleccionEnriquecida.reduce((acc, item) => acc + parseAmount(item.total_proyectado), 0),
+    [seleccionEnriquecida]
+  );
+
   const criterioDescripcion = useMemo(() => {
-    if (modo === "todos") return `Todos (${meta.etiqueta})`;
-    if (modo === "calle") return calleNombre ? `${meta.etiqueta} por calle: ${calleNombre}` : `${meta.etiqueta} por calle`;
-    return `Seleccion manual (${meta.etiqueta})`;
-  }, [modo, calleNombre, meta.etiqueta]);
+    const sufijo = isProyeccion ? ` | Proyeccion ${Number(mesesProyeccion || 0)} mes(es)` : "";
+    if (modo === "todos") return `Todos (${meta.etiqueta})${sufijo}`;
+    if (modo === "calle") return `${calleNombre ? `${meta.etiqueta} por calle: ${calleNombre}` : `${meta.etiqueta} por calle`}${sufijo}`;
+    return `Seleccion manual (${meta.etiqueta})${sufijo}`;
+  }, [modo, calleNombre, meta.etiqueta, isProyeccion, mesesProyeccion]);
 
   const prepararReporte = async (formato) => {
     if (seleccion.length === 0) {
@@ -314,15 +359,17 @@ const ModalReporteCortes = ({
             periodoMes,
             periodoAnio,
             periodoDesde,
-            periodoHasta
+            periodoHasta,
+            mesesProyeccion
           })
         }
       });
       const reporteItems = Array.isArray(reporteRes?.data?.rows) ? reporteRes.data.rows : [];
+      const proyeccion = reporteRes?.data?.proyeccion || null;
       const reporteSeleccionMap = new Map(
         reporteItems.map((item) => [Number(item?.id_contribuyente || 0), item])
       );
-      const requiereResumenCorte = estadoFiltro === ESTADOS_CONEXION.CORTADO;
+      const requiereResumenCorte = estadoFiltro === ESTADOS_CONEXION.CORTADO && !isProyeccion;
       let resumenItems = [];
       if (requiereResumenCorte && ids.length > 0) {
         const resumenRes = await api.post("/contribuyentes/cortes/resumen", {
@@ -356,9 +403,11 @@ const ModalReporteCortes = ({
           tipo: modo,
           descripcion: criterioDescripcion,
           estado_objetivo: estadoFiltro,
-          estado_label: meta.etiqueta
+          estado_label: meta.etiqueta,
+          modo_reporte: isProyeccion ? "proyeccion" : "estado"
         },
         formato,
+        proyeccion,
         mostrar_evidencia: formato === "pdf" && requiereResumenCorte,
         generado_en: new Date().toISOString()
       });
@@ -384,7 +433,8 @@ const ModalReporteCortes = ({
           periodoMes,
           periodoAnio,
           periodoDesde,
-          periodoHasta
+          periodoHasta,
+          mesesProyeccion
         })
       };
       const res = await api.get("/contribuyentes/reporte-estado-conexion.xlsx", {
@@ -399,7 +449,7 @@ const ModalReporteCortes = ({
       a.href = url;
       a.download = buildDownloadNameFromHeaders(
         res?.headers,
-        `reporte_estado_conexion_${currentMonthValue().replace("-", "")}.xlsx`
+        `${isProyeccion ? "reporte_proyeccion_conexion_activa" : "reporte_estado_conexion"}_${currentMonthValue().replace("-", "")}.xlsx`
       );
       document.body.appendChild(a);
       a.click();
@@ -430,6 +480,9 @@ const ModalReporteCortes = ({
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
   const inputClass = darkMode ? "form-select bg-dark text-white border-secondary" : "form-select";
   const cardClass = darkMode ? "border border-secondary rounded p-2 bg-dark text-white" : "border rounded p-2";
+  const fechaActual = currentDateValue();
+  const mesActual = currentMonthValue();
+  const anioActual = currentYearValue();
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -462,6 +515,7 @@ const ModalReporteCortes = ({
                     <option value="mes">Mes</option>
                     <option value="anio">Año</option>
                     <option value="rango">Intervalo de fechas</option>
+                    {permiteProyeccion && <option value="proyeccion">Proyeccion futura</option>}
                   </select>
                 </div>
                 {tipoPeriodo === "dia" && (
@@ -470,6 +524,7 @@ const ModalReporteCortes = ({
                       type="date"
                       className="form-control form-control-sm"
                       value={periodoDia}
+                      max={fechaActual}
                       onChange={(e) => setPeriodoDia(e.target.value)}
                     />
                   </div>
@@ -480,16 +535,42 @@ const ModalReporteCortes = ({
                       type="month"
                       className="form-control form-control-sm"
                       value={periodoMes}
+                      max={mesActual}
                       onChange={(e) => setPeriodoMes(e.target.value)}
                     />
                   </div>
+                )}
+                {tipoPeriodo === "proyeccion" && (
+                  <>
+                    <div className="col-md-3">
+                      <label className="form-label form-label-sm mb-1">Mes de referencia</label>
+                      <input
+                        type="month"
+                        className="form-control form-control-sm"
+                        value={periodoMes}
+                        max={mesActual}
+                        onChange={(e) => setPeriodoMes(e.target.value)}
+                      />
+                    </div>
+                    <div className="col-md-3">
+                      <label className="form-label form-label-sm mb-1">Meses a proyectar</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="24"
+                        className="form-control form-control-sm"
+                        value={mesesProyeccion}
+                        onChange={(e) => setMesesProyeccion(Math.min(24, Math.max(1, Number(e.target.value || 1) || 1)))}
+                      />
+                    </div>
+                  </>
                 )}
                 {tipoPeriodo === "anio" && (
                   <div className="col-md-3">
                     <input
                       type="number"
                       min="1900"
-                      max="9999"
+                      max={anioActual}
                       className="form-control form-control-sm"
                       value={periodoAnio}
                       onChange={(e) => setPeriodoAnio(e.target.value)}
@@ -504,6 +585,7 @@ const ModalReporteCortes = ({
                         type="date"
                         className="form-control form-control-sm"
                         value={periodoDesde}
+                        max={fechaActual}
                         onChange={(e) => setPeriodoDesde(e.target.value)}
                       />
                     </div>
@@ -513,6 +595,7 @@ const ModalReporteCortes = ({
                         type="date"
                         className="form-control form-control-sm"
                         value={periodoHasta}
+                        max={fechaActual}
                         onChange={(e) => setPeriodoHasta(e.target.value)}
                       />
                     </div>
@@ -520,13 +603,14 @@ const ModalReporteCortes = ({
                 )}
               </div>
               <div className="small text-muted mt-2">
-                {describePeriodo({
+                {describePeriodoExtendido({
                   tipoPeriodo,
                   periodoDia,
                   periodoMes,
                   periodoAnio,
                   periodoDesde,
-                  periodoHasta
+                  periodoHasta,
+                  mesesProyeccion
                 })}
               </div>
             </div>
@@ -577,7 +661,9 @@ const ModalReporteCortes = ({
                           <span className="fw-bold">{m.codigo_municipal}</span>
                           <span className="text-truncate">{m.nombre_completo}</span>
                           <span className="ms-auto text-end">
-                            D: S/. {parseAmount(row.deuda_total).toFixed(2)} | A: S/. {parseAmount(row.abono_total).toFixed(2)}
+                            {isProyeccion
+                              ? `Base: S/. ${parseAmount(row.monto_mensual).toFixed(2)} | Proy: S/. ${parseAmount(row.total_proyectado).toFixed(2)}`
+                              : `D: S/. ${parseAmount(row.deuda_total).toFixed(2)} | A: S/. ${parseAmount(row.abono_total).toFixed(2)}`}
                           </span>
                         </label>
                       );
@@ -611,8 +697,18 @@ const ModalReporteCortes = ({
               <div><strong>Criterio:</strong> {criterioDescripcion}</div>
               <div><strong>Orden:</strong> Calle y numero ascendente</div>
               <div><strong>Usuarios seleccionados:</strong> {seleccion.length}</div>
-              <div><strong>Total deuda:</strong> S/. {totalDeuda.toFixed(2)}</div>
-              <div><strong>Total abono:</strong> S/. {totalAbono.toFixed(2)}</div>
+              {isProyeccion ? (
+                <>
+                  <div><strong>Base mensual:</strong> S/. {totalMensualProyeccion.toFixed(2)}</div>
+                  <div><strong>Total proyectado:</strong> S/. {totalProyectado.toFixed(2)}</div>
+                  <div><strong>Meses proyectados:</strong> {Number(proyeccionData?.meses_proyeccion || mesesProyeccion)}</div>
+                </>
+              ) : (
+                <>
+                  <div><strong>Total deuda:</strong> S/. {totalDeuda.toFixed(2)}</div>
+                  <div><strong>Total abono:</strong> S/. {totalAbono.toFixed(2)}</div>
+                </>
+              )}
               {cargandoReporte && <div className="small mt-1">Actualizando importes segun el periodo seleccionado...</div>}
               {!cargandoReporte && errorReporte && <div className="small mt-1 text-danger">{errorReporte}</div>}
             </div>
@@ -625,9 +721,19 @@ const ModalReporteCortes = ({
                     <th>Codigo</th>
                     <th>Contribuyente</th>
                     <th>Direccion</th>
-                    <th className="text-center">Meses Deuda</th>
-                    <th className="text-end">Deuda Total</th>
-                    <th className="text-end">Abono Total</th>
+                    {isProyeccion ? (
+                      <>
+                        <th className="text-center">Predios Activos</th>
+                        <th className="text-end">Base Mensual</th>
+                        <th className="text-end">Total Proyectado</th>
+                      </>
+                    ) : (
+                      <>
+                        <th className="text-center">Meses Deuda</th>
+                        <th className="text-end">Deuda Total</th>
+                        <th className="text-end">Abono Total</th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -640,13 +746,27 @@ const ModalReporteCortes = ({
                         <td className="fw-bold">{m.codigo_municipal}</td>
                         <td>{m.nombre_completo}</td>
                         <td>{m.direccion_completa}</td>
-                        <td className={`text-center ${Number(m.meses_deuda || 0) > 0 ? "fw-bold text-danger" : ""}`}>{m.meses_deuda}</td>
-                        <td className={`text-end ${parseAmount(m.deuda_total) > 0 ? "fw-bold" : "text-muted"}`}>
-                          S/. {parseAmount(m.deuda_total).toFixed(2)}
-                        </td>
-                        <td className={`text-end ${parseAmount(m.abono_total) > 0 ? "fw-bold text-success" : "text-muted"}`}>
-                          S/. {parseAmount(m.abono_total).toFixed(2)}
-                        </td>
+                        {isProyeccion ? (
+                          <>
+                            <td className="text-center">{Number(m.total_predios || 0)}</td>
+                            <td className={`text-end ${parseAmount(m.monto_mensual) > 0 ? "fw-bold" : "text-muted"}`}>
+                              S/. {parseAmount(m.monto_mensual).toFixed(2)}
+                            </td>
+                            <td className={`text-end ${parseAmount(m.total_proyectado) > 0 ? "fw-bold text-success" : "text-muted"}`}>
+                              S/. {parseAmount(m.total_proyectado).toFixed(2)}
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className={`text-center ${Number(m.meses_deuda || 0) > 0 ? "fw-bold text-danger" : ""}`}>{m.meses_deuda}</td>
+                            <td className={`text-end ${parseAmount(m.deuda_total) > 0 ? "fw-bold" : "text-muted"}`}>
+                              S/. {parseAmount(m.deuda_total).toFixed(2)}
+                            </td>
+                            <td className={`text-end ${parseAmount(m.abono_total) > 0 ? "fw-bold text-success" : "text-muted"}`}>
+                              S/. {parseAmount(m.abono_total).toFixed(2)}
+                            </td>
+                          </>
+                        )}
                       </tr>
                     ))
                   )}
@@ -657,10 +777,12 @@ const ModalReporteCortes = ({
 
           <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={cerrarModal} disabled={procesando}>Cerrar</button>
-            <button type="button" className={`btn ${meta.claseOutline}`} onClick={() => prepararReporte("print")} disabled={procesando}>
-              <FaPrint className="me-2" />
-              {procesando ? "Procesando..." : "Imprimir Reporte"}
-            </button>
+            {!isProyeccion && (
+              <button type="button" className={`btn ${meta.claseOutline}`} onClick={() => prepararReporte("print")} disabled={procesando}>
+                <FaPrint className="me-2" />
+                {procesando ? "Procesando..." : "Imprimir Reporte"}
+              </button>
+            )}
             <button type="button" className="btn btn-danger" onClick={() => prepararReporte("pdf")} disabled={procesando}>
               <FaFilePdf className="me-2" />
               {procesando ? "Procesando..." : "Exportar PDF"}

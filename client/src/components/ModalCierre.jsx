@@ -477,7 +477,6 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   <option value="mensual">Mensual</option>
                   <option value="anual">Anual</option>
                   <option value="rango">Intervalo de fechas</option>
-                  <option value="proyeccion">Proyeccion futura</option>
                 </select>
               </div>
               <div className="col-12 col-md-5 col-lg-4">

@@ -132,7 +132,9 @@ const buildPdfBlobFromStreams = (streams) => {
 export const buildReporteEstadoConexionPdf = (payload = {}) => {
   const lista = Array.isArray(payload?.lista) ? payload.lista : [];
   const criterio = payload?.criterio || {};
+  const modoReporte = String(criterio?.modo_reporte || "estado").toLowerCase();
   const estadoObjetivo = String(criterio?.estado_objetivo || "").toUpperCase();
+  const esProyeccion = modoReporte === "proyeccion";
   const mostrarDetalleCorte = estadoObjetivo === "CORTADO";
   const mostrarEvidencia = mostrarDetalleCorte && Boolean(payload?.mostrar_evidencia);
 
@@ -140,8 +142,41 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
   const fechaValida = Number.isNaN(generadoEn.getTime()) ? new Date() : generadoEn;
   const totalDeuda = lista.reduce((acc, row) => acc + (Number.parseFloat(row?.deuda_total ?? row?.deuda_anio ?? 0) || 0), 0);
   const totalAbono = lista.reduce((acc, row) => acc + (Number.parseFloat(row?.abono_total ?? row?.abono_anio ?? 0) || 0), 0);
+  const totalMensual = lista.reduce((acc, row) => acc + (Number.parseFloat(row?.monto_mensual ?? row?.monto_referencia ?? 0) || 0), 0);
+  const totalProyectado = lista.reduce((acc, row) => acc + (Number.parseFloat(row?.total_proyectado ?? row?.monto_periodo ?? 0) || 0), 0);
+  const proyeccion = payload?.proyeccion || {};
 
   const lines = [];
+  if (esProyeccion) {
+    lines.push("REPORTE DE PROYECCION FUTURA - CONEXION ACTIVA");
+    lines.push("Municipalidad Distrital de Pueblo Nuevo");
+    lines.push(`Fecha: ${fechaValida.toLocaleDateString("es-PE")} ${fechaValida.toLocaleTimeString("es-PE")}`);
+    lines.push(`Criterio: ${criterio?.descripcion || "Seleccion manual"}`);
+    lines.push(`Estado: ${criterio?.estado_label || "Con conexion"}`);
+    lines.push(`Mes referencia: ${proyeccion?.fecha_referencia_mes || "-"}`);
+    lines.push(`Meses proyectados: ${Number(proyeccion?.meses_proyeccion || 0)} | Base mensual: ${formatMoney(totalMensual)} | Total proyectado: ${formatMoney(totalProyectado)}`);
+    lines.push("=".repeat(90));
+    if (Array.isArray(proyeccion?.detalle_mensual) && proyeccion.detalle_mensual.length > 0) {
+      lines.push("DETALLE MENSUAL");
+      proyeccion.detalle_mensual.forEach((row) => {
+        lines.push(`- ${row?.periodo || "-"} | Inicio ${row?.fecha_inicio_mes || "-"} | Total ${formatMoney(row?.total || 0)}`);
+      });
+      lines.push("=".repeat(90));
+    }
+    if (lista.length === 0) {
+      lines.push("No hay datos para este criterio.");
+    } else {
+      lista.forEach((row, idx) => {
+        pushWrapped(lines, `${idx + 1}. [${row?.codigo_municipal || "-"}] ${row?.nombre_completo || ""}`);
+        pushWrapped(lines, `   Direccion: ${row?.direccion_completa || ""}`);
+        pushWrapped(lines, `   Predios activos: ${Number(row?.total_predios || 0)} | Base mensual: ${formatMoney(row?.monto_mensual || 0)} | Total proyectado: ${formatMoney(row?.total_proyectado || 0)}`);
+        lines.push("-".repeat(90));
+      });
+    }
+    const streams = toPageStreams(lines);
+    return buildPdfBlobFromStreams(streams);
+  }
+
   lines.push("REPORTE DE ESTADO DE CONEXION");
   lines.push("Municipalidad Distrital de Pueblo Nuevo");
   lines.push(`Fecha: ${fechaValida.toLocaleDateString("es-PE")} ${fechaValida.toLocaleTimeString("es-PE")}`);
