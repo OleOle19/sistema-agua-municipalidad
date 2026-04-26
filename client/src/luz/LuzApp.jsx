@@ -1391,7 +1391,7 @@ function LuzApp({ onBackToSelector }) {
                             <div><strong>Usuario:</strong> {suministroSeleccionado.nombre_usuario}</div>
                             <div><strong>Zona:</strong> {suministroSeleccionado.zona}</div>
                             <div><strong>ID:</strong> {suministroSeleccionado.nro_medidor}</div>
-                            <div><strong>Medidor:</strong> -</div>
+                            <div><strong>Medidor:</strong> {suministroSeleccionado.nro_medidor_real || suministroSeleccionado.nro_medidor || "-"}</div>
                           </div>
                           <form onSubmit={emitirReciboManual}>
                             <div className="row g-2">

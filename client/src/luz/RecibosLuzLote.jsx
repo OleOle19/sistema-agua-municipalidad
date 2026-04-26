@@ -8,23 +8,38 @@ const RecibosLuzLote = forwardRef(({ items = [] }, ref) => {
     return <div ref={ref}></div>;
   }
 
+  const pages = [];
+  for (let idx = 0; idx < items.length; idx += RECIBOS_POR_HOJA) {
+    pages.push(items.slice(idx, idx + RECIBOS_POR_HOJA));
+  }
+
   return (
-    <div ref={ref} style={{ width: "210mm", minHeight: "297mm", padding: "4mm", background: "#fff" }}>
-      {items.map((datos, idx) => {
-        const isEndOfPage = ((idx + 1) % RECIBOS_POR_HOJA) === 0;
-        const isLast = idx === (items.length - 1);
+    <div ref={ref} style={{ width: "210mm", background: "#fff" }}>
+      {pages.map((pageItems, pageIdx) => {
+        const isLastPage = pageIdx === pages.length - 1;
         return (
           <div
-            key={`luz-lote-${idx}-${datos?.recibo?.id_recibo || "sin-id"}`}
+            key={`luz-lote-page-${pageIdx + 1}`}
             style={{
-              height: "66mm",
-              marginBottom: isEndOfPage || isLast ? "0" : "2mm",
-              breakInside: "avoid",
-              pageBreakInside: "avoid",
-              pageBreakAfter: isEndOfPage && !isLast ? "always" : "auto"
+              width: "210mm",
+              minHeight: "297mm",
+              padding: "3mm",
+              boxSizing: "border-box",
+              pageBreakAfter: isLastPage ? "auto" : "always"
             }}
           >
-            <ReciboLuzCard datos={datos} />
+            {pageItems.map((datos, idx) => (
+              <div
+                key={`luz-lote-${pageIdx}-${idx}-${datos?.recibo?.id_recibo || "sin-id"}`}
+                style={{
+                  marginBottom: idx === pageItems.length - 1 ? 0 : "1.5mm",
+                  breakInside: "avoid",
+                  pageBreakInside: "avoid"
+                }}
+              >
+                <ReciboLuzCard datos={datos} />
+              </div>
+            ))}
           </div>
         );
       })}

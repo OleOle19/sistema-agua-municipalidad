@@ -572,6 +572,42 @@ const ensureDefaults = async () => {
      WHERE NOT EXISTS (SELECT 1 FROM tarifas_config WHERE activo = TRUE)`,
     [round2(LUZ_TARIFA_KWH_DEFAULT), round2(LUZ_CARGO_FIJO_DEFAULT)]
   );
+  await runSafe(
+    `WITH objetivo AS (
+       SELECT
+         r.id_recibo,
+         ROUND(GREATEST(COALESCE(r.lectura_actual, 0) - COALESCE(r.lectura_anterior, 0), 0)::numeric, 2) AS consumo_nuevo,
+         ROUND((GREATEST(COALESCE(r.lectura_actual, 0) - COALESCE(r.lectura_anterior, 0), 0) * COALESCE(r.tarifa_kwh, $1::numeric))::numeric, 2) AS energia_nueva,
+         ROUND((
+           ROUND((GREATEST(COALESCE(r.lectura_actual, 0) - COALESCE(r.lectura_anterior, 0), 0) * COALESCE(r.tarifa_kwh, $1::numeric))::numeric, 2)
+           + COALESCE(r.mantenimiento, $2::numeric)
+         )::numeric, 2) AS total_nuevo
+       FROM recibos r
+       WHERE COALESCE(r.lectura_anterior, 0) > 0
+         AND COALESCE(r.lectura_actual, 0) >= COALESCE(r.lectura_anterior, 0)
+         AND NOT EXISTS (
+           SELECT 1
+           FROM pagos p
+           WHERE p.id_recibo = r.id_recibo
+         )
+         AND (
+           ABS(COALESCE(r.consumo_kwh, 0) - ROUND(COALESCE(r.lectura_actual, 0)::numeric, 2)) <= 0.01
+           OR ABS(COALESCE(r.energia_activa, 0) - ROUND((COALESCE(r.lectura_actual, 0) * COALESCE(r.tarifa_kwh, $1::numeric))::numeric, 2)) <= 0.01
+         )
+         AND (
+           ABS(COALESCE(r.consumo_kwh, 0) - ROUND(GREATEST(COALESCE(r.lectura_actual, 0) - COALESCE(r.lectura_anterior, 0), 0)::numeric, 2)) > 0.01
+           OR ABS(COALESCE(r.energia_activa, 0) - ROUND((GREATEST(COALESCE(r.lectura_actual, 0) - COALESCE(r.lectura_anterior, 0), 0) * COALESCE(r.tarifa_kwh, $1::numeric))::numeric, 2)) > 0.01
+         )
+     )
+     UPDATE recibos r
+     SET
+       consumo_kwh = o.consumo_nuevo,
+       energia_activa = o.energia_nueva,
+       total_pagar = o.total_nuevo
+     FROM objetivo o
+     WHERE r.id_recibo = o.id_recibo`,
+    [round2(LUZ_TARIFA_KWH_DEFAULT), round2(LUZ_CARGO_FIJO_DEFAULT)]
+  );
 };
 
 let defaultsPromise = null;
@@ -776,7 +812,10 @@ const computeRecibo = ({ lecturaAnterior, lecturaActual, tarifaKwh, cargoFijo })
   if (lecturaAct < 0) {
     throw new Error("LECTURA_ACTUAL_INVALIDA");
   }
-  const consumo = lecturaAct;
+  if (lecturaAct < lecturaAnt) {
+    throw new Error("LECTURA_ACTUAL_MENOR");
+  }
+  const consumo = round2(Math.max(lecturaAct - lecturaAnt, 0));
   const tarifa = round2(parseMonto(tarifaKwh, LUZ_TARIFA_KWH_DEFAULT));
   const fijo = round2(parseMonto(cargoFijo, LUZ_CARGO_FIJO_DEFAULT));
   const energia = round2(consumo * tarifa);
@@ -1988,6 +2027,7 @@ router.post("/recibos", authenticateLuzToken, requireRole("ADMIN_SEC"), async (r
     if (err.message === "SUMINISTRO_INACTIVO") return res.status(400).json({ error: "Suministro inactivo. No se puede generar deuda." });
     if (err.message === "LECTURA_ACTUAL_REQUERIDA") return res.status(400).json({ error: "Lectura actual es obligatoria." });
     if (err.message === "LECTURA_ACTUAL_INVALIDA") return res.status(400).json({ error: "Lectura actual no puede ser negativa." });
+    if (err.message === "LECTURA_ACTUAL_MENOR") return res.status(400).json({ error: "Lectura actual no puede ser menor que la lectura anterior." });
     console.error("[LUZ] Error generando recibo:", err.message);
     return res.status(500).json({ error: "Error generando recibo." });
   } finally {
@@ -3447,6 +3487,15 @@ router.post("/importar/lecturas", authenticateLuzToken, requireRole("ADMIN"), up
             anio,
             mes,
             motivo: "Lectura actual no puede ser negativa."
+          });
+        } else if (errFila.message === "LECTURA_ACTUAL_MENOR") {
+          pushRechazo("lectura_invalida", {
+            linea: r,
+            zona,
+            nro_medidor: nroMedidor,
+            anio,
+            mes,
+            motivo: "Lectura actual no puede ser menor que lectura anterior."
           });
         } else if (errFila.message === "SUMINISTRO_INACTIVO") {
           pushRechazo("lectura_invalida", {

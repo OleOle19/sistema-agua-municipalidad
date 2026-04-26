@@ -710,6 +710,18 @@ const shiftIsoDateByDays = (isoDateRaw, deltaDays = 0) => {
   const d = String(probe.getUTCDate()).padStart(2, "0");
   return `${String(y).padStart(4, "0")}-${m}-${d}`;
 };
+const shiftIsoDateByMonths = (isoDateRaw, deltaMonths = 0) => {
+  const iso = normalizeDateOnly(isoDateRaw);
+  if (!iso) return null;
+  const [yyyy, mm, dd] = iso.split("-").map((v) => Number(v));
+  const probe = new Date(Date.UTC(yyyy, mm - 1, dd));
+  if (Number.isNaN(probe.getTime())) return null;
+  probe.setUTCMonth(probe.getUTCMonth() + Number(deltaMonths || 0));
+  const y = probe.getUTCFullYear();
+  const m = String(probe.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(probe.getUTCDate()).padStart(2, "0");
+  return `${String(y).padStart(4, "0")}-${m}-${d}`;
+};
 const getPagoCorrectionMinDate = (hoyIso = toISODate()) => {
   const hoy = normalizeDateOnly(hoyIso) || toISODate();
   const hoyMs = isoDateToUtcMs(hoy);
@@ -9975,7 +9987,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
   }
 });
 
-const TIPOS_REPORTE_CAJA = new Set(["diario", "semanal", "mensual", "anual", "rango"]);
+const TIPOS_REPORTE_CAJA = new Set(["diario", "semanal", "mensual", "anual", "rango", "proyeccion"]);
 
 const obtenerRangoCaja = async (tipo, fechaReferencia, rangoManual = null) => {
   if (tipo === "rango") {
@@ -10036,6 +10048,132 @@ const construirSerieTemporalCaja = async (tipo, desde, hasta) => {
     etiqueta: r.etiqueta,
     total: parseFloat(r.total) || 0
   }));
+};
+
+const buildCajaProjectionMonthLabel = (isoDateRaw) => {
+  const iso = normalizeDateOnly(isoDateRaw);
+  if (!iso) return "";
+  const [anio, mes] = iso.split("-");
+  return `${mes}/${anio}`;
+};
+
+const construirProyeccionCaja = async (fechaReferencia, options = {}) => {
+  const fechaBase = normalizeDateOnly(fechaReferencia) || toISODate();
+  const mesesRaw = Number(options.mesesProyeccion ?? options.meses_projection ?? 1);
+  const mesesProyeccion = Number.isFinite(mesesRaw)
+    ? Math.min(24, Math.max(1, Math.trunc(mesesRaw)))
+    : 1;
+  const inicioBase = shiftIsoDateByMonths(`${fechaBase.slice(0, 7)}-01`, 1) || `${fechaBase.slice(0, 7)}-01`;
+  const finExclusivo = shiftIsoDateByMonths(inicioBase, mesesProyeccion) || inicioBase;
+  const cacheKey = `proyeccion|${inicioBase}|${mesesProyeccion}`;
+  const cached = reportesCajaCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.data;
+  }
+
+  const tarifaPredioSql = buildTarifaActualReciboSql("pr");
+  const totalMensualRs = await pool.query(`
+    SELECT ROUND(COALESCE(SUM(${tarifaPredioSql}), 0)::numeric, 2) AS total_mensual
+    FROM predios pr
+    JOIN contribuyentes c ON c.id_contribuyente = pr.id_contribuyente
+    WHERE COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'
+      AND ${sqlSnEsSi("pr.activo_sn", "S")}
+  `);
+  const totalMensual = roundMonto2(parseMonto(totalMensualRs.rows[0]?.total_mensual, 0));
+  const totalProyectado = roundMonto2(totalMensual * mesesProyeccion);
+
+  const topContribuyentesRs = await pool.query(`
+    SELECT
+      c.id_contribuyente,
+      c.codigo_municipal,
+      COALESCE(
+        NULLIF(TRIM(c.nombre_completo), ''),
+        NULLIF(TRIM(c.sec_nombre), ''),
+        ''
+      ) AS nombre_completo,
+      COUNT(pr.id_predio)::int AS total_predios,
+      ROUND(COALESCE(SUM(${tarifaPredioSql}), 0)::numeric, 2) AS total_mensual
+    FROM contribuyentes c
+    JOIN predios pr ON pr.id_contribuyente = c.id_contribuyente
+    WHERE COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'
+      AND ${sqlSnEsSi("pr.activo_sn", "S")}
+    GROUP BY c.id_contribuyente, c.codigo_municipal,
+      COALESCE(
+        NULLIF(TRIM(c.nombre_completo), ''),
+        NULLIF(TRIM(c.sec_nombre), ''),
+        ''
+      )
+    HAVING COALESCE(SUM(${tarifaPredioSql}), 0) > 0
+    ORDER BY COALESCE(SUM(${tarifaPredioSql}), 0) DESC,
+      COALESCE(
+        NULLIF(TRIM(c.nombre_completo), ''),
+        NULLIF(TRIM(c.sec_nombre), ''),
+        ''
+      ) ASC
+    LIMIT 10
+  `);
+
+  const detalleMensual = [];
+  for (let idx = 0; idx < mesesProyeccion; idx += 1) {
+    const fechaMes = shiftIsoDateByMonths(inicioBase, idx) || inicioBase;
+    detalleMensual.push({
+      periodo: buildCajaProjectionMonthLabel(fechaMes),
+      fecha_inicio_mes: fechaMes,
+      total: totalMensual
+    });
+  }
+
+  const resumen = {
+    tipo: "proyeccion",
+    fecha_referencia: fechaBase,
+    rango: {
+      desde: inicioBase,
+      hasta_exclusivo: finExclusivo
+    },
+    total: totalProyectado.toFixed(2),
+    total_reimpresion: "0.00",
+    total_general: totalProyectado.toFixed(2),
+    cantidad_movimientos: 0,
+    movimientos: [],
+    paginacion: {
+      pagina: 1,
+      page_size: 1,
+      total_paginas: 1
+    },
+    proyeccion: {
+      meses_proyeccion: mesesProyeccion,
+      total_mensual: totalMensual.toFixed(2),
+      total_proyectado: totalProyectado.toFixed(2),
+      detalle_mensual: detalleMensual
+    },
+    graficos: {
+      recaudacion_temporal: detalleMensual.map((item) => ({
+        etiqueta: item.periodo,
+        total: item.total
+      })),
+      top_contribuyentes: topContribuyentesRs.rows.map((r) => {
+        const totalMensualContrib = roundMonto2(parseMonto(r.total_mensual, 0));
+        return {
+          id_contribuyente: Number(r.id_contribuyente || 0),
+          codigo_municipal: r.codigo_municipal || "",
+          nombre_completo: r.nombre_completo || "",
+          total_predios: Number(r.total_predios || 0),
+          total_mensual: totalMensualContrib,
+          total: roundMonto2(totalMensualContrib * mesesProyeccion)
+        };
+      }),
+      recaudacion_por_periodo: detalleMensual.map((item) => ({
+        periodo: item.periodo,
+        total: item.total
+      }))
+    }
+  };
+
+  reportesCajaCache.set(cacheKey, {
+    expiresAt: Date.now() + REPORTE_CAJA_CACHE_TTL_MS,
+    data: resumen
+  });
+  return resumen;
 };
 
 const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) => {
@@ -10143,6 +10281,9 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) =
 };
 
 const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
+  if (tipo === "proyeccion") {
+    return construirProyeccionCaja(fechaReferencia, options);
+  }
   const includeAllMovimientos = Boolean(options.includeAllMovimientos);
   const includeCodigoImpresion = Boolean(options.includeCodigoImpresion);
   const pageRaw = Number(options.page ?? 1);
@@ -10175,7 +10316,9 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
           ''
         ) AS nombre_completo,
         pr.id_contribuyente,
+        pr.id_predio,
         c.codigo_municipal,
+        ${buildDireccionSql("ca", "pr")} AS direccion_completa,
         r.mes,
         r.anio,
         r.subtotal_agua,
@@ -10215,6 +10358,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       JOIN recibos r ON p.id_recibo = r.id_recibo
       JOIN predios pr ON r.id_predio = pr.id_predio
       JOIN contribuyentes c ON pr.id_contribuyente = c.id_contribuyente
+      LEFT JOIN calles ca ON ca.id_calle = pr.id_calle
       LEFT JOIN ordenes_cobro oc ON oc.id_orden = p.id_orden_cobro
       LEFT JOIN LATERAL (
         SELECT id_codigo
@@ -10237,7 +10381,9 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       monto_pagado,
       nombre_completo,
       id_contribuyente,
+      id_predio,
       codigo_municipal,
+      direccion_completa,
       mes,
       anio,
       subtotal_agua,
@@ -10309,7 +10455,9 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       codigo_impresion: codigoImpresion,
       codigo_recibo: codigoRecibo > 0 ? codigoRecibo : null,
       id_recibo: idRecibo > 0 ? idRecibo : null,
+      id_predio: parsePositiveInt(row?.id_predio, 0) || null,
       numero_recibo: numeroRecibo || null,
+      direccion_completa: row?.direccion_completa || "",
       monto_agua: montos.agua,
       monto_desague: montos.desague,
       monto_limpieza: montos.limpieza,
@@ -10469,6 +10617,7 @@ app.get("/caja/reporte", async (req, res) => {
     const hoy = toISODate();
     let fecha = normalizeDateOnly(req.query.fecha) || hoy;
     let rangoManual = null;
+    const mesesProyeccion = Math.min(24, Math.max(1, Number(req.query.meses_proyeccion || 1) || 1));
     if (tipo === "rango") {
       let fechaDesde = normalizeDateOnly(req.query.fecha_desde || req.query.desde) || fecha;
       let fechaHasta = normalizeDateOnly(req.query.fecha_hasta || req.query.hasta) || fecha;
@@ -10492,7 +10641,8 @@ app.get("/caja/reporte", async (req, res) => {
       page,
       pageSize,
       includeCodigoImpresion: mostrarCodigoImpresion,
-      rangoManual
+      rangoManual,
+      mesesProyeccion
     });
     res.json(data);
   } catch (err) {
@@ -10507,6 +10657,7 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
     const hoy = toISODate();
     let fecha = normalizeDateOnly(req.query.fecha) || hoy;
     let rangoManual = null;
+    const mesesProyeccion = Math.min(24, Math.max(1, Number(req.query.meses_proyeccion || 1) || 1));
     if (tipo === "rango") {
       let fechaDesde = normalizeDateOnly(req.query.fecha_desde || req.query.desde) || fecha;
       let fechaHasta = normalizeDateOnly(req.query.fecha_hasta || req.query.hasta) || fecha;
@@ -10527,7 +10678,8 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
     const data = await construirReporteCaja(tipo, fecha, {
       includeAllMovimientos: true,
       includeCodigoImpresion: mostrarCodigoImpresion,
-      rangoManual
+      rangoManual,
+      mesesProyeccion
     });
 
     const workbook = new ExcelJS.Workbook();
@@ -10544,31 +10696,77 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
     wsResumen.addRow({ campo: "Rango hasta (exclusivo)", valor: data.rango?.hasta_exclusivo || "" });
     wsResumen.addRow({ campo: "Cantidad movimientos", valor: data.cantidad_movimientos || 0 });
     wsResumen.addRow({ campo: "Total caja", valor: parseFloat(data.total_general || 0) });
+    if (tipo === "proyeccion") {
+      wsResumen.addRow({ campo: "Meses proyectados", valor: Number(data?.proyeccion?.meses_proyeccion || 0) });
+      wsResumen.addRow({ campo: "Base mensual estimada", valor: parseFloat(data?.proyeccion?.total_mensual || 0) });
 
-    const wsMov = workbook.addWorksheet("Movimientos");
-    wsMov.columns = [
-      { header: "ID PAGO", key: "id_pago", width: 12 },
-      { header: "FECHA", key: "fecha", width: 14 },
-      { header: "HORA", key: "hora", width: 12 },
-      { header: "RECIBO", key: "numero_recibo", width: 14 },
-      { header: "CODIGO", key: "codigo_municipal", width: 16 },
-      { header: "CONTRIBUYENTE", key: "nombre_completo", width: 36 },
-      { header: "PERIODO", key: "periodo", width: 12 },
-      { header: "MONTO", key: "monto_pagado", width: 14 }
-    ];
-    wsMov.getRow(1).font = { bold: true };
-    (data.movimientos || []).forEach((m) => {
-      wsMov.addRow({
-        id_pago: m.id_pago,
-        fecha: m.fecha || "",
-        hora: m.hora || "",
-        numero_recibo: m.numero_recibo || m.codigo_impresion || "",
-        codigo_municipal: m.codigo_municipal || "",
-        nombre_completo: m.nombre_completo || "",
-        periodo: `${m.mes || ""}/${m.anio || ""}`,
-        monto_pagado: parseFloat(m.monto_pagado || 0)
+      const wsDetalle = workbook.addWorksheet("Proyeccion");
+      wsDetalle.columns = [
+        { header: "PERIODO", key: "periodo", width: 16 },
+        { header: "INICIO_MES", key: "fecha_inicio_mes", width: 16 },
+        { header: "TOTAL_ESTIMADO", key: "total", width: 18 }
+      ];
+      wsDetalle.getRow(1).font = { bold: true };
+      (data?.proyeccion?.detalle_mensual || []).forEach((row) => {
+        wsDetalle.addRow({
+          periodo: row.periodo || "",
+          fecha_inicio_mes: row.fecha_inicio_mes || "",
+          total: parseFloat(row.total || 0)
+        });
       });
-    });
+
+      const wsTop = workbook.addWorksheet("Top Contribuyentes");
+      wsTop.columns = [
+        { header: "CODIGO", key: "codigo_municipal", width: 16 },
+        { header: "ID_CONTRIBUYENTE", key: "id_contribuyente", width: 18 },
+        { header: "CONTRIBUYENTE", key: "nombre_completo", width: 36 },
+        { header: "PREDIOS", key: "total_predios", width: 12 },
+        { header: "BASE_MENSUAL", key: "total_mensual", width: 16 },
+        { header: "TOTAL_PROYECTADO", key: "total", width: 18 }
+      ];
+      wsTop.getRow(1).font = { bold: true };
+      (data?.graficos?.top_contribuyentes || []).forEach((row) => {
+        wsTop.addRow({
+          codigo_municipal: row.codigo_municipal || "",
+          id_contribuyente: Number(row.id_contribuyente || 0),
+          nombre_completo: row.nombre_completo || "",
+          total_predios: Number(row.total_predios || 0),
+          total_mensual: parseFloat(row.total_mensual || 0),
+          total: parseFloat(row.total || 0)
+        });
+      });
+    } else {
+      const wsMov = workbook.addWorksheet("Movimientos");
+      wsMov.columns = [
+        { header: "ID PAGO", key: "id_pago", width: 12 },
+        { header: "FECHA", key: "fecha", width: 14 },
+        { header: "HORA", key: "hora", width: 12 },
+        { header: "RECIBO", key: "numero_recibo", width: 14 },
+        { header: "CODIGO", key: "codigo_municipal", width: 16 },
+        { header: "ID CONTRIBUYENTE", key: "id_contribuyente", width: 18 },
+        { header: "ID PREDIO", key: "id_predio", width: 14 },
+        { header: "CONTRIBUYENTE", key: "nombre_completo", width: 36 },
+        { header: "DIRECCION", key: "direccion_completa", width: 42 },
+        { header: "PERIODO", key: "periodo", width: 12 },
+        { header: "MONTO", key: "monto_pagado", width: 14 }
+      ];
+      wsMov.getRow(1).font = { bold: true };
+      (data.movimientos || []).forEach((m) => {
+        wsMov.addRow({
+          id_pago: m.id_pago,
+          fecha: m.fecha || "",
+          hora: m.hora || "",
+          numero_recibo: m.numero_recibo || m.codigo_impresion || "",
+          codigo_municipal: m.codigo_municipal || "",
+          id_contribuyente: Number(m.id_contribuyente || 0) || "",
+          id_predio: Number(m.id_predio || 0) || "",
+          nombre_completo: m.nombre_completo || "",
+          direccion_completa: m.direccion_completa || "",
+          periodo: `${m.mes || ""}/${m.anio || ""}`,
+          monto_pagado: parseFloat(m.monto_pagado || 0)
+        });
+      });
+    }
 
     const fechaSafe = tipo === "rango"
       ? `${String(data.rango?.desde || "").replace(/[^\d-]/g, "")}_${String(data.rango?.hasta_exclusivo || "").replace(/[^\d-]/g, "")}`

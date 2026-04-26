@@ -98,6 +98,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   const [fechaConsulta, setFechaConsulta] = useState(todayIso());
   const [fechaDesdeRango, setFechaDesdeRango] = useState(todayIso());
   const [fechaHastaRango, setFechaHastaRango] = useState(todayIso());
+  const [mesesProyeccion, setMesesProyeccion] = useState(1);
   const [cargando, setCargando] = useState(false);
   const [exportandoExcel, setExportandoExcel] = useState(false);
   const [paginaMovimientos, setPaginaMovimientos] = useState(1);
@@ -151,6 +152,9 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
             fecha_desde: fechaDesdeRango,
             fecha_hasta: fechaHastaRango
           } : {}),
+          ...(reporteTipo === "proyeccion" ? {
+            meses_proyeccion: mesesProyeccion
+          } : {}),
           page: paginaMovimientos,
           page_size: MOVIMIENTOS_PAGE_SIZE
         },
@@ -164,7 +168,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     } finally {
       if (!signal?.aborted) setCargando(false);
     }
-  }, [fechaConsulta, fechaDesdeRango, fechaHastaRango, paginaMovimientos, reporteTipo]);
+  }, [fechaConsulta, fechaDesdeRango, fechaHastaRango, mesesProyeccion, paginaMovimientos, reporteTipo]);
 
   const cargarAlertasRiesgo = useCallback(async (signal) => {
     try {
@@ -232,6 +236,9 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
           ...(reporteTipo === "rango" ? {
             fecha_desde: fechaDesdeRango,
             fecha_hasta: fechaHastaRango
+          } : {}),
+          ...(reporteTipo === "proyeccion" ? {
+            meses_proyeccion: mesesProyeccion
           } : {})
         },
         responseType: "blob",
@@ -257,7 +264,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
 
   useEffect(() => {
     setPaginaMovimientos(1);
-  }, [reporteTipo, fechaConsulta, fechaDesdeRango, fechaHastaRango]);
+  }, [reporteTipo, fechaConsulta, fechaDesdeRango, fechaHastaRango, mesesProyeccion]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -298,6 +305,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   const pageSizeActual = Math.max(1, Number(reporte?.paginacion?.page_size || MOVIMIENTOS_PAGE_SIZE));
   const inicioIndice = (paginaActual - 1) * pageSizeActual;
   const totalGeneral = formatMoney(reporte.total_general || reporte.total || 0);
+  const isProyeccion = reporteTipo === "proyeccion";
   const alertasResumen = alertasRiesgo?.resumen || {};
   const alertasDetalle = alertasRiesgo?.alertas || {};
   const totalAnuladoAdmin = formatMoney(
@@ -311,6 +319,8 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
         ? "Anual"
         : reporteTipo === "rango"
           ? "Intervalo"
+          : reporteTipo === "proyeccion"
+            ? "Proyeccion"
         : "Diario";
   const graficosCaja = reporte?.graficos || {};
   const recaudacionTemporal = Array.isArray(graficosCaja.recaudacion_temporal) ? graficosCaja.recaudacion_temporal : [];
@@ -347,11 +357,14 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
       const fecha = String(row?.fecha || "").trim() || "SIN_FECHA";
       if (!byFecha.has(fecha)) byFecha.set(fecha, new Map());
       const contribuyentes = byFecha.get(fecha);
-      const key = `${row?.id_contribuyente || 0}|${row?.codigo_municipal || ""}|${row?.nombre_completo || ""}`;
+      const key = `${row?.id_contribuyente || 0}|${row?.id_predio || 0}|${row?.direccion_completa || ""}|${row?.codigo_municipal || ""}|${row?.nombre_completo || ""}`;
       if (!contribuyentes.has(key)) {
         contribuyentes.set(key, {
+          id_contribuyente: row?.id_contribuyente || null,
+          id_predio: row?.id_predio || null,
           codigo_municipal: row?.codigo_municipal || "",
           nombre_completo: row?.nombre_completo || "-",
+          direccion_completa: row?.direccion_completa || "",
           items: []
         });
       }
@@ -382,6 +395,9 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     () => movimientosReporte.reduce((acc, row) => acc + Number(row?.monto_pagado || 0), 0),
     [movimientosReporte]
   );
+  const proyeccionResumen = reporte?.proyeccion || {};
+  const proyeccionDetalle = Array.isArray(proyeccionResumen?.detalle_mensual) ? proyeccionResumen.detalle_mensual : [];
+  const baseMensualProyeccion = formatMoney(proyeccionResumen?.total_mensual || 0);
   const fechaDesdeImpresion = formatFechaCorta(reporte?.rango?.desde || "");
   const fechaHastaImpresion = formatFechaCorta(addIsoDays(reporte?.rango?.hasta_exclusivo || "", -1));
 
@@ -405,6 +421,8 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
       setFechaConsulta(`${year}-${month}-01`);
     } else if (nextTipo === "anual") {
       setFechaConsulta(`${year}-01-01`);
+    } else if (nextTipo === "proyeccion") {
+      setFechaConsulta(`${year}-${month}-${day}`);
     } else if (nextTipo === "rango") {
       const iso = /^\d{4}-\d{2}-\d{2}$/.test(actual) ? actual : todayIso();
       setFechaConsulta(iso);
@@ -459,6 +477,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   <option value="mensual">Mensual</option>
                   <option value="anual">Anual</option>
                   <option value="rango">Intervalo de fechas</option>
+                  <option value="proyeccion">Proyeccion futura</option>
                 </select>
               </div>
               <div className="col-12 col-md-5 col-lg-4">
@@ -499,8 +518,24 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   />
                 )}
               </div>
+              {isProyeccion && (
+                <div className="col-12 col-md-3 col-lg-2">
+                  <label className="form-label small mb-1">Meses a proyectar</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="24"
+                    className="form-control form-control-sm"
+                    value={mesesProyeccion}
+                    onChange={(e) => setMesesProyeccion(Math.min(24, Math.max(1, Number(e.target.value || 1) || 1)))}
+                  />
+                </div>
+              )}
               <div className="col-12 col-md d-flex flex-column align-items-md-end">
-                <div className={`fs-5 fw-bold ${colorTotal}`}>Total Caja: S/. {totalGeneral}</div>
+                <div className={`fs-5 fw-bold ${colorTotal}`}>{isProyeccion ? "Total Proyectado" : "Total Caja"}: S/. {totalGeneral}</div>
+                {isProyeccion && (
+                  <div className="small text-muted">Base mensual estimada: S/. {baseMensualProyeccion}</div>
+                )}
                 {esAdminPrincipal && (
                   <div className="small text-muted">Admin: anulados en rango = {movimientosAdmin.length}</div>
                 )}
@@ -564,7 +599,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
             <div className="row g-3 mb-3 no-print">
               <div className="col-12 col-lg-4">
                 <div className="border rounded p-3 h-100">
-                  <div className="fw-bold mb-2">Recaudacion mensual</div>
+                  <div className="fw-bold mb-2">{isProyeccion ? "Proyeccion por mes" : "Recaudacion mensual"}</div>
                   {recaudacionTemporal.length === 0 ? (
                     <div className="small text-muted">Sin datos para el periodo.</div>
                   ) : (
@@ -587,7 +622,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
               </div>
               <div className="col-12 col-lg-4">
                 <div className="border rounded p-3 h-100">
-                  <div className="fw-bold mb-2">Top contribuyentes recaudados</div>
+                  <div className="fw-bold mb-2">{isProyeccion ? "Top contribuyentes proyectados" : "Top contribuyentes recaudados"}</div>
                   {topContribuyentes.length === 0 ? (
                     <div className="small text-muted">Sin datos para el periodo.</div>
                   ) : (
@@ -610,7 +645,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
               </div>
               <div className="col-12 col-lg-4">
                 <div className="border rounded p-3 h-100">
-                  <div className="fw-bold mb-2">Recaudacion por mes de cobro</div>
+                  <div className="fw-bold mb-2">{isProyeccion ? "Detalle de meses proyectados" : "Recaudacion por mes de cobro"}</div>
                   {recaudacionPeriodo.length === 0 ? (
                     <div className="small text-muted">Sin datos para el periodo.</div>
                   ) : (
@@ -645,99 +680,169 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                     <div><strong>MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO</strong></div>
                     <div>Area de Administracion Tributaria - Agua Potable</div>
                     <div className="fw-bold mt-1" style={{ fontSize: "17px", letterSpacing: "0.3px" }}>
-                      INFORME DE INGRESOS TRIBUTARIOS
+                      {isProyeccion ? "INFORME DE PROYECCION DE RECAUDACION" : "INFORME DE INGRESOS TRIBUTARIOS"}
                     </div>
                   </div>
                 </div>
                 <div className="text-end">
-                  <div>{formatFechaCorta(fechaConsulta)}</div>
+                  <div>{isProyeccion ? `Base ${formatFechaCorta(fechaConsulta)}` : formatFechaCorta(fechaConsulta)}</div>
                   <div><strong>Desde</strong> {fechaDesdeImpresion || "-"}</div>
                   <div><strong>Hasta</strong> {fechaHastaImpresion || "-"}</div>
                 </div>
               </div>
               <hr className="mt-1 mb-2" />
+              {isProyeccion ? (
+                <>
+                  <div className="mb-3" style={{ fontSize: "12px" }}>
+                    <strong>Meses proyectados:</strong> {Number(proyeccionResumen?.meses_proyeccion || 0)}{" "}
+                    <strong className="ms-3">Base mensual estimada:</strong> S/. {baseMensualProyeccion}
+                  </div>
+                  <table className="table table-sm mb-3 border border-dark" style={{ fontSize: "12px" }}>
+                    <thead>
+                      <tr className="border border-dark">
+                        <th>Periodo</th>
+                        <th>Inicio mes</th>
+                        <th className="text-end">Total estimado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {proyeccionDetalle.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="text-center py-3">Sin meses proyectados.</td>
+                        </tr>
+                      ) : (
+                        proyeccionDetalle.map((row, idx) => (
+                          <tr key={`proy-${row?.fecha_inicio_mes || idx}`}>
+                            <td>{row?.periodo || "-"}</td>
+                            <td>{formatFechaCorta(row?.fecha_inicio_mes || "")}</td>
+                            <td className="text-end fw-bold">{formatMontoReporte(row?.total || 0)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                    <tfoot>
+                      <tr className="border-top border-dark">
+                        <td colSpan={2} className="fw-bold">Total proyectado</td>
+                        <td className="text-end fw-bold">{formatMontoReporte(reporte.total_general || 0)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
 
-              <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
-                <thead>
-                  <tr className="border border-dark">
-                    <th style={{ width: "34%" }}>Fecha / Contribuyente</th>
-                    <th className="text-center" style={{ width: "14%" }}>Recibo</th>
-                    <th className="text-center" style={{ width: "7%" }}>Año</th>
-                    <th className="text-center" style={{ width: "6%" }}>Mes</th>
-                    <th className="text-end" style={{ width: "8%" }}>Agua</th>
-                    <th className="text-end" style={{ width: "8%" }}>Desague</th>
-                    <th className="text-end" style={{ width: "8%" }}>Limpieza</th>
-                    <th className="text-end" style={{ width: "7%" }}>Gastos</th>
-                    <th className="text-end" style={{ width: "8%" }}>Abono</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {gruposReporte.length === 0 ? (
-                    <tr>
-                      <td colSpan={9} className="text-center py-3 border">No hay movimientos para el rango consultado.</td>
+                  <table className="table table-sm mb-0 border border-dark" style={{ fontSize: "12px" }}>
+                    <thead>
+                      <tr className="border border-dark">
+                        <th>Codigo</th>
+                        <th>Contribuyente</th>
+                        <th className="text-center">Predios</th>
+                        <th className="text-end">Base mensual</th>
+                        <th className="text-end">Total proyectado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {topContribuyentes.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="text-center py-3">Sin contribuyentes para proyeccion.</td>
+                        </tr>
+                      ) : (
+                        topContribuyentes.map((row, idx) => (
+                          <tr key={`proy-top-${row?.id_contribuyente || idx}`}>
+                            <td>{row?.codigo_municipal || "-"}</td>
+                            <td>{row?.nombre_completo || "-"}</td>
+                            <td className="text-center">{Number(row?.total_predios || 0)}</td>
+                            <td className="text-end">{formatMontoReporte(row?.total_mensual || 0)}</td>
+                            <td className="text-end fw-bold">{formatMontoReporte(row?.total || 0)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </>
+              ) : (
+                <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
+                  <thead>
+                    <tr className="border border-dark">
+                      <th style={{ width: "34%" }}>Fecha / Contribuyente</th>
+                      <th className="text-center" style={{ width: "14%" }}>Recibo</th>
+                      <th className="text-center" style={{ width: "7%" }}>Año</th>
+                      <th className="text-center" style={{ width: "6%" }}>Mes</th>
+                      <th className="text-end" style={{ width: "8%" }}>Agua</th>
+                      <th className="text-end" style={{ width: "8%" }}>Desague</th>
+                      <th className="text-end" style={{ width: "8%" }}>Limpieza</th>
+                      <th className="text-end" style={{ width: "7%" }}>Gastos</th>
+                      <th className="text-end" style={{ width: "8%" }}>Abono</th>
                     </tr>
-                  ) : (
-                    gruposReporte.map((grupoFecha) => (
-                      <tr key={`fecha-${grupoFecha.fecha}`}>
-                        <td colSpan={9} className="p-0 border-0">
-                          <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
-                            <tbody>
-                              <tr>
-                                <td colSpan={9} className="fw-bold border-top border-dark border-bottom">
-                                  Fecha {formatFechaCorta(grupoFecha.fecha)}
-                                </td>
-                              </tr>
-                              {grupoFecha.contribuyentes.map((contrib, idxContrib) => (
-                                <tr key={`contrib-${grupoFecha.fecha}-${idxContrib}`}>
-                                  <td colSpan={9} className="p-0 border-0">
-                                    <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
-                                      <tbody>
-                                        <tr>
-                                          <td colSpan={9} className="fw-semibold border-bottom">
-                                            {String(contrib.nombre_completo || "-").toUpperCase()}
-                                          </td>
-                                        </tr>
-                                        {contrib.items.map((item) => (
-                                          <tr key={`item-${item.id_pago}`}>
-                                            <td style={{ width: "34%" }}></td>
-                                            <td className="text-center" style={{ width: "14%" }}>{item.numero_recibo || item.codigo_impresion || "-"}</td>
-                                            <td className="text-center" style={{ width: "7%" }}>{item.anio || "-"}</td>
-                                            <td className="text-center" style={{ width: "6%" }}>{String(item.mes || "").padStart(2, "0")}</td>
-                                            <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_agua || 0)}</td>
-                                            <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_desague || 0)}</td>
-                                            <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_limpieza || 0)}</td>
-                                            <td className="text-end" style={{ width: "7%" }}>{formatMontoReporte(item.monto_gastos || 0)}</td>
-                                            <td className="text-end fw-bold" style={{ width: "8%" }}>{formatMontoReporte(item.monto_pagado || 0)}</td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
+                  </thead>
+                  <tbody>
+                    {gruposReporte.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="text-center py-3 border">No hay movimientos para el rango consultado.</td>
+                      </tr>
+                    ) : (
+                      gruposReporte.map((grupoFecha) => (
+                        <tr key={`fecha-${grupoFecha.fecha}`}>
+                          <td colSpan={9} className="p-0 border-0">
+                            <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
+                              <tbody>
+                                <tr>
+                                  <td colSpan={9} className="fw-bold border-top border-dark border-bottom">
+                                    Fecha {formatFechaCorta(grupoFecha.fecha)}
                                   </td>
                                 </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-                <tfoot>
-                  <tr className="border-top border-dark">
-                    <td className="fw-bold">Total Fechas</td>
-                    <td></td>
-                    <td></td>
-                    <td></td>
-                    <td className="text-end fw-bold">{formatMontoReporte(totalAguaReporte)}</td>
-                    <td className="text-end fw-bold">{formatMontoReporte(totalDesagueReporte)}</td>
-                    <td className="text-end fw-bold">{formatMontoReporte(totalLimpiezaReporte)}</td>
-                    <td className="text-end fw-bold">{formatMontoReporte(totalGastosReporte)}</td>
-                    <td className="text-end fw-bold">{formatMontoReporte(totalAbonoReporte)}</td>
-                  </tr>
-                </tfoot>
-              </table>
+                                {grupoFecha.contribuyentes.map((contrib, idxContrib) => (
+                                  <tr key={`contrib-${grupoFecha.fecha}-${idxContrib}`}>
+                                    <td colSpan={9} className="p-0 border-0">
+                                      <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
+                                        <tbody>
+                                          <tr>
+                                            <td colSpan={9} className="fw-semibold border-bottom">
+                                              {String(contrib.nombre_completo || "-").toUpperCase()}
+                                              <div className="small fw-normal text-muted">
+                                                Cod: {contrib.codigo_municipal || "-"} | Contribuyente ID: {contrib.id_contribuyente || "-"} | Predio ID: {contrib.id_predio || "-"} | Direccion: {contrib.direccion_completa || "-"}
+                                              </div>
+                                            </td>
+                                          </tr>
+                                          {contrib.items.map((item) => (
+                                            <tr key={`item-${item.id_pago}`}>
+                                              <td style={{ width: "34%" }}></td>
+                                              <td className="text-center" style={{ width: "14%" }}>{item.numero_recibo || item.codigo_impresion || "-"}</td>
+                                              <td className="text-center" style={{ width: "7%" }}>{item.anio || "-"}</td>
+                                              <td className="text-center" style={{ width: "6%" }}>{String(item.mes || "").padStart(2, "0")}</td>
+                                              <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_agua || 0)}</td>
+                                              <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_desague || 0)}</td>
+                                              <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_limpieza || 0)}</td>
+                                              <td className="text-end" style={{ width: "7%" }}>{formatMontoReporte(item.monto_gastos || 0)}</td>
+                                              <td className="text-end fw-bold" style={{ width: "8%" }}>{formatMontoReporte(item.monto_pagado || 0)}</td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-top border-dark">
+                      <td className="fw-bold">Total Fechas</td>
+                      <td></td>
+                      <td></td>
+                      <td></td>
+                      <td className="text-end fw-bold">{formatMontoReporte(totalAguaReporte)}</td>
+                      <td className="text-end fw-bold">{formatMontoReporte(totalDesagueReporte)}</td>
+                      <td className="text-end fw-bold">{formatMontoReporte(totalLimpiezaReporte)}</td>
+                      <td className="text-end fw-bold">{formatMontoReporte(totalGastosReporte)}</td>
+                      <td className="text-end fw-bold">{formatMontoReporte(totalAbonoReporte)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
 
-              {totalPaginas > 1 && (
+              {!isProyeccion && totalPaginas > 1 && (
                 <div className="d-flex justify-content-between align-items-center mt-2 no-print">
                   <small className="text-muted">
                     Mostrando {inicioIndice + 1} - {Math.min(inicioIndice + movimientos.length, Number(reporte?.cantidad_movimientos || 0))} de {Number(reporte?.cantidad_movimientos || 0)}
