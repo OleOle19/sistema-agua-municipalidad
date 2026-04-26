@@ -2,8 +2,6 @@ import React, { forwardRef } from "react";
 
 const MONTH_NAMES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const RECIBO_FONT_FAMILY = "\"Segoe UI\", Calibri, Arial, sans-serif";
-const RECIBOS_POR_HOJA = 3;
-
 const parseNum = (value) => {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -174,18 +172,14 @@ const ReciboLuz = forwardRef(({ datos }, ref) => {
 
   return (
     <div ref={ref} style={{ width: "210mm", minHeight: "297mm", padding: "3mm", fontFamily: RECIBO_FONT_FAMILY, color: "#111", background: "#fff", boxSizing: "border-box" }}>
-      {Array.from({ length: RECIBOS_POR_HOJA }).map((_, idx) => (
-        <div
-          key={`recibo-luz-copia-${idx + 1}`}
-          style={{
-            marginBottom: idx === RECIBOS_POR_HOJA - 1 ? 0 : "1.5mm",
-            breakInside: "avoid",
-            pageBreakInside: "avoid"
-          }}
-        >
-          <ReciboLuzCard datos={datos} />
-        </div>
-      ))}
+      <div
+        style={{
+          breakInside: "avoid",
+          pageBreakInside: "avoid"
+        }}
+      >
+        <ReciboLuzCard datos={datos} />
+      </div>
     </div>
   );
 });

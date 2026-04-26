@@ -153,7 +153,7 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
     lines.push(`Fecha: ${fechaValida.toLocaleDateString("es-PE")} ${fechaValida.toLocaleTimeString("es-PE")}`);
     lines.push(`Criterio: ${criterio?.descripcion || "Seleccion manual"}`);
     lines.push(`Estado: ${criterio?.estado_label || "Con conexion"}`);
-    lines.push(`Mes referencia: ${proyeccion?.fecha_referencia_mes || "-"}`);
+    lines.push(`Mes inicial: ${proyeccion?.fecha_referencia_mes || "-"}`);
     lines.push(`Meses proyectados: ${Number(proyeccion?.meses_proyeccion || 0)} | Base mensual: ${formatMoney(totalMensual)} | Total proyectado: ${formatMoney(totalProyectado)}`);
     lines.push("=".repeat(90));
     if (Array.isArray(proyeccion?.detalle_mensual) && proyeccion.detalle_mensual.length > 0) {
@@ -169,7 +169,8 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
       lista.forEach((row, idx) => {
         pushWrapped(lines, `${idx + 1}. [${row?.codigo_municipal || "-"}] ${row?.nombre_completo || ""}`);
         pushWrapped(lines, `   Direccion: ${row?.direccion_completa || ""}`);
-        pushWrapped(lines, `   Predios activos: ${Number(row?.total_predios || 0)} | Base mensual: ${formatMoney(row?.monto_mensual || 0)} | Total proyectado: ${formatMoney(row?.total_proyectado || 0)}`);
+        pushWrapped(lines, `   Tarifas: Agua ${formatMoney(row?.tarifa_agua || 0)} | Desague ${formatMoney(row?.tarifa_desague || 0)} | Limpieza ${formatMoney(row?.tarifa_limpieza || 0)}`);
+        pushWrapped(lines, `   Admin ${formatMoney(row?.tarifa_admin || 0)} | Extra ${formatMoney(row?.tarifa_extra || 0)} | Base ${formatMoney(row?.monto_mensual || 0)} | Proyectado ${formatMoney(row?.total_proyectado || 0)}`);
         lines.push("-".repeat(90));
       });
     }

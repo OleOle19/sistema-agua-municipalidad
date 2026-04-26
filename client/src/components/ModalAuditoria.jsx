@@ -9,16 +9,20 @@ const ACTION_LABELS = {
   PAGO_ANULADO_LOGICO: "Pago anulado (archivo admin)",
   CAJA_CIERRE_REGISTRADO: "Cierre de caja registrado",
   COBRO_DIRECTO_REGISTRADO: "Cobro directo registrado",
-  AUTH_PASSWORD_CAMBIO: "Cambio de password"
+  AUTH_PASSWORD_CAMBIO: "Cambio de clave"
 };
 
 const SIMPLE_ROUTE_RULES = [
+  { method: "POST", pattern: /^\/auth\/login$/i, label: "Inicio de sesion" },
+  { method: "POST", pattern: /^\/auth\/change-password$/i, label: "Cambio de clave" },
   { method: "POST", pattern: /^\/caja\/ordenes-cobro$/i, label: "Emitir orden de cobro" },
   { method: "POST", pattern: /^\/caja\/ordenes-cobro\/\d+\/cobrar$/i, label: "Cobrar orden de cobro" },
   { method: "POST", pattern: /^\/caja\/ordenes-cobro\/\d+\/anular$/i, label: "Anular orden de cobro" },
   { method: "POST", pattern: /^\/pagos\/\d+\/anular$/i, label: "Anular pago" },
   { method: "POST", pattern: /^\/pagos\/recibo\/\d+\/anular-ultimo$/i, label: "Anular ultimo pago por periodo" },
   { method: "POST", pattern: /^\/caja\/cierre$/i, label: "Registrar cierre de caja" },
+  { method: "GET", pattern: /^\/contribuyentes\/reporte-estado-conexion$/i, label: "Consultar reporte de conexiones" },
+  { method: "GET", pattern: /^\/contribuyentes\/reporte-estado-conexion\.xlsx$/i, label: "Exportar reporte de conexiones" },
   { method: "GET", pattern: /^\/exportar\/auditoria$/i, label: "Exportar auditoria" },
   { method: "GET", pattern: /^\/caja\/reporte\/excel$/i, label: "Exportar reporte de caja (Excel)" },
   { method: "POST", pattern: /^\/admin\/backup/i, label: "Crear respaldo de base de datos" }
@@ -45,6 +49,12 @@ const LABEL_TRANSLATIONS = {
   ip: "IP",
   tipo: "Tipo",
   fecha: "Fecha",
+  username: "Usuario",
+  password: "Clave",
+  rol: "Rol",
+  ruta: "Ruta",
+  sistema: "Sistema",
+  estado: "Estado",
   cargo_reimpresion: "Cargo reimpresion",
   motivo: "Motivo",
   codigo_recibo: "Codigo recibo",
@@ -54,6 +64,16 @@ const LABEL_TRANSLATIONS = {
   acceso: "Tipo acceso",
   detalle_recibos: "Detalle recibos"
 };
+
+const METHOD_FILTER_OPTIONS = [
+  { value: "TODOS", label: "Todos" },
+  { value: "GET", label: "Consultas" },
+  { value: "POST", label: "Registros" },
+  { value: "PUT", label: "Cambios" },
+  { value: "PATCH", label: "Ajustes" },
+  { value: "DELETE", label: "Eliminaciones" },
+  { value: "SISTEMA", label: "Sistema" }
+];
 
 const getActionBadgeClass = (accion) => {
   const txt = String(accion || "").toUpperCase();
@@ -313,13 +333,9 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                 </div>
                 <div className="col-lg-2 col-md-4">
                   <select className={filtroSelectClass} value={filtroMetodo} onChange={(e) => setFiltroMetodo(e.target.value)}>
-                    <option value="TODOS">Todos</option>
-                    <option value="GET">GET</option>
-                    <option value="POST">POST</option>
-                    <option value="PUT">PUT</option>
-                    <option value="PATCH">PATCH</option>
-                    <option value="DELETE">DELETE</option>
-                    <option value="SISTEMA">Sistema</option>
+                    {METHOD_FILTER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
                   </select>
                 </div>
                 <div className="col-lg-2 col-md-4">
@@ -377,11 +393,6 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                             <span className={`badge ${getActionBadgeClass(log.accion)}`}>
                               {accionSimple}
                             </span>
-                            {accionSimple !== log.accion && (
-                              <div className="small opacity-75 mt-1" style={{ wordBreak: "break-word" }}>
-                                {log.accion}
-                              </div>
-                            )}
                           </td>
                           <td className="align-top">
                             <div className="rounded-3 p-2 w-100" style={detalleCardStyle}>

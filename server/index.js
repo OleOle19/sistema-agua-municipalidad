@@ -5539,6 +5539,11 @@ const obtenerReporteProyeccionEstadoConexion = async ({
   const mesesProyeccion = Number.isFinite(mesesRaw)
     ? Math.min(24, Math.max(1, Math.trunc(mesesRaw)))
     : 1;
+  const tarifaAguaSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, ${AUTO_DEUDA_BASE.agua}) ELSE 0 END)`;
+  const tarifaDesagueSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, ${AUTO_DEUDA_BASE.desague}) ELSE 0 END)`;
+  const tarifaLimpiezaSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza}) ELSE 0 END)`;
+  const tarifaAdminSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) ELSE 0 END)`;
+  const tarifaExtraSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_extra, 0) ELSE 0 END)`;
   const where = ["COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'"];
   const params = [];
   const ids = Array.from(new Set((Array.isArray(idsContribuyentes) ? idsContribuyentes : [])
@@ -5554,12 +5559,12 @@ const obtenerReporteProyeccionEstadoConexion = async ({
       SELECT
         p.id_contribuyente,
         COUNT(*) FILTER (WHERE ${sqlSnEsSi("p.activo_sn", "S")})::int AS total_predios,
-        SUM(
-          (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, 0) ELSE 0 END)
-          + (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, 0) ELSE 0 END)
-          + (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, 0) ELSE 0 END)
-          + (CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, 0) + COALESCE(p.tarifa_extra, 0) ELSE 0 END)
-        ) AS monto_mensual_base
+        SUM(${tarifaAguaSql}) AS tarifa_agua,
+        SUM(${tarifaDesagueSql}) AS tarifa_desague,
+        SUM(${tarifaLimpiezaSql}) AS tarifa_limpieza,
+        SUM(${tarifaAdminSql}) AS tarifa_admin,
+        SUM(${tarifaExtraSql}) AS tarifa_extra,
+        SUM(${tarifaAguaSql} + ${tarifaDesagueSql} + ${tarifaLimpiezaSql} + ${tarifaAdminSql} + ${tarifaExtraSql}) AS monto_mensual_base
       FROM predios p
       GROUP BY p.id_contribuyente
     ),
@@ -5581,6 +5586,11 @@ const obtenerReporteProyeccionEstadoConexion = async ({
       c.nombre_completo,
       COALESCE(NULLIF(TRIM(dp.direccion_completa), ''), '-') AS direccion_completa,
       COALESCE(pa.total_predios, 0) AS total_predios,
+      COALESCE(pa.tarifa_agua, 0) AS tarifa_agua,
+      COALESCE(pa.tarifa_desague, 0) AS tarifa_desague,
+      COALESCE(pa.tarifa_limpieza, 0) AS tarifa_limpieza,
+      COALESCE(pa.tarifa_admin, 0) AS tarifa_admin,
+      COALESCE(pa.tarifa_extra, 0) AS tarifa_extra,
       COALESCE(pa.monto_mensual_base, 0) AS monto_mensual_base
     FROM contribuyentes c
     JOIN predios_activos pa ON pa.id_contribuyente = c.id_contribuyente
@@ -5599,6 +5609,11 @@ const obtenerReporteProyeccionEstadoConexion = async ({
       direccion_completa: row.direccion_completa || "-",
       estado_conexion: "CON_CONEXION",
       total_predios: Number(row.total_predios || 0),
+      tarifa_agua: roundMonto2(parseMonto(row.tarifa_agua, 0)),
+      tarifa_desague: roundMonto2(parseMonto(row.tarifa_desague, 0)),
+      tarifa_limpieza: roundMonto2(parseMonto(row.tarifa_limpieza, 0)),
+      tarifa_admin: roundMonto2(parseMonto(row.tarifa_admin, 0)),
+      tarifa_extra: roundMonto2(parseMonto(row.tarifa_extra, 0)),
       monto_mensual: montoMensual,
       monto_periodo: roundMonto2(montoMensual * mesesProyeccion),
       monto_referencia: montoMensual,
@@ -5611,7 +5626,7 @@ const obtenerReporteProyeccionEstadoConexion = async ({
 
   const totalMensual = roundMonto2(rows.reduce((acc, row) => acc + parseMonto(row.monto_mensual, 0), 0));
   const totalProyectado = roundMonto2(rows.reduce((acc, row) => acc + parseMonto(row.total_proyectado, 0), 0));
-  const inicioBase = shiftIsoDateByMonths(`${fechaReferenciaMes}-01`, 1) || `${fechaReferenciaMes}-01`;
+  const inicioBase = `${fechaReferenciaMes}-01`;
   const finExclusivo = shiftIsoDateByMonths(inicioBase, mesesProyeccion) || inicioBase;
   const detalleMensual = [];
   for (let idx = 0; idx < mesesProyeccion; idx += 1) {
@@ -5841,7 +5856,7 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
     wsResumen.addRow({ campo: "Hasta", valor: periodo.fecha_hasta || "" });
     wsResumen.addRow({ campo: "Total registros", valor: Number(rowsOrdenadas.length || 0) });
     if (esProyeccion) {
-      wsResumen.addRow({ campo: "Mes referencia", valor: data?.proyeccion?.fecha_referencia_mes || periodo.periodo || "" });
+      wsResumen.addRow({ campo: "Mes inicial", valor: data?.proyeccion?.fecha_referencia_mes || periodo.periodo || "" });
       wsResumen.addRow({ campo: "Meses proyectados", valor: Number(data?.proyeccion?.meses_proyeccion || 0) });
       wsResumen.addRow({ campo: "Base mensual", valor: Number(parseMonto(data?.proyeccion?.total_mensual, 0).toFixed(2)) });
       wsResumen.addRow({ campo: "Total proyectado", valor: Number(parseMonto(data?.proyeccion?.total_proyectado, 0).toFixed(2)) });
@@ -5851,7 +5866,11 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
         { header: "CODIGO", key: "codigo_municipal", width: 14 },
         { header: "CONTRIBUYENTE", key: "nombre_completo", width: 42 },
         { header: "DIRECCION", key: "direccion_completa", width: 44 },
-        { header: "PREDIOS ACTIVOS", key: "total_predios", width: 16 },
+        { header: "TARIFA AGUA", key: "tarifa_agua", width: 14 },
+        { header: "TARIFA DESAGUE", key: "tarifa_desague", width: 16 },
+        { header: "TARIFA LIMPIEZA", key: "tarifa_limpieza", width: 16 },
+        { header: "TARIFA ADMIN", key: "tarifa_admin", width: 14 },
+        { header: "TARIFA EXTRA", key: "tarifa_extra", width: 14 },
         { header: "BASE MENSUAL", key: "monto_mensual", width: 16 },
         { header: "TOTAL PROYECTADO", key: "total_proyectado", width: 18 }
       ];
@@ -5861,7 +5880,11 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
           codigo_municipal: row.codigo_municipal,
           nombre_completo: row.nombre_completo,
           direccion_completa: row.direccion_completa,
-          total_predios: Number(row.total_predios || 0),
+          tarifa_agua: parseMonto(row.tarifa_agua, 0),
+          tarifa_desague: parseMonto(row.tarifa_desague, 0),
+          tarifa_limpieza: parseMonto(row.tarifa_limpieza, 0),
+          tarifa_admin: parseMonto(row.tarifa_admin, 0),
+          tarifa_extra: parseMonto(row.tarifa_extra, 0),
           monto_mensual: parseMonto(row.monto_mensual, 0),
           total_proyectado: parseMonto(row.total_proyectado, 0)
         });
@@ -5870,14 +5893,23 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
         codigo_municipal: "",
         nombre_completo: "TOTAL",
         direccion_completa: "",
-        total_predios: rowsOrdenadas.reduce((acc, item) => acc + Number(item?.total_predios || 0), 0),
+        tarifa_agua: roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.tarifa_agua, 0), 0)),
+        tarifa_desague: roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.tarifa_desague, 0), 0)),
+        tarifa_limpieza: roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.tarifa_limpieza, 0), 0)),
+        tarifa_admin: roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.tarifa_admin, 0), 0)),
+        tarifa_extra: roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.tarifa_extra, 0), 0)),
         monto_mensual: roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.monto_mensual, 0), 0)),
         total_proyectado: roundMonto2(rowsOrdenadas.reduce((acc, item) => acc + parseMonto(item?.total_proyectado, 0), 0))
       });
       totalRow.font = { bold: true };
       for (let i = 2; i <= ws.rowCount; i += 1) {
+        ws.getCell(`D${i}`).numFmt = "#,##0.00";
         ws.getCell(`E${i}`).numFmt = "#,##0.00";
         ws.getCell(`F${i}`).numFmt = "#,##0.00";
+        ws.getCell(`G${i}`).numFmt = "#,##0.00";
+        ws.getCell(`H${i}`).numFmt = "#,##0.00";
+        ws.getCell(`I${i}`).numFmt = "#,##0.00";
+        ws.getCell(`J${i}`).numFmt = "#,##0.00";
       }
       ws.views = [{ state: "frozen", ySplit: 1 }];
 
@@ -10742,9 +10774,7 @@ const validatePeriodoReporteConexion = (periodo = {}) => {
       : "";
   }
   if (periodo?.tipo === "proyeccion") {
-    return String(periodo?.periodo || "") > mesActual
-      ? "No se permite usar un mes de referencia futuro para proyeccion."
-      : "";
+    return "";
   }
   return String(periodo?.periodo || "") > mesActual
     ? "No se permite consultar reportes de conexiones con mes futuro."
@@ -11536,7 +11566,12 @@ app.get("/dashboard/resumen", async (req, res) => {
 
 app.get("/auditoria", authenticateToken, async (req, res) => {
   try {
-    const logs = await pool.query("SELECT * FROM auditoria ORDER BY fecha DESC LIMIT 100");
+    const logs = await pool.query(`
+      SELECT *
+      FROM auditoria
+      ORDER BY fecha DESC, id_auditoria DESC
+      LIMIT 5000
+    `);
     res.json(logs.rows);
   } catch (err) { res.status(500).send("Error auditoria"); }
 });

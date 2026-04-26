@@ -294,6 +294,15 @@ function LuzApp({ onBackToSelector }) {
     () => [...suministros].sort(compareMedidorAsc),
     [suministros]
   );
+  const suministrosActivosImpresion = useMemo(
+    () => suministrosOrdenados.filter((row) => String(row?.estado || "").trim().toUpperCase() === "ACTIVO"),
+    [suministrosOrdenados]
+  );
+  const totalZonaImpresion = useMemo(() => {
+    const idZona = Number.parseInt(String(filtroZonaImpresion || ""), 10);
+    if (!Number.isFinite(idZona) || idZona <= 0) return 0;
+    return suministrosActivosImpresion.filter((row) => Number.parseInt(String(row.id_zona || ""), 10) === idZona).length;
+  }, [filtroZonaImpresion, suministrosActivosImpresion]);
   const nextIdUsuarioSugerido = useMemo(() => {
     if (suministroForm.id_suministro) return "";
     const idZona = Number.parseInt(String(suministroForm.id_zona || ""), 10);
@@ -670,10 +679,10 @@ function LuzApp({ onBackToSelector }) {
 
   useEffect(() => {
     setIdsSuministrosImpresion((prev) => {
-      const existentes = new Set(suministros.map((row) => Number(row.id_suministro || 0)));
+      const existentes = new Set(suministrosActivosImpresion.map((row) => Number(row.id_suministro || 0)));
       return prev.filter((id) => existentes.has(Number(id || 0)));
     });
-  }, [suministros]);
+  }, [suministrosActivosImpresion]);
 
   useEffect(() => {
     if (suministroForm.id_suministro) return;
@@ -880,11 +889,11 @@ function LuzApp({ onBackToSelector }) {
 
   const seleccionarTodosSuministrosImpresion = useCallback(() => {
     setIdsSuministrosImpresion(
-      suministrosOrdenados
+      suministrosActivosImpresion
         .map((row) => Number(row.id_suministro || 0))
         .filter((id) => id > 0)
     );
-  }, [suministrosOrdenados]);
+  }, [suministrosActivosImpresion]);
 
   const limpiarSuministrosImpresion = useCallback(() => {
     setIdsSuministrosImpresion([]);
@@ -894,15 +903,15 @@ function LuzApp({ onBackToSelector }) {
     const modoNorm = String(modo || "").toLowerCase();
     if (modoNorm === "seleccion") {
       const ids = new Set(idsSuministrosImpresion.map((id) => Number(id || 0)).filter((id) => id > 0));
-      return suministrosOrdenados.filter((row) => ids.has(Number(row.id_suministro || 0)));
+      return suministrosActivosImpresion.filter((row) => ids.has(Number(row.id_suministro || 0)));
     }
     if (modoNorm === "zona") {
       const idZona = Number.parseInt(String(filtroZonaImpresion || ""), 10);
       if (!Number.isFinite(idZona) || idZona <= 0) return [];
-      return suministrosOrdenados.filter((row) => Number.parseInt(String(row.id_zona || ""), 10) === idZona);
+      return suministrosActivosImpresion.filter((row) => Number.parseInt(String(row.id_zona || ""), 10) === idZona);
     }
-    return suministrosOrdenados;
-  }, [filtroZonaImpresion, idsSuministrosImpresion, suministrosOrdenados]);
+    return suministrosActivosImpresion;
+  }, [filtroZonaImpresion, idsSuministrosImpresion, suministrosActivosImpresion]);
 
   const imprimirRecibosLote = useCallback(async (modo) => {
     if (!permisos.canEmitirRecibo) return;
@@ -1543,77 +1552,90 @@ function LuzApp({ onBackToSelector }) {
                 <div className="col-12 col-xl-8">
                   <div className="card border mb-2">
                     <div className="card-body p-2">
-                      <div className="d-flex flex-wrap gap-2 align-items-end">
-                        <button className="btn btn-outline-primary btn-sm d-flex align-items-center gap-2" onClick={() => cargarHistorial()}>
-                          <FaSyncAlt />
-                          Recargar historial
-                        </button>
-                        <div>
-                          <label className="form-label form-label-sm mb-1 small text-muted">Historial</label>
-                          <select
-                            className="form-select form-select-sm"
-                            style={{ minWidth: "150px" }}
-                            value={historialAnio}
-                            onChange={(e) => setHistorialAnio(e.target.value)}
+                      <div className="d-flex flex-wrap justify-content-between gap-3 align-items-end">
+                        <div className="d-flex flex-wrap gap-2 align-items-end">
+                          <button className="btn btn-outline-primary btn-sm d-flex align-items-center gap-2" onClick={() => cargarHistorial()}>
+                            <FaSyncAlt />
+                            Recargar historial
+                          </button>
+                          <div>
+                            <label className="form-label form-label-sm mb-1 small text-muted">Historial</label>
+                            <select
+                              className="form-select form-select-sm"
+                              style={{ minWidth: "150px" }}
+                              value={historialAnio}
+                              onChange={(e) => setHistorialAnio(e.target.value)}
+                            >
+                              <option value="all">Todos los años</option>
+                              {yearsHistorial.map((y) => (
+                                <option key={y} value={y}>{y}</option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                        <div className="d-flex flex-wrap gap-2 align-items-end">
+                          <div>
+                            <label className="form-label form-label-sm mb-1 small text-muted">Año impresión</label>
+                            <input
+                              type="number"
+                              min="2000"
+                              max="2200"
+                              className="form-control form-control-sm"
+                              style={{ width: "110px" }}
+                              value={periodoImpresion.anio}
+                              onChange={(e) => setPeriodoImpresion((prev) => ({ ...prev, anio: e.target.value }))}
+                            />
+                          </div>
+                          <div>
+                            <label className="form-label form-label-sm mb-1 small text-muted">Mes impresión</label>
+                            <input
+                              type="number"
+                              min="1"
+                              max="12"
+                              className="form-control form-control-sm"
+                              style={{ width: "90px" }}
+                              value={periodoImpresion.mes}
+                              onChange={(e) => setPeriodoImpresion((prev) => ({ ...prev, mes: e.target.value }))}
+                            />
+                          </div>
+                          <button
+                            className="btn btn-outline-dark btn-sm d-flex align-items-center gap-2"
+                            disabled={procesandoImpresionLote}
+                            onClick={() => imprimirRecibosLote("todos")}
                           >
-                            <option value="all">Todos los años</option>
-                            {yearsHistorial.map((y) => (
-                              <option key={y} value={y}>{y}</option>
-                            ))}
-                          </select>
+                            <FaPrint />
+                            {procesandoImpresionLote ? "Preparando..." : "Imprimir activos"}
+                          </button>
                         </div>
-                        <div>
-                          <label className="form-label form-label-sm mb-1 small text-muted">Año impresión</label>
-                          <input
-                            type="number"
-                            min="2000"
-                            max="2200"
-                            className="form-control form-control-sm"
-                            style={{ width: "110px" }}
-                            value={periodoImpresion.anio}
-                            onChange={(e) => setPeriodoImpresion((prev) => ({ ...prev, anio: e.target.value }))}
-                          />
-                        </div>
-                        <div>
-                          <label className="form-label form-label-sm mb-1 small text-muted">Mes impresión</label>
-                          <input
-                            type="number"
-                            min="1"
-                            max="12"
-                            className="form-control form-control-sm"
-                            style={{ width: "90px" }}
-                            value={periodoImpresion.mes}
-                            onChange={(e) => setPeriodoImpresion((prev) => ({ ...prev, mes: e.target.value }))}
-                          />
-                        </div>
-                        <button
-                          className="btn btn-outline-dark btn-sm d-flex align-items-center gap-2"
-                          disabled={procesandoImpresionLote}
-                          onClick={() => imprimirRecibosLote("todos")}
-                        >
-                          <FaPrint />
-                          {procesandoImpresionLote ? "Preparando..." : "Imprimir todos"}
-                        </button>
                       </div>
 
-                      <div className="row g-2 mt-1">
-                        <div className="col-12 col-lg-5">
-                          <div className="d-flex gap-2 align-items-end">
-                            <div className="flex-grow-1">
-                              <label className="form-label form-label-sm mb-1 small text-muted">Zona</label>
-                              <select
-                                className="form-select form-select-sm"
-                                value={filtroZonaImpresion}
-                                onChange={(e) => setFiltroZonaImpresion(e.target.value)}
-                              >
-                                <option value="">Seleccione zona...</option>
-                                {zonas.map((z) => (
-                                  <option key={z.id_zona} value={z.id_zona}>{z.nombre}</option>
-                                ))}
-                              </select>
+                      <div className="d-flex flex-wrap gap-2 mt-2">
+                        <span className="badge text-bg-light border">Activos: {suministrosActivosImpresion.length}</span>
+                        <span className="badge text-bg-light border">Seleccionados: {idsSuministrosImpresion.length}</span>
+                        <span className="badge text-bg-light border">Periodo: {periodoImpresion.mes}/{periodoImpresion.anio}</span>
+                      </div>
+                      <div className="small text-muted mt-2">Solo se consideran conexiones activas. Si un activo no tiene recibo en ese periodo, sistema lo omite.</div>
+
+                      <div className="row g-3 mt-1">
+                        <div className="col-12 col-lg-4">
+                          <div className="border rounded p-3 h-100">
+                            <div className="fw-semibold mb-2">Impresión por zona</div>
+                            <label className="form-label form-label-sm mb-1 small text-muted">Zona</label>
+                            <select
+                              className="form-select form-select-sm"
+                              value={filtroZonaImpresion}
+                              onChange={(e) => setFiltroZonaImpresion(e.target.value)}
+                            >
+                              <option value="">Seleccione zona...</option>
+                              {zonas.map((z) => (
+                                <option key={z.id_zona} value={z.id_zona}>{z.nombre}</option>
+                              ))}
+                            </select>
+                            <div className="small text-muted mt-2">
+                              {filtroZonaImpresion ? `${totalZonaImpresion} conexion(es) activa(s) en zona.` : "Seleccione zona para filtrar."}
                             </div>
                             <button
-                              className="btn btn-outline-dark btn-sm d-flex align-items-center gap-2"
+                              className="btn btn-outline-dark btn-sm d-flex align-items-center justify-content-center gap-2 mt-3 w-100"
                               disabled={procesandoImpresionLote}
                               onClick={() => imprimirRecibosLote("zona")}
                             >
@@ -1622,42 +1644,49 @@ function LuzApp({ onBackToSelector }) {
                             </button>
                           </div>
                         </div>
-                        <div className="col-12 col-lg-7">
-                          <div className="d-flex flex-wrap gap-2 align-items-center">
-                            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={seleccionarTodosSuministrosImpresion}>
-                              Seleccionar todos
-                            </button>
-                            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={limpiarSuministrosImpresion}>
-                              Limpiar
-                            </button>
-                            <button
-                              className="btn btn-outline-dark btn-sm d-flex align-items-center gap-2"
-                              disabled={procesandoImpresionLote || idsSuministrosImpresion.length === 0}
-                              onClick={() => imprimirRecibosLote("seleccion")}
-                            >
-                              <FaPrint />
-                              Imprimir seleccion ({idsSuministrosImpresion.length})
-                            </button>
-                          </div>
-                          <div className="border rounded p-2 mt-2" style={{ maxHeight: "130px", overflowY: "auto" }}>
-                            {suministrosOrdenados.length === 0 && (
-                              <div className="small text-muted">Sin contribuyentes en padron.</div>
-                            )}
-                            {suministrosOrdenados.map((row) => {
-                              const idSuministro = Number(row.id_suministro || 0);
-                              return (
-                                <label key={`chk-print-${idSuministro}`} className="d-flex align-items-center gap-2 small mb-1">
-                                  <input
-                                    type="checkbox"
-                                    checked={idsSuministrosImpresionSet.has(idSuministro)}
-                                    onChange={() => toggleSuministroImpresion(idSuministro)}
-                                  />
-                                  <span>
-                                    {row.zona || "-"} | {row.nro_medidor || "-"} | {row.nombre_usuario || "Contribuyente"}
-                                  </span>
-                                </label>
-                              );
-                            })}
+                        <div className="col-12 col-lg-8">
+                          <div className="border rounded p-3 h-100">
+                            <div className="d-flex flex-wrap gap-2 align-items-center justify-content-between">
+                              <div className="fw-semibold">Selección manual</div>
+                              <div className="d-flex flex-wrap gap-2">
+                                <button type="button" className="btn btn-outline-secondary btn-sm" onClick={seleccionarTodosSuministrosImpresion}>
+                                  Seleccionar todos
+                                </button>
+                                <button type="button" className="btn btn-outline-secondary btn-sm" onClick={limpiarSuministrosImpresion}>
+                                  Limpiar
+                                </button>
+                                <button
+                                  className="btn btn-outline-dark btn-sm d-flex align-items-center gap-2"
+                                  disabled={procesandoImpresionLote || idsSuministrosImpresion.length === 0}
+                                  onClick={() => imprimirRecibosLote("seleccion")}
+                                >
+                                  <FaPrint />
+                                  Imprimir selección ({idsSuministrosImpresion.length})
+                                </button>
+                              </div>
+                            </div>
+                            <div className="border rounded p-2 mt-3" style={{ maxHeight: "190px", overflowY: "auto" }}>
+                              {suministrosActivosImpresion.length === 0 && (
+                                <div className="small text-muted">Sin conexiones activas en padrón.</div>
+                              )}
+                              {suministrosActivosImpresion.map((row) => {
+                                const idSuministro = Number(row.id_suministro || 0);
+                                return (
+                                  <label key={`chk-print-${idSuministro}`} className="d-flex align-items-center gap-2 small mb-2">
+                                    <input
+                                      type="checkbox"
+                                      checked={idsSuministrosImpresionSet.has(idSuministro)}
+                                      onChange={() => toggleSuministroImpresion(idSuministro)}
+                                    />
+                                    <span className="fw-semibold">{row.zona || "-"}</span>
+                                    <span className="text-muted">|</span>
+                                    <span>{row.nro_medidor || "-"}</span>
+                                    <span className="text-muted">|</span>
+                                    <span>{row.nombre_usuario || "Contribuyente"}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
                           </div>
                         </div>
                       </div>

@@ -116,7 +116,7 @@ const describePeriodo = ({
 
 const describePeriodoExtendido = (params = {}) => {
   if (params?.tipoPeriodo === "proyeccion") {
-    return `Proyeccion: base ${params?.periodoMes || "-"} | ${Number(params?.mesesProyeccion || 0)} mes(es)`;
+    return `Proyeccion desde ${params?.periodoMes || "-"} | ${Number(params?.mesesProyeccion || 0)} mes(es)`;
   }
   return describePeriodo(params);
 };
@@ -269,6 +269,11 @@ const ModalReporteCortes = ({
     const montoMensual = parseAmount(detalle?.monto_mensual ?? row?.monto_mensual ?? row?.monto_referencia ?? 0);
     const totalProyectado = parseAmount(detalle?.total_proyectado ?? row?.total_proyectado ?? row?.monto_periodo ?? 0);
     const totalPredios = Number(detalle?.total_predios ?? row?.total_predios ?? 0) || 0;
+    const tarifaAgua = parseAmount(detalle?.tarifa_agua ?? row?.tarifa_agua ?? 0);
+    const tarifaDesague = parseAmount(detalle?.tarifa_desague ?? row?.tarifa_desague ?? 0);
+    const tarifaLimpieza = parseAmount(detalle?.tarifa_limpieza ?? row?.tarifa_limpieza ?? 0);
+    const tarifaAdmin = parseAmount(detalle?.tarifa_admin ?? row?.tarifa_admin ?? 0);
+    const tarifaExtra = parseAmount(detalle?.tarifa_extra ?? row?.tarifa_extra ?? 0);
     return {
       ...detalle,
       ...row,
@@ -281,7 +286,12 @@ const ModalReporteCortes = ({
       monto_referencia: montoMensual,
       monto_periodo: totalProyectado,
       total_proyectado: totalProyectado,
-      total_predios: totalPredios
+      total_predios: totalPredios,
+      tarifa_agua: tarifaAgua,
+      tarifa_desague: tarifaDesague,
+      tarifa_limpieza: tarifaLimpieza,
+      tarifa_admin: tarifaAdmin,
+      tarifa_extra: tarifaExtra
     };
   };
 
@@ -543,12 +553,11 @@ const ModalReporteCortes = ({
                 {tipoPeriodo === "proyeccion" && (
                   <>
                     <div className="col-md-3">
-                      <label className="form-label form-label-sm mb-1">Mes de referencia</label>
+                      <label className="form-label form-label-sm mb-1">Mes inicial</label>
                       <input
                         type="month"
                         className="form-control form-control-sm"
                         value={periodoMes}
-                        max={mesActual}
                         onChange={(e) => setPeriodoMes(e.target.value)}
                       />
                     </div>
@@ -662,7 +671,7 @@ const ModalReporteCortes = ({
                           <span className="text-truncate">{m.nombre_completo}</span>
                           <span className="ms-auto text-end">
                             {isProyeccion
-                              ? `Base: S/. ${parseAmount(row.monto_mensual).toFixed(2)} | Proy: S/. ${parseAmount(row.total_proyectado).toFixed(2)}`
+                              ? `Tarifa: S/. ${parseAmount(row.monto_mensual).toFixed(2)} | Proy: S/. ${parseAmount(row.total_proyectado).toFixed(2)}`
                               : `D: S/. ${parseAmount(row.deuda_total).toFixed(2)} | A: S/. ${parseAmount(row.abono_total).toFixed(2)}`}
                           </span>
                         </label>
@@ -723,7 +732,11 @@ const ModalReporteCortes = ({
                     <th>Direccion</th>
                     {isProyeccion ? (
                       <>
-                        <th className="text-center">Predios Activos</th>
+                        <th className="text-end">Agua</th>
+                        <th className="text-end">Desague</th>
+                        <th className="text-end">Limpieza</th>
+                        <th className="text-end">Admin</th>
+                        <th className="text-end">Extra</th>
                         <th className="text-end">Base Mensual</th>
                         <th className="text-end">Total Proyectado</th>
                       </>
@@ -738,7 +751,7 @@ const ModalReporteCortes = ({
                 </thead>
                 <tbody>
                   {seleccionEnriquecida.length === 0 ? (
-                    <tr><td colSpan="7" className="text-center py-3">Sin datos para mostrar.</td></tr>
+                    <tr><td colSpan={isProyeccion ? 11 : 7} className="text-center py-3">Sin datos para mostrar.</td></tr>
                   ) : (
                     seleccionEnriquecida.map((m, idx) => (
                       <tr key={`${m.id_contribuyente}-${idx}`}>
@@ -748,7 +761,21 @@ const ModalReporteCortes = ({
                         <td>{m.direccion_completa}</td>
                         {isProyeccion ? (
                           <>
-                            <td className="text-center">{Number(m.total_predios || 0)}</td>
+                            <td className={`text-end ${parseAmount(m.tarifa_agua) > 0 ? "fw-bold" : "text-muted"}`}>
+                              S/. {parseAmount(m.tarifa_agua).toFixed(2)}
+                            </td>
+                            <td className={`text-end ${parseAmount(m.tarifa_desague) > 0 ? "fw-bold" : "text-muted"}`}>
+                              S/. {parseAmount(m.tarifa_desague).toFixed(2)}
+                            </td>
+                            <td className={`text-end ${parseAmount(m.tarifa_limpieza) > 0 ? "fw-bold" : "text-muted"}`}>
+                              S/. {parseAmount(m.tarifa_limpieza).toFixed(2)}
+                            </td>
+                            <td className={`text-end ${parseAmount(m.tarifa_admin) > 0 ? "fw-bold" : "text-muted"}`}>
+                              S/. {parseAmount(m.tarifa_admin).toFixed(2)}
+                            </td>
+                            <td className={`text-end ${parseAmount(m.tarifa_extra) > 0 ? "fw-bold" : "text-muted"}`}>
+                              S/. {parseAmount(m.tarifa_extra).toFixed(2)}
+                            </td>
                             <td className={`text-end ${parseAmount(m.monto_mensual) > 0 ? "fw-bold" : "text-muted"}`}>
                               S/. {parseAmount(m.monto_mensual).toFixed(2)}
                             </td>
