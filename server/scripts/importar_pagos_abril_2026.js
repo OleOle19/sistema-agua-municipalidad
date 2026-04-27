@@ -214,6 +214,26 @@ function classifyRow(row, match) {
     return { status: "replace", reason: "mover_fecha_importada", match };
   }
   if (row.abono > match.total_pagar_num + EPS) {
+    const subtotalAdmin = Number((row.admin + row.extras).toFixed(2));
+    const totalHoja = Number((row.agua + row.desague + row.limpieza + subtotalAdmin).toFixed(2));
+    if (
+      match.total_pagado_num <= EPS
+      && Math.abs(totalHoja - row.abono) <= EPS
+      && totalHoja > match.total_pagar_num + EPS
+    ) {
+      return {
+        status: "adjust_and_insert",
+        reason: "actualizar_recibo_y_registrar_pago",
+        match,
+        target_totals: {
+          subtotal_agua: row.agua,
+          subtotal_desague: row.desague,
+          subtotal_limpieza: row.limpieza,
+          subtotal_admin: subtotalAdmin,
+          total_pagar: totalHoja
+        }
+      };
+    }
     return {
       status: "unresolved",
       reason: "abono_supera_total_actual",
@@ -267,7 +287,17 @@ async function applyChange(client, item) {
       throw new Error(`Recibo ${match.id_recibo} tiene total pagado ${totalPagado} y no coincide con ${row.abono}.`);
     }
     const fechaImportada = `${row.anio}-${pad2(row.mes)}-01`;
-    const fechasInvalidas = pagosRs.rows.filter((pago) => toIsoDateOnly(pago.fecha_pago) !== fechaImportada);
+    const fechaObjetivo = row.fecha;
+    const fechasActuales = pagosRs.rows.map((pago) => toIsoDateOnly(pago.fecha_pago));
+    const yaAlineado = fechasActuales.every((fecha) => fecha === fechaObjetivo);
+    if (yaAlineado) {
+      await refreshReciboEstado(client, match.id_recibo);
+      return { action: "already_aligned", pagos: pagosRs.rows.length };
+    }
+    const fechasInvalidas = pagosRs.rows.filter((pago) => {
+      const fechaPago = toIsoDateOnly(pago.fecha_pago);
+      return fechaPago !== fechaImportada && fechaPago !== fechaObjetivo;
+    });
     if (fechasInvalidas.length > 0) {
       throw new Error(`Recibo ${match.id_recibo} ya no conserva fecha importada ${fechaImportada}.`);
     }
@@ -278,7 +308,7 @@ async function applyChange(client, item) {
         fecha_pago = ($2::date + COALESCE(fecha_pago::time, TIME '00:00:00')),
         usuario_cajero = $3
       WHERE id_pago = ANY($1::bigint[])
-    `, [idsPago, row.fecha, IMPORT_USER]);
+    `, [idsPago, fechaObjetivo, IMPORT_USER]);
     await refreshReciboEstado(client, match.id_recibo);
     return { action: "replace", pagos: idsPago.length };
   }
@@ -290,6 +320,33 @@ async function applyChange(client, item) {
     `, [Number(match.id_recibo), row.abono, row.fecha, IMPORT_USER]);
     await refreshReciboEstado(client, match.id_recibo);
     return { action: "insert", pagos: 1 };
+  }
+
+  if (status === "adjust_and_insert") {
+    const target = item.target_totals || {};
+    await client.query(`
+      UPDATE recibos
+      SET
+        subtotal_agua = $2,
+        subtotal_desague = $3,
+        subtotal_limpieza = $4,
+        subtotal_admin = $5,
+        total_pagar = $6
+      WHERE id_recibo = $1
+    `, [
+      Number(match.id_recibo),
+      target.subtotal_agua,
+      target.subtotal_desague,
+      target.subtotal_limpieza,
+      target.subtotal_admin,
+      target.total_pagar
+    ]);
+    await client.query(`
+      INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero)
+      VALUES ($1, $2, ($3::date + TIME '00:00:00'), $4)
+    `, [Number(match.id_recibo), row.abono, row.fecha, IMPORT_USER]);
+    await refreshReciboEstado(client, match.id_recibo);
+    return { action: "adjust_and_insert", pagos: 1 };
   }
 
   return { action: "skip", pagos: 0 };
@@ -326,6 +383,7 @@ async function main() {
 
     const replaceItems = resolved.filter((item) => item.status === "replace");
     const insertItems = resolved.filter((item) => item.status === "insert");
+    const adjustItems = resolved.filter((item) => item.status === "adjust_and_insert");
     const unresolved = resolved.filter((item) => item.status === "unresolved");
 
     console.log(JSON.stringify({
@@ -334,6 +392,7 @@ async function main() {
       total_filas_validas: rows.length,
       reemplazos: replaceItems.length,
       inserciones: insertItems.length,
+      ajustes_con_insercion: adjustItems.length,
       pendientes_revision: unresolved.length,
       pendientes: unresolved.map((item) => ({
         fila: item.row.row_number,
@@ -358,10 +417,12 @@ async function main() {
     await client.query("BEGIN");
     let replaced = 0;
     let inserted = 0;
-    for (const item of [...replaceItems, ...insertItems]) {
+    let adjusted = 0;
+    for (const item of [...replaceItems, ...insertItems, ...adjustItems]) {
       const result = await applyChange(client, item);
       if (result.action === "replace") replaced += 1;
       if (result.action === "insert") inserted += 1;
+      if (result.action === "adjust_and_insert") adjusted += 1;
     }
     await client.query("COMMIT");
 
@@ -370,6 +431,7 @@ async function main() {
       usuario_cajero: IMPORT_USER,
       reemplazos_aplicados: replaced,
       inserciones_aplicadas: inserted,
+      ajustes_aplicados: adjusted,
       pendientes_revision: unresolved.length
     }, null, 2));
   } catch (err) {
