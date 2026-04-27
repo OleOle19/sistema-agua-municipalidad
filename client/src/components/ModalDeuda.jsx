@@ -108,7 +108,6 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
       });
       alert(`Deuda registrada correctamente para ${usuario.nombre_completo}`);
       alGuardar();
-      cerrarModal();
     } catch (error) {
       const errorBackend = error?.response?.data;
       const mensajeError = errorBackend?.error

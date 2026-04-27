@@ -110,7 +110,7 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
       };
       const res = await api.post("/recibos/generar-masivo", payload);
       alert(res.data.mensaje);
-      alGuardar(); cerrarModal();
+      alGuardar();
     } catch { alert("Error al generar deuda."); } 
     finally { setLoading(false); }
   };

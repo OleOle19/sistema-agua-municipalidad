@@ -19,7 +19,9 @@ const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
     if(!window.confirm(`¿ESTÁ SEGURO? Se borrará la deuda de ${mes}/${anio}.`)) return;
     try {
       await api.delete(`/recibos/${id_recibo}`);
-      alert("Deuda eliminada."); alGuardar(); cerrarModal();
+      setDeudas((prev) => prev.filter((recibo) => Number(recibo.id_recibo) !== Number(id_recibo)));
+      alert("Deuda eliminada.");
+      alGuardar();
     } catch { alert("Error al eliminar"); }
   };
 

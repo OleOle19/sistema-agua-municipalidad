@@ -1612,7 +1612,7 @@ const SECURITY_STRICT_STARTUP = Object.prototype.hasOwnProperty.call(process.env
   : NODE_ENV === "production";
 const JWT_SECRET_DEFAULT = "cambia_esto_en_produccion";
 const JWT_SECRET = process.env.JWT_SECRET || JWT_SECRET_DEFAULT;
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
+const JWT_EXPIRES_IN_RAW = process.env.JWT_EXPIRES_IN || "30d";
 const AUTH_OPTIONAL_DEV = process.env.AUTH_OPTIONAL_DEV === "1";
 const serverHostForSecurity = String(process.env.SERVER_HOST || "").trim().toLowerCase();
 const explicitLocalHost = ["127.0.0.1", "localhost", "::1"].includes(serverHostForSecurity);
@@ -1623,6 +1623,15 @@ if (SECURITY_STRICT_STARTUP && jwtWeakSecret) {
 if (AUTH_OPTIONAL_DEV && !explicitLocalHost) {
   throw new Error("[SECURITY] AUTH_OPTIONAL_DEV=1 solo permitido con SERVER_HOST local explícito (localhost/127.0.0.1/::1).");
 }
+const normalizeJwtExpiresIn = (value, fallback = "30d") => {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  if (/^\d+\s*(ms|s|m|h|d|w|y)$/i.test(raw)) return raw.replace(/\s+/g, "");
+  console.warn(`[AUTH] JWT_EXPIRES_IN invalido (${raw}). Usando ${fallback}.`);
+  return fallback;
+};
+const JWT_EXPIRES_IN = normalizeJwtExpiresIn(JWT_EXPIRES_IN_RAW, "30d");
 
 const isBcryptHash = (value) => typeof value === "string" && value.startsWith("$2");
 
@@ -10447,15 +10456,6 @@ const construirProyeccionCaja = async (fechaReferencia, options = {}) => {
 };
 
 const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) => {
-  const cacheKey = tipo === "rango"
-    ? `${tipo}|${normalizeDateOnly(rangoManual?.desde) || ""}|${normalizeDateOnly(rangoManual?.hasta) || ""}`
-    : `${tipo}|${fechaReferencia}`;
-  const now = Date.now();
-  const cached = reportesCajaCache.get(cacheKey);
-  if (cached && now < cached.expiresAt) {
-    return cached.data;
-  }
-
   const rango = await obtenerRangoCaja(tipo, fechaReferencia, rangoManual);
   const desde = rango.desde;
   const hasta = rango.hasta;
@@ -10541,11 +10541,6 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) =
       }))
     }
   };
-
-  reportesCajaCache.set(cacheKey, {
-    expiresAt: Date.now() + REPORTE_CAJA_CACHE_TTL_MS,
-    data: resumen
-  });
 
   return resumen;
 };
@@ -10917,6 +10912,7 @@ const consultarCierreCajaBloqueante = async (clientOrPool, fechaReferencia = toI
 
 app.get("/caja/reporte", async (req, res) => {
   try {
+    res.set("Cache-Control", "no-store");
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
     const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
     if (tipo === "proyeccion") {
@@ -10960,6 +10956,7 @@ app.get("/caja/reporte", async (req, res) => {
 
 app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
   try {
+    res.set("Cache-Control", "no-store");
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
     const tipo = TIPOS_REPORTE_CAJA.has(tipoRaw) ? tipoRaw : "diario";
     if (tipo === "proyeccion") {

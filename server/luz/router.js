@@ -97,12 +97,21 @@ const SECURITY_STRICT_STARTUP = Object.prototype.hasOwnProperty.call(process.env
   : NODE_ENV === "production";
 const JWT_SECRET_DEFAULT = "cambia_esto_en_produccion";
 const JWT_SECRET = process.env.JWT_SECRET || JWT_SECRET_DEFAULT;
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "30d";
+const JWT_EXPIRES_IN_RAW = process.env.JWT_EXPIRES_IN || "30d";
 const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
 const jwtWeakSecret = !JWT_SECRET || JWT_SECRET === JWT_SECRET_DEFAULT || String(JWT_SECRET).trim().length < 32;
 if (SECURITY_STRICT_STARTUP && jwtWeakSecret) {
   throw new Error("[LUZ][SECURITY] JWT_SECRET inseguro. Configure una clave >= 32 caracteres.");
 }
+const normalizeJwtExpiresIn = (value, fallback = "30d") => {
+  const raw = String(value || "").trim();
+  if (!raw) return fallback;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  if (/^\d+\s*(ms|s|m|h|d|w|y)$/i.test(raw)) return raw.replace(/\s+/g, "");
+  console.warn(`[LUZ][AUTH] JWT_EXPIRES_IN invalido (${raw}). Usando ${fallback}.`);
+  return fallback;
+};
+const JWT_EXPIRES_IN = normalizeJwtExpiresIn(JWT_EXPIRES_IN_RAW, "30d");
 
 const LUZ_TARIFA_KWH_DEFAULT = Number.parseFloat(process.env.LUZ_TARIFA_KWH_DEFAULT || "1") || 1;
 const LUZ_CARGO_FIJO_DEFAULT = Number.parseFloat(process.env.LUZ_CARGO_FIJO_DEFAULT || "6.5") || 6.5;

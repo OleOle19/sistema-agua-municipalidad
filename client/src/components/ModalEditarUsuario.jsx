@@ -138,8 +138,8 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
       });
       const recalc = Number(res?.data?.recibos_recalculados || 0);
       alert(`Usuario actualizado.\nRecibos pendientes/futuros recalculados: ${recalc}`);
+      setNombreOriginal(String(formData.nombre_completo || ""));
       alGuardar();
-      cerrarModal();
     } catch (error) {
       alert(error.response?.data?.error || "Error al actualizar");
     }
