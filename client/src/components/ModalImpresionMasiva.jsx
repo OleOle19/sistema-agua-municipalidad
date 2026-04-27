@@ -22,11 +22,28 @@ const formatPeriodoLabel = (anio, mes) => {
   const month = MONTH_OPTIONS.find((m) => Number(m.value) === Number(mes));
   return `${month?.label || String(mes || "-")} ${String(anio || "-")}`;
 };
-const getUltimoPeriodoDisponible = (incluirMesActual = false) => {
+const canUnlockNextMonthForMensual = () => {
+  const now = new Date();
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffMs = endOfMonth.getTime() - today.getTime();
+  const daysRemaining = Math.floor(diffMs / 86400000);
+  return daysRemaining <= 7;
+};
+const getUltimoPeriodoDisponible = ({
+  incluirMesActual = false,
+  permitirMesSiguiente = false
+} = {}) => {
   const now = new Date();
   const currentMonth = now.getMonth() + 1;
   if (incluirMesActual) {
     return { anio: now.getFullYear(), mes: currentMonth };
+  }
+  if (permitirMesSiguiente) {
+    if (currentMonth === 12) {
+      return { anio: now.getFullYear() + 1, mes: 1 };
+    }
+    return { anio: now.getFullYear(), mes: currentMonth + 1 };
   }
   if (currentMonth === 1) {
     return { anio: now.getFullYear() - 1, mes: 12 };
@@ -44,7 +61,11 @@ const ModalImpresionMasiva = ({
   const [calles, setCalles] = useState([]);
   const [cargando, setCargando] = useState(false);
   const soloSeleccion = modoOperacion === "reimpresion";
-  const ultimoPeriodoEmitido = getUltimoPeriodoDisponible(soloSeleccion);
+  const permitirMesSiguienteMensual = !soloSeleccion && canUnlockNextMonthForMensual();
+  const ultimoPeriodoEmitido = getUltimoPeriodoDisponible({
+    incluirMesActual: soloSeleccion,
+    permitirMesSiguiente: permitirMesSiguienteMensual
+  });
   const maxPeriodoEmitidoNum = getPeriodoNum(ultimoPeriodoEmitido.anio, ultimoPeriodoEmitido.mes);
   const [modo, setModo] = useState(soloSeleccion ? "seleccion" : (idsSeleccionados.length > 0 ? "seleccion" : "calle"));
   const [seleccion, setSeleccion] = useState({

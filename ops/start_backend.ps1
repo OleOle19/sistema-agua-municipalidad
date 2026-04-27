@@ -25,6 +25,20 @@ function Is-Running([int]$ProcessId) {
   return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
 }
 
+function Get-ProcessNameSafe([int]$ProcessId) {
+  if ($ProcessId -le 0) { return "" }
+  try {
+    return String((Get-Process -Id $ProcessId -ErrorAction Stop).ProcessName)
+  } catch {
+    return ""
+  }
+}
+
+function Is-BackendProcessCandidate([int]$ProcessId) {
+  $name = (Get-ProcessNameSafe $ProcessId).ToLowerInvariant()
+  return @("node", "npm", "powershell", "pwsh", "cmd") -contains $name
+}
+
 function Stop-Safe([int]$ProcessId) {
   if (!(Is-Running $ProcessId)) { return }
   try {
@@ -59,7 +73,17 @@ function Resolve-CommandPath([string]$Name) {
 $state = Read-State
 if ($state) {
   $existingPid = [int]($state.backend_pid | ForEach-Object { $_ })
-  if (Is-Running $existingPid) {
+  $existingManagerPid = [int]($state.backend_manager_pid | ForEach-Object { $_ })
+  $statePort = [int]($state.backend_port | ForEach-Object { $_ })
+  if ($statePort -gt 0 -and $statePort -lt 65536) {
+    $backendPort = $statePort
+    $backendHealthUrl = "http://127.0.0.1:$backendPort/health"
+  }
+  $stateLooksHealthy = (Test-BackendHealth $backendHealthUrl) -and (
+    ((Is-Running $existingPid) -and (Is-BackendProcessCandidate $existingPid)) -or
+    ((Is-Running $existingManagerPid) -and (Is-BackendProcessCandidate $existingManagerPid))
+  )
+  if ($stateLooksHealthy) {
     Write-Host "Backend ya esta iniciado (PID $existingPid)."
     Write-Host "Health: $backendHealthUrl"
     exit 0

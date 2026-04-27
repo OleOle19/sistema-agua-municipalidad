@@ -14,7 +14,8 @@
     "luz:ensure-db": "node scripts/ensure_luz_db.js",
     "luz:bootstrap-admin": "node scripts/bootstrap_luz_admin.js",
     "sanear:recibos:report": "node scripts/sanear_recibos_montos.js",
-    "sanear:recibos:apply": "node scripts/sanear_recibos_montos.js --apply"
+    "sanear:recibos:apply": "node scripts/sanear_recibos_montos.js --apply",
+    "pagos:abril-2026": "node scripts/importar_pagos_abril_2026.js"
   },
   "keywords": [],
   "author": "",

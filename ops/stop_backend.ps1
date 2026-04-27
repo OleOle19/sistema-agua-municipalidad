@@ -32,6 +32,20 @@ function Is-Running([int]$ProcessId) {
   return $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
 }
 
+function Get-ProcessNameSafe([int]$ProcessId) {
+  if ($ProcessId -le 0) { return "" }
+  try {
+    return String((Get-Process -Id $ProcessId -ErrorAction Stop).ProcessName)
+  } catch {
+    return ""
+  }
+}
+
+function Is-BackendProcessCandidate([int]$ProcessId) {
+  $name = (Get-ProcessNameSafe $ProcessId).ToLowerInvariant()
+  return @("node", "npm", "powershell", "pwsh", "cmd") -contains $name
+}
+
 function Stop-Safe([int]$ProcessId) {
   if (!(Is-Running $ProcessId)) { return $false }
   try {
@@ -111,8 +125,11 @@ if ($statePort -gt 0 -and $statePort -lt 65536) {
   $Port = $statePort
 }
 
-$stopped = Stop-Safe $backendPid
-if (-not $stopped -and $backendManagerPid -gt 0 -and $backendManagerPid -ne $backendPid) {
+$stopped = $false
+if ((Is-Running $backendPid) -and (Is-BackendProcessCandidate $backendPid)) {
+  $stopped = Stop-Safe $backendPid
+}
+if (-not $stopped -and $backendManagerPid -gt 0 -and $backendManagerPid -ne $backendPid -and (Is-Running $backendManagerPid) -and (Is-BackendProcessCandidate $backendManagerPid)) {
   $stopped = Stop-Safe $backendManagerPid
 }
 Remove-Item -Path $stateFile -Force -ErrorAction SilentlyContinue
