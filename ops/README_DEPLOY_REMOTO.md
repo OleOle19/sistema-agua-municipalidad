@@ -21,13 +21,13 @@ node --version
 npm --version
 ```
 
-### 1.3 Probar conexión SSH desde tu laptop
+### 1.3 Probar conexion SSH desde tu laptop
 
 ```powershell
 ssh TU_USUARIO@IP_DEL_SERVIDOR
 ```
 
-## 2) Uso rápido del script de despliegue
+## 2) Uso rapido del script de despliegue
 
 Desde tu laptop:
 
@@ -42,9 +42,13 @@ Ese comando hace:
 1. `git fetch + git pull --ff-only` en `main`.
 2. `npm --prefix client run build`.
 3. reinicio backend (`ops/stop_backend.ps1 -Force` + `ops/start_backend.ps1`).
-4. verificación de healthcheck en `http://127.0.0.1:5000/health`.
+4. verificacion de healthcheck en `http://127.0.0.1:5000/health`.
 
-## 3) Opciones útiles del script
+Nota:
+- Ese flujo actualiza codigo, pero no aplica cambios de datos en PostgreSQL.
+- Si quieres reflejar pagos abril 2026 en reportes del servidor, usa la opcion especial de abajo.
+
+## 3) Opciones utiles del script
 
 ### Simular sin ejecutar (dry-run)
 
@@ -52,13 +56,30 @@ Ese comando hace:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\deploy_from_github.ps1 -DryRun
 ```
 
-### Incluir instalación de dependencias
+### Incluir instalacion de dependencias
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\deploy_from_github.ps1 -InstallDependencies
 ```
 
-### Omitir pull/build/restart (según necesidad)
+### Desplegar y aplicar pagos abril 2026
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\deploy_from_github.ps1 `
+  -ApplyApril2026Payments `
+  -AprilExcelPath "C:\ruta\real\MARZO.xlsx"
+```
+
+Ese modo hace:
+
+1. `git pull`.
+2. `npm --prefix client run build`.
+3. `node server\scripts\importar_pagos_abril_2026.js <excel> --apply`.
+4. reinicio backend.
+
+Usar cuando el servidor siga mostrando `0.00` en caja para `01/04/2026` o `06/04/2026` despues del pull.
+
+### Omitir pull/build/restart (segun necesidad)
 
 ```powershell
 # solo restart
@@ -84,4 +105,3 @@ CORS_ALLOW_TRYCLOUDFLARE=1
 ```
 
 Luego reinicia backend para aplicar cambios.
-

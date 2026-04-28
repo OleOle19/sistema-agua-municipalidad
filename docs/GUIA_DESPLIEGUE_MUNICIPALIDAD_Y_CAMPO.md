@@ -170,9 +170,10 @@ No, no hace falta desplegar frontend como servicio separado.
 1. Base de datos operativa.
 2. `server/.env` correcto (`AUTH_OPTIONAL_DEV=0`, `SERVER_HOST=0.0.0.0`).
 3. `npm --prefix client run build` (solo cuando cambia `client`).
-4. Levantar backend (`INICIAR_BACKEND.bat` o `npm --prefix server start`).
-5. Probar LAN: `/` y `/campo-app/`.
-6. Si hay salida remota temporal: ejecutar `INICIAR_CAMPO_REMOTO.bat`.
+4. Si el cambio incluye importaciones o correcciones historicas de pagos, aplicar tambien el script de datos correspondiente en el servidor.
+5. Levantar backend (`INICIAR_BACKEND.bat` o `npm --prefix server start`).
+6. Probar LAN: `/` y `/campo-app/`.
+7. Si hay salida remota temporal: ejecutar `INICIAR_CAMPO_REMOTO.bat`.
 
 ## 10) Sincronizacion en tiempo real entre PCs (WebSocket)
 

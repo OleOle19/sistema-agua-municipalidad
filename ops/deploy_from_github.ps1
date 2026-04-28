@@ -6,6 +6,8 @@ param(
   [switch]$SkipBuild,
   [switch]$SkipRestart,
   [switch]$InstallDependencies,
+  [switch]$ApplyApril2026Payments,
+  [string]$AprilExcelPath = "",
   [switch]$Force,
   [switch]$DryRun
 )
@@ -16,6 +18,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
 $startBackendScript = Join-Path $scriptDir "start_backend.ps1"
 $stopBackendScript = Join-Path $scriptDir "stop_backend.ps1"
+$aprilImportScript = Join-Path $repoRoot "server\scripts\importar_pagos_abril_2026.js"
 $healthUrl = "http://127.0.0.1:5000/health"
 
 function Run-OrFail {
@@ -62,6 +65,18 @@ function Wait-BackendHealth {
 
 Push-Location $repoRoot
 try {
+  if ($ApplyApril2026Payments) {
+    if ([string]::IsNullOrWhiteSpace($AprilExcelPath)) {
+      throw "Debe indicar -AprilExcelPath cuando usa -ApplyApril2026Payments."
+    }
+    if (!(Test-Path $aprilImportScript)) {
+      throw "No se encontro script de importacion abril: $aprilImportScript"
+    }
+    if (!(Test-Path $AprilExcelPath)) {
+      throw "No se encontro archivo Excel indicado: $AprilExcelPath"
+    }
+  }
+
   if (-not $SkipPull) {
     $status = (& git status --porcelain)
     if ($LASTEXITCODE -ne 0) {
@@ -110,6 +125,15 @@ try {
     }
   } else {
     Write-Host ">> Omitiendo build por -SkipBuild."
+  }
+
+  if ($ApplyApril2026Payments) {
+    $resolvedAprilExcelPath = (Resolve-Path $AprilExcelPath).Path
+    Run-OrFail "Aplicando importacion abril 2026" {
+      Invoke-OrFail -Cmd "node" -CommandArgs @($aprilImportScript, $resolvedAprilExcelPath, "--apply")
+    }
+  } else {
+    Write-Host ">> Omitiendo importacion abril 2026."
   }
 
   if (-not $SkipRestart) {
