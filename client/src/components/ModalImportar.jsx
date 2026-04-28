@@ -16,9 +16,10 @@ const TIPOS_IMPORTACION = {
   historial: {
     titulo: "Historial Deudas/Pagos",
     endpoint: "/importar/historial",
-    accept: ".txt,.csv",
+    accept: ".txt,.csv,.xlsx,.xls",
     ayuda: [
-      { icono: <FaHistory className="me-1" />, titulo: "TXT/CSV", detalle: "historial de deudas y pagos (ej. CATORCE.txt)." }
+      { icono: <FaHistory className="me-1" />, titulo: "TXT/CSV", detalle: "historial de deudas y pagos (ej. CATORCE.txt)." },
+      { icono: <FaFileExcel className="me-1" />, titulo: "Excel (XLSX)", detalle: "importar datos con estructura de planilla (columnas: CONTRIBUYENTE, FECHA, AÑO, MES, AGUA, DESAGUE, LIMPIEZA, ADMINISTRACIÓN, EXTRAS, ABONO, TOTAL)." }
     ],
     procesando: "Importando historial de deudas y pagos (puede tardar varios minutos)..."
   }

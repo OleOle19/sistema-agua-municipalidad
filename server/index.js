@@ -11,6 +11,7 @@ const cors = require("cors");
 const pool = require("./db");
 const luzRouter = require("./luz/router");
 const { importarDeudas } = require("./importar_deudas");
+const { importarDestritoExcel } = require("./importar_deudas_excel");
 const ExcelJS = require('exceljs');
 const xml2js = require('xml2js');
 const multer = require('multer');
@@ -14980,40 +14981,66 @@ app.post("/importar/historial", authenticateToken, requireSuperAdmin, uploadImpo
 
   try {
     if (!req.file) {
-      return res.status(400).json({ error: "Debe adjuntar un archivo .txt o .csv." });
+      return res.status(400).json({ error: "Debe adjuntar un archivo .txt, .csv, .xlsx o .xls." });
     }
-    const typeError = validateUploadFileType(req.file, {
-      allowedExts: [".txt", ".csv"],
-      allowedMimeTypes: [
-        "text/plain",
-        "text/csv",
-        "application/csv",
-        "application/octet-stream"
-      ]
-    });
-    if (typeError) return res.status(400).json({ error: typeError });
-
+    
     const nombre = (req.file.originalname || "").toLowerCase();
-    if (!nombre.endsWith(".txt") && !nombre.endsWith(".csv")) {
-      return res.status(400).json({ error: "Formato no válido. Use .txt o .csv." });
+    const esExcel = nombre.endsWith(".xlsx") || nombre.endsWith(".xls");
+    const esTxtCsv = nombre.endsWith(".txt") || nombre.endsWith(".csv");
+    
+    if (!esTxtCsv && !esExcel) {
+      return res.status(400).json({ error: "Formato no válido. Use .txt, .csv, .xlsx o .xls." });
     }
 
     importacionHistorialEnCurso = true;
-    const inputStream = createReadStreamFromUploadedFile(req.file);
-    if (!inputStream) {
-      return res.status(400).json({ error: "El archivo está vacío." });
-    }
 
-    const resultado = await importarDeudas({
-      inputStream,
-      commitPerBatch: true,
-      maxRechazos: MAX_RECHAZOS_IMPORTACION,
-      logger: {
-        log: (msg) => console.log(`[IMPORTAR_HISTORIAL] ${msg}`),
-        error: (msg, err) => console.error(`[IMPORTAR_HISTORIAL] ${msg}`, err),
-        progress: () => {}
+    let resultado;
+    
+    if (esExcel) {
+      // Importar desde Excel
+      if (!req.file.buffer) {
+        return res.status(400).json({ error: "No se pudo leer el archivo Excel." });
       }
-    });
+      
+      resultado = await importarDestritoExcel({
+        buffer: req.file.buffer,
+        commitPerBatch: true,
+        maxRechazos: MAX_RECHAZOS_IMPORTACION,
+        logger: {
+          log: (msg) => console.log(`[IMPORTAR_HISTORIAL_EXCEL] ${msg}`),
+          error: (msg, err) => console.error(`[IMPORTAR_HISTORIAL_EXCEL] ${msg}`, err),
+          progress: () => {}
+        }
+      });
+    } else {
+      // Importar desde TXT/CSV
+      const typeError = validateUploadFileType(req.file, {
+        allowedExts: [".txt", ".csv"],
+        allowedMimeTypes: [
+          "text/plain",
+          "text/csv",
+          "application/csv",
+          "application/octet-stream"
+        ]
+      });
+      if (typeError) return res.status(400).json({ error: typeError });
+      
+      const inputStream = createReadStreamFromUploadedFile(req.file);
+      if (!inputStream) {
+        return res.status(400).json({ error: "El archivo está vacío." });
+      }
+
+      resultado = await importarDeudas({
+        inputStream,
+        commitPerBatch: true,
+        maxRechazos: MAX_RECHAZOS_IMPORTACION,
+        logger: {
+          log: (msg) => console.log(`[IMPORTAR_HISTORIAL] ${msg}`),
+          error: (msg, err) => console.error(`[IMPORTAR_HISTORIAL] ${msg}`, err),
+          progress: () => {}
+        }
+      });
+    }
 
     if (Number(resultado?.total_recibos_procesados || 0) > 0 || Number(resultado?.total_pagos_registrados || 0) > 0) {
       invalidateContribuyentesCache();
