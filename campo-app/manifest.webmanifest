@@ -1,7 +1,7 @@
 {
-  "name": "App Campo - Agua Municipal",
+  "name": "App Campo - Municipal",
   "short_name": "App Campo",
-  "description": "App de brigada para registro y sincronizacion offline de solicitudes de campo.",
+  "description": "App de brigada para trabajo de campo municipal (agua y luz).",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

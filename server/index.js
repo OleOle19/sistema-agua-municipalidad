@@ -493,7 +493,10 @@ const CAJA_RIESGO_WINDOW_HOURS = Math.min(168, Math.max(1, Number(process.env.CA
 const CAJA_RIESGO_ANULACIONES_UMBRAL = Math.min(20, Math.max(1, Number(process.env.CAJA_RIESGO_ANULACIONES_UMBRAL || 3)));
 const MAX_RETROACTIVE_COBRO_YEARS = Math.min(5, Math.max(0, Number(process.env.MAX_RETROACTIVE_COBRO_YEARS || 1)));
 const MAX_DIAS_CORRECCION_PAGO = Math.min(30, Math.max(1, Number(process.env.MAX_DIAS_CORRECCION_PAGO || 7)));
-const PAGO_OPERATIVO_CAJA_SQL = "(p.id_orden_cobro IS NOT NULL OR COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '')";
+const PAGO_OPERATIVO_CAJA_SQL = `(
+  (p.id_orden_cobro IS NOT NULL OR COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '')
+  AND COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> 'IMPORTACION_HISTORIAL'
+)`;
 const normalizeHoraHM = (value, fallback) => {
   const raw = String(value || "").trim();
   if (!/^\d{2}:\d{2}$/.test(raw)) return fallback;

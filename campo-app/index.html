@@ -9,16 +9,25 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="App Campo" />
-    <title>App Campo - Agua Municipal</title>
+    <title>App Campo - Municipal</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <main class="layout">
       <header class="hero">
-        <h1>App Campo</h1>
-        <p>Registro de cambios desde brigada hacia la bandeja de revision del administrador.</p>
+        <h1 id="heroTitle">App Campo</h1>
+        <p id="heroSubtitle">Registro de cambios desde brigada hacia la bandeja de revision del administrador.</p>
       </header>
+
+      <section class="card">
+        <h2>Submodulo de campo</h2>
+        <div class="module-switch" role="tablist" aria-label="Selector de submodulo">
+          <button id="moduleAguaBtn" type="button" class="secondary module-switch-btn is-active" role="tab" aria-selected="true">Agua</button>
+          <button id="moduleLuzBtn" type="button" class="secondary module-switch-btn" role="tab" aria-selected="false">Luz</button>
+        </div>
+        <p id="moduleDescription" class="muted module-description">Agua operativo: busqueda, registro en campo y cola offline.</p>
+      </section>
 
       <section id="apiConfigCard" class="card hidden">
         <h2>Configuracion API</h2>
@@ -32,7 +41,7 @@
       </section>
 
       <section id="authSection" class="card">
-        <h2>Ingreso de brigada</h2>
+        <h2 id="authTitle">Ingreso de brigada - Agua</h2>
         <form id="loginForm">
           <div class="row">
             <label for="username">Usuario</label>
@@ -51,13 +60,13 @@
       <section id="appSection" class="card hidden">
         <div class="toolbar">
           <div>
-            <h2>Reporte brigada - orden de cortes</h2>
+            <h2 id="toolbarTitle">Reporte brigada - orden de cortes (Agua)</h2>
             <p id="userInfo" class="muted"></p>
           </div>
           <button id="logoutBtn" class="secondary" type="button">Salir</button>
         </div>
 
-        <div class="offline-tools">
+        <div class="offline-tools agua-only">
           <div class="offline-actions">
             <button id="syncOfflineBtn" class="secondary" type="button">Sincronizar offline</button>
             <button id="syncQueueBtn" class="secondary" type="button">Enviar pendientes</button>
@@ -73,7 +82,7 @@
           </div>
         </div>
 
-        <section class="queue-panel">
+        <section class="queue-panel agua-only">
           <div class="queue-header">
             <h3>Pendientes offline</h3>
             <button id="refreshQueueBtn" class="secondary" type="button">Actualizar lista</button>
@@ -83,7 +92,7 @@
           </div>
         </section>
 
-        <section class="queue-panel" id="seguimientoPanel">
+        <section class="queue-panel agua-only" id="seguimientoPanel">
           <div class="queue-header">
             <h3>Seguimiento predios (pendientes / aprobados)</h3>
             <div class="offline-actions">
@@ -101,7 +110,7 @@
           </div>
         </section>
 
-        <div class="filters">
+        <div class="filters agua-only">
           <div class="row">
             <label for="searchInput">Buscar contribuyente (nombre, DNI, codigo o direccion)</label>
             <div class="search-field">
@@ -117,13 +126,13 @@
             </select>
           </div>
         </div>
-        <div class="search-actions">
+        <div class="search-actions agua-only">
           <button id="newPredioBtn" class="warning" type="button">Registrar predio nuevo (no encontrado)</button>
         </div>
 
-        <div id="searchResults" class="results"></div>
+        <div id="searchResults" class="results agua-only"></div>
 
-        <form id="solicitudForm" class="hidden accordion">
+        <form id="solicitudForm" class="hidden accordion agua-only">
           <div id="selectedInfo" class="selected-inline"></div>
           <div id="duplicateWarning" class="duplicate-warning hidden"></div>
 
@@ -257,6 +266,77 @@
             <button id="submitSolicitudBtn" type="submit">Enviar solicitud</button>
           </div>
         </form>
+
+        <section id="luzFieldPanel" class="queue-panel luz-only hidden">
+          <div class="queue-header">
+            <h3>Campo Luz - corroboracion y visitas mensuales</h3>
+          </div>
+
+          <div class="row">
+            <label for="luzSearchInput">Buscar por ID contribuyente, nombre o zona</label>
+            <div class="search-field">
+              <input id="luzSearchInput" type="search" placeholder="Ej: 00080, apellido o zona..." />
+              <button id="luzClearSearchBtn" class="secondary" type="button">Limpiar</button>
+            </div>
+            <div class="row" style="margin-bottom:0">
+              <label for="luzZonaFilter">Filtro por zona</label>
+              <select id="luzZonaFilter">
+                <option value="">Todas las zonas</option>
+              </select>
+            </div>
+            <div class="search-hint">Datos mostrados: ID contribuyente, nombres completos y zona.</div>
+          </div>
+
+          <div id="luzSearchResults" class="results"></div>
+
+          <form id="luzVisitaForm" class="hidden accordion">
+            <div id="luzSelectedInfo" class="selected-inline"></div>
+
+            <div class="row">
+              <label for="luzIdContribuyente">ID</label>
+              <input id="luzIdContribuyente" type="text" maxlength="80" readonly />
+            </div>
+
+            <div class="row">
+              <label for="luzMedidorReportado">Numero de medidor</label>
+              <input id="luzMedidorReportado" type="text" maxlength="80" required placeholder="Ingresa o corrige el numero de medidor" />
+            </div>
+
+            <div class="row" id="luzLecturaActualRow">
+              <label for="luzLecturaActual">Lectura actual del medidor</label>
+              <input id="luzLecturaActual" type="number" step="0.01" min="0" inputmode="decimal" required />
+              <div class="muted">Registra lectura y toma foto del medidor.</div>
+            </div>
+
+            <div class="row">
+              <label for="luzFotoMedidor">Foto del medidor</label>
+              <div class="photo-actions">
+                <button id="luzOpenCameraBtn" type="button">Tomar foto</button>
+              </div>
+              <input id="luzFotoMedidor" type="file" accept="image/*" capture="environment" class="hidden" />
+              <div id="luzCameraWrap" class="camera-wrap hidden">
+                <video id="luzCameraPreview" autoplay playsinline></video>
+                <div class="camera-actions">
+                  <button id="luzCapturePhotoBtn" type="button">Capturar</button>
+                  <button id="luzCancelCameraBtn" class="secondary" type="button">Cancelar</button>
+                </div>
+              </div>
+              <div id="luzFotoPreviewWrap" class="photo-preview hidden">
+                <img id="luzFotoPreview" alt="Foto del medidor" />
+                <button id="luzClearFotoBtn" class="secondary" type="button">Quitar foto</button>
+              </div>
+            </div>
+
+            <div class="row">
+              <label for="luzObservacion">Observacion</label>
+              <textarea id="luzObservacion" rows="3" maxlength="1200" placeholder="Opcional"></textarea>
+            </div>
+
+            <div class="actions">
+              <button id="luzSubmitVisitaBtn" type="submit">Registrar visita</button>
+            </div>
+          </form>
+        </section>
       </section>
 
       <section id="statusSection" class="status hidden"></section>

@@ -1,5 +1,5 @@
 ﻿import { useEffect, useState, useRef, useMemo, useDeferredValue, useCallback, memo } from "react";
-import api, { API_BASE_URL } from "./api";
+import api from "./api";
 import { useReactToPrint } from 'react-to-print'; 
 import RegistroForm from "./components/RegistroForm";
 import ModalDeuda from "./components/ModalDeuda";
@@ -82,13 +82,6 @@ const HISTORIAL_ROW_STYLES = {
   idle: { backgroundColor: "transparent", "--bs-table-bg": "transparent" },
   deuda: { backgroundColor: HISTORIAL_ROW_COLORS.deuda, "--bs-table-bg": HISTORIAL_ROW_COLORS.deuda },
   pagado: { backgroundColor: HISTORIAL_ROW_COLORS.pagado, "--bs-table-bg": HISTORIAL_ROW_COLORS.pagado }
-};
-const getLocalCampoAppUrl = () => `${API_BASE_URL}/campo-app/`;
-const normalizeCampoAppUrl = (value) => {
-  const raw = String(value || "").trim();
-  if (!/^https?:\/\//i.test(raw)) return "";
-  if (/\/campo-app\/?$/i.test(raw)) return `${raw.replace(/\/+$/g, "")}/`;
-  return `${raw.replace(/\/+$/g, "")}/campo-app/`;
 };
 const normalizeSearchText = (value) => String(value || "")
   .normalize("NFD")
@@ -631,8 +624,6 @@ function AguaApp({ onBackToSelector = null }) {
     monto_pendiente_hoy: 0,
     ultimo_pendiente: null
   });
-  const [campoAppUrl, setCampoAppUrl] = useState(getLocalCampoAppUrl);
-
   const [busqueda, setBusqueda] = useState("");
   const [filtroEstadoConexion, setFiltroEstadoConexion] = useState("TODOS");
   const [orden, setOrden] = useState({ columna: "nombre_completo", direccion: "asc" });
@@ -659,31 +650,6 @@ function AguaApp({ onBackToSelector = null }) {
     canReporteCortes: hasMinRole(rolActual, "ADMIN_SEC"),
     canGestionCampo: hasMinRole(rolActual, "ADMIN")
   }), [rolActual]);
-  const cargarCampoAppUrl = useCallback(async () => {
-    const fallbackUrl = getLocalCampoAppUrl();
-    if (!hasMinRole(rolActual, "ADMIN_SEC")) {
-      setCampoAppUrl(fallbackUrl);
-      return;
-    }
-    try {
-      const res = await api.get("/admin/campo-remoto/estado", { timeout: 5000 });
-      const remoteUrl = normalizeCampoAppUrl(res?.data?.campo_url);
-      setCampoAppUrl(remoteUrl || fallbackUrl);
-    } catch {
-      setCampoAppUrl(fallbackUrl);
-    }
-  }, [rolActual]);
-
-  useEffect(() => {
-    if (!usuarioSistema) return;
-    cargarCampoAppUrl();
-  }, [usuarioSistema, cargarCampoAppUrl]);
-
-  useEffect(() => {
-    if (!mostrarModalCampo) return;
-    cargarCampoAppUrl();
-  }, [mostrarModalCampo, cargarCampoAppUrl]);
-
   const masivoRef = useRef(null);
   const isPrintingMasivoRef = useRef(false);
   const [datosMasivos, setDatosMasivos] = useState(null);
@@ -1992,12 +1958,14 @@ const anexoCajaPageStyle = `
           <div className="card-body">
             <h5 className="card-title mb-2">Usuario de brigada detectado</h5>
             <p className="text-muted mb-3">
-              Este panel es para administracion. Para brigada use la app de campo.
+              Este panel es para administracion. Para brigada, ingrese desde Inicio al módulo App Campo.
             </p>
             <div className="d-flex gap-2">
-              <a className="btn btn-primary" href={campoAppUrl}>
-                Ir a App Campo
-              </a>
+              {typeof onBackToSelector === "function" && (
+                <button className="btn btn-primary" onClick={onBackToSelector}>
+                  Volver a Inicio
+                </button>
+              )}
               <button className="btn btn-outline-secondary" onClick={handleLogout}>
                 Cerrar sesion
               </button>
@@ -2196,7 +2164,6 @@ const anexoCajaPageStyle = `
           cerrarModal={() => setMostrarModalCampo(false)}
           darkMode={darkMode}
           onAplicado={recargarTodo}
-          campoAppUrl={campoAppUrl}
         />
       )}
       {mostrarModalCorteConexion && (

@@ -42,6 +42,17 @@ function pad2(value) {
   return String(value).padStart(2, "0");
 }
 
+function parseLegacyMonth(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return 0;
+  const parsed = Number(raw);
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 12) return parsed;
+  if (/^9(0?[1-9]|1[0-2])$/.test(raw)) {
+    return Number(raw.slice(1));
+  }
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function serialToIsoDate(serial) {
   const baseUtc = Date.UTC(1899, 11, 30);
   const wholeDays = Math.floor(Number(serial || 0));
@@ -97,7 +108,7 @@ async function loadRowsFromExcel(filePath) {
     const fecha = parseExcelDate(getCellValue(row, 2));
     const reciboLegacy = String(getCellValue(row, 3) || "").trim();
     const anio = Number(getCellValue(row, 4) || 0);
-    const mes = Number(getCellValue(row, 5) || 0);
+    const mes = parseLegacyMonth(getCellValue(row, 5));
     const agua = parseMonto(getCellValue(row, 6));
     const desague = parseMonto(getCellValue(row, 7));
     const limpieza = parseMonto(getCellValue(row, 8));

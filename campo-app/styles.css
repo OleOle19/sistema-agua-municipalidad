@@ -1,12 +1,12 @@
 :root {
-  --bg: #f4f6f8;
+  --bg: #eef2f7;
   --card: #ffffff;
-  --text: #18202a;
-  --muted: #5c6775;
-  --border: #d8dee6;
-  --primary: #0b5ed7;
-  --primary-hover: #0a53be;
-  --secondary: #505a66;
+  --text: #102033;
+  --muted: #4f6074;
+  --border: #cfd8e4;
+  --primary: #1557b0;
+  --primary-hover: #11458c;
+  --secondary: #374457;
   --success-bg: #d1e7dd;
   --success-text: #0f5132;
   --error-bg: #f8d7da;
@@ -22,7 +22,10 @@
 body {
   margin: 0;
   font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-  background: linear-gradient(180deg, #eef2f7 0%, var(--bg) 100%);
+  background:
+    radial-gradient(circle at 0% 0%, #dde8f8 0%, transparent 40%),
+    radial-gradient(circle at 100% 0%, #e2eef9 0%, transparent 36%),
+    linear-gradient(180deg, #f5f8fc 0%, var(--bg) 100%);
   color: var(--text);
 }
 
@@ -46,8 +49,9 @@ body {
 .card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px;
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
 }
 
 .card h2 {
@@ -61,6 +65,30 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.module-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.module-switch-btn {
+  min-width: 120px;
+  border: 1px solid #8ca3bf;
+  background: #eef3fa;
+  color: #1f2f46;
+}
+
+.module-switch-btn.is-active {
+  border-color: #0b5ed7;
+  background: #0b5ed7;
+  color: #fff;
+}
+
+.module-description {
+  margin-top: 8px;
 }
 
 .offline-tools {
@@ -127,9 +155,9 @@ body {
 .queue-panel {
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 10px;
+  padding: 12px;
   margin-bottom: 12px;
-  background: #fbfcff;
+  background: #f7faff;
 }
 
 .queue-header {
@@ -332,7 +360,8 @@ textarea {
   margin-top: 8px;
 }
 
-#solicitudForm {
+#solicitudForm,
+#luzVisitaForm {
   border: 1px solid #d8e2f3;
   border-radius: 12px;
   padding: 12px;
@@ -405,9 +434,9 @@ button:disabled {
 .result-item {
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 10px;
+  padding: 12px;
   display: grid;
-  gap: 4px;
+  gap: 6px;
   transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -421,9 +450,9 @@ button:disabled {
 }
 
 .result-item.is-selected {
-  border-color: #8ab4ff;
-  background: #eaf2ff;
-  box-shadow: inset 0 0 0 1px #b7d2ff;
+  border-color: #5579b8;
+  background: #e7eefc;
+  box-shadow: inset 0 0 0 1px #86a7dc;
 }
 
 .result-form-slot {
@@ -504,6 +533,31 @@ button:disabled {
 
 .hidden {
   display: none;
+}
+
+#luzFieldPanel {
+  border-color: #bdcde4;
+  background: linear-gradient(180deg, #f4f8ff 0%, #eef4ff 100%);
+}
+
+#luzFieldPanel .queue-header h3 {
+  color: #16345b;
+}
+
+#luzFieldPanel .result-item {
+  border: 1px solid #c5d4ea;
+  background: #fbfdff;
+}
+
+#luzFieldPanel .result-item.is-selected {
+  border-color: #4b6fae;
+  background: #e4edfd;
+  box-shadow: inset 0 0 0 1px #7b9fda;
+}
+
+#luzFieldPanel .selected-inline {
+  color: #163f7a;
+  font-weight: 600;
 }
 
 @media (max-width: 640px) {

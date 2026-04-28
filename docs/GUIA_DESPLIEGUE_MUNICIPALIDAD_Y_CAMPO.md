@@ -195,6 +195,18 @@ Si necesitas rollback rapido:
 
 ## 11) Backup (obligatorio)
 
-- Backup diario automatico con `pg_dump`.
-- Retencion sugerida: 30 diarios + 12 mensuales.
-- Restauracion de prueba al menos 1 vez por mes.
+1. En `server/.env` configurar:
+   - `PG_DUMP_PATH=C:\Program Files\PostgreSQL\16\bin\pg_dump.exe`
+   - `AUTO_BACKUP_ACTIVO=1`
+   - `AUTO_BACKUP_HORA=23:55` (fin de dia)
+   - `AUTO_BACKUP_TIMEZONE=America/Lima`
+   - `AUTO_BACKUP_DIR=C:\respaldos\sistema-agua`
+   - `AUTO_BACKUP_RETENTION_DAYS=30`
+2. Reiniciar backend (`npm --prefix server start`).
+3. Verificar en logs mensaje `[AUTO_BACKUP] Activa...`.
+4. Revisar que aparezca un `.sql` diario en carpeta de respaldos.
+
+Notas:
+- Si backend se reinicia despues de la hora programada, al iniciar intenta ejecutar respaldo del dia.
+- Retencion recomendada minima: 30 diarios. Mantener ademas 12 mensuales en almacenamiento externo.
+- Probar restauracion al menos 1 vez por mes.

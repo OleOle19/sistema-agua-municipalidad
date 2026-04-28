@@ -4,6 +4,7 @@
   const TOKEN_KEY = "campo_app_token";
   const USER_KEY = "campo_app_user";
   const API_BASE_KEY = "campo_app_api_base";
+  const MODULE_KEY = "campo_app_modulo";
   const DB_NAME = "campo_app_offline";
   const DB_VERSION = 1;
   const STORE_META = "meta";
@@ -19,6 +20,10 @@
   const SEARCH_LOCAL_LIMIT = 1200;
   const RETRY_BASE_DELAY_MS = 20 * 1000;
   const RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
+  const CAMPO_MODULES = {
+    AGUA: "agua",
+    LUZ: "luz"
+  };
   const TIPOS_SOLICITUD = {
     ACTUALIZACION: "ACTUALIZACION",
     ALTA_DIRECCION_ALTERNA: "ALTA_DIRECCION_ALTERNA",
@@ -45,7 +50,30 @@
     NIVEL_1: "ADMIN"
   };
 
+  const normalizeModule = (value) => {
+    const raw = String(value || "").trim().toLowerCase();
+    return raw === CAMPO_MODULES.LUZ ? CAMPO_MODULES.LUZ : CAMPO_MODULES.AGUA;
+  };
+  const readModuleFromUrl = () => {
+    try {
+      const params = new URLSearchParams(window.location.search || "");
+      return params.get("modulo") || params.get("module") || "";
+    } catch {
+      return "";
+    }
+  };
+  const readInitialModule = () => normalizeModule(readModuleFromUrl() || localStorage.getItem(MODULE_KEY));
+
   const el = {
+    heroTitle: document.getElementById("heroTitle"),
+    heroSubtitle: document.getElementById("heroSubtitle"),
+    authTitle: document.getElementById("authTitle"),
+    toolbarTitle: document.getElementById("toolbarTitle"),
+    moduleDescription: document.getElementById("moduleDescription"),
+    moduleAguaBtn: document.getElementById("moduleAguaBtn"),
+    moduleLuzBtn: document.getElementById("moduleLuzBtn"),
+    aguaOnlyNodes: Array.from(document.querySelectorAll(".agua-only")),
+    luzOnlyNodes: Array.from(document.querySelectorAll(".luz-only")),
     apiConfigCard: document.getElementById("apiConfigCard"),
     apiBaseUrl: document.getElementById("apiBaseUrl"),
     saveApiBtn: document.getElementById("saveApiBtn"),
@@ -103,11 +131,35 @@
     motivoObs: document.getElementById("motivoObs"),
     inspector: document.getElementById("inspector"),
     submitSolicitudBtn: document.getElementById("submitSolicitudBtn"),
+    luzFieldPanel: document.getElementById("luzFieldPanel"),
+    luzSearchInput: document.getElementById("luzSearchInput"),
+    luzClearSearchBtn: document.getElementById("luzClearSearchBtn"),
+    luzZonaFilter: document.getElementById("luzZonaFilter"),
+    luzSearchResults: document.getElementById("luzSearchResults"),
+    luzVisitaForm: document.getElementById("luzVisitaForm"),
+    luzSelectedInfo: document.getElementById("luzSelectedInfo"),
+    luzIdContribuyente: document.getElementById("luzIdContribuyente"),
+    luzMedidorReportado: document.getElementById("luzMedidorReportado"),
+    luzLecturaActualRow: document.getElementById("luzLecturaActualRow"),
+    luzLecturaActual: document.getElementById("luzLecturaActual"),
+    luzOpenCameraBtn: document.getElementById("luzOpenCameraBtn"),
+    luzFotoMedidor: document.getElementById("luzFotoMedidor"),
+    luzCameraWrap: document.getElementById("luzCameraWrap"),
+    luzCameraPreview: document.getElementById("luzCameraPreview"),
+    luzCapturePhotoBtn: document.getElementById("luzCapturePhotoBtn"),
+    luzCancelCameraBtn: document.getElementById("luzCancelCameraBtn"),
+    luzFotoPreviewWrap: document.getElementById("luzFotoPreviewWrap"),
+    luzFotoPreview: document.getElementById("luzFotoPreview"),
+    luzClearFotoBtn: document.getElementById("luzClearFotoBtn"),
+    luzObservacion: document.getElementById("luzObservacion"),
+    luzSubmitVisitaBtn: document.getElementById("luzSubmitVisitaBtn"),
     statusSection: document.getElementById("statusSection")
   };
 
+  const initialModule = readInitialModule();
   const state = {
     apiBase: normalizeBase(localStorage.getItem(API_BASE_KEY) || window.location.origin),
+    activeModule: initialModule,
     token: localStorage.getItem(TOKEN_KEY) || "",
     user: parseJson(localStorage.getItem(USER_KEY)),
     online: navigator.onLine,
@@ -126,7 +178,10 @@
     recentSubmissions: [],
     predioMode: false,
     fotoDataUrl: "",
+    luzFotoDataUrl: "",
+    luzZonas: [],
     cameraStream: null,
+    luzCameraStream: null,
     seguimientoRows: [],
     seguimientoLoading: false,
     seguimientoLastOkAt: null,
@@ -144,6 +199,119 @@
 
   function parseJson(v) { try { return v ? JSON.parse(v) : null; } catch { return null; } }
   function normalizeBase(v) { try { return new URL(String(v || "").trim() || window.location.origin).origin; } catch { return window.location.origin; } }
+  function isAguaModule() { return normalizeModule(state.activeModule) === CAMPO_MODULES.AGUA; }
+  function isLuzModule() { return normalizeModule(state.activeModule) === CAMPO_MODULES.LUZ; }
+  function currentModuleLabel() { return isLuzModule() ? "Luz" : "Agua"; }
+  function moduleLoginPath() { return isLuzModule() ? "/luz/auth/login" : "/auth/login"; }
+  function clearSessionStorage() {
+    state.token = "";
+    state.user = null;
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+  }
+  function inferUserModule(user) {
+    if (!user || typeof user !== "object") return CAMPO_MODULES.AGUA;
+    const rawModule = normalizeModule(user.modulo || user.module || "");
+    if (rawModule === CAMPO_MODULES.LUZ) return CAMPO_MODULES.LUZ;
+    const system = String(user.sistema || "").trim().toUpperCase();
+    if (system === "LUZ") return CAMPO_MODULES.LUZ;
+    return CAMPO_MODULES.AGUA;
+  }
+  function syncUrlModuleParam() {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("modulo", normalizeModule(state.activeModule));
+      window.history.replaceState(null, "", url.toString());
+    } catch {}
+  }
+  function renderModuleUi() {
+    const aguaActive = isAguaModule();
+    if (el.moduleAguaBtn) {
+      el.moduleAguaBtn.classList.toggle("is-active", aguaActive);
+      el.moduleAguaBtn.setAttribute("aria-selected", aguaActive ? "true" : "false");
+    }
+    if (el.moduleLuzBtn) {
+      el.moduleLuzBtn.classList.toggle("is-active", !aguaActive);
+      el.moduleLuzBtn.setAttribute("aria-selected", aguaActive ? "false" : "true");
+    }
+    if (el.moduleDescription) {
+      el.moduleDescription.textContent = aguaActive
+        ? "Agua operativo: busqueda, registro en campo y cola offline."
+        : "Luz operativo: corroboracion de medidor y visitas mensuales con foto.";
+    }
+    if (el.heroTitle) el.heroTitle.textContent = "App Campo - " + currentModuleLabel();
+    if (el.heroSubtitle) {
+      el.heroSubtitle.textContent = aguaActive
+        ? "Registro de cambios desde brigada hacia la bandeja de revision del administrador."
+        : "Brigada luz: corroboracion de medidor y registro mensual de lectura en campo.";
+    }
+    if (el.authTitle) el.authTitle.textContent = "Ingreso de brigada - " + currentModuleLabel();
+    if (el.toolbarTitle) {
+      el.toolbarTitle.textContent = aguaActive
+        ? "Reporte brigada - orden de cortes (Agua)"
+        : "Reporte brigada - modulo Luz";
+    }
+    if (Array.isArray(el.aguaOnlyNodes)) {
+      el.aguaOnlyNodes.forEach((node) => {
+        if (!node) return;
+        node.classList.toggle("hidden", !aguaActive);
+      });
+    }
+    if (Array.isArray(el.luzOnlyNodes)) {
+      el.luzOnlyNodes.forEach((node) => {
+        if (!node) return;
+        node.classList.toggle("hidden", aguaActive);
+      });
+    }
+    document.title = aguaActive ? "App Campo - Agua Municipal" : "App Campo - Luz Municipal";
+  }
+  function resetModuleRuntimeState() {
+    state.selectedId = 0;
+    state.searchRows = [];
+    state.filtered = [];
+    state.searchVisibleCount = SEARCH_PAGE_SIZE;
+    state.searchTruncated = false;
+    state.queueCount = 0;
+    state.queueItems = [];
+    state.queueActionKey = "";
+    state.snapshot = null;
+    state.contribuyentes = [];
+    state.calles = [];
+    state.predioMode = false;
+    state.luzFotoDataUrl = "";
+    state.luzZonas = [];
+    state.warnedNoSnapshotOffline = false;
+    state.warnedSnapshotExpired = false;
+    if (el.searchResults) el.searchResults.innerHTML = "";
+    if (el.luzSearchResults) el.luzSearchResults.innerHTML = "";
+    if (el.luzZonaFilter) el.luzZonaFilter.innerHTML = '<option value="">Todas las zonas</option>';
+    if (el.queueList) el.queueList.innerHTML = '<p class="muted">Sin pendientes.</p>';
+    if (el.seguimientoList) el.seguimientoList.innerHTML = '<p class="muted">Sin seguimiento cargado.</p>';
+    stopCameraStream();
+    clearFotoPredio();
+    clearLuzFotoMedidor();
+    resetForm();
+    resetLuzForm();
+    parkFormHidden();
+    parkLuzFormHidden();
+  }
+  async function setActiveModule(nextModule, options) {
+    const opts = options || {};
+    const normalized = normalizeModule(nextModule);
+    const changed = normalized !== normalizeModule(state.activeModule);
+    state.activeModule = normalized;
+    localStorage.setItem(MODULE_KEY, state.activeModule);
+    syncUrlModuleParam();
+    renderModuleUi();
+    if (changed && !opts.keepSession) {
+      clearSessionStorage();
+      resetModuleRuntimeState();
+      await refreshQueueCount();
+    }
+    updateInfo();
+    renderAuth();
+    renderSeguimiento();
+  }
   function normalizeRole(role) {
     const raw = String(role || "").trim().toUpperCase();
     return ROLE_ALIASES[raw] || "";
@@ -225,6 +393,11 @@
     if (!state.cameraStream) return;
     state.cameraStream.getTracks().forEach((t) => t.stop());
     state.cameraStream = null;
+  }
+  function stopLuzCameraStream() {
+    if (!state.luzCameraStream) return;
+    state.luzCameraStream.getTracks().forEach((t) => t.stop());
+    state.luzCameraStream = null;
   }
   async function openCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -338,6 +511,97 @@
       setStatus("No se pudo cargar la foto.", "warning", 4000);
     }
   }
+  function updateLuzTipoVisitaUi() {
+    if (el.luzLecturaActualRow) el.luzLecturaActualRow.classList.remove("hidden");
+    if (el.luzLecturaActual) el.luzLecturaActual.required = true;
+  }
+  function clearLuzFotoMedidor() {
+    state.luzFotoDataUrl = "";
+    if (el.luzFotoMedidor) el.luzFotoMedidor.value = "";
+    if (el.luzFotoPreview) el.luzFotoPreview.src = "";
+    if (el.luzFotoPreviewWrap) el.luzFotoPreviewWrap.classList.add("hidden");
+    if (el.luzCameraWrap) el.luzCameraWrap.classList.add("hidden");
+    stopLuzCameraStream();
+  }
+  async function openLuzCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      if (el.luzFotoMedidor) el.luzFotoMedidor.click();
+      return;
+    }
+    try {
+      stopLuzCameraStream();
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" } },
+        audio: false
+      });
+      state.luzCameraStream = stream;
+      if (el.luzCameraPreview) {
+        el.luzCameraPreview.srcObject = stream;
+        el.luzCameraPreview.play().catch(() => {});
+      }
+      if (el.luzCameraWrap) el.luzCameraWrap.classList.remove("hidden");
+    } catch (err) {
+      setStatus("No se pudo abrir la camara para medidor.", "warning", 5000);
+    }
+  }
+  async function captureFromLuzCamera() {
+    if (!el.luzCameraPreview || !state.luzCameraStream) return;
+    const video = el.luzCameraPreview;
+    const width = Math.max(1, video.videoWidth || 0);
+    const height = Math.max(1, video.videoHeight || 0);
+    if (!width || !height) {
+      setStatus("Camara no lista para capturar.", "warning", 3500);
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0, width, height);
+    let dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+    if (dataUrl.length > 900000) {
+      const scale = Math.min(1, 1200 / Math.max(width, height));
+      const w2 = Math.max(1, Math.round(width * scale));
+      const h2 = Math.max(1, Math.round(height * scale));
+      const canvas2 = document.createElement("canvas");
+      canvas2.width = w2;
+      canvas2.height = h2;
+      const ctx2 = canvas2.getContext("2d");
+      ctx2.drawImage(video, 0, 0, w2, h2);
+      dataUrl = canvas2.toDataURL("image/jpeg", 0.65);
+    }
+    if (dataUrl.length > 900000) {
+      setStatus("Foto de medidor demasiado grande. Intenta acercarte mas.", "warning", 4500);
+      return;
+    }
+    state.luzFotoDataUrl = dataUrl;
+    if (el.luzFotoMedidor) el.luzFotoMedidor.value = "";
+    if (el.luzFotoPreview) el.luzFotoPreview.src = dataUrl;
+    if (el.luzFotoPreviewWrap) el.luzFotoPreviewWrap.classList.remove("hidden");
+    if (el.luzCameraWrap) el.luzCameraWrap.classList.add("hidden");
+    stopLuzCameraStream();
+  }
+  async function handleLuzFotoChange() {
+    const file = el.luzFotoMedidor && el.luzFotoMedidor.files && el.luzFotoMedidor.files[0];
+    if (!file) { clearLuzFotoMedidor(); return; }
+    try {
+      let dataUrl = await compressImage(file, 1280, 0.72);
+      if (dataUrl.length > 900000) dataUrl = await compressImage(file, 1024, 0.6);
+      if (dataUrl.length > 900000) {
+        clearLuzFotoMedidor();
+        setStatus("Foto de medidor demasiado grande. Usa menor resolucion.", "warning", 5000);
+        return;
+      }
+      state.luzFotoDataUrl = dataUrl;
+      if (el.luzFotoPreview) el.luzFotoPreview.src = dataUrl;
+      if (el.luzFotoPreviewWrap) el.luzFotoPreviewWrap.classList.remove("hidden");
+      if (el.luzCameraWrap) el.luzCameraWrap.classList.add("hidden");
+      stopLuzCameraStream();
+    } catch (err) {
+      clearLuzFotoMedidor();
+      setStatus("No se pudo cargar foto del medidor.", "warning", 4000);
+    }
+  }
   function seguimientoMotivoLabel(value) {
     const raw = String(value || "").trim().toUpperCase();
     if (!raw) return "";
@@ -411,6 +675,10 @@
 
   function renderSeguimiento() {
     if (!el.seguimientoList) return;
+    if (!isAguaModule()) {
+      el.seguimientoList.innerHTML = '<p class="muted">Seguimiento de agua no aplica en submodulo Luz.</p>';
+      return;
+    }
     const rows = Array.isArray(state.seguimientoRows) ? state.seguimientoRows : [];
     if (state.seguimientoLoading) {
       el.seguimientoList.innerHTML = '<p class="muted">Cargando seguimiento...</p>';
@@ -476,6 +744,12 @@
   }
 
   async function loadSeguimiento() {
+    if (!isAguaModule()) {
+      state.seguimientoRows = [];
+      state.seguimientoLoading = false;
+      renderSeguimiento();
+      return;
+    }
     if (state.seguimientoLoading) return;
     if (!state.token || !state.online) { renderSeguimiento(); return; }
     state.seguimientoLoading = true;
@@ -497,6 +771,7 @@
   }
 
   async function openSeguimientoFoto(idSolicitud) {
+    if (!isAguaModule()) return;
     if (!idSolicitud) return;
     if (!state.token) { setStatus("Debes iniciar sesion.", "warning"); return; }
     if (!state.online) { setStatus("Sin internet.", "warning"); return; }
@@ -634,10 +909,12 @@
     return (Date.now() - syncedMs) / (1000 * 60 * 60);
   }
   function isSnapshotFresh() {
+    if (!isAguaModule()) return true;
     const age = snapshotAgeHours();
     return age !== null && age <= SNAPSHOT_MAX_AGE_HOURS;
   }
   function requiresFreshSnapshotForOfflineWork() {
+    if (!isAguaModule()) return false;
     return !state.online && !isSnapshotFresh();
   }
   function mountFormInsideResult(resultItem) {
@@ -691,7 +968,9 @@
     const logged = !!(state.token && state.user);
     el.authSection.classList.toggle("hidden", logged);
     el.appSection.classList.toggle("hidden", !logged);
-    if (logged) el.userInfo.textContent = (state.user.nombre || "Sin nombre") + " | " + (state.user.rol || "SIN_ROL");
+    if (logged) {
+      el.userInfo.textContent = (state.user.nombre || "Sin nombre") + " | " + (state.user.rol || "SIN_ROL") + " | Submodulo: " + currentModuleLabel();
+    }
     if (!logged) {
       state.selectedId = 0;
       state.searchRows = [];
@@ -707,6 +986,12 @@
       parkFormHidden();
       exitPredioMode();
       el.searchResults.innerHTML = "";
+      if (el.luzSearchResults) el.luzSearchResults.innerHTML = "";
+      if (el.luzSelectedInfo) el.luzSelectedInfo.textContent = "";
+      state.luzZonas = [];
+      renderLuzZoneFilter();
+      resetLuzForm();
+      parkLuzFormHidden();
       if (el.queueList) el.queueList.innerHTML = '<p class="muted">Inicia sesion para ver pendientes.</p>';
     }
     renderHealthPanel();
@@ -714,6 +999,16 @@
   }
 
   function updateInfo() {
+    if (!isAguaModule()) {
+      if (el.offlineInfo) {
+        el.offlineInfo.textContent =
+          "Conexion: " + (state.online ? "Online" : "Offline") +
+          " | Submodulo Luz operativo | Registro: corroboracion + visita mensual con foto.";
+      }
+      renderHealthPanel();
+      updateOperationalLock();
+      return;
+    }
     const snap = state.snapshot && state.snapshot.synced_at ? fmtDateTime(state.snapshot.synced_at) : "sin snapshot";
     const age = snapshotAgeHours();
     let snapshotState = "SIN_SNAPSHOT";
@@ -740,6 +1035,16 @@
   }
 
   function updateOperationalLock() {
+    if (!isAguaModule()) {
+      if (el.searchInput) el.searchInput.disabled = true;
+      if (el.streetFilter) el.streetFilter.disabled = true;
+      if (el.submitSolicitudBtn) el.submitSolicitudBtn.disabled = true;
+      const lockedLuz = !(state.user && state.token) || !state.online;
+      if (el.luzSearchInput) el.luzSearchInput.disabled = lockedLuz;
+      if (el.luzZonaFilter) el.luzZonaFilter.disabled = lockedLuz;
+      if (el.luzSubmitVisitaBtn) el.luzSubmitVisitaBtn.disabled = lockedLuz;
+      return;
+    }
     const blocked = requiresFreshSnapshotForOfflineWork();
     if (el.searchInput) el.searchInput.disabled = blocked;
     if (el.streetFilter) el.streetFilter.disabled = blocked;
@@ -787,6 +1092,49 @@
       throw err;
     }
     return data;
+  }
+
+  function renderLuzZoneFilter() {
+    if (!el.luzZonaFilter) return;
+    const prev = String(el.luzZonaFilter.value || "").trim();
+    const options = ['<option value="">Todas las zonas</option>'].concat(
+      (Array.isArray(state.luzZonas) ? state.luzZonas : []).map((z) => {
+        const id = Number(z.id_zona || 0);
+        const nombre = String(z.nombre || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        if (!id || !nombre) return "";
+        return `<option value="${id}">${nombre}</option>`;
+      }).filter(Boolean)
+    );
+    el.luzZonaFilter.innerHTML = options.join("");
+    if (prev && el.luzZonaFilter.querySelector(`option[value="${prev}"]`)) {
+      el.luzZonaFilter.value = prev;
+    }
+  }
+  async function loadLuzZones() {
+    if (!isLuzModule()) return;
+    if (!(state.token && state.user)) {
+      state.luzZonas = [];
+      renderLuzZoneFilter();
+      return;
+    }
+    if (!state.online) {
+      renderLuzZoneFilter();
+      return;
+    }
+    try {
+      const rows = await api("/luz/zonas", { headers: authHeaders() });
+      state.luzZonas = (Array.isArray(rows) ? rows : [])
+        .map((z) => ({
+          id_zona: Number(z && z.id_zona || 0),
+          nombre: String(z && z.nombre || "").trim()
+        }))
+        .filter((z) => z.id_zona > 0 && z.nombre)
+        .sort((a, b) => a.nombre.localeCompare(b.nombre, "es", { sensitivity: "base" }));
+      renderLuzZoneFilter();
+    } catch (err) {
+      state.luzZonas = [];
+      renderLuzZoneFilter();
+    }
   }
 
   function openDb() {
@@ -931,8 +1279,121 @@
     await refreshQueueCount();
   }
 
+  function parkLuzFormHidden() {
+    if (!el.luzVisitaForm || !el.luzFieldPanel) return;
+    if (el.luzVisitaForm.parentElement !== el.luzFieldPanel) el.luzFieldPanel.appendChild(el.luzVisitaForm);
+    el.luzVisitaForm.classList.remove("open");
+    el.luzVisitaForm.classList.add("hidden");
+  }
+  function mountLuzFormInsideResult(resultItem) {
+    if (!resultItem || !el.luzVisitaForm) return;
+    const parent = resultItem.parentElement;
+    if (!parent) return;
+    const slot = document.createElement("div");
+    slot.className = "result-form-slot";
+    slot.appendChild(el.luzVisitaForm);
+    parent.insertBefore(slot, resultItem.nextSibling);
+  }
+  function showLuzForm(resultItem) {
+    if (!el.luzVisitaForm) return;
+    if (resultItem) mountLuzFormInsideResult(resultItem);
+    else if (el.luzFieldPanel && el.luzVisitaForm.parentElement !== el.luzFieldPanel) el.luzFieldPanel.appendChild(el.luzVisitaForm);
+    el.luzVisitaForm.classList.remove("hidden");
+    requestAnimationFrame(() => el.luzVisitaForm.classList.add("open"));
+  }
+  function resetLuzForm() {
+    if (el.luzIdContribuyente) el.luzIdContribuyente.value = "";
+    if (el.luzMedidorReportado) el.luzMedidorReportado.value = "";
+    if (el.luzLecturaActual) el.luzLecturaActual.value = "";
+    if (el.luzObservacion) el.luzObservacion.value = "";
+    clearLuzFotoMedidor();
+    updateLuzTipoVisitaUi();
+  }
+  function selectedLuzSuministro() {
+    const id = Number(state.selectedId || 0);
+    return state.filtered.find((x) => Number(x.id_suministro) === id)
+      || state.searchRows.find((x) => Number(x.id_suministro) === id)
+      || null;
+  }
+  function renderLuzResults() {
+    if (!el.luzSearchResults) return;
+    el.luzSearchResults.innerHTML = "";
+    const q = String(el.luzSearchInput && el.luzSearchInput.value || "").trim();
+    if (!state.filtered.length) {
+      const d = document.createElement("div");
+      d.className = "muted";
+      d.textContent = q.length >= 1
+        ? "Sin resultados para esa busqueda."
+        : "Escribe ID contribuyente, nombre o zona para buscar.";
+      el.luzSearchResults.appendChild(d);
+      if (el.luzSelectedInfo) el.luzSelectedInfo.textContent = "";
+      parkLuzFormHidden();
+      return;
+    }
+
+    const frag = document.createDocumentFragment();
+    let selectedItem = null;
+    state.filtered.forEach((c) => {
+      const id = Number(c.id_suministro || 0);
+      const selected = id === Number(state.selectedId || 0);
+      const item = document.createElement("article");
+      item.className = "result-item" + (selected ? " is-selected" : "");
+      const idContrib = String(c.id_contribuyente || c.nro_medidor || "").trim() || "SIN-ID";
+      const nombre = String(c.nombre_completo || c.nombre_usuario || "").trim() || "Sin nombre";
+      const zona = String(c.zona || "").trim() || "Sin zona";
+      const lastTipo = String(c.ultima_visita_tipo || "").trim().toUpperCase();
+      const lastTipoTxt = lastTipo === "VISITA_MENSUAL"
+        ? "Visita mensual"
+        : (lastTipo === "CORROBORAR_MEDIDOR" ? "Corroboracion" : "Sin visitas");
+      const lastFecha = c.ultima_visita_en ? fmtDateTime(c.ultima_visita_en) : "Sin fecha";
+      const t = document.createElement("strong");
+      t.textContent = idContrib + " - " + nombre;
+      const metaZona = document.createElement("div");
+      metaZona.className = "meta";
+      metaZona.textContent = "Zona: " + zona;
+      const metaVisita = document.createElement("div");
+      metaVisita.className = "meta";
+      metaVisita.textContent = "Ultima visita: " + lastTipoTxt + " | " + lastFecha;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = selected ? "Seleccionado" : "Seleccionar";
+      b.addEventListener("click", () => {
+        if (selected) {
+          state.selectedId = 0;
+          resetLuzForm();
+          if (el.luzSelectedInfo) el.luzSelectedInfo.textContent = "";
+          parkLuzFormHidden();
+          renderLuzResults();
+          return;
+        }
+        state.selectedId = id;
+        resetLuzForm();
+        if (el.luzIdContribuyente) el.luzIdContribuyente.value = idContrib;
+        if (el.luzMedidorReportado) el.luzMedidorReportado.value = String(c.nro_medidor || "").trim();
+        if (el.luzSelectedInfo) {
+          el.luzSelectedInfo.textContent =
+            "Seleccionado: ID " + idContrib + " | " + nombre + " | Zona: " + zona;
+        }
+        renderLuzResults();
+      });
+      item.appendChild(t);
+      item.appendChild(metaZona);
+      item.appendChild(metaVisita);
+      b.className = selected ? "secondary" : "";
+      item.appendChild(b);
+      if (selected) selectedItem = item;
+      frag.appendChild(item);
+    });
+    el.luzSearchResults.appendChild(frag);
+    if (state.selectedId && selectedItem) showLuzForm(selectedItem);
+  }
+
   function renderQueue() {
     if (!el.queueList) return;
+    if (!isAguaModule()) {
+      el.queueList.innerHTML = '<p class="muted">Cola offline de agua no aplica en submodulo Luz.</p>';
+      return;
+    }
     if (!(state.user && state.token)) {
       el.queueList.innerHTML = '<p class="muted">Inicia sesion para ver pendientes.</p>';
       return;
@@ -993,6 +1454,10 @@
   }
 
   function renderResults() {
+    if (isLuzModule()) {
+      renderLuzResults();
+      return;
+    }
     el.searchResults.innerHTML = "";
     if (!state.filtered.length) {
       const d = document.createElement("div");
@@ -1135,6 +1600,11 @@
   }
 
   function closeForm() {
+    if (isLuzModule()) {
+      if (state.selectedId) return;
+      parkLuzFormHidden();
+      return;
+    }
     if (state.selectedId) return;
     if (!state.predioMode) parkFormHidden();
   }
@@ -1161,6 +1631,69 @@
   }
 
   async function search() {
+    if (isLuzModule()) {
+      const qLuz = String(el.luzSearchInput && el.luzSearchInput.value || "").trim();
+      const idZona = Number(el.luzZonaFilter && el.luzZonaFilter.value || 0);
+      if (!(state.user && state.token)) {
+        state.searchRows = [];
+        state.filtered = [];
+        state.searchVisibleCount = SEARCH_PAGE_SIZE;
+        state.searchTruncated = false;
+        state.selectedId = 0;
+        renderResults();
+        closeForm();
+        return;
+      }
+      if (!qLuz && !idZona) {
+        state.searchRows = [];
+        state.filtered = [];
+        state.searchVisibleCount = SEARCH_PAGE_SIZE;
+        state.searchTruncated = false;
+        state.selectedId = 0;
+        renderResults();
+        closeForm();
+        return;
+      }
+      if (!state.online) {
+        state.searchRows = [];
+        state.filtered = [];
+        state.searchVisibleCount = SEARCH_PAGE_SIZE;
+        state.searchTruncated = false;
+        renderResults();
+        closeForm();
+        setStatus("Submodulo Luz requiere internet para buscar y registrar visitas.", "warning", 4500);
+        return;
+      }
+      try {
+        const p = new URLSearchParams();
+        if (qLuz) p.set("buscar", qLuz);
+        if (idZona > 0) p.set("id_zona", String(idZona));
+        p.set("limit", String(300));
+        const remoteRows = await api("/luz/campo/suministros?" + p.toString(), { headers: authHeaders() });
+        state.searchRows = Array.isArray(remoteRows) ? remoteRows : [];
+        state.searchTruncated = state.searchRows.length >= 300;
+        state.searchVisibleCount = state.searchRows.length;
+        const selectedIndexLuz = state.searchRows.findIndex((x) => Number(x.id_suministro) === Number(state.selectedId));
+        if (selectedIndexLuz >= 0 && (selectedIndexLuz + 1) > state.searchVisibleCount) {
+          state.searchVisibleCount = selectedIndexLuz + 1;
+        }
+        updateVisibleResults();
+        if (selectedIndexLuz < 0) {
+          state.selectedId = 0;
+          closeForm();
+        }
+        renderResults();
+      } catch (err) {
+        state.searchRows = [];
+        state.filtered = [];
+        state.searchVisibleCount = SEARCH_PAGE_SIZE;
+        state.searchTruncated = false;
+        renderResults();
+        closeForm();
+        setStatus(err.message || "No se pudo buscar suministros de luz.", "warning", 5000);
+      }
+      return;
+    }
     if (requiresFreshSnapshotForOfflineWork()) {
       state.searchRows = [];
       state.filtered = [];
@@ -1223,6 +1756,14 @@
   }
 
   async function refreshQueueCount() {
+    if (!isAguaModule()) {
+      state.queueCount = 0;
+      state.queueItems = [];
+      updateInfo();
+      renderHealthPanel();
+      renderQueue();
+      return;
+    }
     const rows = await queueByUser(state.user && state.user.id_usuario);
     state.queueCount = rows.length;
     state.queueItems = rows;
@@ -1233,6 +1774,10 @@
   }
 
   async function syncSnapshot(silent) {
+    if (!isAguaModule()) {
+      if (!silent) setStatus("Snapshot offline disponible solo para submodulo Agua.", "warning", 4500);
+      return;
+    }
     if (!state.token) { if (!silent) setStatus("Debes iniciar sesion para sincronizar snapshot.", "warning"); return; }
     if (!state.online) { if (!silent) setStatus("Sin internet.", "warning"); return; }
     el.syncOfflineBtn.disabled = true;
@@ -1307,6 +1852,9 @@
   }
 
   async function sendSolicitud(payload) {
+    if (!isAguaModule()) {
+      throw new Error("Submodulo Luz aun no tiene endpoint de solicitudes de campo.");
+    }
     return api("/campo/solicitudes", {
       method: "POST",
       headers: authHeaders({ "Idempotency-Key": payload.idempotency_key }),
@@ -1373,9 +1921,94 @@
     }
     stopCameraStream();
   }
+  async function submitLuzVisita() {
+    if (!(state.user && state.token)) {
+      setStatus("Debes iniciar sesion.", "warning");
+      return;
+    }
+    if (!state.online) {
+      setStatus("Submodulo Luz requiere internet para registrar visitas.", "warning", 4500);
+      return;
+    }
+    const s = selectedLuzSuministro();
+    if (!s) {
+      setStatus("Selecciona un contribuyente de luz.", "warning");
+      return;
+    }
+    const tipoVisita = "VISITA_MENSUAL";
+    const medidorReportado = String(el.luzMedidorReportado && el.luzMedidorReportado.value || "").trim();
+    const lecturaRaw = String(el.luzLecturaActual && el.luzLecturaActual.value || "").trim();
+    const lecturaNum = lecturaRaw === "" ? NaN : Number.parseFloat(lecturaRaw);
+    const fotoMedidor = String(state.luzFotoDataUrl || "").trim();
+    const observacion = String(el.luzObservacion && el.luzObservacion.value || "").trim();
+    const inspector = String((state.user && state.user.nombre) || "").trim()
+      || String((state.user && state.user.username) || "");
+
+    if (!medidorReportado) {
+      setStatus("Ingresa el ID/medidor corroborado manualmente.", "warning", 4500);
+      if (el.luzMedidorReportado) el.luzMedidorReportado.focus();
+      return;
+    }
+    if (!fotoMedidor) {
+      setStatus("Adjunta foto del medidor.", "warning", 4500);
+      if (el.luzFotoMedidor) el.luzFotoMedidor.focus();
+      return;
+    }
+    if (!Number.isFinite(lecturaNum) || lecturaNum < 0) {
+      setStatus("Para visita mensual registra lectura actual valida.", "warning", 4500);
+      if (el.luzLecturaActual) el.luzLecturaActual.focus();
+      return;
+    }
+
+    const key = makeIdempotencyKey("luz_visita", s.id_suministro);
+    const payload = {
+      id_suministro: Number(s.id_suministro),
+      tipo_visita: tipoVisita,
+      id_contribuyente: String(s.id_contribuyente || s.nro_medidor || "").trim(),
+      nro_medidor_reportado: medidorReportado,
+      lectura_actual: Number(lecturaNum),
+      foto_medidor_base64: fotoMedidor,
+      observacion: observacion || null,
+      inspector: inspector || null,
+      metadata: {
+        app: "campo-app-pwa",
+        idempotency_key: key,
+        tipo_visita: tipoVisita,
+        created_at: new Date().toISOString()
+      }
+    };
+
+    if (el.luzSubmitVisitaBtn) el.luzSubmitVisitaBtn.disabled = true;
+    try {
+      const data = await api("/luz/campo/visitas", {
+        method: "POST",
+        headers: authHeaders({ "Idempotency-Key": key }),
+        body: payload
+      });
+      setStatus((data && data.mensaje) || "Visita de luz registrada.", "success", 3500);
+      state.selectedId = 0;
+      resetLuzForm();
+      if (el.luzSelectedInfo) el.luzSelectedInfo.textContent = "";
+      renderResults();
+      closeForm();
+      await search();
+    } catch (err) {
+      setStatus(err.message || "No se pudo registrar visita de luz.", "error", 5500);
+    } finally {
+      if (el.luzSubmitVisitaBtn) el.luzSubmitVisitaBtn.disabled = false;
+    }
+  }
 
   async function submitSolicitud(ev) {
     ev.preventDefault();
+    if (isLuzModule()) {
+      await submitLuzVisita();
+      return;
+    }
+    if (!isAguaModule()) {
+      setStatus("Formulario de solicitudes solo activo en submodulo Agua por ahora.", "warning", 5000);
+      return;
+    }
     if (!(state.user && state.token)) { setStatus("Debes iniciar sesion.", "warning"); return; }
     if (requiresFreshSnapshotForOfflineWork()) {
       setStatus("Operacion bloqueada offline: sincroniza snapshot reciente antes de registrar.", "warning", 5000);
@@ -1554,6 +2187,10 @@
   }
 
   async function syncQueue(manual) {
+    if (!isAguaModule()) {
+      if (manual) setStatus("Cola offline disponible solo para submodulo Agua.", "warning", 4500);
+      return;
+    }
     if (state.syncing) return;
     if (!state.online) { if (manual) setStatus("Sin internet.", "warning"); return; }
     if (!state.token) { if (manual) setStatus("Debes iniciar sesion.", "warning"); return; }
@@ -1629,7 +2266,7 @@
     const btn = el.loginForm.querySelector("button[type='submit']");
     if (btn) btn.disabled = true;
     try {
-      const data = await api("/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: { username: username, password: password } });
+      const data = await api(moduleLoginPath(), { method: "POST", headers: { "Content-Type": "application/json" }, body: { username: username, password: password } });
       if (!hasMinRole(data && data.rol, "BRIGADA")) { setStatus("El usuario no tiene permisos para campo.", "error", 5000); return; }
       const token = String((data && data.token) || "").trim();
       const idUsuario = Number(data && data.id_usuario);
@@ -1638,17 +2275,40 @@
         return;
       }
       state.token = token;
-      state.user = { id_usuario: idUsuario, nombre: String(data.nombre || "").trim(), rol: normalizeRole(data.rol) || String(data.rol || "").trim().toUpperCase() };
+      state.user = {
+        id_usuario: idUsuario,
+        nombre: String(data.nombre || "").trim(),
+        rol: normalizeRole(data.rol) || String(data.rol || "").trim().toUpperCase(),
+        modulo: normalizeModule(state.activeModule),
+        sistema: isLuzModule() ? "LUZ" : "AGUA"
+      };
       state.queueActionKey = "";
       state.lastQueueSyncError = "";
       localStorage.setItem(TOKEN_KEY, state.token);
       localStorage.setItem(USER_KEY, JSON.stringify(state.user));
       el.password.value = "";
       renderAuth();
-      await loadLocalData();
-      await refreshQueueCount();
-      if (state.online && !state.snapshot) await syncSnapshot(true);
-      if (state.online) await syncQueue(false);
+      if (isAguaModule()) {
+        await loadLocalData();
+        await refreshQueueCount();
+        if (state.online && !state.snapshot) await syncSnapshot(true);
+        if (state.online) await syncQueue(false);
+      } else {
+        await loadLuzZones();
+        state.snapshot = null;
+        state.queueCount = 0;
+        state.queueItems = [];
+        state.selectedId = 0;
+        state.searchRows = [];
+        state.filtered = [];
+        state.searchVisibleCount = SEARCH_PAGE_SIZE;
+        state.searchTruncated = false;
+        resetLuzForm();
+        parkLuzFormHidden();
+        renderResults();
+        updateInfo();
+        renderQueue();
+      }
       setStatus("Sesion iniciada.", "success", 2000);
     } catch (err) {
       setStatus(err.message || "No se pudo iniciar sesion.", "error", 5000);
@@ -1670,7 +2330,20 @@
   }
 
   function bind() {
-    window.addEventListener("beforeunload", () => stopCameraStream());
+    window.addEventListener("beforeunload", () => {
+      stopCameraStream();
+      stopLuzCameraStream();
+    });
+    if (el.moduleAguaBtn) {
+      el.moduleAguaBtn.addEventListener("click", () => {
+        setActiveModule(CAMPO_MODULES.AGUA).catch((err) => console.error(err));
+      });
+    }
+    if (el.moduleLuzBtn) {
+      el.moduleLuzBtn.addEventListener("click", () => {
+        setActiveModule(CAMPO_MODULES.LUZ).catch((err) => console.error(err));
+      });
+    }
     el.loginForm.addEventListener("submit", (e) => login(e).catch((err) => console.error(err)));
     el.logoutBtn.addEventListener("click", () => logout().catch((err) => console.error(err)));
     el.saveApiBtn.addEventListener("click", () => { state.apiBase = normalizeBase(el.apiBaseUrl.value); localStorage.setItem(API_BASE_KEY, state.apiBase); el.apiConfigCard.classList.toggle("hidden", state.apiBase === window.location.origin); setStatus("URL API guardada: " + state.apiBase, "success"); });
@@ -1680,6 +2353,7 @@
     if (el.refreshSeguimientoBtn) el.refreshSeguimientoBtn.addEventListener("click", () => loadSeguimiento().catch((err) => console.error(err)));
     if (el.seguimientoEstadoFilter) el.seguimientoEstadoFilter.addEventListener("change", () => loadSeguimiento().catch((err) => console.error(err)));
     el.searchInput.addEventListener("input", queueSearch);
+    if (el.luzSearchInput) el.luzSearchInput.addEventListener("input", queueSearch);
     if (el.clearSearchBtn) {
       el.clearSearchBtn.addEventListener("click", () => {
         el.searchInput.value = "";
@@ -1688,7 +2362,19 @@
         el.searchInput.focus();
       });
     }
+    if (el.luzClearSearchBtn) {
+      el.luzClearSearchBtn.addEventListener("click", () => {
+        if (el.luzSearchInput) el.luzSearchInput.value = "";
+        if (el.luzZonaFilter) el.luzZonaFilter.value = "";
+        state.selectedId = 0;
+        resetLuzForm();
+        if (el.luzSelectedInfo) el.luzSelectedInfo.textContent = "";
+        search().catch((err) => console.error(err));
+        if (el.luzSearchInput) el.luzSearchInput.focus();
+      });
+    }
     el.streetFilter.addEventListener("change", queueSearch);
+    if (el.luzZonaFilter) el.luzZonaFilter.addEventListener("change", queueSearch);
     if (el.newPredioBtn) el.newPredioBtn.addEventListener("click", () => enterPredioMode());
     if (el.tipoSolicitud) {
       el.tipoSolicitud.addEventListener("change", () => {
@@ -1708,11 +2394,20 @@
     if (el.verificacionEstado) el.verificacionEstado.addEventListener("change", () => updateVerificacionUI());
     if (el.fotoPredio) el.fotoPredio.addEventListener("change", () => handleFotoPredioChange());
     if (el.clearFotoBtn) el.clearFotoBtn.addEventListener("click", () => clearFotoPredio());
+    if (el.luzFotoMedidor) el.luzFotoMedidor.addEventListener("change", () => handleLuzFotoChange());
+    if (el.luzClearFotoBtn) el.luzClearFotoBtn.addEventListener("click", () => clearLuzFotoMedidor());
+    if (el.luzOpenCameraBtn) el.luzOpenCameraBtn.addEventListener("click", () => openLuzCamera());
+    if (el.luzCapturePhotoBtn) el.luzCapturePhotoBtn.addEventListener("click", () => captureFromLuzCamera());
+    if (el.luzCancelCameraBtn) el.luzCancelCameraBtn.addEventListener("click", () => {
+      if (el.luzCameraWrap) el.luzCameraWrap.classList.add("hidden");
+      stopLuzCameraStream();
+    });
     if (el.openCameraBtn) el.openCameraBtn.addEventListener("click", () => openCamera());
     if (el.openFileBtn) el.openFileBtn.addEventListener("click", () => { if (el.fotoPredio) el.fotoPredio.click(); });
     if (el.capturePhotoBtn) el.capturePhotoBtn.addEventListener("click", () => captureFromCamera());
     if (el.cancelCameraBtn) el.cancelCameraBtn.addEventListener("click", () => { if (el.cameraWrap) el.cameraWrap.classList.add("hidden"); stopCameraStream(); });
     el.solicitudForm.addEventListener("submit", (e) => submitSolicitud(e).catch((err) => console.error(err)));
+    if (el.luzVisitaForm) el.luzVisitaForm.addEventListener("submit", (e) => submitSolicitud(e).catch((err) => console.error(err)));
     window.addEventListener("online", () => { state.online = true; updateInfo(); syncQueue(false).catch((err) => console.error(err)); });
     window.addEventListener("offline", () => { state.online = false; updateInfo(); });
     if (!queueAutoSyncTimer) {
@@ -1729,19 +2424,33 @@
 
   async function init() {
     if (!el.loginForm) return;
+    state.activeModule = normalizeModule(state.activeModule);
+    localStorage.setItem(MODULE_KEY, state.activeModule);
+    syncUrlModuleParam();
+    state.user = state.user && typeof state.user === "object" ? state.user : null;
+    if (state.token && state.user) {
+      const storedModule = inferUserModule(state.user);
+      if (storedModule !== normalizeModule(state.activeModule)) {
+        clearSessionStorage();
+      }
+    }
     el.apiBaseUrl.value = state.apiBase;
     state.recentSubmissions = pruneRecentSubmissions(parseJson(localStorage.getItem(RECENT_SUBMISSIONS_KEY)) || []);
     saveRecentSubmissions();
     el.apiConfigCard.classList.toggle("hidden", state.apiBase === window.location.origin);
+    renderModuleUi();
     bind();
     registerSw();
     resetForm();
+    resetLuzForm();
     parkFormHidden();
-    await loadLocalData();
+    parkLuzFormHidden();
+    if (isAguaModule()) await loadLocalData();
+    else await loadLuzZones();
     await refreshQueueCount();
     renderAuth();
     renderSeguimiento();
-    if (state.token && state.user && state.online) {
+    if (state.token && state.user && state.online && isAguaModule()) {
       if (!state.snapshot) await syncSnapshot(true);
       await syncQueue(false);
       await loadSeguimiento();

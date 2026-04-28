@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import api, { API_BASE_URL } from "../api";
-import { FaCheck, FaClipboardCheck, FaFileDownload, FaMobileAlt, FaSyncAlt, FaTimes } from "react-icons/fa";
+import api from "../api";
+import { FaCheck, FaClipboardCheck, FaFileDownload, FaSyncAlt, FaTimes } from "react-icons/fa";
 
 const ESTADO_LABELS = {
   PENDIENTE: "Pendiente",
@@ -161,7 +161,7 @@ const getSeguimientoTone = (tipo, darkMode) => {
   return palette[tipo] || null;
 };
 
-const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl }) => {
+const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
   const [filtroEstado, setFiltroEstado] = useState("PENDIENTE");
   const [busquedaContribuyente, setBusquedaContribuyente] = useState("");
   const [organizarPor, setOrganizarPor] = useState("FECHA");
@@ -379,7 +379,6 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
   const closeBtnClass = `btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`;
   const tableClass = `table mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
   const inputClass = `form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const campoHref = campoAppUrl || `${API_BASE_URL}/campo-app/`;
   const generarInformeEmpadronados = async () => {
     try {
       setError("");
@@ -499,9 +498,6 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, campoAppUrl 
               <button type="button" className="btn btn-sm btn-outline-success d-flex align-items-center gap-1" onClick={() => generarInformeEmpadronados()} disabled={cargando}>
                 <FaFileDownload /> Excel Usuarios
               </button>
-              <a href={campoHref} target="_blank" rel="noreferrer" className="btn btn-sm btn-outline-info d-flex align-items-center gap-1">
-                <FaMobileAlt /> Abrir App Campo
-              </a>
               <div className="ms-auto small opacity-75">
                 Mostrando: <strong>{totalVisibleSolicitudes}</strong> de <strong>{solicitudes.length}</strong> | Grupos: <strong>{groupedRows.length}</strong>
               </div>
