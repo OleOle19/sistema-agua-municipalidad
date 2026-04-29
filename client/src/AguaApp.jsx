@@ -942,7 +942,7 @@ const anexoCajaPageStyle = `
       if (!c) return false;
       const meses = Number(c.meses_deuda || 0);
       const estado = normalizeEstadoConexion(c.estado_conexion);
-      return meses >= 4 && estado === ESTADOS_CONEXION.CON_CONEXION;
+      return meses >= 3 && estado === ESTADOS_CONEXION.CON_CONEXION;
     });
     const idsParaGenerar = objetivosConDeuda.length > 0 ? objetivosConDeuda : idsObjetivo;
 
