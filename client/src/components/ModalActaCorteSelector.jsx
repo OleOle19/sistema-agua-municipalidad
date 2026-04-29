@@ -5,7 +5,7 @@ import { compareByDireccionAsc } from "../utils/cortesAddress";
 
 const esDeudor = (c) => {
   const meses = Number(c?.meses_deuda || 0);
-  return meses >= 4;
+  return meses >= 3;
 };
 const esConConexion = (c) => {
   const raw = String(c?.estado_conexion || "").trim().toUpperCase();
@@ -67,10 +67,10 @@ const ModalActaCorteSelector = ({
   }, [modo, deudores, idCalle, sector, manualIds]);
 
   const criterioDescripcion = useMemo(() => {
-    if (modo === "todos") return "Todos (4+ meses)";
-    if (modo === "calle") return calleNombre ? `4+ meses por calle: ${calleNombre}` : "4+ meses por calle";
-    if (modo === "sector") return sector ? `4+ meses por sector: ${sector}` : "4+ meses por sector";
-    return "Seleccion manual (4+ meses)";
+    if (modo === "todos") return "Todos (3+ meses)";
+    if (modo === "calle") return calleNombre ? `3+ meses por calle: ${calleNombre}` : "3+ meses por calle";
+    if (modo === "sector") return sector ? `3+ meses por sector: ${sector}` : "3+ meses por sector";
+    return "Seleccion manual (3+ meses)";
   }, [modo, calleNombre, sector]);
 
   const totalDeuda = useMemo(

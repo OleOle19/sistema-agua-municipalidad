@@ -9862,9 +9862,9 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "El acta de corte solo aplica a contribuyentes con conexión activa." });
     }
 
-    if (mesesDeuda < 4) {
+    if (mesesDeuda < 3) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "La notificación aplica solo a contribuyentes con 4 o más meses de deuda." });
+      return res.status(400).json({ error: "La notificación aplica solo a contribuyentes con 3 o más meses de deuda." });
     }
 
     if (deudaTotal <= 0) {
@@ -9982,13 +9982,13 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
         continue;
       }
 
-      if (mesesDeuda < 4) {
+      if (mesesDeuda < 3) {
         omitidas.push({
           id_contribuyente: idContribuyente,
           codigo_municipal: codigoMunicipal,
           meses_deuda: mesesDeuda,
           deuda_total: deudaTotal,
-          motivo: "Menos de 4 meses de deuda."
+          motivo: "Menos de 3 meses de deuda."
         });
         continue;
       }
