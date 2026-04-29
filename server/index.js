@@ -1831,6 +1831,7 @@ const ACCESS_RULES = [
   { methods: ["PUT"], pattern: /^\/admin\/usuarios\/\d+$/, minRole: "ADMIN" },
   { methods: ["DELETE"], pattern: /^\/admin\/usuarios\/\d+$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/admin\/backup$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/admin\/adjuntos-sistema$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/admin\/pagos-anulados$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/admin\/campo-remoto\/estado$/, minRole: "ADMIN_SEC" },
 
@@ -6953,6 +6954,80 @@ app.get("/contribuyentes/adjuntos/:id_adjunto/descargar", async (req, res) => {
   } catch (err) {
     console.error("Error descargando adjunto de contribuyente:", err);
     return res.status(500).json({ error: "Error descargando adjunto del contribuyente." });
+  } finally {
+    client.release();
+  }
+});
+
+app.get("/admin/adjuntos-sistema", authenticateToken, requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await ensureEstadoConexionEvidenciasTable(client);
+    await ensureContribuyentesAdjuntosTable(client);
+    const limitRaw = Number(req.query?.limit);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 300) : 120;
+    const data = await client.query(`
+      WITH archivos AS (
+        SELECT
+          'CORTE_EVIDENCIA'::text AS origen,
+          ev.id_evidencia::bigint AS id_archivo,
+          ev.creado_en,
+          ev.id_contribuyente,
+          COALESCE(c.codigo_municipal, '') AS codigo_municipal,
+          COALESCE(c.nombre_completo, '') AS nombre_completo,
+          'Evidencia de corte'::text AS tipo_contexto,
+          COALESCE(e.motivo, '') AS descripcion,
+          ev.archivo_nombre,
+          COALESCE(ev.archivo_mime, '') AS archivo_mime,
+          COALESCE(ev.archivo_bytes, 0)::bigint AS archivo_bytes,
+          ('/contribuyentes/cortes/evidencias/' || ev.id_evidencia::text || '/descargar') AS descarga_url
+        FROM estado_conexion_eventos_evidencias ev
+        LEFT JOIN contribuyentes c ON c.id_contribuyente = ev.id_contribuyente
+        LEFT JOIN estado_conexion_eventos e ON e.id_evento = ev.id_evento
+
+        UNION ALL
+
+        SELECT
+          'CONTRIBUYENTE_ADJUNTO'::text AS origen,
+          ca.id_adjunto::bigint AS id_archivo,
+          ca.creado_en,
+          ca.id_contribuyente,
+          COALESCE(c.codigo_municipal, '') AS codigo_municipal,
+          COALESCE(c.nombre_completo, '') AS nombre_completo,
+          COALESCE(ca.tipo_contexto, 'ALTA') AS tipo_contexto,
+          COALESCE(ca.descripcion, '') AS descripcion,
+          ca.archivo_nombre,
+          COALESCE(ca.archivo_mime, '') AS archivo_mime,
+          COALESCE(ca.archivo_bytes, 0)::bigint AS archivo_bytes,
+          ('/contribuyentes/adjuntos/' || ca.id_adjunto::text || '/descargar') AS descarga_url
+        FROM contribuyentes_adjuntos ca
+        LEFT JOIN contribuyentes c ON c.id_contribuyente = ca.id_contribuyente
+      )
+      SELECT *
+      FROM archivos
+      ORDER BY creado_en DESC, origen ASC, id_archivo DESC
+      LIMIT $1
+    `, [limit]);
+    return res.json({
+      total: Number(data.rows.length || 0),
+      items: data.rows.map((row) => ({
+        origen: row.origen,
+        id_archivo: Number(row.id_archivo || 0),
+        creado_en: row.creado_en || null,
+        id_contribuyente: Number(row.id_contribuyente || 0),
+        codigo_municipal: row.codigo_municipal || "",
+        nombre_completo: row.nombre_completo || "",
+        tipo_contexto: row.tipo_contexto || "",
+        descripcion: row.descripcion || "",
+        archivo_nombre: row.archivo_nombre || "",
+        archivo_mime: row.archivo_mime || "",
+        archivo_bytes: Number(row.archivo_bytes || 0),
+        descarga_url: row.descarga_url || ""
+      }))
+    });
+  } catch (err) {
+    console.error("Error listando adjuntos del sistema:", err);
+    return res.status(500).json({ error: "Error listando adjuntos del sistema." });
   } finally {
     client.release();
   }

@@ -1,11 +1,22 @@
 import { useState } from "react";
-import { FaBalanceScale, FaDatabase, FaFileAlt, FaFileExcel, FaMoneyBillWave, FaUsers } from "react-icons/fa";
+import { FaBalanceScale, FaDatabase, FaDownload, FaEye, FaFileAlt, FaFileExcel, FaFolderOpen, FaMoneyBillWave, FaUsers } from "react-icons/fa";
 import api from "../api";
 import ModalComparacionesLegacy from "./ModalComparacionesLegacy";
 
 const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
   const [exportando, setExportando] = useState("");
   const [mostrarComparaciones, setMostrarComparaciones] = useState(false);
+  const [adjuntosSistema, setAdjuntosSistema] = useState([]);
+  const [cargandoAdjuntos, setCargandoAdjuntos] = useState(false);
+  const [mostrarAdjuntos, setMostrarAdjuntos] = useState(false);
+
+  const formatBytes = (bytes) => {
+    const value = Number(bytes || 0);
+    if (!Number.isFinite(value) || value <= 0) return "-";
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  };
 
   const descargarArchivo = async ({
     key,
@@ -44,6 +55,51 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
     try {
       setExportando("backup");
       await onBackup();
+    } finally {
+      setExportando("");
+    }
+  };
+
+  const cargarAdjuntosSistema = async () => {
+    try {
+      setCargandoAdjuntos(true);
+      const res = await api.get("/admin/adjuntos-sistema", {
+        params: { limit: 120 },
+        timeout: 0
+      });
+      setAdjuntosSistema(Array.isArray(res.data?.items) ? res.data.items : []);
+      setMostrarAdjuntos(true);
+    } catch (err) {
+      alert(err?.response?.data?.error || "No se pudieron cargar los adjuntos del sistema.");
+    } finally {
+      setCargandoAdjuntos(false);
+    }
+  };
+
+  const abrirAdjunto = async (item, inline = false) => {
+    try {
+      setExportando(`adjunto_${item?.id_archivo || 0}`);
+      const res = await api.get(item.descarga_url, {
+        responseType: "blob",
+        timeout: 0
+      });
+      const mimeType = item?.archivo_mime || "application/octet-stream";
+      const blob = new Blob([res.data], { type: mimeType });
+      const url = window.URL.createObjectURL(blob);
+      if (inline && /^image\/|^application\/pdf$/i.test(mimeType)) {
+        window.open(url, "_blank", "noopener,noreferrer");
+        window.setTimeout(() => window.URL.revokeObjectURL(url), 30000);
+        return;
+      }
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = item?.archivo_nombre || `adjunto_${item?.id_archivo || "sistema"}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err?.response?.data?.error || "No se pudo abrir el adjunto.");
     } finally {
       setExportando("");
     }
@@ -167,6 +223,81 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
                 <FaBalanceScale className="me-2" />
                 Abrir Comparador
               </button>
+            </div>
+
+            <div className={`border rounded p-3 mt-3 ${bodyCardClass}`}>
+              <div className="fw-bold mb-1 d-flex align-items-center gap-2">
+                <FaFolderOpen /> Adjuntos del sistema
+              </div>
+              <div className="small opacity-75 mb-2">
+                Muestra evidencias de corte y archivos adjuntos de contribuyentes sin entrar a carpetas del servidor.
+              </div>
+              <button
+                type="button"
+                className="btn btn-outline-primary btn-sm"
+                disabled={exportando !== "" || cargandoAdjuntos}
+                onClick={cargarAdjuntosSistema}
+              >
+                <FaFolderOpen className="me-2" />
+                {cargandoAdjuntos ? "Cargando..." : "Ver Adjuntos"}
+              </button>
+
+              {mostrarAdjuntos && (
+                <div className="table-responsive mt-3" style={{ maxHeight: "260px" }}>
+                  <table className={`table table-sm mb-0 ${darkMode ? "table-dark" : "table-striped"}`}>
+                    <thead>
+                      <tr>
+                        <th>Fecha</th>
+                        <th>Origen</th>
+                        <th>Codigo</th>
+                        <th>Nombre</th>
+                        <th>Archivo</th>
+                        <th>Tamano</th>
+                        <th>Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adjuntosSistema.length === 0 ? (
+                        <tr><td colSpan="7" className="text-center py-3">Sin adjuntos registrados.</td></tr>
+                      ) : adjuntosSistema.map((item) => (
+                        <tr key={`${item.origen}-${item.id_archivo}`}>
+                          <td>{item.creado_en ? new Date(item.creado_en).toLocaleString("es-PE") : "-"}</td>
+                          <td>{item.origen === "CORTE_EVIDENCIA" ? "Corte" : "Contribuyente"}</td>
+                          <td>{item.codigo_municipal || "-"}</td>
+                          <td>{item.nombre_completo || "-"}</td>
+                          <td>
+                            <div>{item.archivo_nombre || "-"}</div>
+                            <div className="small opacity-75">{item.tipo_contexto || "-"}</div>
+                          </td>
+                          <td>{formatBytes(item.archivo_bytes)}</td>
+                          <td>
+                            <div className="d-flex gap-1">
+                              <button
+                                type="button"
+                                className="btn btn-outline-secondary btn-sm"
+                                disabled={exportando !== ""}
+                                onClick={() => abrirAdjunto(item, true)}
+                                title="Abrir"
+                              >
+                                <FaEye />
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-outline-primary btn-sm"
+                                disabled={exportando !== ""}
+                                onClick={() => abrirAdjunto(item, false)}
+                                title="Descargar"
+                              >
+                                <FaDownload />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
 
