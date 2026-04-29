@@ -1563,7 +1563,18 @@ const anexoCajaPageStyle = `
       document.body.appendChild(link);
       link.click();
       link.remove();
-    } catch (error) { alert("Error al generar la copia."); console.error(error); }
+    } catch (error) {
+      let mensaje = "Error al generar la copia.";
+      try {
+        const raw = await error?.response?.data?.text?.();
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed?.error) mensaje = parsed.error;
+        }
+      } catch {}
+      alert(mensaje);
+      console.error(error);
+    }
   };
 
   const startScrollSelect = useCallback((anchorId, mode, baseIds) => {

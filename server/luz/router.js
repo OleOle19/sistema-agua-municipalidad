@@ -129,7 +129,8 @@ const LUZ_PUBLIC_BOOTSTRAP_PATHS = new Set([
   "/health",
   "/auth/login",
   "/auth/registro",
-  "/auth/cambiar-password"
+  "/auth/cambiar-password",
+  "/auth/cambiar_password"
 ]);
 
 const ROLE_ORDER = {
@@ -426,11 +427,15 @@ const ensureCampoVisitasTable = async (db) => {
       tipo_visita VARCHAR(40) NOT NULL,
       nro_medidor_reportado VARCHAR(80) NOT NULL,
       lectura_actual NUMERIC(12, 2) NULL,
-      foto_medidor_base64 TEXT NOT NULL,
+      foto_medidor_base64 TEXT NULL,
       observacion TEXT NULL,
       inspector VARCHAR(120) NULL,
       metadata JSONB NOT NULL DEFAULT '{}'::jsonb
     )
+  `);
+  await db.query(`
+    ALTER TABLE campo_visitas
+    ALTER COLUMN foto_medidor_base64 DROP NOT NULL
   `);
   await db.query(`
     DO $$
@@ -923,7 +928,6 @@ router.get("/health", (req, res) => {
 });
 router.post("/auth/registro", async (req, res) => {
   try {
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const username = normalizeText(req.body?.username, 120);
     const password = String(req.body?.password || "");
     const nombre = normalizeText(req.body?.nombre_completo, 180);
@@ -949,7 +953,6 @@ router.post("/auth/registro", async (req, res) => {
 
 router.post("/auth/login", async (req, res) => {
   try {
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     cleanupLoginSecurityMaps();
     const username = normalizeText(req.body?.username, 120);
     const password = String(req.body?.password || "");
@@ -1040,9 +1043,8 @@ router.post("/auth/login", async (req, res) => {
   }
 });
 
-router.post("/auth/cambiar-password", async (req, res) => {
+const handleLuzPasswordChange = async (req, res) => {
   try {
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const username = normalizeText(req.body?.username, 120);
     const passwordActual = String(req.body?.password_actual || "");
     const passwordNuevo = String(req.body?.password_nuevo || "");
@@ -1094,11 +1096,13 @@ router.post("/auth/cambiar-password", async (req, res) => {
     console.error("[LUZ] Error cambio password:", err.message);
     return res.status(500).json({ error: "Error cambiando password." });
   }
-});
+};
+
+router.post("/auth/cambiar-password", handleLuzPasswordChange);
+router.post("/auth/cambiar_password", handleLuzPasswordChange);
 
 router.get("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
   try {
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const usuarios = await pool.query(
       `SELECT id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible
        FROM usuarios_sistema
@@ -1144,7 +1148,6 @@ router.get("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async 
 
 router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
   try {
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const username = normalizeText(req.body?.username, 120);
     const nombreCompleto = normalizeText(req.body?.nombre_completo, 180);
     const password = String(req.body?.password || "");
@@ -1208,7 +1211,6 @@ router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async
 
 router.put("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
   try {
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const targetId = parsePositiveInt(req.params?.id, 0);
     if (!targetId) return res.status(400).json({ error: "ID inválido." });
 
@@ -1436,8 +1438,8 @@ router.post("/campo/visitas", authenticateLuzToken, requireRole("BRIGADA"), asyn
 
     if (!idSuministro) return res.status(400).json({ error: "Suministro inválido." });
     if (!nroMedidorReportado) return res.status(400).json({ error: "Debe registrar el ID/medidor observado." });
-    if (!fotoMedidor || !/^data:image\//i.test(fotoMedidor)) {
-      return res.status(400).json({ error: "Debe adjuntar foto válida del medidor." });
+    if (fotoMedidor && !/^data:image\//i.test(fotoMedidor)) {
+      return res.status(400).json({ error: "La foto adjunta no es válida." });
     }
     if (fotoMedidor.length > 2200000) {
       return res.status(413).json({ error: "La foto es demasiado grande. Intente con menor resolución." });
@@ -1472,7 +1474,7 @@ router.post("/campo/visitas", authenticateLuzToken, requireRole("BRIGADA"), asyn
         tipoVisita,
         nroMedidorReportado,
         tipoVisita === CAMPO_TIPO_VISITA.VISITA_MENSUAL ? lecturaActual : null,
-        fotoMedidor,
+        fotoMedidor || null,
         observacion,
         inspector,
         JSON.stringify(metadata || {})
@@ -1490,7 +1492,7 @@ router.post("/campo/visitas", authenticateLuzToken, requireRole("BRIGADA"), asyn
 
     return res.json({
       mensaje: tipoVisita === CAMPO_TIPO_VISITA.CORROBORAR_MEDIDOR
-        ? "Corroboracion de medidor registrada."
+        ? "Corroboracion de ID registrada."
         : "Visita mensual registrada.",
       visita: {
         id_visita: Number(ins.rows[0].id_visita),

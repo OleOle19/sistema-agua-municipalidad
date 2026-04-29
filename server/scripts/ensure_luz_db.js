@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("../load-env");
 const { Client } = require("pg");
 
 const dbName = String(process.env.LUZ_DB_NAME || "db_luz_pueblonuevo").trim();

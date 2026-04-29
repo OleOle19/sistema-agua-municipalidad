@@ -1,5 +1,7 @@
 ﻿const { spawn } = require('child_process');
 const path = require('path');
+const { spawnSync } = require('child_process');
+require("./load-env");
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
@@ -15,7 +17,6 @@ const { importarDestritoExcel } = require("./importar_deudas_excel");
 const ExcelJS = require('exceljs');
 const xml2js = require('xml2js');
 const multer = require('multer');
-require("dotenv").config();
 const { Readable } = require('stream');
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -1571,6 +1572,12 @@ const buildDireccionSql = (calleAlias = "ca", predioAlias = "p") => `
         CASE
           WHEN COALESCE(TRIM(${calleAlias}.nombre), '') = '' THEN NULLIF(TRIM(${predioAlias}.referencia_direccion), '')
           WHEN COALESCE(TRIM(${predioAlias}.referencia_direccion), '') = '' THEN TRIM(${calleAlias}.nombre)
+          WHEN POSITION(
+            REGEXP_REPLACE(LOWER(COALESCE(TRIM(${calleAlias}.nombre), '')), '[^[:alnum:]]', '', 'g')
+            IN REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.referencia_direccion), '')), '[^[:alnum:]]', '', 'g')
+          ) = 0
+            AND COALESCE(TRIM(${predioAlias}.referencia_direccion), '') ~* '(^|\\s)(av\\.?|avenida|jr\\.?|jiron|calle|psje?\\.?|pasaje|carretera|prol\\.?|prolongacion|urb\\.?|sector|aa\\.?hh\\.?)\\s+'
+          THEN TRIM(${predioAlias}.referencia_direccion)
           WHEN POSITION(
             REGEXP_REPLACE(LOWER(COALESCE(TRIM(${calleAlias}.nombre), '')), '[^[:alnum:]]', '', 'g')
             IN REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.referencia_direccion), '')), '[^[:alnum:]]', '', 'g')
@@ -14025,18 +14032,57 @@ app.get("/comparaciones/legacy/:id/exportar", async (req, res) => {
 // ==========================================
 // BACKUP
 // ==========================================
+const resolvePgDumpPath = () => {
+  const envPath = String(process.env.PG_DUMP_PATH || "").trim();
+  if (envPath && fs.existsSync(envPath)) return envPath;
+
+  const candidates = [];
+  const programFiles = [
+    process.env["ProgramFiles"],
+    process.env["ProgramFiles(x86)"],
+    "C:\\Program Files",
+    "C:\\Program Files (x86)"
+  ].filter(Boolean);
+
+  for (const baseDir of programFiles) {
+    for (const version of [18, 17, 16, 15, 14, 13, 12]) {
+      candidates.push(path.join(baseDir, "PostgreSQL", String(version), "bin", "pg_dump.exe"));
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+
+  try {
+    const lookup = spawnSync("where.exe", ["pg_dump"], {
+      windowsHide: true,
+      encoding: "utf8"
+    });
+    if (lookup.status === 0) {
+      const first = String(lookup.stdout || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean);
+      if (first) return first;
+    }
+  } catch {}
+
+  return envPath || "";
+};
+
 const getBackupConfig = () => {
   const DB_USER = String(process.env.DB_USER || "").trim();
   const DB_HOST = String(process.env.DB_HOST || "").trim();
   const DB_NAME = String(process.env.DB_NAME || "").trim();
   const DB_PORT = String(process.env.DB_PORT || "").trim();
   const DB_PASSWORD = String(process.env.DB_PASSWORD || "");
-  const PG_DUMP_PATH = String(process.env.PG_DUMP_PATH || "").trim();
+  const PG_DUMP_PATH = resolvePgDumpPath();
   if (!DB_USER || !DB_HOST || !DB_NAME || !DB_PORT || !DB_PASSWORD) {
     throw new Error("Configuración de base de datos incompleta para backup.");
   }
   if (!PG_DUMP_PATH) {
-    throw new Error("PG_DUMP_PATH no configurado.");
+    throw new Error("No se encontró pg_dump. Configure PG_DUMP_PATH o instale PostgreSQL con pg_dump.exe disponible.");
   }
   return {
     DB_USER,
