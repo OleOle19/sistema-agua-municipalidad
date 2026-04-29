@@ -152,6 +152,60 @@ const formatFechaHora = (value) => {
   if (Number.isNaN(dt.getTime())) return String(value);
   return dt.toLocaleString("es-PE");
 };
+
+const LUZ_AUDIT_ACTION_LABELS = {
+  AUTH_REGISTRO: "Registro de usuario",
+  AUTH_PASSWORD_CAMBIO: "Cambio de clave",
+  ADMIN_LUZ_USUARIO_CREADO: "Usuario creado",
+  ADMIN_LUZ_USUARIO_ACTUALIZADO: "Usuario actualizado",
+  ADMIN_LUZ_USUARIO_ELIMINADO: "Usuario eliminado",
+  CAMPO_LUZ_VISITA_REGISTRADA: "Visita de campo registrada"
+};
+
+const formatLuzAuditAction = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "Sin movimiento";
+  const upper = raw.toUpperCase();
+  if (LUZ_AUDIT_ACTION_LABELS[upper]) return LUZ_AUDIT_ACTION_LABELS[upper];
+  return raw.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+};
+
+const formatLuzAuditLabel = (value) => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "Dato";
+  const labels = {
+    id_usuario: "ID usuario",
+    username: "Usuario",
+    rol: "Rol",
+    estado: "Estado",
+    campos: "Campos cambiados",
+    id_visita: "ID visita",
+    id_suministro: "ID suministro",
+    tipo: "Tipo",
+    medidor: "ID/medidor",
+    via: "Forma",
+    ip: "IP"
+  };
+  return labels[raw] || raw.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+};
+
+const formatLuzAuditDetail = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "-";
+  if (!raw.includes("=")) return formatLuzAuditAction(raw);
+  return raw
+    .split(";")
+    .map((piece) => piece.trim())
+    .filter(Boolean)
+    .map((piece) => {
+      const idx = piece.indexOf("=");
+      if (idx <= 0) return formatLuzAuditAction(piece);
+      const label = formatLuzAuditLabel(piece.slice(0, idx));
+      const detail = piece.slice(idx + 1).trim();
+      return `${label}: ${detail || "-"}`;
+    })
+    .join(" | ");
+};
 const formatFechaCorta = (value) => {
   if (!value) return "-";
   const text = String(value).trim();
@@ -2020,14 +2074,14 @@ function LuzApp({ onBackToSelector }) {
                       <span className="input-group-text"><FaSearch /></span>
                       <input
                         className="form-control"
-                        placeholder="Buscar por usuario, accion o detalle"
+                        placeholder="Buscar por usuario, movimiento o detalle"
                         value={auditoriaFiltro}
                         onChange={(e) => setAuditoriaFiltro(e.target.value)}
                       />
                     </div>
                     <button className="btn btn-outline-primary btn-sm d-flex align-items-center gap-2" onClick={cargarAuditoria} disabled={loadingAuditoria}>
                       <FaSyncAlt />
-                      Recargar auditoria
+                      Recargar lista
                     </button>
                   </div>
 
@@ -2037,8 +2091,8 @@ function LuzApp({ onBackToSelector }) {
                         <tr>
                           <th style={{ minWidth: "170px" }}>Fecha</th>
                           <th style={{ minWidth: "170px" }}>Usuario</th>
-                          <th style={{ minWidth: "220px" }}>Accion</th>
-                          <th>Detalle</th>
+                          <th style={{ minWidth: "220px" }}>Movimiento</th>
+                          <th>Resumen</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2050,8 +2104,8 @@ function LuzApp({ onBackToSelector }) {
                           <tr key={row.id_auditoria}>
                             <td>{formatFechaHora(row.fecha)}</td>
                             <td>{row.usuario || "-"}</td>
-                            <td><span className="badge bg-secondary">{row.accion}</span></td>
-                            <td>{row.detalle || "-"}</td>
+                            <td><span className="badge bg-secondary">{formatLuzAuditAction(row.accion)}</span></td>
+                            <td>{formatLuzAuditDetail(row.detalle)}</td>
                           </tr>
                         ))}
                       </tbody>

@@ -1,0 +1,66 @@
+## Reemplazo manual de historial financiero viejo
+
+Uso recomendado cuando vas a reemplazar pagos o deudas de meses anteriores con un Excel ya corregido.
+
+### Idea
+
+El importador de historial no borra solo. Primero haces respaldo, luego borras meses viejos, y al final importas el Excel.
+
+### Importante
+
+- Haz backup SQL antes de borrar.
+- Si tus datos antiguos solo tienen mes y no dia, el importador guarda `fecha_pago` en primer dia de ese mes.
+- El Excel de historial sirve bien para este caso porque toma columnas por periodo y monto.
+
+### Vista previa antes de borrar
+
+```sql
+SELECT
+  r.anio,
+  r.mes,
+  COUNT(*) AS total_recibos,
+  COALESCE(SUM(p.monto_pagado), 0) AS total_pagado
+FROM recibos r
+LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
+WHERE (r.anio < 2026 OR (r.anio = 2026 AND r.mes < 4))
+GROUP BY r.anio, r.mes
+ORDER BY r.anio, r.mes;
+```
+
+### Borrado manual para meses antes de abril 2026
+
+```sql
+BEGIN;
+
+DELETE FROM pagos p
+USING recibos r
+WHERE p.id_recibo = r.id_recibo
+  AND (r.anio < 2026 OR (r.anio = 2026 AND r.mes < 4));
+
+DELETE FROM recibos r
+WHERE (r.anio < 2026 OR (r.anio = 2026 AND r.mes < 4));
+
+COMMIT;
+```
+
+### Si quieres revisar antes de confirmar
+
+```sql
+BEGIN;
+
+DELETE FROM pagos p
+USING recibos r
+WHERE p.id_recibo = r.id_recibo
+  AND (r.anio < 2026 OR (r.anio = 2026 AND r.mes < 4));
+
+DELETE FROM recibos r
+WHERE (r.anio < 2026 OR (r.anio = 2026 AND r.mes < 4));
+
+ROLLBACK;
+```
+
+### Despues
+
+1. Importa tu Excel desde `Importacion > Historial`.
+2. Revisa rechazos.
+3. Verifica un contribuyente con historial y recibo reimpreso.

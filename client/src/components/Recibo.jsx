@@ -50,7 +50,7 @@ const CAL = {
   nudgeX: 6,
   nudgeY: 0,
   topBlockOffsetX: -15,
-  topBlockOffsetY: 10,
+  topBlockOffsetY: -7,
   bottomBlockOffsetX: 0,
   bottomBlockOffsetY: 23,
   // Coordenadas del bloque superior.
