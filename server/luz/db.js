@@ -1,5 +1,5 @@
 const { Pool } = require("pg");
-require("dotenv").config();
+require("../load-env");
 
 const luzPool = new Pool({
   user: process.env.LUZ_DB_USER || process.env.DB_USER,

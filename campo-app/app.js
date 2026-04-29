@@ -142,15 +142,6 @@
     luzMedidorReportado: document.getElementById("luzMedidorReportado"),
     luzLecturaActualRow: document.getElementById("luzLecturaActualRow"),
     luzLecturaActual: document.getElementById("luzLecturaActual"),
-    luzOpenCameraBtn: document.getElementById("luzOpenCameraBtn"),
-    luzFotoMedidor: document.getElementById("luzFotoMedidor"),
-    luzCameraWrap: document.getElementById("luzCameraWrap"),
-    luzCameraPreview: document.getElementById("luzCameraPreview"),
-    luzCapturePhotoBtn: document.getElementById("luzCapturePhotoBtn"),
-    luzCancelCameraBtn: document.getElementById("luzCancelCameraBtn"),
-    luzFotoPreviewWrap: document.getElementById("luzFotoPreviewWrap"),
-    luzFotoPreview: document.getElementById("luzFotoPreview"),
-    luzClearFotoBtn: document.getElementById("luzClearFotoBtn"),
     luzObservacion: document.getElementById("luzObservacion"),
     luzSubmitVisitaBtn: document.getElementById("luzSubmitVisitaBtn"),
     statusSection: document.getElementById("statusSection")
@@ -178,10 +169,8 @@
     recentSubmissions: [],
     predioMode: false,
     fotoDataUrl: "",
-    luzFotoDataUrl: "",
     luzZonas: [],
     cameraStream: null,
-    luzCameraStream: null,
     seguimientoRows: [],
     seguimientoLoading: false,
     seguimientoLastOkAt: null,
@@ -237,13 +226,13 @@
     if (el.moduleDescription) {
       el.moduleDescription.textContent = aguaActive
         ? "Agua operativo: busqueda, registro en campo y cola offline."
-        : "Luz operativo: corroboracion de medidor y visitas mensuales con foto.";
+        : "Luz operativo: corroboracion de ID y visitas mensuales de lectura.";
     }
     if (el.heroTitle) el.heroTitle.textContent = "App Campo - " + currentModuleLabel();
     if (el.heroSubtitle) {
       el.heroSubtitle.textContent = aguaActive
         ? "Registro de cambios desde brigada hacia la bandeja de revision del administrador."
-        : "Brigada luz: corroboracion de medidor y registro mensual de lectura en campo.";
+        : "Brigada luz: corroboracion de ID y registro mensual de lectura en campo.";
     }
     if (el.authTitle) el.authTitle.textContent = "Ingreso de brigada - " + currentModuleLabel();
     if (el.toolbarTitle) {
@@ -278,7 +267,6 @@
     state.contribuyentes = [];
     state.calles = [];
     state.predioMode = false;
-    state.luzFotoDataUrl = "";
     state.luzZonas = [];
     state.warnedNoSnapshotOffline = false;
     state.warnedSnapshotExpired = false;
@@ -289,7 +277,6 @@
     if (el.seguimientoList) el.seguimientoList.innerHTML = '<p class="muted">Sin seguimiento cargado.</p>';
     stopCameraStream();
     clearFotoPredio();
-    clearLuzFotoMedidor();
     resetForm();
     resetLuzForm();
     parkFormHidden();
@@ -393,11 +380,6 @@
     if (!state.cameraStream) return;
     state.cameraStream.getTracks().forEach((t) => t.stop());
     state.cameraStream = null;
-  }
-  function stopLuzCameraStream() {
-    if (!state.luzCameraStream) return;
-    state.luzCameraStream.getTracks().forEach((t) => t.stop());
-    state.luzCameraStream = null;
   }
   async function openCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -514,93 +496,6 @@
   function updateLuzTipoVisitaUi() {
     if (el.luzLecturaActualRow) el.luzLecturaActualRow.classList.remove("hidden");
     if (el.luzLecturaActual) el.luzLecturaActual.required = true;
-  }
-  function clearLuzFotoMedidor() {
-    state.luzFotoDataUrl = "";
-    if (el.luzFotoMedidor) el.luzFotoMedidor.value = "";
-    if (el.luzFotoPreview) el.luzFotoPreview.src = "";
-    if (el.luzFotoPreviewWrap) el.luzFotoPreviewWrap.classList.add("hidden");
-    if (el.luzCameraWrap) el.luzCameraWrap.classList.add("hidden");
-    stopLuzCameraStream();
-  }
-  async function openLuzCamera() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      if (el.luzFotoMedidor) el.luzFotoMedidor.click();
-      return;
-    }
-    try {
-      stopLuzCameraStream();
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" } },
-        audio: false
-      });
-      state.luzCameraStream = stream;
-      if (el.luzCameraPreview) {
-        el.luzCameraPreview.srcObject = stream;
-        el.luzCameraPreview.play().catch(() => {});
-      }
-      if (el.luzCameraWrap) el.luzCameraWrap.classList.remove("hidden");
-    } catch (err) {
-      setStatus("No se pudo abrir la camara para medidor.", "warning", 5000);
-    }
-  }
-  async function captureFromLuzCamera() {
-    if (!el.luzCameraPreview || !state.luzCameraStream) return;
-    const video = el.luzCameraPreview;
-    const width = Math.max(1, video.videoWidth || 0);
-    const height = Math.max(1, video.videoHeight || 0);
-    if (!width || !height) {
-      setStatus("Camara no lista para capturar.", "warning", 3500);
-      return;
-    }
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0, width, height);
-    let dataUrl = canvas.toDataURL("image/jpeg", 0.75);
-    if (dataUrl.length > 900000) {
-      const scale = Math.min(1, 1200 / Math.max(width, height));
-      const w2 = Math.max(1, Math.round(width * scale));
-      const h2 = Math.max(1, Math.round(height * scale));
-      const canvas2 = document.createElement("canvas");
-      canvas2.width = w2;
-      canvas2.height = h2;
-      const ctx2 = canvas2.getContext("2d");
-      ctx2.drawImage(video, 0, 0, w2, h2);
-      dataUrl = canvas2.toDataURL("image/jpeg", 0.65);
-    }
-    if (dataUrl.length > 900000) {
-      setStatus("Foto de medidor demasiado grande. Intenta acercarte mas.", "warning", 4500);
-      return;
-    }
-    state.luzFotoDataUrl = dataUrl;
-    if (el.luzFotoMedidor) el.luzFotoMedidor.value = "";
-    if (el.luzFotoPreview) el.luzFotoPreview.src = dataUrl;
-    if (el.luzFotoPreviewWrap) el.luzFotoPreviewWrap.classList.remove("hidden");
-    if (el.luzCameraWrap) el.luzCameraWrap.classList.add("hidden");
-    stopLuzCameraStream();
-  }
-  async function handleLuzFotoChange() {
-    const file = el.luzFotoMedidor && el.luzFotoMedidor.files && el.luzFotoMedidor.files[0];
-    if (!file) { clearLuzFotoMedidor(); return; }
-    try {
-      let dataUrl = await compressImage(file, 1280, 0.72);
-      if (dataUrl.length > 900000) dataUrl = await compressImage(file, 1024, 0.6);
-      if (dataUrl.length > 900000) {
-        clearLuzFotoMedidor();
-        setStatus("Foto de medidor demasiado grande. Usa menor resolucion.", "warning", 5000);
-        return;
-      }
-      state.luzFotoDataUrl = dataUrl;
-      if (el.luzFotoPreview) el.luzFotoPreview.src = dataUrl;
-      if (el.luzFotoPreviewWrap) el.luzFotoPreviewWrap.classList.remove("hidden");
-      if (el.luzCameraWrap) el.luzCameraWrap.classList.add("hidden");
-      stopLuzCameraStream();
-    } catch (err) {
-      clearLuzFotoMedidor();
-      setStatus("No se pudo cargar foto del medidor.", "warning", 4000);
-    }
   }
   function seguimientoMotivoLabel(value) {
     const raw = String(value || "").trim().toUpperCase();
@@ -1003,7 +898,7 @@
       if (el.offlineInfo) {
         el.offlineInfo.textContent =
           "Conexion: " + (state.online ? "Online" : "Offline") +
-          " | Submodulo Luz operativo | Registro: corroboracion + visita mensual con foto.";
+          " | Submodulo Luz operativo | Registro: corroboracion de ID + visita mensual.";
       }
       renderHealthPanel();
       updateOperationalLock();
@@ -1306,7 +1201,6 @@
     if (el.luzMedidorReportado) el.luzMedidorReportado.value = "";
     if (el.luzLecturaActual) el.luzLecturaActual.value = "";
     if (el.luzObservacion) el.luzObservacion.value = "";
-    clearLuzFotoMedidor();
     updateLuzTipoVisitaUi();
   }
   function selectedLuzSuministro() {
@@ -1344,7 +1238,7 @@
       const lastTipo = String(c.ultima_visita_tipo || "").trim().toUpperCase();
       const lastTipoTxt = lastTipo === "VISITA_MENSUAL"
         ? "Visita mensual"
-        : (lastTipo === "CORROBORAR_MEDIDOR" ? "Corroboracion" : "Sin visitas");
+        : (lastTipo === "CORROBORAR_MEDIDOR" ? "Corroboracion ID" : "Sin visitas");
       const lastFecha = c.ultima_visita_en ? fmtDateTime(c.ultima_visita_en) : "Sin fecha";
       const t = document.createElement("strong");
       t.textContent = idContrib + " - " + nombre;
@@ -1939,7 +1833,6 @@
     const medidorReportado = String(el.luzMedidorReportado && el.luzMedidorReportado.value || "").trim();
     const lecturaRaw = String(el.luzLecturaActual && el.luzLecturaActual.value || "").trim();
     const lecturaNum = lecturaRaw === "" ? NaN : Number.parseFloat(lecturaRaw);
-    const fotoMedidor = String(state.luzFotoDataUrl || "").trim();
     const observacion = String(el.luzObservacion && el.luzObservacion.value || "").trim();
     const inspector = String((state.user && state.user.nombre) || "").trim()
       || String((state.user && state.user.username) || "");
@@ -1947,11 +1840,6 @@
     if (!medidorReportado) {
       setStatus("Ingresa el ID/medidor corroborado manualmente.", "warning", 4500);
       if (el.luzMedidorReportado) el.luzMedidorReportado.focus();
-      return;
-    }
-    if (!fotoMedidor) {
-      setStatus("Adjunta foto del medidor.", "warning", 4500);
-      if (el.luzFotoMedidor) el.luzFotoMedidor.focus();
       return;
     }
     if (!Number.isFinite(lecturaNum) || lecturaNum < 0) {
@@ -1967,7 +1855,6 @@
       id_contribuyente: String(s.id_contribuyente || s.nro_medidor || "").trim(),
       nro_medidor_reportado: medidorReportado,
       lectura_actual: Number(lecturaNum),
-      foto_medidor_base64: fotoMedidor,
       observacion: observacion || null,
       inspector: inspector || null,
       metadata: {
@@ -2332,7 +2219,6 @@
   function bind() {
     window.addEventListener("beforeunload", () => {
       stopCameraStream();
-      stopLuzCameraStream();
     });
     if (el.moduleAguaBtn) {
       el.moduleAguaBtn.addEventListener("click", () => {
@@ -2394,14 +2280,6 @@
     if (el.verificacionEstado) el.verificacionEstado.addEventListener("change", () => updateVerificacionUI());
     if (el.fotoPredio) el.fotoPredio.addEventListener("change", () => handleFotoPredioChange());
     if (el.clearFotoBtn) el.clearFotoBtn.addEventListener("click", () => clearFotoPredio());
-    if (el.luzFotoMedidor) el.luzFotoMedidor.addEventListener("change", () => handleLuzFotoChange());
-    if (el.luzClearFotoBtn) el.luzClearFotoBtn.addEventListener("click", () => clearLuzFotoMedidor());
-    if (el.luzOpenCameraBtn) el.luzOpenCameraBtn.addEventListener("click", () => openLuzCamera());
-    if (el.luzCapturePhotoBtn) el.luzCapturePhotoBtn.addEventListener("click", () => captureFromLuzCamera());
-    if (el.luzCancelCameraBtn) el.luzCancelCameraBtn.addEventListener("click", () => {
-      if (el.luzCameraWrap) el.luzCameraWrap.classList.add("hidden");
-      stopLuzCameraStream();
-    });
     if (el.openCameraBtn) el.openCameraBtn.addEventListener("click", () => openCamera());
     if (el.openFileBtn) el.openFileBtn.addEventListener("click", () => { if (el.fotoPredio) el.fotoPredio.click(); });
     if (el.capturePhotoBtn) el.capturePhotoBtn.addEventListener("click", () => captureFromCamera());

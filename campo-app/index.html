@@ -305,26 +305,7 @@
             <div class="row" id="luzLecturaActualRow">
               <label for="luzLecturaActual">Lectura actual del medidor</label>
               <input id="luzLecturaActual" type="number" step="0.01" min="0" inputmode="decimal" required />
-              <div class="muted">Registra lectura y toma foto del medidor.</div>
-            </div>
-
-            <div class="row">
-              <label for="luzFotoMedidor">Foto del medidor</label>
-              <div class="photo-actions">
-                <button id="luzOpenCameraBtn" type="button">Tomar foto</button>
-              </div>
-              <input id="luzFotoMedidor" type="file" accept="image/*" capture="environment" class="hidden" />
-              <div id="luzCameraWrap" class="camera-wrap hidden">
-                <video id="luzCameraPreview" autoplay playsinline></video>
-                <div class="camera-actions">
-                  <button id="luzCapturePhotoBtn" type="button">Capturar</button>
-                  <button id="luzCancelCameraBtn" class="secondary" type="button">Cancelar</button>
-                </div>
-              </div>
-              <div id="luzFotoPreviewWrap" class="photo-preview hidden">
-                <img id="luzFotoPreview" alt="Foto del medidor" />
-                <button id="luzClearFotoBtn" class="secondary" type="button">Quitar foto</button>
-              </div>
+              <div class="muted">Registra lectura, ID observado y observación si aplica.</div>
             </div>
 
             <div class="row">
