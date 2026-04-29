@@ -537,6 +537,141 @@ const ensureCharcapeSplit = async () => {
   }
 };
 
+const ensureLuzCoreSchema = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS zonas (
+      id_zona SERIAL PRIMARY KEY,
+      nombre VARCHAR(120) NOT NULL UNIQUE,
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS suministros (
+      id_suministro SERIAL PRIMARY KEY,
+      id_zona INTEGER NOT NULL REFERENCES zonas(id_zona),
+      nro_medidor VARCHAR(80) NOT NULL,
+      nro_medidor_real VARCHAR(80) NULL,
+      nombre_usuario VARCHAR(220) NOT NULL,
+      direccion TEXT NULL,
+      estado VARCHAR(20) NOT NULL DEFAULT 'ACTIVO',
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      actualizado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      UNIQUE (id_zona, nro_medidor)
+    );
+
+    CREATE TABLE IF NOT EXISTS tarifas_config (
+      id_tarifa BIGSERIAL PRIMARY KEY,
+      tarifa_kwh NUMERIC(10,2) NOT NULL,
+      cargo_fijo NUMERIC(10,2) NOT NULL,
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      actualizado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      creado_por VARCHAR(120) NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS config_fechas (
+      id_config SMALLINT PRIMARY KEY,
+      dias_vencimiento INTEGER NOT NULL,
+      dias_corte INTEGER NOT NULL,
+      actualizado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      actualizado_por VARCHAR(120) NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS recibos (
+      id_recibo BIGSERIAL PRIMARY KEY,
+      id_suministro INTEGER NOT NULL REFERENCES suministros(id_suministro),
+      anio INTEGER NOT NULL,
+      mes INTEGER NOT NULL,
+      lectura_anterior NUMERIC(14,2) NOT NULL DEFAULT 0,
+      lectura_actual NUMERIC(14,2) NOT NULL DEFAULT 0,
+      consumo_kwh NUMERIC(14,2) NOT NULL DEFAULT 0,
+      tarifa_kwh NUMERIC(10,2) NOT NULL DEFAULT 0,
+      energia_activa NUMERIC(14,2) NOT NULL DEFAULT 0,
+      mantenimiento NUMERIC(14,2) NOT NULL DEFAULT 0,
+      total_pagar NUMERIC(14,2) NOT NULL DEFAULT 0,
+      fecha_emision DATE NOT NULL DEFAULT CURRENT_DATE,
+      fecha_vencimiento DATE NOT NULL DEFAULT CURRENT_DATE,
+      fecha_corte DATE NOT NULL DEFAULT CURRENT_DATE,
+      estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+      observacion TEXT NULL,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      actualizado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      UNIQUE (id_suministro, anio, mes)
+    );
+
+    CREATE TABLE IF NOT EXISTS ordenes_cobro (
+      id_orden BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      actualizado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE',
+      id_usuario_emite INTEGER NULL REFERENCES usuarios_sistema(id_usuario),
+      id_usuario_cobra INTEGER NULL REFERENCES usuarios_sistema(id_usuario),
+      id_suministro INTEGER NOT NULL REFERENCES suministros(id_suministro),
+      total_orden NUMERIC(14,2) NOT NULL DEFAULT 0,
+      recibos_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+      observacion TEXT NULL,
+      cobrado_en TIMESTAMP NULL,
+      motivo_anulacion TEXT NULL,
+      anulado_en TIMESTAMP NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS pagos (
+      id_pago BIGSERIAL PRIMARY KEY,
+      id_recibo BIGINT NOT NULL REFERENCES recibos(id_recibo),
+      fecha_pago TIMESTAMP NOT NULL DEFAULT NOW(),
+      monto_pagado NUMERIC(14,2) NOT NULL,
+      usuario_cajero VARCHAR(120) NULL,
+      id_orden_cobro BIGINT NULL REFERENCES ordenes_cobro(id_orden)
+    );
+
+    CREATE TABLE IF NOT EXISTS codigos_impresion (
+      id_codigo BIGSERIAL PRIMARY KEY,
+      creado_en TIMESTAMP NOT NULL DEFAULT NOW(),
+      id_usuario INTEGER NULL REFERENCES usuarios_sistema(id_usuario),
+      recibos_json JSONB NOT NULL DEFAULT '[]'::jsonb
+    );
+
+    CREATE TABLE IF NOT EXISTS auditoria (
+      id_auditoria BIGSERIAL PRIMARY KEY,
+      fecha TIMESTAMP NOT NULL DEFAULT NOW(),
+      usuario VARCHAR(160) NULL,
+      accion VARCHAR(120) NOT NULL,
+      detalle TEXT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_luz_tarifas_activa
+    ON tarifas_config ((activo))
+    WHERE activo = TRUE;
+
+    CREATE INDEX IF NOT EXISTS idx_luz_suministros_nombre
+    ON suministros (nombre_usuario);
+
+    CREATE INDEX IF NOT EXISTS idx_luz_suministros_medidor
+    ON suministros (nro_medidor);
+
+    CREATE INDEX IF NOT EXISTS idx_luz_recibos_periodo
+    ON recibos (anio, mes, id_suministro, id_recibo);
+
+    CREATE INDEX IF NOT EXISTS idx_luz_recibos_suministro
+    ON recibos (id_suministro);
+
+    CREATE INDEX IF NOT EXISTS idx_luz_pagos_fecha
+    ON pagos (fecha_pago DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_luz_pagos_recibo
+    ON pagos (id_recibo);
+
+    CREATE INDEX IF NOT EXISTS idx_luz_ordenes_estado
+    ON ordenes_cobro (estado, creado_en DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_luz_ordenes_suministro
+    ON ordenes_cobro (id_suministro, creado_en DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_luz_codigos_gin
+    ON codigos_impresion USING GIN (recibos_json);
+  `);
+};
+
 const ensureDefaults = async () => {
   const runSafe = async (sql, params = []) => {
     try {
@@ -548,6 +683,8 @@ const ensureDefaults = async () => {
     }
   };
 
+  await ensureLuzAuthSchemaOnce();
+  await ensureLuzCoreSchema();
   await runSafe("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
   await runSafe("ALTER TABLE suministros ADD COLUMN IF NOT EXISTS nro_medidor_real VARCHAR(80) NULL");
   await runSafe("ALTER TABLE recibos DROP CONSTRAINT IF EXISTS chk_luz_recibos_lecturas");

@@ -9,15 +9,22 @@ const ACTION_LABELS = {
   PAGO_ANULADO_LOGICO: "Pago anulado (archivo admin)",
   CAJA_CIERRE_REGISTRADO: "Cierre de caja registrado",
   COBRO_DIRECTO_REGISTRADO: "Cobro directo registrado",
-  AUTH_PASSWORD_CAMBIO: "Cambio de clave"
+  AUTH_PASSWORD_CAMBIO: "Cambio de clave",
+  AUTH_REGISTRO: "Registro de usuario",
+  AUTH_LOGIN: "Inicio de sesion",
+  ADMIN_LUZ_USUARIO_CREADO: "Usuario de luz creado",
+  ADMIN_LUZ_USUARIO_ACTUALIZADO: "Usuario de luz actualizado",
+  ADMIN_LUZ_USUARIO_ELIMINADO: "Usuario de luz eliminado"
 };
 
 const SIMPLE_ROUTE_RULES = [
   { method: "POST", pattern: /^\/auth\/login$/i, label: "Inicio de sesion" },
   { method: "POST", pattern: /^\/auth\/change-password$/i, label: "Cambio de clave" },
+  { method: "POST", pattern: /^\/auth\/cambiar-password$/i, label: "Cambio de clave" },
   { method: "POST", pattern: /^\/caja\/ordenes-cobro$/i, label: "Emitir orden de cobro" },
   { method: "POST", pattern: /^\/caja\/ordenes-cobro\/\d+\/cobrar$/i, label: "Cobrar orden de cobro" },
   { method: "POST", pattern: /^\/caja\/ordenes-cobro\/\d+\/anular$/i, label: "Anular orden de cobro" },
+  { method: "POST", pattern: /^\/pagos$/i, label: "Registrar pago" },
   { method: "POST", pattern: /^\/pagos\/\d+\/anular$/i, label: "Anular pago" },
   { method: "POST", pattern: /^\/pagos\/recibo\/\d+\/anular-ultimo$/i, label: "Anular ultimo pago por periodo" },
   { method: "POST", pattern: /^\/caja\/cierre$/i, label: "Registrar cierre de caja" },
@@ -25,6 +32,8 @@ const SIMPLE_ROUTE_RULES = [
   { method: "GET", pattern: /^\/contribuyentes\/reporte-estado-conexion\.xlsx$/i, label: "Exportar reporte de conexiones" },
   { method: "GET", pattern: /^\/exportar\/auditoria$/i, label: "Exportar auditoria" },
   { method: "GET", pattern: /^\/caja\/reporte\/excel$/i, label: "Exportar reporte de caja (Excel)" },
+  { method: "POST", pattern: /^\/importar\/historial$/i, label: "Importar historial" },
+  { method: "POST", pattern: /^\/importar\/padron$/i, label: "Importar padron" },
   { method: "POST", pattern: /^\/admin\/backup/i, label: "Crear respaldo de base de datos" }
 ];
 
@@ -63,6 +72,12 @@ const LABEL_TRANSLATIONS = {
   minutos: "Minutos",
   acceso: "Tipo acceso",
   detalle_recibos: "Detalle recibos"
+};
+
+const formatArrayHint = (value) => {
+  const match = String(value || "").trim().match(/^\[array:(\d+)\]$/i);
+  if (!match) return null;
+  return `${Number(match[1] || 0)} registro(s)`;
 };
 
 const METHOD_FILTER_OPTIONS = [
@@ -151,6 +166,9 @@ const parseValue = (rawValue) => {
 
 const formatScalar = (value) => {
   if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "boolean") return value ? "Si" : "No";
+  const arrayHint = formatArrayHint(value);
+  if (arrayHint) return arrayHint;
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 };
@@ -166,6 +184,15 @@ const formatValueForDisplay = (label, valueText, isJson) => {
     const val = String(valueText || "").trim().toUpperCase();
     if (val === "S") return "Si";
     if (val === "N") return "No";
+  }
+
+  if (key === "password" && String(valueText || "").trim().toUpperCase() === "[REDACTED]") {
+    return "Oculta por seguridad";
+  }
+
+  if (key === "detalle_recibos") {
+    const arrayHint = formatArrayHint(valueText);
+    if (arrayHint) return arrayHint;
   }
 
   if (isJson && (key === "params" || key === "body")) {
@@ -313,7 +340,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
       <div className="modal-dialog modal-xl">
         <div className={modalContentClass} style={modalContentStyle}>
           <div className={headerClass}>
-            <h5 className="modal-title"><FaShieldAlt className="me-2" /> Bitacora de Seguridad y Auditoria</h5>
+            <h5 className="modal-title"><FaShieldAlt className="me-2" /> Bitacora de Seguridad y Movimientos</h5>
             <button type="button" className={closeBtnClass} onClick={cerrarModal}></button>
           </div>
           <div className="modal-body p-0">
@@ -325,7 +352,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                     <input
                       type="text"
                       className={filtroInputClass}
-                      placeholder="Buscar por usuario, accion o detalle..."
+                      placeholder="Buscar por usuario, movimiento o detalle..."
                       value={filtroTexto}
                       onChange={(e) => setFiltroTexto(e.target.value)}
                     />
@@ -347,7 +374,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                       checked={soloSensibles}
                       onChange={(e) => setSoloSensibles(e.target.checked)}
                     />
-                    <label className="form-check-label small" htmlFor="auditoria-sensibles">Solo sensibles</label>
+                    <label className="form-check-label small" htmlFor="auditoria-sensibles">Solo delicados</label>
                   </div>
                 </div>
                 <div className="col-lg-2 col-md-4 text-md-end">
@@ -372,8 +399,8 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                   <tr>
                     <th>Fecha / Hora</th>
                     <th>Usuario</th>
-                    <th>Accion</th>
-                    <th>Detalle del Evento</th>
+                    <th>Movimiento</th>
+                    <th>Resumen</th>
                   </tr>
                 </thead>
                 <tbody>
