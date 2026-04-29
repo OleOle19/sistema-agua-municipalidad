@@ -173,6 +173,9 @@ const normalizeEstadoUsuario = (value) => {
   if (USER_STATUS_ALLOWED.has(raw)) return raw;
   return "";
 };
+const LUZ_ADMIN_DEFAULT_USER = String(process.env.LUZ_ADMIN_USER || "admin_luz").trim();
+const LUZ_ADMIN_DEFAULT_PASS = String(process.env.LUZ_ADMIN_PASS || "MUNI123456a.").trim();
+const LUZ_ADMIN_DEFAULT_NAME = String(process.env.LUZ_ADMIN_NOMBRE || "Administrador Luz").trim();
 
 const round2 = (value) => Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
 const parseMonto = (value, fallback = 0) => {
@@ -634,6 +637,47 @@ const ensureDefaultsOnce = async () => {
   }
   await defaultsPromise;
 };
+let authSchemaPromise = null;
+const ensureLuzAuthSchema = async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usuarios_sistema (
+      id_usuario SERIAL PRIMARY KEY,
+      username VARCHAR(120) NOT NULL,
+      password TEXT NOT NULL,
+      password_visible VARCHAR(120) NULL,
+      nombre_completo VARCHAR(180) NOT NULL,
+      rol VARCHAR(40) NOT NULL DEFAULT 'CONSULTA',
+      estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE'
+    )
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_luz_usuarios_sistema_username
+    ON usuarios_sistema (UPPER(TRIM(username)))
+  `);
+  await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
+
+  if (!LUZ_ADMIN_DEFAULT_USER || !LUZ_ADMIN_DEFAULT_PASS || !LUZ_ADMIN_DEFAULT_NAME) return;
+  const adminRs = await pool.query(
+    "SELECT id_usuario FROM usuarios_sistema WHERE username = $1 LIMIT 1",
+    [LUZ_ADMIN_DEFAULT_USER]
+  );
+  if (adminRs.rows[0]) return;
+  const hash = await bcrypt.hash(LUZ_ADMIN_DEFAULT_PASS, 10);
+  await pool.query(
+    `INSERT INTO usuarios_sistema (username, password, password_visible, nombre_completo, rol, estado)
+     VALUES ($1, $2, $3, $4, 'ADMIN', 'ACTIVO')`,
+    [LUZ_ADMIN_DEFAULT_USER, hash, LUZ_ADMIN_DEFAULT_PASS.slice(0, 120), LUZ_ADMIN_DEFAULT_NAME]
+  );
+};
+const ensureLuzAuthSchemaOnce = async () => {
+  if (!authSchemaPromise) {
+    authSchemaPromise = ensureLuzAuthSchema().catch((err) => {
+      authSchemaPromise = null;
+      throw err;
+    });
+  }
+  await authSchemaPromise;
+};
 let charcapeSplitPromise = null;
 const ensureCharcapeSplitOnce = async () => {
   if (!charcapeSplitPromise) {
@@ -928,6 +972,7 @@ router.get("/health", (req, res) => {
 });
 router.post("/auth/registro", async (req, res) => {
   try {
+    await ensureLuzAuthSchemaOnce();
     const username = normalizeText(req.body?.username, 120);
     const password = String(req.body?.password || "");
     const nombre = normalizeText(req.body?.nombre_completo, 180);
@@ -953,6 +998,7 @@ router.post("/auth/registro", async (req, res) => {
 
 router.post("/auth/login", async (req, res) => {
   try {
+    await ensureLuzAuthSchemaOnce();
     cleanupLoginSecurityMaps();
     const username = normalizeText(req.body?.username, 120);
     const password = String(req.body?.password || "");
@@ -1045,6 +1091,7 @@ router.post("/auth/login", async (req, res) => {
 
 const handleLuzPasswordChange = async (req, res) => {
   try {
+    await ensureLuzAuthSchemaOnce();
     const username = normalizeText(req.body?.username, 120);
     const passwordActual = String(req.body?.password_actual || "");
     const passwordNuevo = String(req.body?.password_nuevo || "");
@@ -1103,6 +1150,7 @@ router.post("/auth/cambiar_password", handleLuzPasswordChange);
 
 router.get("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
   try {
+    await ensureLuzAuthSchemaOnce();
     const usuarios = await pool.query(
       `SELECT id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible
        FROM usuarios_sistema
@@ -1148,6 +1196,7 @@ router.get("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async 
 
 router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
   try {
+    await ensureLuzAuthSchemaOnce();
     const username = normalizeText(req.body?.username, 120);
     const nombreCompleto = normalizeText(req.body?.nombre_completo, 180);
     const password = String(req.body?.password || "");
@@ -1211,6 +1260,7 @@ router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async
 
 router.put("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
   try {
+    await ensureLuzAuthSchemaOnce();
     const targetId = parsePositiveInt(req.params?.id, 0);
     if (!targetId) return res.status(400).json({ error: "ID inválido." });
 
