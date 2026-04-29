@@ -457,10 +457,6 @@ const Recibo = forwardRef(({ datos }, ref) => {
       <div style={{ ...baseText, left: xBottom(CAL.bottom.xEmision), top: yBottom(CAL.bottom.yEmision), fontSize: "2.9mm", fontWeight: 700 }}>
         {fechaEmision}
       </div>
-      <div style={{ ...baseText, left: xBottom(CAL.bottom.xCorte), top: yBottom(CAL.bottom.yCorte), fontSize: "2.9mm", fontWeight: 700 }}>
-        {fechaCorte}
-      </div>
-
       <div style={{ ...baseText, left: xBottom(CAL.bottom.xTotal), top: yBottom(CAL.bottom.yTotal), width: mm(14), textAlign: "right", fontSize: "4.0mm", fontWeight: 700 }}>
         {formatMonto(totalRecibo)}
       </div>

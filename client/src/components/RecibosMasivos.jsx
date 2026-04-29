@@ -7,7 +7,6 @@ const parseAmount = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 const MONTH_LABELS = ["", "ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"];
-const MONTH_INITIALS = ["", "E", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
 const buildPeriodoLabel = (mes, anio) => {
   const mesNum = Number(mes || 0);
   const anioNum = Number(anio || 0);
@@ -19,11 +18,7 @@ const buildMesResumenLabel = (periodos = []) => {
     .map((p) => Number(p?.mes || 0))
     .filter((mes, index, arr) => mes >= 1 && mes <= 12 && arr.indexOf(mes) === index);
   if (meses.length === 0) return "VARIOS";
-
-  const abreviado = meses.map((mes) => MONTH_LABELS[mes] || String(mes)).join("/");
-  if (abreviado.length <= 16) return abreviado;
-
-  return meses.map((mes) => MONTH_INITIALS[mes] || String(mes)).join("/");
+  return meses.map((mes) => MONTH_LABELS[mes] || String(mes)).join("/");
 };
 const buildReciboGroupKey = (item = {}) => {
   const predio = Number(item?.id_predio || 0);
@@ -99,7 +94,7 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
         subtotal_desague: resumenServicios.desague,
         subtotal_limpieza: resumenServicios.limpieza,
         subtotal_admin: resumenServicios.admin,
-        deuda_meses_label: periodos.map((p) => p.label).join(", "),
+        deuda_meses_label: "",
         detalles_por_periodo: periodos,
         es_agrupado_meses: true
       });
