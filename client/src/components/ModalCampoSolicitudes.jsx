@@ -196,14 +196,25 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
   }, [organizarPor]);
 
   const procesarSolicitud = async (solicitud, accion) => {
-    const id = Number(solicitud?.id_solicitud);
+    const id = Number(solicitud?.solicitud?.id_solicitud || solicitud?.id_solicitud);
     if (!Number.isInteger(id) || id <= 0) return;
 
     let payload = {};
     if (accion === "aprobar") {
       const nota = window.prompt("Nota de aprobacion (opcional):", "");
       if (nota === null) return;
-      payload = { motivo_revision: nota.trim() };
+      const puedeAplicarAutomatico = Boolean(solicitud?.autoApplySafe);
+      let aplicarCambiosSN = "N";
+      if (puedeAplicarAutomatico) {
+        const aplicarAhora = window.confirm("Solicitud con cambios claros. Aceptar = aprobar y aplicar automatico. Cancelar = aprobar sin aplicar para revisar manualmente.");
+        aplicarCambiosSN = aplicarAhora ? "S" : "N";
+      } else {
+        window.alert("Esta solicitud quedara aprobada sin aplicacion automatica. Primero revisa ficha y haz cambios manuales si hace falta.");
+      }
+      payload = {
+        motivo_revision: nota.trim(),
+        aplicar_cambios_sn: aplicarCambiosSN
+      };
     } else {
       const motivo = window.prompt("Motivo de rechazo (obligatorio):", "");
       if (motivo === null) return;
@@ -218,8 +229,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
       setProcesandoId(id);
       setError("");
       setMensaje("");
-      await api.post(`/campo/solicitudes/${id}/${accion}`, payload);
+      const res = await api.post(`/campo/solicitudes/${id}/${accion}`, payload);
       setMensaje(accion === "aprobar" ? "Solicitud aprobada (sin aplicación automática)." : "Solicitud rechazada.");
+      setMensaje(res?.data?.mensaje || (accion === "aprobar" ? "Solicitud aprobada." : "Solicitud rechazada."));
       await cargarSolicitudes();
       if (onAplicado) onAplicado();
     } catch (err) {
@@ -305,6 +317,11 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
         changes.push(renderChangeLine("Servicio limpieza", limpiezaNuevo, limpiezaActual));
       }
     }
+    const hasStructuredChanges = changes.length > 0;
+    const autoApplySafe = !isAltaPredio
+      && hasStructuredChanges
+      && visitadoSN === "S"
+      && verificacionEstado !== "NO_VERIFICADO";
 
     return {
       solicitud: s,
@@ -322,7 +339,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
       verificacionEstado,
       verificacionMotivo,
       predioTemporalSN,
-      fotoFachada
+      fotoFachada,
+      hasStructuredChanges,
+      autoApplySafe
     };
   }), [solicitudes]);
 
@@ -531,7 +550,8 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
                         </td>
                       </tr>
                     );
-                    const groupItems = group.items.map(({ solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt, calleLabel, verificacionEstado, verificacionMotivo, predioTemporalSN, fotoFachada }) => {
+                    const groupItems = group.items.map((rowData) => {
+                      const { solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt, calleLabel, verificacionEstado, verificacionMotivo, predioTemporalSN, fotoFachada, autoApplySafe } = rowData;
                       const pending = s.estado_solicitud === "PENDIENTE";
                       const disabled = procesandoId === s.id_solicitud;
                       const isAltaPredio = tipoSolicitud === "ALTA_PREDIO";
@@ -644,6 +664,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
                                     Observacion registrada en visita efectiva (queda para seguimiento).
                                   </div>
                                 )}
+                                <div className="mt-1 small">
+                                  Aprobacion sugerida: <strong>{autoApplySafe ? "Automatica" : "Manual"}</strong>
+                                </div>
                               </>
                             )}
                             <div className="mt-1 opacity-75">{s.observacion_campo || "Sin observacion."}</div>
@@ -664,7 +687,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
                                   type="button"
                                   className="btn btn-sm btn-outline-success d-flex align-items-center gap-1"
                                   disabled={disabled}
-                                  onClick={() => procesarSolicitud(s, "aprobar")}
+                                  onClick={() => procesarSolicitud(rowData, "aprobar")}
                                 >
                                   <FaCheck /> Aprobar
                                 </button>

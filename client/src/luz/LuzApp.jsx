@@ -215,6 +215,13 @@ const formatFechaCorta = (value) => {
   if (Number.isNaN(dt.getTime())) return text;
   return dt.toLocaleDateString("es-PE");
 };
+const isPadronLuzLikelyEmpty = ({ usuarioSistema, filtros, zonas, suministros, loadingPadron }) => {
+  if (!usuarioSistema || loadingPadron) return false;
+  if (String(filtros?.q || "").trim()) return false;
+  if (String(filtros?.id_zona || "").trim()) return false;
+  if (String(filtros?.estado || "TODOS").trim().toUpperCase() !== "TODOS") return false;
+  return Array.isArray(zonas) && zonas.length === 0 && Array.isArray(suministros) && suministros.length === 0;
+};
 
 const createEmptySuministroForm = () => ({
   id_suministro: null,
@@ -343,6 +350,10 @@ function LuzApp({ onBackToSelector }) {
   const suministroSeleccionado = useMemo(
     () => suministros.find((s) => Number(s.id_suministro) === Number(selectedSuministroId)) || null,
     [suministros, selectedSuministroId]
+  );
+  const padronLuzVacio = useMemo(
+    () => isPadronLuzLikelyEmpty({ usuarioSistema, filtros, zonas, suministros, loadingPadron }),
+    [usuarioSistema, filtros, zonas, suministros, loadingPadron]
   );
   const suministrosOrdenados = useMemo(
     () => [...suministros].sort(compareMedidorAsc),
@@ -1277,7 +1288,13 @@ function LuzApp({ onBackToSelector }) {
                           <tr><td colSpan="7" className="text-center py-3">Cargando...</td></tr>
                         )}
                         {!loadingPadron && suministros.length === 0 && (
-                          <tr><td colSpan="7" className="text-center py-3 text-muted">Sin registros</td></tr>
+                          <tr>
+                            <td colSpan="7" className="text-center py-3 text-muted">
+                              {padronLuzVacio
+                                ? "Sin registros. Este servidor de Luz parece no tener padron cargado aun. Usa Importar > Padron inicial."
+                                : "Sin registros"}
+                            </td>
+                          </tr>
                         )}
                         {suministrosOrdenados.map((row) => (
                           <tr
