@@ -98,12 +98,14 @@ const CAL = {
     yCabecera: 145.5,
     xNombre: 40.0,
     yNombre: 158.0,
+    xDireccion: 40.0,
+    yDireccion: 161.2,
     xEmision: 40.0,
-    yEmision: 162.3,
+    yEmision: 165.0,
     xCorte: 40.0,
-    yCorte: 166.8,
+    yCorte: 169.2,
     xTotal: 106.5,
-    yTotal: 166.5
+    yTotal: 169.0
   }
 };
 
@@ -137,6 +139,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
 
   const mesLabel = recibo.mes_nombre ?? getMesNombre(recibo.mes);
   const anioLabel = String(recibo.anio ?? "");
+  const isGroupedMesLabel = Boolean(recibo?.es_agrupado_meses) && String(mesLabel || "").includes("/");
   const reciboNumero = [
     recibo.numero_recibo,
     recibo.codigo_impresion,
@@ -246,7 +249,19 @@ const Recibo = forwardRef(({ datos }, ref) => {
         textTransform: "uppercase"
       }}
     >
-      <div style={{ ...baseText, left: xTop(CAL.top.xMes), top: yTop(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+      <div
+        style={{
+          ...baseText,
+          left: xTop(CAL.top.xMes),
+          top: yTop(CAL.top.yCabecera),
+          fontSize: isGroupedMesLabel ? "2.6mm" : "3.0mm",
+          fontWeight: 700,
+          maxWidth: mm(34),
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis"
+        }}
+      >
         {mesLabel}
       </div>
       <div style={{ ...baseText, left: xTop(CAL.top.xAnio), top: yTop(CAL.top.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
@@ -411,7 +426,19 @@ const Recibo = forwardRef(({ datos }, ref) => {
         </div>
       </div>
 
-      <div style={{ ...baseText, left: xBottom(CAL.bottom.xMes), top: yBottom(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
+      <div
+        style={{
+          ...baseText,
+          left: xBottom(CAL.bottom.xMes),
+          top: yBottom(CAL.bottom.yCabecera),
+          fontSize: isGroupedMesLabel ? "2.5mm" : "3.0mm",
+          fontWeight: 700,
+          maxWidth: mm(38),
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis"
+        }}
+      >
         {mesLabel}
       </div>
       <div style={{ ...baseText, left: xBottom(CAL.bottom.xAnio), top: yBottom(CAL.bottom.yCabecera), fontSize: "3.0mm", fontWeight: 700 }}>
@@ -423,6 +450,9 @@ const Recibo = forwardRef(({ datos }, ref) => {
 
       <div style={{ ...baseText, left: xBottom(CAL.bottom.xNombre), top: yBottom(CAL.bottom.yNombre), fontSize: "2.9mm", maxWidth: mm(55), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         {contribuyente.nombre_completo || ""}
+      </div>
+      <div style={{ ...baseText, left: xBottom(CAL.bottom.xDireccion), top: yBottom(CAL.bottom.yDireccion), fontSize: "2.35mm", maxWidth: mm(55), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+        {predio.direccion_completa || ""}
       </div>
       <div style={{ ...baseText, left: xBottom(CAL.bottom.xEmision), top: yBottom(CAL.bottom.yEmision), fontSize: "2.9mm", fontWeight: 700 }}>
         {fechaEmision}
