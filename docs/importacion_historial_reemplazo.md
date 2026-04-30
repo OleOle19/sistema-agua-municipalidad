@@ -89,3 +89,18 @@ ROLLBACK;
 1. Importa tu Excel desde `Importacion > Historial`.
 2. Revisa rechazos.
 3. Verifica un contribuyente con historial y recibo reimpreso.
+
+## Variante con `PAGOSACTA.TXT`
+
+Si el servidor remoto ya tiene el padron pero no tiene pagos/recibos historicos visibles antes de abril 2026, puedes usar:
+
+```powershell
+node server\scripts\importar_pagos_acta_txt.js "C:\ruta\real\PAGOSACTA.TXT" --apply --max-period=2026-04
+```
+
+Notas:
+
+- Crea recibos faltantes con los subtotales del TXT.
+- Inserta solo pagos faltantes.
+- Si encuentra pagos ocultos con `IMPORTACION_HISTORIAL`, los vuelve visibles.
+- Si un `abono` excede el `total` del recibo, recorta el pago al total y lo reporta en salida.

@@ -8,6 +8,10 @@ param(
   [switch]$InstallDependencies,
   [switch]$ApplyApril2026Payments,
   [string]$AprilExcelPath = "",
+  [switch]$ApplyPagosActaTxt,
+  [string]$PagosActaTxtPath = "",
+  [string]$PagosActaMaxPeriod = "2026-04",
+  [string]$PagosActaIgnorePeriod = "",
   [switch]$Force,
   [switch]$DryRun
 )
@@ -19,6 +23,7 @@ $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
 $startBackendScript = Join-Path $scriptDir "start_backend.ps1"
 $stopBackendScript = Join-Path $scriptDir "stop_backend.ps1"
 $aprilImportScript = Join-Path $repoRoot "server\scripts\importar_pagos_abril_2026.js"
+$pagosActaImportScript = Join-Path $repoRoot "server\scripts\importar_pagos_acta_txt.js"
 $healthUrl = "http://127.0.0.1:5000/health"
 
 function Run-OrFail {
@@ -65,6 +70,10 @@ function Wait-BackendHealth {
 
 Push-Location $repoRoot
 try {
+  if ($ApplyApril2026Payments -and $ApplyPagosActaTxt) {
+    throw "Usa solo una importacion especial por despliegue: abril o PAGOSACTA.TXT."
+  }
+
   if ($ApplyApril2026Payments) {
     if ([string]::IsNullOrWhiteSpace($AprilExcelPath)) {
       throw "Debe indicar -AprilExcelPath cuando usa -ApplyApril2026Payments."
@@ -74,6 +83,18 @@ try {
     }
     if (!(Test-Path $AprilExcelPath)) {
       throw "No se encontro archivo Excel indicado: $AprilExcelPath"
+    }
+  }
+
+  if ($ApplyPagosActaTxt) {
+    if ([string]::IsNullOrWhiteSpace($PagosActaTxtPath)) {
+      throw "Debe indicar -PagosActaTxtPath cuando usa -ApplyPagosActaTxt."
+    }
+    if (!(Test-Path $pagosActaImportScript)) {
+      throw "No se encontro script de importacion PAGOSACTA: $pagosActaImportScript"
+    }
+    if (!(Test-Path $PagosActaTxtPath)) {
+      throw "No se encontro TXT indicado: $PagosActaTxtPath"
     }
   }
 
@@ -134,6 +155,22 @@ try {
     }
   } else {
     Write-Host ">> Omitiendo importacion abril 2026."
+  }
+
+  if ($ApplyPagosActaTxt) {
+    $resolvedPagosActaTxtPath = (Resolve-Path $PagosActaTxtPath).Path
+    $pagosActaArgs = @($pagosActaImportScript, $resolvedPagosActaTxtPath, "--apply")
+    if (-not [string]::IsNullOrWhiteSpace($PagosActaMaxPeriod)) {
+      $pagosActaArgs += "--max-period=$PagosActaMaxPeriod"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PagosActaIgnorePeriod)) {
+      $pagosActaArgs += "--ignore-period=$PagosActaIgnorePeriod"
+    }
+    Run-OrFail "Aplicando importacion PAGOSACTA.TXT" {
+      Invoke-OrFail -Cmd "node" -CommandArgs $pagosActaArgs
+    }
+  } else {
+    Write-Host ">> Omitiendo importacion PAGOSACTA.TXT."
   }
 
   if (-not $SkipRestart) {

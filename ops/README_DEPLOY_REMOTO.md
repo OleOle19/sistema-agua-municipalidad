@@ -47,6 +47,7 @@ Ese comando hace:
 Nota:
 - Ese flujo actualiza codigo, pero no aplica cambios de datos en PostgreSQL.
 - Si quieres reflejar pagos abril 2026 en reportes del servidor, usa la opcion especial de abajo.
+- Si quieres reflejar pagos historicos desde `PAGOSACTA.TXT`, usa la opcion especial nueva de abajo.
 
 ## 3) Opciones utiles del script
 
@@ -78,6 +79,34 @@ Ese modo hace:
 4. reinicio backend.
 
 Usar cuando el servidor siga mostrando `0.00` en caja para `01/04/2026` o `06/04/2026` despues del pull.
+
+### Desplegar y aplicar `PAGOSACTA.TXT` hasta abril 2026
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\deploy_from_github.ps1 `
+  -ApplyPagosActaTxt `
+  -PagosActaTxtPath "C:\ruta\real\PAGOSACTA.TXT" `
+  -PagosActaMaxPeriod "2026-04"
+```
+
+Ese modo hace:
+
+1. `git pull`.
+2. `npm --prefix client run build`.
+3. `node server\scripts\importar_pagos_acta_txt.js <txt> --apply --max-period=2026-04`.
+4. crea recibos faltantes si en ese servidor no existen.
+5. inserta solo pagos faltantes y no duplica pagos visibles existentes.
+6. reinicia backend.
+
+Si quieres saltarte abril porque ya esta correcto:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\deploy_from_github.ps1 `
+  -ApplyPagosActaTxt `
+  -PagosActaTxtPath "C:\ruta\real\PAGOSACTA.TXT" `
+  -PagosActaMaxPeriod "2026-03" `
+  -PagosActaIgnorePeriod "2026-04"
+```
 
 ### Omitir pull/build/restart (segun necesidad)
 
