@@ -25,6 +25,7 @@ import ModalActaCorteSelector from "./components/ModalActaCorteSelector";
 import ModalCampoSolicitudes from "./components/ModalCampoSolicitudes";
 import ModalCorteConexion from "./components/ModalCorteConexion";
 import { buildReporteEstadoConexionPdf } from "./utils/simplePdf";
+import { formatDireccionDisplay } from "./utils/direccionDisplay";
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -446,7 +447,7 @@ const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, onDoubleCli
         <>
     <td className="fw-bold opacity-75">{c.codigo_municipal}</td>
     <td>{c.nombre_completo}</td>
-    <td>{c.direccion_completa}</td>
+    <td>{formatDireccionDisplay(c.direccion_completa)}</td>
     <td className="text-center">
       <span
         className={`badge ${badgeEstadoConexionClass(estadoNorm)}`}
