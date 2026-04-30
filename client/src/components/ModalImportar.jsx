@@ -19,7 +19,7 @@ const TIPOS_IMPORTACION = {
     accept: ".txt,.csv,.xlsx,.xls",
     ayuda: [
       { icono: <FaHistory className="me-1" />, titulo: "TXT/CSV", detalle: "historial de deudas y pagos (ej. CATORCE.txt)." },
-      { icono: <FaFileExcel className="me-1" />, titulo: "Excel (XLSX)", detalle: "recomendado para reemplazar historial antiguo. Columnas: CONTRIBUYENTE, FECHA, ANIO, MES, AGUA, DESAGUE, LIMPIEZA, ADMINISTRACION, EXTRAS, ABONO, TOTAL." }
+      { icono: <FaFileExcel className="me-1" />, titulo: "Excel (XLSX)", detalle: "recomendado para reemplazar historial antiguo. Columna CONTRIBUYENTE acepta codigo municipal o nombre exacto. Orden esperado: CONTRIBUYENTE, FECHA, ANIO/AÑO, MES, AGUA, DESAGUE, LIMPIEZA, ADMINISTRACION o GASTOS ADMINISTRATIVOS, EXTRAS, ABONO, TOTAL." }
     ],
     procesando: "Importando historial de deudas y pagos (puede tardar varios minutos)..."
   }
@@ -145,7 +145,7 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
 
             {tipo === "historial" && (
               <div className={`alert small ${darkMode ? "alert-secondary border-warning text-light" : "alert-warning"}`}>
-                <strong>Reemplazo de pagos antiguos:</strong> este importador no borra datos por si solo. Primero haz respaldo, luego elimina meses viejos por comando o SQL, y despues sube tu Excel listo.
+                <strong>Reemplazo de pagos antiguos:</strong> este importador no borra datos por si solo. Si ejecutas SQL de borrado para periodos viejos, ese SQL si puede borrar todos esos meses. Primero haz respaldo, luego elimina solo rango que realmente quieres reemplazar, y despues sube tu Excel listo.
               </div>
             )}
 
@@ -183,7 +183,7 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
                       <thead>
                         <tr>
                           <th>Linea</th>
-                          <th>Codigo</th>
+                          <th>Codigo/Nombre</th>
                           <th>Periodo</th>
                           <th>Tipo</th>
                           <th>Motivo</th>

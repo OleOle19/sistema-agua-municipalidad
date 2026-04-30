@@ -10,6 +10,7 @@ const EPS = 0.001;
 const DEFAULT_COMMIT_PER_BATCH = process.env.IMPORT_COMMIT_PER_BATCH !== '0';
 const IMPORT_TIMEZONE = process.env.IMPORT_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || 'America/Lima';
 const IMPORT_ALLOW_FUTURE_PAYMENTS = process.env.IMPORT_ALLOW_FUTURE_PAYMENTS === '1';
+const IDENTIFICADOR_AMBIGUO = Symbol('identificador_ambiguo');
 
 const getFechaPartesZona = (date = new Date(), timeZone = IMPORT_TIMEZONE) => {
   const dtf = new Intl.DateTimeFormat('en-CA', {
@@ -40,6 +41,11 @@ const getLogger = (logger) => ({
 });
 
 const keyPeriodo = (idPredio, anio, mes) => `${idPredio}|${anio}|${mes}`;
+
+const normalizeImportIdentifier = (value) => String(value || '')
+  .trim()
+  .toUpperCase()
+  .replace(/\s+/g, ' ');
 
 const parseDecimal = (value) => {
   const raw = String(value || '').trim();
@@ -138,7 +144,8 @@ async function importarDestritoExcel(options = {}) {
     duplicado_archivo: 0,
     duplicado_bd: 0,
     formato_invalido: 0,
-    contribuyente_no_encontrado: 0
+    contribuyente_no_encontrado: 0,
+    contribuyente_ambiguo: 0
   };
   const resumenAjustes = {
     total_desde_abono: 0,
@@ -178,14 +185,30 @@ async function importarDestritoExcel(options = {}) {
     }
 
     ioLogger.log('... Cargando contribuyentes...');
-    const mapaPredios = new Map();
+    const mapaPrediosPorCodigo = new Map();
+    const mapaPrediosPorNombre = new Map();
     const resPredios = await client.query(`
-      SELECT p.id_predio, c.codigo_municipal
+      SELECT p.id_predio, c.codigo_municipal, c.nombre_completo
       FROM predios p
       JOIN contribuyentes c ON p.id_contribuyente = c.id_contribuyente
     `);
-    resPredios.rows.forEach((r) => mapaPredios.set(String(r.codigo_municipal || '').trim().toUpperCase(), r.id_predio));
-    ioLogger.log(`OK: ${mapaPredios.size} usuarios encontrados.`);
+    resPredios.rows.forEach((r) => {
+      const idPredio = Number(r.id_predio || 0);
+      const codigoKey = normalizeImportIdentifier(r.codigo_municipal);
+      const nombreKey = normalizeImportIdentifier(r.nombre_completo);
+      if (codigoKey && !mapaPrediosPorCodigo.has(codigoKey)) {
+        mapaPrediosPorCodigo.set(codigoKey, idPredio);
+      }
+      if (!nombreKey) return;
+      if (!mapaPrediosPorNombre.has(nombreKey)) {
+        mapaPrediosPorNombre.set(nombreKey, idPredio);
+        return;
+      }
+      if (mapaPrediosPorNombre.get(nombreKey) !== idPredio) {
+        mapaPrediosPorNombre.set(nombreKey, IDENTIFICADOR_AMBIGUO);
+      }
+    });
+    ioLogger.log(`OK: ${mapaPrediosPorCodigo.size} codigos y ${mapaPrediosPorNombre.size} nombres indexados.`);
 
     ioLogger.log('... Cargando periodos ya existentes para detectar duplicados...');
     const recibosDb = new Set();
@@ -277,15 +300,16 @@ async function importarDestritoExcel(options = {}) {
     }
 
     // Procesar filas del Excel
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return; // Omitir encabezado
+    for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+      const row = worksheet.getRow(rowNumber);
 
       lineasLeidas += 1;
       const lineaActual = lineasLeidas;
 
       // Mapeo de columnas:
       // A = CONTRIBUYENTE, B = FECHA, C = RECIBO, D = AÑO, E = MES, F = AGUA, G = DESAGUE, H = LIMPIEZA, I = ADMIN, J = EXTRAS, K = ABONO, L = TOTAL
-      const codigoUser = String(row.getCell(1).value || '').trim().toUpperCase();
+      const identificadorRaw = String(row.getCell(1).text || row.getCell(1).value || '').trim();
+      const identificador = normalizeImportIdentifier(identificadorRaw);
       let anio = Number(row.getCell(4).value || 0);
       let mes = Number(row.getCell(5).value || 0);
 
@@ -298,32 +322,43 @@ async function importarDestritoExcel(options = {}) {
         }
       }
 
-      if (!codigoUser) {
-        registrarRechazo('formato_invalido', { linea: lineaActual, motivo: 'Contribuyente vacío' });
-        return;
+      if (!identificador) {
+        registrarRechazo('formato_invalido', { linea: lineaActual, motivo: 'Contribuyente vacio' });
+        continue;
       }
 
-      const idPredio = mapaPredios.get(codigoUser);
+      let idPredio = mapaPrediosPorCodigo.get(identificador) || null;
+      if (!idPredio && mapaPrediosPorNombre.has(identificador)) {
+        const matchByName = mapaPrediosPorNombre.get(identificador);
+        if (matchByName === IDENTIFICADOR_AMBIGUO) {
+          registrarRechazo('contribuyente_ambiguo', {
+            linea: lineaActual,
+            codigo_municipal: identificadorRaw,
+            motivo: 'Nombre repetido en BD. Usa codigo municipal exacto en columna CONTRIBUYENTE.'
+          });
+          continue;
+        }
+        idPredio = matchByName || null;
+      }
       if (!idPredio) {
         registrarRechazo('contribuyente_no_encontrado', {
           linea: lineaActual,
-          codigo_municipal: codigoUser,
-          motivo: 'Codigo municipal no existe en la BD'
+          codigo_municipal: identificadorRaw,
+          motivo: 'No existe por codigo municipal ni por nombre exacto.'
         });
-        return;
+        continue;
       }
 
       if (!Number.isFinite(anio) || !Number.isFinite(mes) || mes < 1 || mes > 12) {
         registrarRechazo('formato_invalido', {
           linea: lineaActual,
-          codigo_municipal: codigoUser,
+          codigo_municipal: identificadorRaw,
           anio: Number.isFinite(anio) ? anio : null,
           mes: Number.isFinite(mes) ? mes : null,
-          motivo: 'Año o mes inválido'
+          motivo: 'Anio o mes invalido'
         });
-        return;
+        continue;
       }
-
       const subtotalAgua = parseDecimal(row.getCell(6).value);
       const subtotalDesague = parseDecimal(row.getCell(7).value);
       const subtotalLimpieza = parseDecimal(row.getCell(8).value);
@@ -335,14 +370,13 @@ async function importarDestritoExcel(options = {}) {
       if ([subtotalAgua, subtotalDesague, subtotalLimpieza, subtotalAdmin].some((v) => v < 0)) {
         registrarRechazo('formato_invalido', {
           linea: lineaActual,
-          codigo_municipal: codigoUser,
+          codigo_municipal: identificadorRaw,
           anio,
           mes,
           motivo: 'Subtotales negativos no permitidos'
         });
-        return;
+        continue;
       }
-
       if (esPeriodoFuturo && abono > 0 && !IMPORT_ALLOW_FUTURE_PAYMENTS) {
         abono = 0;
         resumenAjustes.abono_futuro_omitido += 1;
@@ -355,7 +389,7 @@ async function importarDestritoExcel(options = {}) {
 
       if (total <= 0 && abono <= 0) {
         lineasOmitidas += 1;
-        return;
+        continue;
       }
 
       if (abono > total + EPS) {
@@ -367,25 +401,23 @@ async function importarDestritoExcel(options = {}) {
       if (recibosArchivo.has(clave)) {
         registrarRechazo('duplicado_archivo', {
           linea: lineaActual,
-          codigo_municipal: codigoUser,
+          codigo_municipal: identificadorRaw,
           anio,
           mes,
           motivo: 'Registro duplicado dentro del archivo'
         });
-        return;
+        continue;
       }
-
       if (recibosDb.has(clave)) {
         registrarRechazo('duplicado_bd', {
           linea: lineaActual,
-          codigo_municipal: codigoUser,
+          codigo_municipal: identificadorRaw,
           anio,
           mes,
           motivo: 'Registro ya existe en la base de datos'
         });
-        return;
+        continue;
       }
-
       let estado = 'PENDIENTE';
       if (abono >= total - EPS) estado = 'PAGADO';
       else if (abono > 0) estado = 'PARCIAL';
@@ -411,12 +443,12 @@ async function importarDestritoExcel(options = {}) {
       recibosDb.add(clave);
 
       if (reciboCount >= batchSize) {
-        flushBatch();
+        await flushBatch();
         ioLogger.progress();
       }
-    });
+    }
 
-    flushBatch();
+    await flushBatch();
 
     if (!commitPerBatch) {
       await client.query('COMMIT');

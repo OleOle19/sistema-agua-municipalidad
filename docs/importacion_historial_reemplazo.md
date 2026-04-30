@@ -11,6 +11,9 @@ El importador de historial no borra solo. Primero haces respaldo, luego borras m
 - Haz backup SQL antes de borrar.
 - Si tus datos antiguos solo tienen mes y no dia, el importador guarda `fecha_pago` en primer dia de ese mes.
 - El Excel de historial sirve bien para este caso porque toma columnas por periodo y monto.
+- En columna `CONTRIBUYENTE` ahora puede venir `codigo municipal` o `nombre completo exacto`.
+- `GASTOS ADMINISTRATIVOS` tambien sirve como columna de administracion.
+- Ojo: ejemplo SQL de abajo borra **todo** lo anterior a abril 2026. Si no quieres eso, reduce filtro antes de ejecutar.
 
 ### Vista previa antes de borrar
 
@@ -39,6 +42,28 @@ WHERE p.id_recibo = r.id_recibo
 
 DELETE FROM recibos r
 WHERE (r.anio < 2026 OR (r.anio = 2026 AND r.mes < 4));
+
+COMMIT;
+```
+
+### Variante mas segura: borrar solo rango puntual
+
+Ejemplo: solo setiembre a diciembre 2025.
+
+```sql
+BEGIN;
+
+DELETE FROM pagos p
+USING recibos r
+WHERE p.id_recibo = r.id_recibo
+  AND (
+    (r.anio = 2025 AND r.mes BETWEEN 9 AND 12)
+  );
+
+DELETE FROM recibos r
+WHERE (
+  (r.anio = 2025 AND r.mes BETWEEN 9 AND 12)
+);
 
 COMMIT;
 ```

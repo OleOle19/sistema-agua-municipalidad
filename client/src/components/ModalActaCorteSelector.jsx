@@ -92,7 +92,7 @@ const ModalActaCorteSelector = ({
       .map((m) => Number(m.id_contribuyente))
       .filter((id) => Number.isInteger(id) && id > 0);
     if (ids.length === 0) {
-      alert("No hay contribuyentes con conexión activa y 4 o más meses seleccionados para generar actas.");
+      alert("No hay contribuyentes con conexión activa y 3 o más meses seleccionados para generar actas.");
       return;
     }
     onConfirmar?.(ids, criterioDescripcion);
@@ -107,7 +107,7 @@ const ModalActaCorteSelector = ({
       <div className="modal-dialog modal-xl">
         <div className="modal-content" style={modalStyle}>
           <div className="modal-header">
-            <h5 className="modal-title"><FaFileInvoiceDollar className="me-2" /> Seleccionar Deudores (4+ meses) para Acta</h5>
+            <h5 className="modal-title"><FaFileInvoiceDollar className="me-2" /> Seleccionar Deudores (3+ meses) para Acta</h5>
             <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
           </div>
 
@@ -134,7 +134,7 @@ const ModalActaCorteSelector = ({
                     Usar seleccion actual ({selectedIds.length})
                   </button>
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set(deudores.map((m) => m.id_contribuyente)))}>
-                    Marcar todos (con conexión, 4+ meses)
+                    Marcar todos (con conexión, 3+ meses)
                   </button>
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set())}>
                     Limpiar
@@ -142,7 +142,7 @@ const ModalActaCorteSelector = ({
                 </div>
                 <div style={{ maxHeight: "220px", overflowY: "auto" }}>
                   {deudores.length === 0 ? (
-                    <div className="small text-muted">No hay contribuyentes con conexión activa y 4 o más meses de deuda.</div>
+                    <div className="small text-muted">No hay contribuyentes con conexión activa y 3 o más meses de deuda.</div>
                   ) : (
                     deudores.map((m) => (
                       <label key={m.id_contribuyente} className="d-flex align-items-center gap-2 small border-bottom py-1">
@@ -191,14 +191,15 @@ const ModalActaCorteSelector = ({
 
             {modo === "todos" && (
               <div className={cardClass}>
-                Se incluirán todos los contribuyentes con conexión activa y 4 o más meses de deuda.
+                Se incluirán todos los contribuyentes con conexión activa y 3 o más meses de deuda.
               </div>
             )}
 
             <div className="alert alert-warning mt-3 mb-2">
+              <div><strong>Regla fija:</strong> acta de corte solo para contribuyentes con conexion activa y 3 o mas meses de deuda.</div>
               <div><strong>Criterio:</strong> {criterioDescripcion}</div>
               <div><strong>Orden:</strong> Calle y numero ascendente</div>
-              <div><strong>Contribuyentes seleccionados (con conexión, 4+ meses):</strong> {seleccion.length}</div>
+              <div><strong>Contribuyentes seleccionados (con conexión, 3+ meses):</strong> {seleccion.length}</div>
               <div><strong>Total deuda:</strong> S/. {totalDeuda.toFixed(2)}</div>
             </div>
 
