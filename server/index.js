@@ -35,21 +35,27 @@ const normalizarNombreCalle = (valor) => {
 
 const extraerCalleYNumero = (direccionRaw) => {
   const direccion = (direccionRaw || '').toString().trim();
-  if (!direccion) return { calle: 'SIN CALLE', numero: '' };
+  if (!direccion) return { calle: 'SIN CALLE', numero: '', referencia: '', esEstructurada: false };
 
-  const match = direccion.match(/^(.*?)(?:\s*(?:N|N°|Nº|NÂ°|NÂº|NO|NUM|NUMERO|#)\s*[:.]?\s*)(\d+[A-Z]?|S\/N)?$/i);
+  const match = direccion.match(/^(.*?)(?:\s*(?:N|N°|Nº|NÂ°|NÂº|NO|NUM|NUMERO|#)\s*[:.]?\s*)([A-Z0-9/-]+|S\/N)?(?:\s+(.*))?$/i);
   if (match) {
     const calle = match[1].trim();
     const numero = (match[2] || '').trim();
-    return { calle: calle || 'SIN CALLE', numero };
+    const referencia = (match[3] || '').trim();
+    return { calle: calle || 'SIN CALLE', numero, referencia, esEstructurada: true };
   }
 
-  const matchFinalNumero = direccion.match(/^(.*\D)\s+(\d+[A-Z]?)$/);
+  const matchFinalNumero = direccion.match(/^(.*\D)\s+([A-Z0-9/-]+)$/i);
   if (matchFinalNumero) {
-    return { calle: matchFinalNumero[1].trim(), numero: matchFinalNumero[2].trim() };
+    return {
+      calle: matchFinalNumero[1].trim(),
+      numero: matchFinalNumero[2].trim(),
+      referencia: '',
+      esEstructurada: true
+    };
   }
 
-  return { calle: direccion, numero: '' };
+  return { calle: direccion, numero: '', referencia: '', esEstructurada: false };
 };
 
 const getFechaPartesZona = (date = new Date(), timeZone = APP_TIMEZONE) => {
@@ -4929,7 +4935,9 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA) {
       if (direccionNueva) {
         const partesDireccion = extraerCalleYNumero(direccionNueva);
-        const idCalleAlterna = await resolveCalleIdByNombre(client, partesDireccion?.calle, idCalleBase);
+        const idCalleAlterna = partesDireccion?.esEstructurada
+          ? await resolveCalleIdByNombre(client, partesDireccion?.calle, idCalleBase)
+          : idCalleBase;
         const payloadDireccion = {
           tipo_solicitud: tipoSolicitud,
           id_solicitud: idSolicitud,
@@ -4947,7 +4955,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
               actual.id_contribuyente,
               idPredioBase || null,
               idCalleAlterna,
-              normalizeLimitedText(partesDireccion?.numero, 30) || null,
+              partesDireccion?.esEstructurada ? (normalizeLimitedText(partesDireccion?.numero, 30) || null) : null,
               direccionNueva,
               aguaDestino,
               desagueDestino,
@@ -4996,21 +5004,45 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         ]
       );
     } else {
+      const partesDireccion = direccionNueva ? extraerCalleYNumero(direccionNueva) : null;
+      const aplicarDireccionNueva = Boolean(direccionNueva);
+      const idCalleNuevo = aplicarDireccionNueva && partesDireccion?.esEstructurada
+        ? await resolveCalleIdByNombre(client, partesDireccion?.calle, idCalleBase)
+        : idCalleBase;
+      const numeroCasaNuevo = aplicarDireccionNueva
+        ? (
+          partesDireccion?.esEstructurada
+            ? (normalizeLimitedText(partesDireccion?.numero, 30) || null)
+            : null
+        )
+        : null;
+      const referenciaDireccionNueva = aplicarDireccionNueva
+        ? (
+          partesDireccion?.esEstructurada
+            ? (normalizeLimitedText(partesDireccion?.referencia, 250) || null)
+            : direccionNueva
+        )
+        : null;
       await client.query(
         `UPDATE predios
          SET activo_sn = $1,
              estado_servicio = $2,
-             referencia_direccion = COALESCE(NULLIF($3, ''), referencia_direccion),
-             agua_sn = $4,
-             desague_sn = $5,
-             limpieza_sn = $6
-         WHERE id_predio = $7`,
+             id_calle = CASE WHEN $8 THEN COALESCE($3, id_calle) ELSE id_calle END,
+             numero_casa = CASE WHEN $8 THEN NULLIF($4, '') ELSE numero_casa END,
+             referencia_direccion = CASE WHEN $8 THEN NULLIF($5, '') ELSE referencia_direccion END,
+             agua_sn = $6,
+             desague_sn = $7,
+             limpieza_sn = $9
+         WHERE id_predio = $10`,
         [
           predioEstado.activo_sn,
           predioEstado.estado_servicio,
-          direccionNueva,
+          idCalleNuevo,
+          numeroCasaNuevo,
+          referenciaDireccionNueva,
           aguaDestino,
           desagueDestino,
+          aplicarDireccionNueva,
           limpiezaDestino,
           idPredioBase
         ]

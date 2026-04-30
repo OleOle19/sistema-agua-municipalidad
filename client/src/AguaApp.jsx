@@ -1046,7 +1046,9 @@ const anexoCajaPageStyle = `
           .map((x) => String(x.codigo_municipal || x.id_contribuyente || "").trim())
           .filter(Boolean)
           .slice(0, 30);
-        alert(`Se generaron ${actasGeneradas.length} acta(s). Omitidos: ${codigos.join(", ")}${omitidas.length > 30 ? "..." : ""}`);
+        alert(`Se generaron ${actasGeneradas.length} acta(s) con criterio 3+ meses. Omitidos: ${codigos.join(", ")}${omitidas.length > 30 ? "..." : ""}`);
+      } else {
+        alert(`Se generaron ${actasGeneradas.length} acta(s) con criterio 3+ meses de deuda.`);
       }
     } catch (error) {
       const msg = error?.response?.data?.error || "No se pudo generar el acta de corte.";
