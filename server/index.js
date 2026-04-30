@@ -14,6 +14,7 @@ const pool = require("./db");
 const luzRouter = require("./luz/router");
 const { importarDeudas } = require("./importar_deudas");
 const { importarDestritoExcel } = require("./importar_deudas_excel");
+const { parseLegacyNumeroMzLt, normalizeLegacyReference } = require("./addressLegacy");
 const ExcelJS = require('exceljs');
 const xml2js = require('xml2js');
 const multer = require('multer');
@@ -14826,6 +14827,8 @@ app.post("/importar/padron", authenticateToken, requireSuperAdmin, uploadImportS
 
         try {
           const idCalle = await getCalleId(d.calle_nombre);
+          const partesDireccionLegacy = parseLegacyNumeroMzLt(d.dir_numero || "");
+          const referenciaLegacy = normalizeLegacyReference(d.calle_nombre, d.dir_referencia || "");
           const activoRaw = String(d.activo || "S").trim().toUpperCase();
           const estadoConexionImportado = (activoRaw === "S" || activoRaw === "1" || activoRaw === "TRUE")
             ? ESTADOS_CONEXION.CON_CONEXION
@@ -14842,15 +14845,17 @@ app.post("/importar/padron", authenticateToken, requireSuperAdmin, uploadImportS
           const idCont = nuevoContribuyente.rows[0].id_contribuyente;
           await client.query(
             `INSERT INTO predios (
-              id_contribuyente, id_calle, numero_casa, referencia_direccion,
+              id_contribuyente, id_calle, numero_casa, manzana, lote, referencia_direccion,
               agua_sn, desague_sn, limpieza_sn, activo_sn, tipo_tarifa,
               ultima_act, id_tarifa, estado_servicio
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,$11)`,
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1,$13)`,
             [
               idCont,
               idCalle,
-              d.dir_numero || '',
-              d.dir_referencia || '',
+              partesDireccionLegacy.numero || null,
+              partesDireccionLegacy.manzana || null,
+              partesDireccionLegacy.lote || null,
+              referenciaLegacy || null,
               d.agua || 'S',
               d.desague || 'S',
               d.limpieza || 'S',

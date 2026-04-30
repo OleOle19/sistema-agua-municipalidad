@@ -9,6 +9,7 @@ import cajaLuzApi from "./apiCajaLuz";
 import ReciboLuz from "../luz/ReciboLuz";
 import realtime from "../realtime";
 import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
+import { formatDireccionDisplay } from "../utils/direccionDisplay";
 
 const AGUA_TOKEN_KEY = "token_agua";
 
@@ -321,7 +322,7 @@ const buildAnexoDataFromPagoDirecto = (contribuyente, pagos) => {
     contribuyente: {
       codigo_municipal: pickFirstText(contribuyente?.codigo_municipal, contribuyente?.sec_cod),
       nombre_completo: pickFirstText(contribuyente?.nombre_completo, contribuyente?.sec_nombre),
-      calle: pickFirstText(contribuyente?.direccion_completa, contribuyente?.direccion),
+      calle: formatDireccionDisplay(pickFirstText(contribuyente?.direccion_completa, contribuyente?.direccion)),
       ruc: pickFirstText(contribuyente?.dni_ruc)
     },
     total: totalCobrado,
@@ -358,7 +359,7 @@ const buildAnexoDataFromReciboPagado = (contribuyente, reciboPagado) => {
     contribuyente: {
       codigo_municipal: pickFirstText(contribuyente?.codigo_municipal, contribuyente?.sec_cod),
       nombre_completo: pickFirstText(contribuyente?.nombre_completo, contribuyente?.sec_nombre),
-      calle: pickFirstText(contribuyente?.direccion_completa, contribuyente?.direccion),
+      calle: formatDireccionDisplay(pickFirstText(contribuyente?.direccion_completa, contribuyente?.direccion)),
       ruc: pickFirstText(contribuyente?.dni_ruc)
     },
     total: totalPagado,
@@ -1761,7 +1762,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                           >
                             <td className="fw-semibold">{c.codigo_municipal || `ID ${c.id_contribuyente}`}</td>
                             <td>{c.nombre_completo || c.sec_nombre || "-"}</td>
-                            <td>{c.direccion_completa || "-"}</td>
+                            <td>{formatDireccionDisplay(c.direccion_completa) || "-"}</td>
                             <td className="text-center">{Number(c.meses_deuda || 0)}</td>
                             <td className="text-end">{formatMoney(c.deuda_anio)}</td>
                             <td className="text-end">{formatMoney(c.abono_anio)}</td>

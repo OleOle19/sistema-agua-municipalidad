@@ -1,4 +1,5 @@
 import React, { forwardRef } from "react";
+import { formatDireccionDisplay } from "../utils/direccionDisplay";
 
 const mm = (value) => `${value}mm`;
 
@@ -47,12 +48,12 @@ const RECIBO_TEXTOS = {
 // Ajustes finos globales en mm para prueba/error con la impresora.
 // nudgeX/nudgeY mueven TODO el recibo.
 const CAL = {
-  nudgeX: 6,
+  nudgeX: 5.2,
   nudgeY: 0,
-  topBlockOffsetX: -15,
-  topBlockOffsetY: -7,
+  topBlockOffsetX: -14.2,
+  topBlockOffsetY: -6.2,
   bottomBlockOffsetX: 0,
-  bottomBlockOffsetY: 23,
+  bottomBlockOffsetY: 21.8,
   // Coordenadas del bloque superior.
   top: {
     // IMPORTANTE: estos nombres deben mantenerse exactos (xMes, xAnio, xNumero).
@@ -73,18 +74,18 @@ const CAL = {
     yTipoServicio: 59.7,
     xConcepto: 47.0,
     xImporte: 121.0,
-    yDetalleInicio: 65.5,
-    detalleGap: 4.2,
+    yDetalleInicio: 65.9,
+    detalleGap: 4.0,
     xTotal: 121.0,
-    yTotal: 81.8,
-    xNota: 16.8,
-    yNota: 82.7,
-    xFechaTop: 104.0,
-    yFechaEmisionTop: 91.0,
-    yFechaCorteTop: 96.0,
+    yTotal: 81.2,
+    xNota: 20.5,
+    yNota: 84.2,
+    xFechaTop: 104.8,
+    yFechaEmisionTop: 91.8,
+    yFechaCorteTop: 96.8,
     fechaWidth: 18.0,
     debt: {
-      y: 105.8,
+      y: 108.0,
       boxW: 36.0,
       xAnterior: 19.8,
       xMes: 70.8
@@ -92,20 +93,20 @@ const CAL = {
   },
   // Coordenadas del bloque inferior (talon).
   bottom: {
-    xMes: 23.0,
-    xAnio: 64.0,
-    xNumero: 108.0,
-    yCabecera: 145.5,
-    xNombre: 40.0,
-    yNombre: 158.0,
-    xDireccion: 40.0,
-    yDireccion: 161.2,
-    xEmision: 40.0,
-    yEmision: 165.0,
+    xMes: 24.0,
+    xAnio: 65.0,
+    xNumero: 109.0,
+    yCabecera: 145.0,
+    xNombre: 39.0,
+    yNombre: 159.0,
+    xDireccion: 39.0,
+    yDireccion: 162.4,
+    xEmision: 39.0,
+    yEmision: 167.0,
     xCorte: 40.0,
     yCorte: 169.2,
     xTotal: 106.5,
-    yTotal: 169.0
+    yTotal: 170.4
   }
 };
 
@@ -197,6 +198,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
   const fallbackCorte = new Date(now.getFullYear(), now.getMonth() + 1, 5).toLocaleDateString("es-PE");
   const fechaEmision = formatDate(recibo.fecha_emision || recibo.creado_en) || fallbackEmision;
   const fechaCorte = formatDate(recibo.fecha_corte) || fallbackCorte;
+  const direccionLabel = formatDireccionDisplay(predio.direccion_completa || "");
 
   // Helpers para aplicar calibracion global a cada coordenada.
   const x = (value) => mm(value + CAL.nudgeX);
@@ -278,7 +280,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
         {contribuyente.nombre_completo || ""}
       </div>
       <div style={{ ...baseText, left: xTop(CAL.top.xDireccion), top: yTop(CAL.top.yDireccion), fontSize: "2.9mm", maxWidth: mm(78), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {predio.direccion_completa || ""}
+        {direccionLabel}
       </div>
       <div style={{ ...baseText, left: xTop(CAL.top.xDistrito), top: yTop(CAL.top.yDistrito), fontSize: "2.9mm", maxWidth: mm(40), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
         {RECIBO_TEXTOS.distrito}
@@ -339,7 +341,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
           left: xTop(CAL.top.xNota),
           top: yTop(CAL.top.yNota),
           fontSize: "2.5mm",
-          width: mm(68),
+          width: mm(58),
           whiteSpace: "pre-line",
           lineHeight: 1.05,
           textAlign: "left"
@@ -452,7 +454,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
         {contribuyente.nombre_completo || ""}
       </div>
       <div style={{ ...baseText, left: xBottom(CAL.bottom.xDireccion), top: yBottom(CAL.bottom.yDireccion), fontSize: "2.35mm", maxWidth: mm(55), whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {predio.direccion_completa || ""}
+        {direccionLabel}
       </div>
       <div style={{ ...baseText, left: xBottom(CAL.bottom.xEmision), top: yBottom(CAL.bottom.yEmision), fontSize: "2.9mm", fontWeight: 700 }}>
         {fechaEmision}
