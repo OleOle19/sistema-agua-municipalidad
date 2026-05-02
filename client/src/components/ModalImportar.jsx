@@ -19,7 +19,7 @@ const TIPOS_IMPORTACION = {
     accept: ".txt,.csv,.xlsx,.xls",
     ayuda: [
       { icono: <FaHistory className="me-1" />, titulo: "TXT/CSV", detalle: "historial de deudas y pagos (ej. CATORCE.txt)." },
-      { icono: <FaFileExcel className="me-1" />, titulo: "Excel (XLSX)", detalle: "recomendado para reemplazar historial antiguo. Columna CONTRIBUYENTE acepta codigo municipal o nombre exacto. Orden esperado: CONTRIBUYENTE, FECHA, ANIO/AÑO, MES, AGUA, DESAGUE, LIMPIEZA, ADMINISTRACION o GASTOS ADMINISTRATIVOS, EXTRAS, ABONO, TOTAL." }
+      { icono: <FaFileExcel className="me-1" />, titulo: "Excel (XLSX)", detalle: "recomendado para reemplazar historial antiguo. Columna CONTRIBUYENTE acepta codigo municipal o nombre exacto. Orden esperado: CONTRIBUYENTE, FECHA, ANIO/AÑO, MES, AGUA, DESAGUE, LIMPIEZA, ADMINISTRACION o GASTOS ADMINISTRATIVOS, EXTRAS, ABONO, TOTAL. Si FECHA viene llena, se respeta como fecha real de pago." }
     ],
     procesando: "Importando historial de deudas y pagos (puede tardar varios minutos)..."
   }
@@ -34,6 +34,11 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
   const [resumenRechazos, setResumenRechazos] = useState({});
   const [totalRechazados, setTotalRechazados] = useState(0);
   const [rechazosMostrados, setRechazosMostrados] = useState(0);
+  const [filtroRechazo, setFiltroRechazo] = useState("todos");
+  const [omitidos, setOmitidos] = useState([]);
+  const [resumenOmitidos, setResumenOmitidos] = useState({});
+  const [totalOmitidosSinRechazo, setTotalOmitidosSinRechazo] = useState(0);
+  const [filtroOmitido, setFiltroOmitido] = useState("todos");
 
   const conf = TIPOS_IMPORTACION[tipo];
 
@@ -53,6 +58,11 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
     setResumenRechazos({});
     setTotalRechazados(0);
     setRechazosMostrados(0);
+    setFiltroRechazo("todos");
+    setOmitidos([]);
+    setResumenOmitidos({});
+    setTotalOmitidosSinRechazo(0);
+    setFiltroOmitido("todos");
 
     try {
       const res = await api.post(conf.endpoint, formData, {
@@ -65,6 +75,9 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
       setResumenRechazos(datos.resumen_rechazos || {});
       setTotalRechazados(Number(datos.total_rechazados || 0));
       setRechazosMostrados(Number(datos.rechazos_mostrados || (Array.isArray(datos.rechazos) ? datos.rechazos.length : 0)));
+      setOmitidos(Array.isArray(datos.omitidos) ? datos.omitidos : []);
+      setResumenOmitidos(datos.resumen_omitidos || {});
+      setTotalOmitidosSinRechazo(Number(datos.total_omitidos_sin_rechazo || 0));
 
       if (tipo === "historial") {
         const resumen = `Recibos: ${datos.total_recibos_procesados ?? 0} | Pagos: ${datos.total_pagos_registrados ?? 0} | Leidas: ${datos.lineas_leidas ?? 0} | Omitidas: ${datos.lineas_omitidas ?? 0} | Rechazadas: ${datos.total_rechazados ?? 0}`;
@@ -89,10 +102,17 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
   const tabClass = (key) => `btn btn-sm ${tipo === key ? "btn-primary" : (darkMode ? "btn-outline-light" : "btn-outline-secondary")}`;
   const alertClass = mensaje.startsWith("Error") ? "alert-danger" : "alert-success";
   const resumenItems = Object.entries(resumenRechazos || {}).filter(([, val]) => Number(val) > 0);
+  const rechazosFiltrados = filtroRechazo === "todos"
+    ? rechazos
+    : rechazos.filter((item) => item?.tipo === filtroRechazo);
+  const resumenOmitidosItems = Object.entries(resumenOmitidos || {}).filter(([, val]) => Number(val) > 0);
+  const omitidosFiltrados = filtroOmitido === "todos"
+    ? omitidos
+    : omitidos.filter((item) => item?.tipo === filtroOmitido);
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
-      <div className="modal-dialog">
+      <div className="modal-dialog modal-xl">
         <div className="modal-content" style={modalStyle}>
           <div className={headerClass}>
             <h5 className="modal-title">Importacion de Datos</h5>
@@ -112,6 +132,11 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
                   setResumenRechazos({});
                   setTotalRechazados(0);
                   setRechazosMostrados(0);
+                  setFiltroRechazo("todos");
+                  setOmitidos([]);
+                  setResumenOmitidos({});
+                  setTotalOmitidosSinRechazo(0);
+                  setFiltroOmitido("todos");
                 }}
               >
                 Padron
@@ -128,6 +153,11 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
                   setResumenRechazos({});
                   setTotalRechazados(0);
                   setRechazosMostrados(0);
+                  setFiltroRechazo("todos");
+                  setOmitidos([]);
+                  setResumenOmitidos({});
+                  setTotalOmitidosSinRechazo(0);
+                  setFiltroOmitido("todos");
                 }}
               >
                 Historial
@@ -145,7 +175,7 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
 
             {tipo === "historial" && (
               <div className={`alert small ${darkMode ? "alert-secondary border-warning text-light" : "alert-warning"}`}>
-                <strong>Reemplazo de pagos antiguos:</strong> este importador no borra datos por si solo. Si ejecutas SQL de borrado para periodos viejos, ese SQL si puede borrar todos esos meses. Primero haz respaldo, luego elimina solo rango que realmente quieres reemplazar, y despues sube tu Excel listo.
+                <strong>Reemplazo de pagos antiguos:</strong> si el Excel trae un mismo contribuyente y periodo ya existente, el importador reemplaza pagos de ese periodo y actualiza el recibo. Igual haz respaldo antes de una carga historica grande, sobre todo si vas a rehacer meses completos.
               </div>
             )}
 
@@ -173,12 +203,26 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
                   <div className="fw-bold mb-1">Registros no importados: {totalRechazados}</div>
                   {resumenItems.length > 0 && (
                     <div className="mb-2">
+                      <button
+                        type="button"
+                        className={`btn btn-sm me-1 mb-1 ${filtroRechazo === "todos" ? "btn-primary" : "btn-outline-secondary"}`}
+                        onClick={() => setFiltroRechazo("todos")}
+                      >
+                        todos: {totalRechazados}
+                      </button>
                       {resumenItems.map(([k, v]) => (
-                        <span key={k} className="badge text-bg-secondary me-1 mb-1">{k}: {v}</span>
+                        <button
+                          key={k}
+                          type="button"
+                          className={`btn btn-sm me-1 mb-1 ${filtroRechazo === k ? "btn-primary" : "btn-outline-secondary"}`}
+                          onClick={() => setFiltroRechazo(k)}
+                        >
+                          {k}: {v}
+                        </button>
                       ))}
                     </div>
                   )}
-                  <div className="table-responsive" style={{ maxHeight: "220px" }}>
+                  <div className="table-responsive" style={{ maxHeight: "420px" }}>
                     <table className={`table table-sm mb-0 ${darkMode ? "table-dark" : "table-striped"}`}>
                       <thead>
                         <tr>
@@ -190,9 +234,9 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
                         </tr>
                       </thead>
                       <tbody>
-                        {rechazos.length === 0 ? (
+                        {rechazosFiltrados.length === 0 ? (
                           <tr><td colSpan="5">Sin detalle disponible.</td></tr>
-                        ) : rechazos.map((r, idx) => {
+                        ) : rechazosFiltrados.map((r, idx) => {
                           const periodo = (r.anio && r.mes) ? `${String(r.mes).padStart(2, "0")}/${r.anio}` : "-";
                           return (
                             <tr key={`${r.linea || "x"}-${idx}`}>
@@ -210,6 +254,72 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
                   {rechazosMostrados < totalRechazados && (
                     <div className="text-muted mt-2">
                       Mostrando {rechazosMostrados} de {totalRechazados} rechazados.
+                    </div>
+                  )}
+                  {rechazosFiltrados.length > 0 && (
+                    <div className="text-muted mt-2">
+                      Viendo {rechazosFiltrados.length} registros del filtro actual.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {totalOmitidosSinRechazo > 0 && (
+                <div className={`border rounded p-2 mb-3 small ${darkMode ? "border-info text-light" : "border-info"}`}>
+                  <div className="fw-bold mb-1">Registros omitidos sin rechazo: {totalOmitidosSinRechazo}</div>
+                  {resumenOmitidosItems.length > 0 && (
+                    <div className="mb-2">
+                      <button
+                        type="button"
+                        className={`btn btn-sm me-1 mb-1 ${filtroOmitido === "todos" ? "btn-primary" : "btn-outline-secondary"}`}
+                        onClick={() => setFiltroOmitido("todos")}
+                      >
+                        todos: {totalOmitidosSinRechazo}
+                      </button>
+                      {resumenOmitidosItems.map(([k, v]) => (
+                        <button
+                          key={k}
+                          type="button"
+                          className={`btn btn-sm me-1 mb-1 ${filtroOmitido === k ? "btn-primary" : "btn-outline-secondary"}`}
+                          onClick={() => setFiltroOmitido(k)}
+                        >
+                          {k}: {v}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="table-responsive" style={{ maxHeight: "260px" }}>
+                    <table className={`table table-sm mb-0 ${darkMode ? "table-dark" : "table-striped"}`}>
+                      <thead>
+                        <tr>
+                          <th>Linea</th>
+                          <th>Codigo/Nombre</th>
+                          <th>Periodo</th>
+                          <th>Tipo</th>
+                          <th>Motivo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {omitidosFiltrados.length === 0 ? (
+                          <tr><td colSpan="5">Sin detalle disponible.</td></tr>
+                        ) : omitidosFiltrados.map((r, idx) => {
+                          const periodo = (r.anio && r.mes) ? `${String(r.mes).padStart(2, "0")}/${r.anio}` : "-";
+                          return (
+                            <tr key={`${r.linea || "o"}-${idx}`}>
+                              <td>{r.linea || "-"}</td>
+                              <td>{r.codigo_municipal || "-"}</td>
+                              <td>{periodo}</td>
+                              <td>{r.tipo || "-"}</td>
+                              <td>{r.motivo || "-"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {omitidosFiltrados.length > 0 && (
+                    <div className="text-muted mt-2">
+                      Viendo {omitidosFiltrados.length} registros del filtro actual.
                     </div>
                   )}
                 </div>

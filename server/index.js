@@ -156,6 +156,16 @@ const readTextFromUploadedFile = (file) => {
   }
   return "";
 };
+const readBufferFromUploadedFile = (file) => {
+  const filePath = String(file?.path || "").trim();
+  if (filePath && fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath);
+  }
+  if (Buffer.isBuffer(file?.buffer)) {
+    return file.buffer;
+  }
+  return Buffer.alloc(0);
+};
 const createReadStreamFromUploadedFile = (file) => {
   const filePath = String(file?.path || "").trim();
   if (filePath && fs.existsSync(filePath)) {
@@ -15156,12 +15166,13 @@ app.post("/importar/historial", authenticateToken, requireSuperAdmin, uploadImpo
     
     if (esExcel) {
       // Importar desde Excel
-      if (!req.file.buffer) {
+      const excelBuffer = readBufferFromUploadedFile(req.file);
+      if (!excelBuffer.length) {
         return res.status(400).json({ error: "No se pudo leer el archivo Excel." });
       }
       
       resultado = await importarDestritoExcel({
-        buffer: req.file.buffer,
+        buffer: excelBuffer,
         commitPerBatch: true,
         maxRechazos: MAX_RECHAZOS_IMPORTACION,
         logger: {
