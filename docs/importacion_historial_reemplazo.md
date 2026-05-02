@@ -91,6 +91,20 @@ ROLLBACK;
 2. Revisa rechazos.
 3. Verifica un contribuyente con historial y recibo reimpreso.
 
+### Ajustes manuales complementarios de marzo 2026
+
+Si despues de importar `MARZO.xlsx` necesitas aplicar los cobros omitidos que fuimos confirmando manualmente, ejecuta:
+
+```powershell
+node server\scripts\aplicar_recaudacion_marzo_2026_complementaria.js --apply
+```
+
+Notas:
+
+- El script es idempotente para esos casos: recrea o reemplaza el pago del periodo objetivo.
+- Tambien corrige las fechas manuales ya acordadas para marzo 2026.
+- Conviene hacer backup antes de correrlo en otro servidor.
+
 ## Variante con `PAGOSACTA.TXT`
 
 Si el servidor remoto ya tiene el padron pero no tiene pagos/recibos historicos visibles antes de abril 2026, puedes usar:
