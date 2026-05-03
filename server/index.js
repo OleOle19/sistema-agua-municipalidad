@@ -877,11 +877,31 @@ const buildCampoSolicitudExcelGroup = (row = {}, changes = [], extraEntries = []
   }
   return { key: "NO_VISITADO_SIN_NOVEDAD", label: "No visitados sin cambios ni observaciones", rank: 4, visitado: false, hasNovedad: false };
 };
+const normalizeCampoExcelDedupeValue = (value) => String(value || "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .replace(/\s+/g, " ")
+  .trim()
+  .toUpperCase();
 const toCampoCambioTipoExportLabel = (row = {}, item = {}) => {
   const itemTipo = String(item?.tipo || "").trim().toUpperCase();
   if (itemTipo === "OBSERVACION") return "Observacion";
   if (itemTipo === "REVISION") return "Revision";
   return resolveCampoCambioFlowLabel(row);
+};
+const buildCampoCambioDedupeKey = (row = {}, item = {}) => {
+  const tipoExport = toCampoCambioTipoExportLabel(row, item);
+  const contribuyenteKey = parsePositiveInt(row?.id_contribuyente, 0) > 0
+    ? String(parsePositiveInt(row?.id_contribuyente, 0))
+    : pickCampoText(row?.codigo_municipal, row?.contribuyente_label, row?.contribuyente) || String(row?.id_solicitud || "");
+  return [
+    contribuyenteKey,
+    normalizeCampoExcelDedupeValue(row?.tipo_solicitud_label || row?.tipo_solicitud),
+    normalizeCampoExcelDedupeValue(item?.campo),
+    normalizeCampoExcelDedupeValue(tipoExport),
+    normalizeCampoExcelDedupeValue(item?.antes),
+    normalizeCampoExcelDedupeValue(item?.despues)
+  ].join("|");
 };
 const pushCampoAuditoriaCambio = (items, label, nuevo, anterior) => {
   if (nuevo === null || nuevo === undefined || nuevo === "") return;
@@ -4892,28 +4912,32 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
     });
     let totalCambiosRows = 0;
     let currentGroupKey = "";
+    const dedupeKeys = new Set();
     rowsOrdenadas.forEach((row) => {
       const groupKey = String(row?.excel_group?.key || "");
-      if (groupKey && groupKey !== currentGroupKey) {
-        currentGroupKey = groupKey;
-        wsCambios.addRow({
-          id_solicitud: "",
-          tipo_solicitud: "",
-          id_contribuyente: "",
-          codigo_municipal: "",
-          contribuyente: "",
-          campo: row?.excel_group?.label || "Grupo",
-          tipo: "GRUPO",
-          valor_anterior: "",
-          valor_nuevo: ""
-        });
-      }
       const items = [
         ...(Array.isArray(row.cambios_items) ? row.cambios_items : []),
         ...(Array.isArray(row.extra_items) ? row.extra_items : [])
       ];
       if (items.length > 0) {
         items.forEach((item) => {
+          const dedupeKey = buildCampoCambioDedupeKey(row, item);
+          if (dedupeKeys.has(dedupeKey)) return;
+          dedupeKeys.add(dedupeKey);
+          if (groupKey && groupKey !== currentGroupKey) {
+            currentGroupKey = groupKey;
+            wsCambios.addRow({
+              id_solicitud: "",
+              tipo_solicitud: "",
+              id_contribuyente: "",
+              codigo_municipal: "",
+              contribuyente: "",
+              campo: row?.excel_group?.label || "Grupo",
+              tipo: "GRUPO",
+              valor_anterior: "",
+              valor_nuevo: ""
+            });
+          }
           totalCambiosRows += 1;
           wsCambios.addRow({
             id_solicitud: row.id_solicitud,
@@ -4928,6 +4952,29 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
           });
         });
       } else {
+        const item = {
+          campo: "Sin cambios estructurados",
+          antes: "",
+          despues: row.resultado_resumen,
+          tipo: "INFO"
+        };
+        const dedupeKey = buildCampoCambioDedupeKey(row, item);
+        if (dedupeKeys.has(dedupeKey)) return;
+        dedupeKeys.add(dedupeKey);
+        if (groupKey && groupKey !== currentGroupKey) {
+          currentGroupKey = groupKey;
+          wsCambios.addRow({
+            id_solicitud: "",
+            tipo_solicitud: "",
+            id_contribuyente: "",
+            codigo_municipal: "",
+            contribuyente: "",
+            campo: row?.excel_group?.label || "Grupo",
+            tipo: "GRUPO",
+            valor_anterior: "",
+            valor_nuevo: ""
+          });
+        }
         totalCambiosRows += 1;
         wsCambios.addRow({
           id_solicitud: row.id_solicitud,
