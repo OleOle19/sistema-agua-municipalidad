@@ -78,13 +78,16 @@ const LABEL_TRANSLATIONS = {
   minutos: "Minutos",
   acceso: "Tipo acceso",
   detalle_recibos: "Detalle recibos",
+  solicitud: "Solicitud",
   tipo_solicitud: "Tipo solicitud",
   aplicacion: "Aplicacion",
   cambios_aplicados: "Cambios aplicados",
   cambios_solicitados: "Cambios solicitados",
   recibos_recalculados: "Recibos futuros recalculados",
   id_direccion_alterna: "ID direccion alterna",
-  nota_revision: "Nota revision"
+  nota_revision: "Nota revision",
+  codigo_municipal: "Codigo municipal",
+  nombre_completo: "Nombre completo"
 };
 
 const formatArrayHint = (value) => {

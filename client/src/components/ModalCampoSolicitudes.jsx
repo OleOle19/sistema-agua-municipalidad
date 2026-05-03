@@ -395,7 +395,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
   const closeBtnClass = `btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`;
   const tableClass = `table mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
   const inputClass = `form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const generarInformeEmpadronados = async () => {
+  const exportarSolicitudesExcel = async () => {
     try {
       setError("");
       setMensaje("");
@@ -412,6 +412,8 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
       let res = null;
       let lastError = null;
       const endpoints = [
+        "/campo/solicitudes/exportar",
+        "/campo/solicitudes/exportar.xlsx",
         "/campo/solicitudes/reporte-empadronados",
         "/campo/solicitudes/reporte-empadronados.xlsx"
       ];
@@ -428,7 +430,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
       if (!res) throw lastError || new Error("No se pudo generar el informe Excel.");
       const disposition = String(res?.headers?.["content-disposition"] || "");
       const fileNameMatch = disposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
-      const fileName = decodeURIComponent(fileNameMatch?.[1] || fileNameMatch?.[2] || "").trim() || `informe_empadronados_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const fileName = decodeURIComponent(fileNameMatch?.[1] || fileNameMatch?.[2] || "").trim() || `solicitudes_campo_${new Date().toISOString().slice(0, 10)}.xlsx`;
       const blob = new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -438,12 +440,12 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      const totalUsuarios = Number(res?.headers?.["x-total-usuarios"] || 0);
-      setMensaje(totalUsuarios > 0
-        ? `Informe Excel generado: ${totalUsuarios} usuario(s).`
-        : "Informe Excel generado correctamente.");
+      const totalSolicitudes = Number(res?.headers?.["x-total-solicitudes"] || 0);
+      setMensaje(totalSolicitudes > 0
+        ? `Excel generado: ${totalSolicitudes} solicitud(es).`
+        : "Excel de solicitudes generado correctamente.");
     } catch (err) {
-      setError(err?.response?.data?.error || "No se pudo generar el informe Excel.");
+      setError(err?.response?.data?.error || "No se pudo generar el Excel de solicitudes.");
     }
   };
 
@@ -511,8 +513,8 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
               <button type="button" className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" onClick={cargarSolicitudes} disabled={cargando}>
                 <FaSyncAlt /> Recargar
               </button>
-              <button type="button" className="btn btn-sm btn-outline-success d-flex align-items-center gap-1" onClick={() => generarInformeEmpadronados()} disabled={cargando}>
-                <FaFileDownload /> Excel Usuarios
+              <button type="button" className="btn btn-sm btn-outline-success d-flex align-items-center gap-1" onClick={() => exportarSolicitudesExcel()} disabled={cargando}>
+                <FaFileDownload /> Excel Solicitudes
               </button>
               <div className="ms-auto small opacity-75">
                 Mostrando: <strong>{totalVisibleSolicitudes}</strong> de <strong>{solicitudes.length}</strong> | Grupos: <strong>{groupedRows.length}</strong>
