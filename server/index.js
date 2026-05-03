@@ -1433,6 +1433,44 @@ const splitAdminExtraDisplay = (subtotalAdminRaw, extraTarifaRaw) => {
     subtotal_extra: subtotalExtra
   };
 };
+const resolveActivatedServiceTarifas = ({
+  activoAntes = "S",
+  activoDespues = "S",
+  aguaAntes = "S",
+  aguaDespues = "S",
+  desagueAntes = "S",
+  desagueDespues = "S",
+  limpiezaAntes = "S",
+  limpiezaDespues = "S",
+  tarifaAgua = null,
+  tarifaDesague = null,
+  tarifaLimpieza = null,
+  tarifaAdmin = null
+} = {}) => {
+  const normalizeTarifa = (value) => {
+    const parsed = parseOptionalTarifaMonto(value);
+    if (parsed === "__INVALID__") return null;
+    return parsed;
+  };
+  const resolveTarifaServicio = (tarifaActual, servicioAntes, servicioDespues, montoBase) => {
+    const tarifaNormalizada = normalizeTarifa(tarifaActual);
+    const estabaActivo = normalizeSN(activoAntes, "S") === "S" && normalizeSN(servicioAntes, "S") === "S";
+    const quedaActivo = normalizeSN(activoDespues, "S") === "S" && normalizeSN(servicioDespues, "S") === "S";
+    if (!quedaActivo || estabaActivo) return tarifaNormalizada;
+    return tarifaNormalizada !== null && tarifaNormalizada > 0 ? tarifaNormalizada : roundMonto2(montoBase);
+  };
+  const tarifaAdminNormalizada = normalizeTarifa(tarifaAdmin);
+  const predioAntesActivo = normalizeSN(activoAntes, "S") === "S";
+  const predioDespuesActivo = normalizeSN(activoDespues, "S") === "S";
+  return {
+    tarifa_agua: resolveTarifaServicio(tarifaAgua, aguaAntes, aguaDespues, AUTO_DEUDA_BASE.agua),
+    tarifa_desague: resolveTarifaServicio(tarifaDesague, desagueAntes, desagueDespues, AUTO_DEUDA_BASE.desague),
+    tarifa_limpieza: resolveTarifaServicio(tarifaLimpieza, limpiezaAntes, limpiezaDespues, AUTO_DEUDA_BASE.limpieza),
+    tarifa_admin: predioDespuesActivo && !predioAntesActivo && !(tarifaAdminNormalizada > 0)
+      ? roundMonto2(AUTO_DEUDA_BASE.admin)
+      : tarifaAdminNormalizada
+  };
+};
 const buildTarifaActualReciboSql = (predioAlias = "p2") => `(
   (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.agua_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_agua, ${AUTO_DEUDA_BASE.agua}) ELSE 0 END)
   + (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.desague_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_desague, ${AUTO_DEUDA_BASE.desague}) ELSE 0 END)
@@ -5488,6 +5526,10 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+        p.tarifa_agua,
+        p.tarifa_desague,
+        p.tarifa_limpieza,
+        p.tarifa_admin,
         COALESCE(NULLIF(TRIM(p.direccion_alterna), ''), '') AS direccion_alterna,
         ${buildDireccionSql("ca", "p")} AS direccion_completa
       FROM predios p
@@ -5513,6 +5555,10 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       agua_sn: predioData.rows[0]?.agua_sn || "S",
       desague_sn: predioData.rows[0]?.desague_sn || "S",
       limpieza_sn: predioData.rows[0]?.limpieza_sn || "S",
+      tarifa_agua: predioData.rows[0]?.tarifa_agua ?? null,
+      tarifa_desague: predioData.rows[0]?.tarifa_desague ?? null,
+      tarifa_limpieza: predioData.rows[0]?.tarifa_limpieza ?? null,
+      tarifa_admin: predioData.rows[0]?.tarifa_admin ?? null,
       direccion_alterna: predioData.rows[0]?.direccion_alterna || "",
       direccion_completa: predioData.rows[0]?.direccion_completa || ""
     };
@@ -5546,6 +5592,20 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         activo_sn: normalizeSN(actual.predio_activo_sn, "S"),
         estado_servicio: normalizeLimitedText(actual.predio_estado_servicio, 40) || "ACTIVO"
       };
+    const tarifasPredioAplicadas = resolveActivatedServiceTarifas({
+      activoAntes: actual.predio_activo_sn,
+      activoDespues: predioEstado.activo_sn,
+      aguaAntes: aguaActual,
+      aguaDespues: aguaAplicado,
+      desagueAntes: desagueActual,
+      desagueDespues: desagueAplicado,
+      limpiezaAntes: limpiezaActual,
+      limpiezaDespues: limpiezaAplicado,
+      tarifaAgua: actual.tarifa_agua,
+      tarifaDesague: actual.tarifa_desague,
+      tarifaLimpieza: actual.tarifa_limpieza,
+      tarifaAdmin: actual.tarifa_admin
+    });
     const motivoCampo = [solicitud.observacion_campo || "", motivoRevision || ""]
       .filter(Boolean)
       .join(" | ")
@@ -5636,8 +5696,12 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
              direccion_alterna = CASE WHEN $7::boolean THEN COALESCE(NULLIF($3, ''), direccion_alterna) ELSE direccion_alterna END,
              agua_sn = $4,
              desague_sn = $5,
-             limpieza_sn = $6
-         WHERE id_predio = $8`,
+             limpieza_sn = $6,
+             tarifa_agua = $8,
+             tarifa_desague = $9,
+             tarifa_limpieza = $10,
+             tarifa_admin = $11
+         WHERE id_predio = $12`,
         [
           predioEstado.activo_sn,
           predioEstado.estado_servicio,
@@ -5646,6 +5710,10 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
           desagueAplicado,
           limpiezaAplicado,
           requestedChanges.direccion,
+          tarifasPredioAplicadas.tarifa_agua,
+          tarifasPredioAplicadas.tarifa_desague,
+          tarifasPredioAplicadas.tarifa_limpieza,
+          tarifasPredioAplicadas.tarifa_admin,
           idPredioBase
         ]
       );
@@ -5686,8 +5754,12 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
             desague_sn = $7,
             limpieza_sn = $9,
              manzana = CASE WHEN $8 THEN COALESCE(NULLIF($10, ''), manzana) ELSE manzana END,
-             lote = CASE WHEN $8 THEN COALESCE(NULLIF($11, ''), lote) ELSE lote END
-         WHERE id_predio = $12`,
+             lote = CASE WHEN $8 THEN COALESCE(NULLIF($11, ''), lote) ELSE lote END,
+             tarifa_agua = $12,
+             tarifa_desague = $13,
+             tarifa_limpieza = $14,
+             tarifa_admin = $15
+         WHERE id_predio = $16`,
         [
           predioEstado.activo_sn,
           predioEstado.estado_servicio,
@@ -5700,6 +5772,10 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
           limpiezaAplicado,
           manzanaNueva,
           loteNuevo,
+          tarifasPredioAplicadas.tarifa_agua,
+          tarifasPredioAplicadas.tarifa_desague,
+          tarifasPredioAplicadas.tarifa_limpieza,
+          tarifasPredioAplicadas.tarifa_admin,
           idPredioBase
         ]
       );
@@ -7159,6 +7235,24 @@ app.put("/contribuyentes/:id", async (req, res) => {
     const codigoSistemaActual = String(actualData.rows[0].sec_cod || "").trim() || null;
     const cambioCodigoMunicipal = codigoMunicipal !== codigoMunicipalActual;
     const cambioCodigoSistema = (codigoSistema || null) !== codigoSistemaActual;
+    const predioActualData = await client.query(
+      `SELECT
+         COALESCE(NULLIF(UPPER(TRIM(activo_sn)), ''), 'S') AS activo_sn,
+         COALESCE(NULLIF(UPPER(TRIM(agua_sn)), ''), 'S') AS agua_sn,
+         COALESCE(NULLIF(UPPER(TRIM(desague_sn)), ''), 'S') AS desague_sn,
+         COALESCE(NULLIF(UPPER(TRIM(limpieza_sn)), ''), 'S') AS limpieza_sn,
+         tarifa_agua,
+         tarifa_desague,
+         tarifa_limpieza,
+         tarifa_admin
+       FROM predios
+       WHERE id_contribuyente = $1
+       ORDER BY id_predio ASC
+       LIMIT 1
+       FOR UPDATE`,
+      [idContribuyente]
+    );
+    const predioActual = predioActualData.rows[0] || null;
 
     if (cambioCodigoMunicipal) {
       const exMunicipal = await client.query(
@@ -7202,6 +7296,26 @@ app.put("/contribuyentes/:id", async (req, res) => {
     const motivoRazonSocialTexto = cambioRazonSocial
       ? (motivoCambioRazonSocial === "OTRO" ? `OTRO: ${detalleMotivoRazonSocial}` : motivoCambioRazonSocial)
       : null;
+    const serviciosActuales = {
+      activo_sn: predioActual?.activo_sn || "S",
+      agua_sn: predioActual?.agua_sn || "S",
+      desague_sn: predioActual?.desague_sn || "S",
+      limpieza_sn: predioActual?.limpieza_sn || "S"
+    };
+    const tarifasActualizadas = resolveActivatedServiceTarifas({
+      activoAntes: serviciosActuales.activo_sn,
+      activoDespues: predioEstado.activo_sn,
+      aguaAntes: serviciosActuales.agua_sn,
+      aguaDespues: aguaSN ?? serviciosActuales.agua_sn,
+      desagueAntes: serviciosActuales.desague_sn,
+      desagueDespues: desagueSN ?? serviciosActuales.desague_sn,
+      limpiezaAntes: serviciosActuales.limpieza_sn,
+      limpiezaDespues: limpiezaSN ?? serviciosActuales.limpieza_sn,
+      tarifaAgua: tarifaAgua ?? predioActual?.tarifa_agua ?? null,
+      tarifaDesague: tarifaDesague ?? predioActual?.tarifa_desague ?? null,
+      tarifaLimpieza: tarifaLimpieza ?? predioActual?.tarifa_limpieza ?? null,
+      tarifaAdmin: tarifaAdmin ?? predioActual?.tarifa_admin ?? null
+    });
 
     await client.query(
       `UPDATE contribuyentes
@@ -7240,7 +7354,12 @@ app.put("/contribuyentes/:id", async (req, res) => {
        WHERE id_contribuyente = $7`,
       [
         id_calle, numero_casa, manzana, lote, predioEstado.activo_sn, predioEstado.estado_servicio,
-        idContribuyente, tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin, tarifaExtra,
+        idContribuyente,
+        tarifasActualizadas.tarifa_agua,
+        tarifasActualizadas.tarifa_desague,
+        tarifasActualizadas.tarifa_limpieza,
+        tarifasActualizadas.tarifa_admin,
+        tarifaExtra,
         aguaSN, desagueSN, limpiezaSN
       ]
     );
