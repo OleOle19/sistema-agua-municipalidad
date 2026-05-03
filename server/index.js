@@ -14908,6 +14908,7 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
   const predioRs = await db.query(`
     SELECT
       p.id_predio,
+      COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
       COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
       COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
       COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
@@ -14980,35 +14981,47 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
     ) t
   `, [id]);
   const historialContribuyente = historialContribuyenteRs.rows[0] || null;
-  const hasHistorialTarifario = Boolean(historialContribuyente);
-
-  const tarifaAguaActual = hasHistorialTarifario
-    ? roundMonto2(parseMonto(historialContribuyente?.subtotal_agua, 0))
-    : (
-      normalizeSN(predio.agua_sn, "S") === "S"
-        ? roundMonto2(parseMonto(predio.tarifa_agua, parseMonto(predio.agua_hist, AUTO_DEUDA_BASE.agua)))
-        : 0
-    );
-  const tarifaDesagueActual = hasHistorialTarifario
-    ? roundMonto2(parseMonto(historialContribuyente?.subtotal_desague, 0))
-    : (
-      normalizeSN(predio.desague_sn, "S") === "S"
-        ? roundMonto2(parseMonto(predio.tarifa_desague, parseMonto(predio.desague_hist, AUTO_DEUDA_BASE.desague)))
-        : 0
-    );
-  const tarifaLimpiezaActual = hasHistorialTarifario
-    ? roundMonto2(parseMonto(historialContribuyente?.subtotal_limpieza, 0))
-    : (
-      normalizeSN(predio.limpieza_sn, "S") === "S"
-        ? roundMonto2(parseMonto(predio.tarifa_limpieza, parseMonto(predio.limpieza_hist, AUTO_DEUDA_BASE.limpieza)))
-        : 0
-    );
-  const tarifaAdminActual = hasHistorialTarifario
-    ? roundMonto2(parseMonto(historialContribuyente?.subtotal_admin, parseMonto(predio.tarifa_admin, AUTO_DEUDA_BASE.admin)))
-    : roundMonto2(parseMonto(predio.tarifa_admin, AUTO_DEUDA_BASE.admin));
-  const tarifaExtraActual = hasHistorialTarifario
-    ? roundMonto2(parseMonto(historialContribuyente?.subtotal_extra, parseMonto(predio.tarifa_extra, 0)))
-    : roundMonto2(parseMonto(predio.tarifa_extra, 0));
+  const activoSN = normalizeSN(predio.activo_sn, "S");
+  const aguaSN = normalizeSN(predio.agua_sn, "S");
+  const desagueSN = normalizeSN(predio.desague_sn, "S");
+  const limpiezaSN = normalizeSN(predio.limpieza_sn, "S");
+  const tarifaAguaActual = (activoSN === "S" && aguaSN === "S")
+    ? roundMonto2(parseMonto(
+      predio.tarifa_agua,
+      parseMonto(
+        historialContribuyente?.subtotal_agua,
+        parseMonto(predio.agua_hist, AUTO_DEUDA_BASE.agua)
+      )
+    ))
+    : 0;
+  const tarifaDesagueActual = (activoSN === "S" && desagueSN === "S")
+    ? roundMonto2(parseMonto(
+      predio.tarifa_desague,
+      parseMonto(
+        historialContribuyente?.subtotal_desague,
+        parseMonto(predio.desague_hist, AUTO_DEUDA_BASE.desague)
+      )
+    ))
+    : 0;
+  const tarifaLimpiezaActual = (activoSN === "S" && limpiezaSN === "S")
+    ? roundMonto2(parseMonto(
+      predio.tarifa_limpieza,
+      parseMonto(
+        historialContribuyente?.subtotal_limpieza,
+        parseMonto(predio.limpieza_hist, AUTO_DEUDA_BASE.limpieza)
+      )
+    ))
+    : 0;
+  const tarifaAdminActual = activoSN === "S"
+    ? roundMonto2(parseMonto(
+      predio.tarifa_admin,
+      parseMonto(historialContribuyente?.subtotal_admin, AUTO_DEUDA_BASE.admin)
+    ))
+    : 0;
+  const tarifaExtraActual = roundMonto2(parseMonto(
+    predio.tarifa_extra,
+    parseMonto(historialContribuyente?.subtotal_extra, 0)
+  ));
 
   return {
     tarifa_actual_agua: tarifaAguaActual,
@@ -15016,9 +15029,9 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
     tarifa_actual_limpieza: tarifaLimpiezaActual,
     tarifa_actual_admin: tarifaAdminActual,
     tarifa_actual_extra: tarifaExtraActual,
-    servicio_agua_activo_real_sn: tarifaAguaActual > 0 ? "S" : "N",
-    servicio_desague_activo_real_sn: tarifaDesagueActual > 0 ? "S" : "N",
-    servicio_limpieza_activo_real_sn: tarifaLimpiezaActual > 0 ? "S" : "N"
+    servicio_agua_activo_real_sn: (activoSN === "S" && aguaSN === "S") ? "S" : "N",
+    servicio_desague_activo_real_sn: (activoSN === "S" && desagueSN === "S") ? "S" : "N",
+    servicio_limpieza_activo_real_sn: (activoSN === "S" && limpiezaSN === "S") ? "S" : "N"
   };
 }
 
