@@ -24,6 +24,7 @@ import ModalReporteCortes from "./components/ModalReporteCortes";
 import ModalActaCorteSelector from "./components/ModalActaCorteSelector";
 import ModalCampoSolicitudes from "./components/ModalCampoSolicitudes";
 import ModalCorteConexion from "./components/ModalCorteConexion";
+import FlashNotice from "./components/FlashNotice";
 import { buildReporteEstadoConexionPdf } from "./utils/simplePdf";
 import { formatDireccionDisplay } from "./utils/direccionDisplay";
 
@@ -609,6 +610,7 @@ function AguaApp({ onBackToSelector = null }) {
   const scrollRafRef = useRef(0);
   const lastHoverIdRef = useRef(null);
   const historialCacheRef = useRef(new Map());
+  const [flash, setFlash] = useState(null);
   const rowHeight = 32;
   const overscan = 24;
 
@@ -662,6 +664,15 @@ function AguaApp({ onBackToSelector = null }) {
     const parsed = parseFloat(value);
     return Number.isFinite(parsed) ? parsed.toFixed(2) : "0.00";
   }, []);
+  const showFlash = useCallback((type, text) => {
+    setFlash({ type, text: String(text || "").trim(), ts: Date.now() });
+  }, []);
+
+  useEffect(() => {
+    if (!flash?.text) return undefined;
+    const timer = setTimeout(() => setFlash(null), 5000);
+    return () => clearTimeout(timer);
+  }, [flash]);
 
   const construirDetalleDeudaActa = (rows = [], deudaTotalFallback = 0) => {
     const pendientes = (Array.isArray(rows) ? rows : [])
@@ -1451,7 +1462,7 @@ const anexoCajaPageStyle = `
 
   const abrirModalCorteConexion = () => {
     if (!permisos.canCambiarEstadoConexion) {
-      alert("Tu nivel no tiene permiso para cambiar estado de conexion.");
+      showFlash("warning", "Tu nivel no tiene permiso para cambiar estado de conexion.");
       return;
     }
     setMostrarModalCorteConexion(true);
@@ -1461,7 +1472,7 @@ const anexoCajaPageStyle = `
     if (!permisos.canCambiarEstadoConexion) return;
     const idContribuyente = Number(id_contribuyente);
     if (!Number.isInteger(idContribuyente) || idContribuyente <= 0) {
-      alert("Seleccione un contribuyente válido.");
+      showFlash("warning", "Seleccione un contribuyente valido.");
       return;
     }
     try {
@@ -1479,11 +1490,14 @@ const anexoCajaPageStyle = `
       const fechaEvento = res?.data?.fecha_evento ? new Date(res.data.fecha_evento).toLocaleString() : null;
       const recalc = Number(res?.data?.recibos_recalculados || 0);
       const totalEvidencias = Number(res?.data?.evidencias?.length || 0);
-      alert(`${res?.data?.mensaje || "Corte registrado."}${fechaEvento ? `\nFecha: ${fechaEvento}` : ""}\nEvidencias: ${totalEvidencias}\nRecibos futuros recalculados: ${recalc}`);
+      showFlash(
+        "success",
+        `${res?.data?.mensaje || "Corte registrado."}${fechaEvento ? `\nFecha: ${fechaEvento}` : ""}\nEvidencias: ${totalEvidencias}\nRecibos futuros recalculados: ${recalc}`
+      );
       setMostrarModalCorteConexion(false);
       recargarTodo();
     } catch (error) {
-      alert(error?.response?.data?.error || "No se pudo registrar el corte.");
+      showFlash("danger", error?.response?.data?.error || "No se pudo registrar el corte.");
     } finally {
       setRegistrandoCorteConexion(false);
     }
@@ -1491,21 +1505,21 @@ const anexoCajaPageStyle = `
 
   const cambiarEstadoConexionSeleccionado = async (estadoDestino) => {
     if (!usuarioSeleccionado) {
-      alert("Seleccione un contribuyente.");
+      showFlash("warning", "Seleccione un contribuyente.");
       return;
     }
     if (!permisos.canCambiarEstadoConexion) {
-      alert("Tu nivel no tiene permiso para cambiar estado de conexion.");
+      showFlash("warning", "Tu nivel no tiene permiso para cambiar estado de conexion.");
       return;
     }
 
     const estadoActual = normalizeEstadoConexion(usuarioSeleccionado.estado_conexion);
     if (estadoActual === estadoDestino) {
-      alert("El contribuyente ya tiene ese estado.");
+      showFlash("warning", "El contribuyente ya tiene ese estado.");
       return;
     }
     if (estadoDestino === ESTADOS_CONEXION.CON_CONEXION && estadoActual === ESTADOS_CONEXION.CON_CONEXION) {
-      alert("El contribuyente ya tiene conexion activa.");
+      showFlash("warning", "El contribuyente ya tiene conexion activa.");
       return;
     }
 
@@ -1517,7 +1531,7 @@ const anexoCajaPageStyle = `
     if (motivo === null) return;
     const motivoFinal = String(motivo || "").trim();
     if (!motivoFinal) {
-      alert("Debe ingresar un motivo.");
+      showFlash("warning", "Debe ingresar un motivo.");
       return;
     }
     if (!window.confirm(`Confirma ${accion} a ${usuarioSeleccionado.nombre_completo}?`)) return;
@@ -1529,10 +1543,13 @@ const anexoCajaPageStyle = `
       });
       const fechaEvento = res?.data?.fecha_evento ? new Date(res.data.fecha_evento).toLocaleString() : null;
       const recalc = Number(res?.data?.recibos_recalculados || 0);
-      alert(`${res?.data?.mensaje || "Estado actualizado."}${fechaEvento ? `\nFecha: ${fechaEvento}` : ""}\nRecibos futuros recalculados: ${recalc}`);
+      showFlash(
+        "success",
+        `${res?.data?.mensaje || "Estado actualizado."}${fechaEvento ? `\nFecha: ${fechaEvento}` : ""}\nRecibos futuros recalculados: ${recalc}`
+      );
       recargarTodo();
     } catch (error) {
-      alert(error?.response?.data?.error || "No se pudo actualizar el estado de conexion.");
+      showFlash("danger", error?.response?.data?.error || "No se pudo actualizar el estado de conexion.");
     }
   };
 
@@ -1541,17 +1558,17 @@ const anexoCajaPageStyle = `
   const eliminarUsuarioCompleto = async () => {
     if(!usuarioSeleccionado) return;
     if (!permisos.canSuperAdmin) {
-      alert("Solo Nivel 1 puede eliminar contribuyentes.");
+      showFlash("warning", "Solo Nivel 1 puede eliminar contribuyentes.");
       return;
     }
     if(!window.confirm(`PELIGRO: Eliminar a ${usuarioSeleccionado.nombre_completo}?`)) return;
     try {
       await api.delete(`/contribuyentes/${usuarioSeleccionado.id_contribuyente}`);
-      alert("Usuario eliminado.");
+      showFlash("success", "Contribuyente eliminado correctamente.");
       setUsuarioSeleccionado(null);
       recargarTodo();
     } catch (error) {
-      alert(error?.response?.data?.error || "Error al eliminar.");
+      showFlash("danger", error?.response?.data?.error || "Error al eliminar.");
     }
   };
 
@@ -2016,6 +2033,7 @@ const anexoCajaPageStyle = `
 
   return (
     <div className={`d-flex ${bgMain}`} style={{ height: "100vh", overflow: "hidden" }}>
+      <FlashNotice flash={flash} onClose={() => setFlash(null)} />
       
       <Sidebar 
         setMostrarRegistro={setMostrarRegistro} mostrarRegistro={mostrarRegistro} usuarioSeleccionado={usuarioSeleccionado}
@@ -2058,7 +2076,7 @@ const anexoCajaPageStyle = `
 
         {/* CAMBIO: Se pasa darkMode a RegistroForm */}
         {mostrarRegistro && permisos.canManageContribuyentes ? (
-          <div className="p-4 overflow-auto"><RegistroForm onGuardar={() => { recargarTodo(); setMostrarRegistro(false); }} darkMode={darkMode} canDeleteCalles={permisos.canDeleteCalles} /></div>
+          <div className="p-4 overflow-auto"><RegistroForm onGuardar={() => { recargarTodo(); setMostrarRegistro(false); }} darkMode={darkMode} canDeleteCalles={permisos.canDeleteCalles} onFlash={showFlash} /></div>
         ) : (
           <div className="d-flex flex-column flex-grow-1" style={{ overflow: "hidden" }} onClick={handleBackgroundClick}>
             
@@ -2161,7 +2179,7 @@ const anexoCajaPageStyle = `
       </div>
 
       {/* CAMBIO: Se pasa el prop darkMode a TODOS los modales */}
-      {mostrarModalDeuda && usuarioSeleccionado && (<ModalDeuda usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalDeuda(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
+      {mostrarModalDeuda && usuarioSeleccionado && (<ModalDeuda usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalDeuda(false)} alGuardar={recargarTodo} darkMode={darkMode} onFlash={showFlash} />)}
       {SHOW_LEGACY_CAJA_MENU && mostrarModalPago && usuarioSeleccionado && (
         <ModalPago
           usuario={{...usuarioSeleccionado, recibos: historial}} // Pasamos el historial actual como recibos
@@ -2185,7 +2203,7 @@ const anexoCajaPageStyle = `
           exportandoExcel={exportandoArbitriosExcel}
         />
       )}
-      {mostrarModalEliminar && usuarioSeleccionado && (<ModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
+      {mostrarModalEliminar && usuarioSeleccionado && (<ModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} darkMode={darkMode} onFlash={showFlash} />)}
       {mostrarModalCierre && (
         <ModalCierre
           cerrarModal={() => setMostrarModalCierre(false)}
@@ -2194,7 +2212,7 @@ const anexoCajaPageStyle = `
           usuarioSistema={usuarioSistema}
         />
       )}
-      {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} darkMode={darkMode} />)}
+      {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} darkMode={darkMode} onFlash={showFlash} />)}
       {mostrarModalAuditoria && (<ModalAuditoria cerrarModal={() => setMostrarModalAuditoria(false)} darkMode={darkMode} />)}
       {mostrarModalUsuarios && (<ModalUsuarios cerrarModal={() => setMostrarModalUsuarios(false)} usuarioActivo={usuarioSistema} darkMode={darkMode} />)}
       {mostrarModalCampo && (

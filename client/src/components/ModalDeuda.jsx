@@ -24,10 +24,13 @@ const validarPeriodoNoFuturo = (anioInput, mesInput) => {
   return { ok: true, anio, mes };
 };
 
-const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
+const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null }) => {
   const [anio, setAnio] = useState(new Date().getFullYear());
   const [mes, setMes] = useState(new Date().getMonth() + 1);
   const [cargando, setCargando] = useState(false);
+  const showFlash = (type, text) => {
+    if (typeof onFlash === "function") onFlash(type, text);
+  };
 
   const tarifasBase = {
     agua: toNumber(usuario?.tarifa_agua, 7.5),
@@ -90,13 +93,13 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
   const guardarDeuda = async () => {
     const periodo = validarPeriodoNoFuturo(anio, mes);
     if (!periodo.ok) {
-      alert(periodo.error);
+      showFlash("warning", periodo.error);
       return;
     }
     setCargando(true);
     try {
       if (totalServicios <= 0) {
-        alert("Debe seleccionar al menos un servicio o extra.");
+        showFlash("warning", "Debe seleccionar al menos un servicio o extra.");
         setCargando(false);
         return;
       }
@@ -106,15 +109,16 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
         mes: periodo.mes,
         montos
       });
-      alert(`Deuda registrada correctamente para ${usuario.nombre_completo}`);
+      showFlash("success", `Deuda registrada correctamente para ${usuario.nombre_completo}.`);
       alGuardar();
+      cerrarModal();
     } catch (error) {
       const errorBackend = error?.response?.data;
       const mensajeError = errorBackend?.error
         || (typeof errorBackend === "string" ? errorBackend : "")
         || error?.message
         || "Error al registrar deuda";
-      alert(mensajeError);
+      showFlash("danger", mensajeError);
     } finally {
       setCargando(false);
     }
