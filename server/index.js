@@ -14,7 +14,7 @@ const pool = require("./db");
 const luzRouter = require("./luz/router");
 const { importarDeudas } = require("./importar_deudas");
 const { importarDestritoExcel } = require("./importar_deudas_excel");
-const { parseLegacyNumeroMzLt, normalizeLegacyReference } = require("./addressLegacy");
+const { parseLegacyNumeroMzLt, normalizeLegacyReference, stripAddressTags } = require("./addressLegacy");
 const ExcelJS = require('exceljs');
 const xml2js = require('xml2js');
 const multer = require('multer');
@@ -37,26 +37,49 @@ const normalizarNombreCalle = (valor) => {
 const extraerCalleYNumero = (direccionRaw) => {
   const direccion = (direccionRaw || '').toString().trim();
   if (!direccion) return { calle: 'SIN CALLE', numero: '', referencia: '', esEstructurada: false };
+  const partes = parseLegacyNumeroMzLt(direccion);
 
   const match = direccion.match(/^(.*?)(?:\s*(?:N|N°|Nº|NÂ°|NÂº|NO|NUM|NUMERO|#)\s*[:.]?\s*)([A-Z0-9/-]+|S\/N)?(?:\s+(.*))?$/i);
   if (match) {
     const calle = match[1].trim();
-    const numero = (match[2] || '').trim();
-    const referencia = (match[3] || '').trim();
-    return { calle: calle || 'SIN CALLE', numero, referencia, esEstructurada: true };
+    const numero = partes.numero || (match[2] || '').trim();
+    const referencia = normalizeLegacyReference(calle, (match[3] || '').trim());
+    return {
+      calle: calle || 'SIN CALLE',
+      numero,
+      manzana: partes.manzana || '',
+      lote: partes.lote || '',
+      referencia,
+      esEstructurada: true
+    };
   }
 
   const matchFinalNumero = direccion.match(/^(.*\D)\s+([A-Z0-9/-]+)$/i);
   if (matchFinalNumero) {
+    const calle = matchFinalNumero[1].trim();
     return {
-      calle: matchFinalNumero[1].trim(),
-      numero: matchFinalNumero[2].trim(),
+      calle,
+      numero: partes.numero || matchFinalNumero[2].trim(),
+      manzana: partes.manzana || '',
+      lote: partes.lote || '',
       referencia: '',
       esEstructurada: true
     };
   }
 
-  return { calle: direccion, numero: '', referencia: '', esEstructurada: false };
+  const calleBase = stripAddressTags(direccion);
+  if (calleBase && (partes.numero || partes.manzana || partes.lote)) {
+    return {
+      calle: calleBase,
+      numero: partes.numero || '',
+      manzana: partes.manzana || '',
+      lote: partes.lote || '',
+      referencia: '',
+      esEstructurada: true
+    };
+  }
+
+  return { calle: direccion, numero: '', manzana: '', lote: '', referencia: '', esEstructurada: false };
 };
 
 const getFechaPartesZona = (date = new Date(), timeZone = APP_TIMEZONE) => {
@@ -2009,6 +2032,14 @@ const buildDireccionSql = (calleAlias = "ca", predioAlias = "p") => `
             )
           ) > 0 THEN NULL
           ELSE TRIM(${predioAlias}.numero_casa)
+        END,
+        CASE
+          WHEN COALESCE(TRIM(${predioAlias}.manzana), '') = '' THEN NULL
+          ELSE CONCAT('MZ ', TRIM(${predioAlias}.manzana))
+        END,
+        CASE
+          WHEN COALESCE(TRIM(${predioAlias}.lote), '') = '' THEN NULL
+          ELSE CONCAT('LT ', TRIM(${predioAlias}.lote))
         END
       ),
       '\\s+',
@@ -3925,7 +3956,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
           'N' AS verificar_caja_sn
         FROM contribuyentes c
         LEFT JOIN LATERAL (
-          SELECT id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
+          SELECT id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
           FROM predios
           WHERE id_contribuyente = c.id_contribuyente
           ORDER BY id_predio ASC
@@ -4103,7 +4134,7 @@ app.get("/campo/offline-snapshot", async (req, res) => {
           'N' AS verificar_caja_sn
         FROM contribuyentes c
         LEFT JOIN LATERAL (
-          SELECT id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
+          SELECT id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
           FROM predios
           WHERE id_contribuyente = c.id_contribuyente
           ORDER BY id_predio ASC
@@ -4422,7 +4453,7 @@ app.post("/campo/solicitudes", async (req, res) => {
         END AS ultimo_mes_pagado_periodo
       FROM contribuyentes c
       LEFT JOIN LATERAL (
-        SELECT id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
+        SELECT id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
         FROM predios
         WHERE id_contribuyente = c.id_contribuyente
         ORDER BY id_predio ASC
@@ -4710,7 +4741,7 @@ app.get("/campo/solicitudes", async (req, res) => {
       FROM campo_solicitudes s
       LEFT JOIN contribuyentes c ON c.id_contribuyente = s.id_contribuyente
       LEFT JOIN LATERAL (
-        SELECT id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
+        SELECT id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
         FROM predios
         WHERE id_contribuyente = c.id_contribuyente
         ORDER BY id_predio ASC
@@ -4793,7 +4824,7 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       LEFT JOIN contribuyentes c ON c.id_contribuyente = s.id_contribuyente
       LEFT JOIN LATERAL (
         SELECT
-          id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
+          id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
         FROM predios
         WHERE id_contribuyente = c.id_contribuyente
         ORDER BY id_predio ASC
@@ -5280,6 +5311,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       SELECT
         p.id_predio,
         p.id_calle,
+        p.manzana,
+        p.lote,
         COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
@@ -5301,6 +5334,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       ...contribuyenteBaseData.rows[0],
       id_predio: predioData.rows[0]?.id_predio || null,
       id_calle: predioData.rows[0]?.id_calle || null,
+      manzana: predioData.rows[0]?.manzana || "",
+      lote: predioData.rows[0]?.lote || "",
       agua_sn: predioData.rows[0]?.agua_sn || "S",
       desague_sn: predioData.rows[0]?.desague_sn || "S",
       limpieza_sn: predioData.rows[0]?.limpieza_sn || "S",
@@ -5432,6 +5467,12 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
             : null
         )
         : null;
+      const manzanaNueva = aplicarDireccionNueva
+        ? (normalizeLimitedText(partesDireccion?.manzana, 30) || null)
+        : null;
+      const loteNuevo = aplicarDireccionNueva
+        ? (normalizeLimitedText(partesDireccion?.lote, 30) || null)
+        : null;
       const referenciaDireccionNueva = aplicarDireccionNueva
         ? (
           partesDireccion?.esEstructurada
@@ -5444,12 +5485,14 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
          SET activo_sn = $1,
              estado_servicio = $2,
              id_calle = CASE WHEN $8 THEN COALESCE($3, id_calle) ELSE id_calle END,
-             numero_casa = CASE WHEN $8 THEN NULLIF($4, '') ELSE numero_casa END,
+             numero_casa = CASE WHEN $8 THEN COALESCE(NULLIF($4, ''), numero_casa) ELSE numero_casa END,
              referencia_direccion = CASE WHEN $8 THEN NULLIF($5, '') ELSE referencia_direccion END,
              agua_sn = $6,
              desague_sn = $7,
-             limpieza_sn = $9
-         WHERE id_predio = $10`,
+             limpieza_sn = $9,
+             manzana = CASE WHEN $8 THEN COALESCE(NULLIF($10, ''), manzana) ELSE manzana END,
+             lote = CASE WHEN $8 THEN COALESCE(NULLIF($11, ''), lote) ELSE lote END
+         WHERE id_predio = $12`,
         [
           predioEstado.activo_sn,
           predioEstado.estado_servicio,
@@ -5460,6 +5503,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
           desagueDestino,
           aplicarDireccionNueva,
           limpiezaDestino,
+          manzanaNueva,
+          loteNuevo,
           idPredioBase
         ]
       );
