@@ -4886,10 +4886,48 @@ app.get("/campo/solicitudes", async (req, res) => {
       LIMIT $${params.length}
     `;
     const data = await pool.query(sql, params);
-    return res.json(data.rows);
+    const rows = (Array.isArray(data.rows) ? data.rows : []).map((row) => {
+      const metadata = row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+        ? { ...row.metadata }
+        : {};
+      const hasFoto = Boolean(String(metadata?.foto_fachada_base64 || "").trim());
+      if (Object.prototype.hasOwnProperty.call(metadata, "foto_fachada_base64")) {
+        delete metadata.foto_fachada_base64;
+      }
+      return {
+        ...row,
+        metadata,
+        has_foto: hasFoto
+      };
+    });
+    return res.json(rows);
   } catch (err) {
     console.error("Error listando solicitudes campo:", err);
     return res.status(500).json({ error: "Error listando solicitudes." });
+  }
+});
+
+app.get("/campo/solicitudes/:id/foto", async (req, res) => {
+  try {
+    const idSolicitud = parsePositiveInt(req.params?.id, 0);
+    if (!idSolicitud) return res.status(400).json({ error: "ID invalido." });
+
+    const data = await pool.query(
+      `SELECT metadata->>'foto_fachada_base64' AS foto
+       FROM campo_solicitudes
+       WHERE id_solicitud = $1
+       LIMIT 1`,
+      [idSolicitud]
+    );
+    if (data.rows.length === 0) return res.status(404).json({ error: "Solicitud no encontrada." });
+
+    const foto = String(data.rows[0]?.foto || "").trim();
+    if (!foto) return res.status(404).json({ error: "Sin foto." });
+
+    return res.json({ foto_fachada_base64: foto });
+  } catch (err) {
+    console.error("Error obteniendo foto solicitud campo:", err);
+    return res.status(500).json({ error: "Error obteniendo foto." });
   }
 });
 
