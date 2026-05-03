@@ -56,7 +56,8 @@ const ModalImpresionMasiva = ({
   alConfirmar,
   idsSeleccionados = [],
   modoOperacion = "mensual",
-  darkMode
+  darkMode,
+  onFlash = null
 }) => {
   const [calles, setCalles] = useState([]);
   const [cargando, setCargando] = useState(false);
@@ -76,6 +77,9 @@ const ModalImpresionMasiva = ({
   const [permitirMesesFuturos, setPermitirMesesFuturos] = useState(false);
   const [periodosHistorial, setPeriodosHistorial] = useState([]);
   const [cargandoHistorial, setCargandoHistorial] = useState(false);
+  const showFlash = (type, text) => {
+    if (typeof onFlash === "function") onFlash(type, text);
+  };
 
   const anioSeleccionado = Number(seleccion.anio || ultimoPeriodoEmitido.anio);
   const permitirMesesNoEmitidos = soloSeleccion && permitirMesesFuturos;
@@ -178,10 +182,10 @@ const ModalImpresionMasiva = ({
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (soloSeleccion && (!Array.isArray(idsSeleccionados) || idsSeleccionados.length === 0)) {
-      return alert("Seleccione un contribuyente para reimprimir.");
+      return showFlash("warning", "Seleccione un contribuyente para reimprimir.");
     }
-    if (modo === "calle" && !seleccion.id_calle) return alert("Seleccione una calle");
-    if (!seleccion.meses || seleccion.meses.length === 0) return alert("Seleccione al menos un mes");
+    if (modo === "calle" && !seleccion.id_calle) return showFlash("warning", "Seleccione una calle.");
+    if (!seleccion.meses || seleccion.meses.length === 0) return showFlash("warning", "Seleccione al menos un mes.");
 
     const anioNum = Number(seleccion.anio || 0);
     if (!Number.isInteger(anioNum) || anioNum < 1900) return alert("Ingrese un año válido.");
@@ -243,7 +247,8 @@ const ModalImpresionMasiva = ({
         }));
       } catch (error) {
         if (debeSolicitarPermisoCaja && Number(error?.response?.status || 0) === 404) {
-          alert(
+          showFlash(
+            "warning",
             `${mensajePermiso || "Solicitud enviada a Caja."}\n` +
             "No se encontraron recibos para imprimir en los meses seleccionados.\n" +
             "Para reimpresión, seleccione un mes ya emitido."
@@ -255,11 +260,11 @@ const ModalImpresionMasiva = ({
 
       alConfirmar(datosImpresion);
       if (mensajePermiso) {
-        alert(`${mensajePermiso}\nCaja ya puede cobrar esos meses para el contribuyente seleccionado.`);
+        showFlash("success", `${mensajePermiso}\nCaja ya puede cobrar esos meses para el contribuyente seleccionado.`);
       }
       cerrarModal();
     } catch (error) {
-      alert(error.response?.data?.error || "Error al buscar recibos.");
+      showFlash("danger", error.response?.data?.error || "Error al buscar recibos.");
     } finally {
       setCargando(false);
     }

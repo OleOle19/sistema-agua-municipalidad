@@ -17,6 +17,7 @@ import {
   FaUserShield
 } from "react-icons/fa";
 import LoginPage from "../components/LoginPage";
+import FlashNotice from "../components/FlashNotice";
 import luzApi from "./apiLuz";
 import ReciboLuz from "./ReciboLuz";
 import RecibosLuzLote from "./RecibosLuzLote";
@@ -411,6 +412,17 @@ function LuzApp({ onBackToSelector }) {
     const timer = setTimeout(() => setFlash(null), 5000);
     return () => clearTimeout(timer);
   }, [flash]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const originalAlert = window.alert;
+    window.alert = (message) => {
+      showFlash("warning", String(message || "").trim() || "Aviso del sistema.");
+    };
+    return () => {
+      window.alert = originalAlert;
+    };
+  }, [showFlash]);
 
   const handleApiError = useCallback((err, fallback) => {
     const status = Number(err?.response?.status || 0);
@@ -1140,6 +1152,7 @@ function LuzApp({ onBackToSelector }) {
 
   return (
     <div className="d-flex flex-column min-vh-100 bg-light">
+      <FlashNotice flash={flash} onClose={() => setFlash(null)} />
       <header className="bg-warning-subtle border-bottom p-3 d-flex justify-content-between align-items-center gap-2">
         <div>
           <h5 className="m-0 d-flex align-items-center gap-2">
@@ -1170,12 +1183,6 @@ function LuzApp({ onBackToSelector }) {
       </header>
 
       <div className="container-fluid py-3 flex-grow-1">
-        {flash && (
-          <div className={`alert alert-${flash.type === "danger" ? "danger" : flash.type === "warning" ? "warning" : "success"} py-2`}>
-            {flash.text}
-          </div>
-        )}
-
         <ul className="nav nav-tabs">
           <li className="nav-item">
             <button className={`nav-link ${tab === "padron" ? "active" : ""}`} onClick={() => setTab("padron")}>

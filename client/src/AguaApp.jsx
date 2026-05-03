@@ -143,7 +143,8 @@ const Sidebar = memo(({
   resumenPendientesCaja,
   resumenConteoEfectivo,
   onRegistrarConteoEfectivo,
-  showLegacyCajaMenu
+  showLegacyCajaMenu,
+  onFlash
 }) => {
   const isSoloCobrosCajero = permisos.role === "CAJERO";
   const showReportesSection = !isSoloCobrosCajero && (
@@ -186,7 +187,7 @@ const Sidebar = memo(({
         <>
           <li className="nav-item mt-2 text-white-50 text-uppercase small fw-bold">Caja</li>
           <li>
-            <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => usuarioSeleccionado ? setMostrarModalPago(true) : alert("Seleccione usuario")}>
+            <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => usuarioSeleccionado ? setMostrarModalPago(true) : onFlash?.("warning", "Seleccione usuario.")}>
               <FaMoneyBillWave/> <span>Gestion Cobros (F7)</span>
               {Number(resumenPendientesCaja?.total_ordenes || 0) > 0 && (
                 <span className="badge bg-danger ms-auto">{Number(resumenPendientesCaja?.total_ordenes || 0)}</span>
@@ -674,6 +675,17 @@ function AguaApp({ onBackToSelector = null }) {
     return () => clearTimeout(timer);
   }, [flash]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const originalAlert = window.alert;
+    window.alert = (message) => {
+      showFlash("warning", String(message || "").trim() || "Aviso del sistema.");
+    };
+    return () => {
+      window.alert = originalAlert;
+    };
+  }, [showFlash]);
+
   const construirDetalleDeudaActa = (rows = [], deudaTotalFallback = 0) => {
     const pendientes = (Array.isArray(rows) ? rows : [])
       .filter((r) => Number(r?.deuda_mes || 0) > 0 && String(r?.estado || "") !== "NO_EXIGIBLE")
@@ -897,7 +909,7 @@ const anexoCajaPageStyle = `
 
   const abrirModalReporteCortes = (estadoObjetivo = ESTADOS_CONEXION.CORTADO) => {
     if (!permisos.canReporteCortes) {
-      alert("Tu nivel no tiene permiso para reporte de cortes.");
+      showFlash("warning", "Tu nivel no tiene permiso para reporte de cortes.");
       return;
     }
     setReporteEstadoConexion(estadoObjetivo);
@@ -906,7 +918,7 @@ const anexoCajaPageStyle = `
 
   const abrirModalImpresionMensual = () => {
     if (!permisos.canImpresionMensual) {
-      alert("Solo el administrador puede usar la impresión mensual.");
+      showFlash("warning", "Solo el administrador puede usar la impresion mensual.");
       return;
     }
     setModalImpresionModo("mensual");
@@ -915,11 +927,11 @@ const anexoCajaPageStyle = `
 
   const abrirModalReimpresion = () => {
     if (!permisos.canReimpresionRecibo) {
-      alert("Tu nivel no tiene permiso para reimpresión.");
+      showFlash("warning", "Tu nivel no tiene permiso para reimpresion.");
       return;
     }
     if (!usuarioSeleccionado?.id_contribuyente) {
-      alert("Seleccione un contribuyente para reimprimir recibos.");
+      showFlash("warning", "Seleccione un contribuyente para reimprimir recibos.");
       return;
     }
     setModalImpresionModo("reimpresion");
@@ -928,7 +940,7 @@ const anexoCajaPageStyle = `
 
   const abrirModalActaCorte = () => {
     if (!permisos.canGenerarActaCorte) {
-      alert("Tu nivel no tiene permiso para generar actas de corte.");
+      showFlash("warning", "Tu nivel no tiene permiso para generar actas de corte.");
       return;
     }
     setMostrarModalActaCorte(true);
@@ -936,7 +948,7 @@ const anexoCajaPageStyle = `
 
   const imprimirActaCorte = async (idsEntrada = []) => {
     if (!permisos.canGenerarActaCorte) {
-      alert("Tu nivel no tiene permiso para generar actas de corte.");
+      showFlash("warning", "Tu nivel no tiene permiso para generar actas de corte.");
       return;
     }
 
@@ -952,7 +964,10 @@ const anexoCajaPageStyle = `
         : (usuarioSeleccionado?.id_contribuyente ? [usuarioSeleccionado.id_contribuyente] : []));
     const idsObjetivo = Array.from(new Set(idsObjetivoRaw));
 
-    if (idsObjetivo.length === 0) return alert("Seleccione al menos un contribuyente.");
+    if (idsObjetivo.length === 0) {
+      showFlash("warning", "Seleccione al menos un contribuyente.");
+      return;
+    }
 
     const objetivosConDeuda = idsObjetivo.filter((id) => {
       const c = contribuyenteById.get(id) || contribuyenteById.get(String(id));
@@ -1003,7 +1018,8 @@ const anexoCajaPageStyle = `
       }
 
       if (generadas.length === 0) {
-        return alert("No se pudo generar ninguna acta para la seleccion.");
+        showFlash("danger", "No se pudo generar ninguna acta para la seleccion.");
+        return;
       }
 
       const obtenerHistorialConRetry = async (idContribuyente, intentos = 2) => {
@@ -1054,7 +1070,8 @@ const anexoCajaPageStyle = `
       });
 
       if (actasGeneradas.length === 0) {
-        return alert("No se pudo generar ninguna acta para la seleccion.");
+        showFlash("danger", "No se pudo generar ninguna acta para la seleccion.");
+        return;
       }
 
       setDatosActaCorteImprimir(actasGeneradas);
@@ -1063,13 +1080,13 @@ const anexoCajaPageStyle = `
           .map((x) => String(x.codigo_municipal || x.id_contribuyente || "").trim())
           .filter(Boolean)
           .slice(0, 30);
-        alert(`Se generaron ${actasGeneradas.length} acta(s) con criterio 3+ meses. Omitidos: ${codigos.join(", ")}${omitidas.length > 30 ? "..." : ""}`);
+        showFlash("warning", `Se generaron ${actasGeneradas.length} acta(s) con criterio 3+ meses. Omitidos: ${codigos.join(", ")}${omitidas.length > 30 ? "..." : ""}`);
       } else {
-        alert(`Se generaron ${actasGeneradas.length} acta(s) con criterio 3+ meses de deuda.`);
+        showFlash("success", `Se generaron ${actasGeneradas.length} acta(s) con criterio 3+ meses de deuda.`);
       }
     } catch (error) {
       const msg = error?.response?.data?.error || "No se pudo generar el acta de corte.";
-      alert(msg);
+      showFlash("danger", msg);
     } finally {
       setGenerandoActaCorte(false);
     }
@@ -1381,7 +1398,7 @@ const anexoCajaPageStyle = `
     if (montoRaw === null) return;
     const monto = Number.parseFloat(String(montoRaw).replace(",", "."));
     if (!Number.isFinite(monto) || monto < 0) {
-      alert("Ingrese un monto valido de efectivo.");
+      showFlash("warning", "Ingrese un monto valido de efectivo.");
       return;
     }
     const observacionRaw = window.prompt("Observacion opcional del conteo:", "") || "";
@@ -1391,10 +1408,10 @@ const anexoCajaPageStyle = `
         observacion: observacionRaw,
         cerrar_caja: true
       });
-      alert(res?.data?.mensaje || "Conteo de efectivo enviado.");
+      showFlash("success", res?.data?.mensaje || "Conteo de efectivo enviado.");
       await cargarResumenConteoEfectivo();
     } catch (error) {
-      alert(error?.response?.data?.error || "No se pudo enviar el conteo de efectivo.");
+      showFlash("danger", error?.response?.data?.error || "No se pudo enviar el conteo de efectivo.");
     }
   };
 
@@ -1574,7 +1591,7 @@ const anexoCajaPageStyle = `
 
   const descargarPadron = async () => {
     if (!permisos.canExportPadron) {
-      alert("Tu nivel no tiene permiso para exportar padron.");
+      showFlash("warning", "Tu nivel no tiene permiso para exportar padron.");
       return;
     }
     try {
@@ -1588,13 +1605,13 @@ const anexoCajaPageStyle = `
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (error) {
-      alert(error?.response?.data?.error || "Error al descargar padron.");
+      showFlash("danger", error?.response?.data?.error || "Error al descargar padron.");
     }
   };
 
   const descargarBackup = async () => {
     if (!permisos.canSuperAdmin) {
-      alert("Solo Nivel 1 puede generar copias de seguridad.");
+      showFlash("warning", "Solo Nivel 1 puede generar copias de seguridad.");
       return;
     }
     if (!confirm("Generar y descargar copia de seguridad completa?")) return;
@@ -1616,7 +1633,7 @@ const anexoCajaPageStyle = `
           if (parsed?.error) mensaje = parsed.error;
         }
       } catch {}
-      alert(mensaje);
+      showFlash("danger", mensaje);
       console.error(error);
     }
   };
@@ -1913,7 +1930,7 @@ const anexoCajaPageStyle = `
       link.remove();
       window.URL.revokeObjectURL(url);
     } catch (error) {
-      alert(error?.response?.data?.error || "No se pudo exportar arbitrios.");
+      showFlash("danger", error?.response?.data?.error || "No se pudo exportar arbitrios.");
     } finally {
       setExportandoArbitriosExcel(false);
     }
@@ -2052,6 +2069,7 @@ const anexoCajaPageStyle = `
         resumenConteoEfectivo={resumenConteoEfectivo}
         onRegistrarConteoEfectivo={registrarConteoEfectivoCaja}
         showLegacyCajaMenu={SHOW_LEGACY_CAJA_MENU}
+        onFlash={showFlash}
       />
       
       <div className={`flex-grow-1 d-flex flex-column ${bgMain}`} style={{ overflow: "hidden" }}>
@@ -2188,6 +2206,7 @@ const anexoCajaPageStyle = `
           alGuardar={recargarTodo}
           darkMode={darkMode}
           onImprimirAnexo={(datos) => setDatosAnexoCajaImprimir(datos)}
+          onFlash={showFlash}
         />
       )}
       {mostrarModalArbitrios && usuarioSeleccionado && (
@@ -2210,11 +2229,12 @@ const anexoCajaPageStyle = `
           darkMode={darkMode}
           origen="ventanilla"
           usuarioSistema={usuarioSistema}
+          onFlash={showFlash}
         />
       )}
       {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} darkMode={darkMode} onFlash={showFlash} />)}
       {mostrarModalAuditoria && (<ModalAuditoria cerrarModal={() => setMostrarModalAuditoria(false)} darkMode={darkMode} />)}
-      {mostrarModalUsuarios && (<ModalUsuarios cerrarModal={() => setMostrarModalUsuarios(false)} usuarioActivo={usuarioSistema} darkMode={darkMode} />)}
+      {mostrarModalUsuarios && (<ModalUsuarios cerrarModal={() => setMostrarModalUsuarios(false)} usuarioActivo={usuarioSistema} darkMode={darkMode} onFlash={showFlash} />)}
       {mostrarModalCampo && (
         <ModalCampoSolicitudes
           cerrarModal={() => setMostrarModalCampo(false)}
@@ -2229,6 +2249,7 @@ const anexoCajaPageStyle = `
           loading={registrandoCorteConexion}
           onConfirmar={registrarCorteConEvidencia}
           darkMode={darkMode}
+          onFlash={showFlash}
         />
       )}
       {mostrarModalReporteCortes && (
@@ -2254,7 +2275,7 @@ const anexoCajaPageStyle = `
                 URL.revokeObjectURL(url);
               } catch (error) {
                 console.error("Error al exportar PDF:", error);
-                alert("No se pudo exportar el PDF.");
+                showFlash("danger", "No se pudo exportar el PDF.");
               } finally {
                 setMostrarModalReporteCortes(false);
               }
@@ -2268,6 +2289,7 @@ const anexoCajaPageStyle = `
           }}
           estadoObjetivo={reporteEstadoConexion}
           darkMode={darkMode}
+          onFlash={showFlash}
         />
       )}
       {mostrarModalActaCorte && (
@@ -2281,6 +2303,7 @@ const anexoCajaPageStyle = `
             imprimirActaCorte(ids);
           }}
           darkMode={darkMode}
+          onFlash={showFlash}
         />
       )}
       {mostrarModalExportaciones && (
@@ -2288,6 +2311,7 @@ const anexoCajaPageStyle = `
           cerrarModal={() => setMostrarModalExportaciones(false)}
           darkMode={darkMode}
           onBackup={descargarBackup}
+          onFlash={showFlash}
         />
       )}
       
@@ -2303,6 +2327,7 @@ const anexoCajaPageStyle = `
           }
           modoOperacion={modalImpresionModo}
           darkMode={darkMode}
+          onFlash={showFlash}
         />
       )}
       {mostrarImportar && (<ModalImportar cerrarModal={() => setMostrarImportar(false)} alTerminar={recargarTodo} darkMode={darkMode} />)}
@@ -2312,6 +2337,7 @@ const anexoCajaPageStyle = `
             alGuardar={recargarTodo} 
             idsSeleccionados={Array.from(selectedIds)} 
             darkMode={darkMode}
+            onFlash={showFlash}
         />
       )}
 
