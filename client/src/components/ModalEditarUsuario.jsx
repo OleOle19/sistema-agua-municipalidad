@@ -35,7 +35,7 @@ const MOTIVOS_CAMBIO_RAZON_SOCIAL = [
   { value: "OTRO", label: "Otro motivo" }
 ];
 
-const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
+const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null }) => {
   const idContribuyente = Number(usuario?.id_contribuyente || 0);
   const [formData, setFormData] = useState({
     nombre_completo: "",
@@ -72,6 +72,9 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
     admin: 0,
     extra: 0
   });
+  const showFlash = (type, text) => {
+    if (typeof onFlash === "function") onFlash(type, text);
+  };
 
   useEffect(() => {
     if (!idContribuyente) return;
@@ -146,11 +149,11 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
     e.preventDefault();
     const cambioRazonSocial = String(formData.nombre_completo || "").trim().toUpperCase() !== String(nombreOriginal || "").trim().toUpperCase();
     if (cambioRazonSocial && !formData.motivo_cambio_razon_social) {
-      alert("Debe marcar el motivo del cambio de razon social.");
+      showFlash("warning", "Debe marcar el motivo del cambio de razon social.");
       return;
     }
     if (cambioRazonSocial && formData.motivo_cambio_razon_social === "OTRO" && !String(formData.detalle_motivo_cambio_razon_social || "").trim()) {
-      alert("Detalle el motivo del cambio de razon social.");
+      showFlash("warning", "Detalle el motivo del cambio de razon social.");
       return;
     }
     try {
@@ -162,11 +165,12 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
           : null
       });
       const recalc = Number(res?.data?.recibos_recalculados || 0);
-      alert(`Usuario actualizado.\nRecibos pendientes/futuros recalculados: ${recalc}`);
+      showFlash("success", `Usuario actualizado.\nRecibos pendientes/futuros recalculados: ${recalc}`);
       setNombreOriginal(String(formData.nombre_completo || ""));
       alGuardar();
+      cerrarModal();
     } catch (error) {
-      alert(error.response?.data?.error || "Error al actualizar");
+      showFlash("danger", error.response?.data?.error || "Error al actualizar");
     }
   };
 

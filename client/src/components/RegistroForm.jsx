@@ -3,7 +3,7 @@ import api from "../api";
 import ModalCalles from "./ModalCalles";
 import { FaSave } from "react-icons/fa";
 
-const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
+const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false, onFlash = null }) => {
   const [formData, setFormData] = useState({
     codigo_municipal: "",
     dni_ruc: "",
@@ -27,6 +27,9 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
   const inputClass = `form-control ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
   const selectClass = `form-select ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
   const labelClass = `form-label fw-bold small ${darkMode ? "text-white" : "text-dark"}`;
+  const showFlash = (type, text) => {
+    if (typeof onFlash === "function") onFlash(type, text);
+  };
 
   const cargarCalles = async () => {
     try {
@@ -73,7 +76,10 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!formData.nombre_completo || !formData.id_calle) return alert("Faltan datos obligatorios");
+    if (!formData.nombre_completo || !formData.id_calle) {
+      showFlash("warning", "Faltan datos obligatorios.");
+      return;
+    }
     try {
       const payload = new FormData();
       payload.append("dni_ruc", formData.dni_ruc || "");
@@ -89,7 +95,8 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
         headers: { "Content-Type": "multipart/form-data" }
       });
       const totalAdjuntos = Number(res?.data?.adjuntos_registrados || 0);
-      alert(
+      showFlash(
+        "success",
         totalAdjuntos > 0
           ? `Contribuyente registrado con exito. Adjuntos guardados: ${totalAdjuntos}.`
           : "Contribuyente registrado con exito"
@@ -108,7 +115,7 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
       setAdjuntos([]);
       onGuardar();
     } catch (error) {
-      alert(error.response?.data?.error || "Error al guardar");
+      showFlash("danger", error.response?.data?.error || "Error al guardar");
     }
   };
 
@@ -126,7 +133,7 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false }) => {
         </div>
       </div>
       <div className="card-body p-4">
-        {mostrarModalCalles && <ModalCalles cerrarModal={() => { setMostrarModalCalles(false); cargarCalles(); }} darkMode={darkMode} canDeleteCalles={canDeleteCalles} />}
+        {mostrarModalCalles && <ModalCalles cerrarModal={() => { setMostrarModalCalles(false); cargarCalles(); }} darkMode={darkMode} canDeleteCalles={canDeleteCalles} onFlash={showFlash} />}
 
         <form onSubmit={handleSubmit}>
           <h6 className={`border-bottom pb-2 mb-3 ${darkMode ? "border-secondary" : "text-primary"}`}>1. Datos Personales</h6>
