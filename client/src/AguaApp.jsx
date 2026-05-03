@@ -2240,6 +2240,7 @@ const anexoCajaPageStyle = `
           cerrarModal={() => setMostrarModalCampo(false)}
           darkMode={darkMode}
           onAplicado={recargarTodo}
+          onFlash={showFlash}
         />
       )}
       {mostrarModalCorteConexion && (

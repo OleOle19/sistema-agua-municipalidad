@@ -169,7 +169,7 @@ const getSeguimientoTone = (tipo, darkMode) => {
   return palette[tipo] || null;
 };
 
-const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
+const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) => {
   const [filtroEstado, setFiltroEstado] = useState("PENDIENTE");
   const [busquedaContribuyente, setBusquedaContribuyente] = useState("");
   const [organizarPor, setOrganizarPor] = useState("FECHA");
@@ -181,9 +181,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
   const [error, setError] = useState("");
   const [mensaje, setMensaje] = useState("");
 
-  const cargarSolicitudes = async () => {
+  const cargarSolicitudes = async ({ silent = false } = {}) => {
     try {
-      setCargando(true);
+      if (!silent) setCargando(true);
       setError("");
       const params = { limit: 2000, estado: filtroEstado };
       const res = await api.get("/campo/solicitudes", { params });
@@ -191,7 +191,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
     } catch (err) {
       setError(err?.response?.data?.error || "No se pudo cargar la bandeja de campo.");
     } finally {
-      setCargando(false);
+      if (!silent) setCargando(false);
     }
   };
 
@@ -236,13 +236,44 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
       setMensaje("");
       const res = await api.post(`/campo/solicitudes/${id}/${accion}`, payload);
       setMensaje(accion === "aprobar" ? "Solicitud aprobada (sin aplicación automática)." : "Solicitud rechazada.");
-      setMensaje(res?.data?.mensaje || (accion === "aprobar" ? "Solicitud aprobada." : "Solicitud rechazada."));
-      await cargarSolicitudes();
-      if (onAplicado) {
-        await Promise.resolve(onAplicado());
+      const mensajeExito = res?.data?.mensaje || (accion === "aprobar" ? "Solicitud aprobada." : "Solicitud rechazada.");
+      setMensaje(mensajeExito);
+      setSolicitudes((prev) => {
+        const updated = (Array.isArray(prev) ? prev : []).map((item) => {
+          if (Number(item?.id_solicitud || 0) !== id) return item;
+          const metadata = item?.metadata && typeof item.metadata === "object" ? item.metadata : {};
+          return {
+            ...item,
+            estado_solicitud: accion === "aprobar" ? "APROBADO" : "RECHAZADO",
+            revisado_en: new Date().toISOString(),
+            motivo_revision: accion === "rechazar" ? payload.motivo_revision : item?.motivo_revision,
+            metadata: accion === "aprobar"
+              ? {
+                ...metadata,
+                aplicacion_pendiente_sn: res?.data?.aplicada_automaticamente === false ? "S" : "N",
+                aplicacion_automatica_sn: res?.data?.aplicada_automaticamente === false ? "N" : "S"
+              }
+              : metadata
+          };
+        });
+        if (filtroEstado === "PENDIENTE") {
+          return updated.filter((item) => String(item?.estado_solicitud || "").trim().toUpperCase() === "PENDIENTE");
+        }
+        return updated;
+      });
+      if (typeof onFlash === "function") {
+        onFlash("success", mensajeExito);
       }
+      if (onAplicado) {
+        Promise.resolve(onAplicado()).catch(() => {});
+      }
+      cargarSolicitudes({ silent: true }).catch(() => {});
     } catch (err) {
-      setError(err?.response?.data?.error || "No se pudo procesar la solicitud.");
+      const mensajeError = err?.response?.data?.error || "No se pudo procesar la solicitud.";
+      setError(mensajeError);
+      if (typeof onFlash === "function") {
+        onFlash("danger", mensajeError);
+      }
     } finally {
       setProcesandoId(null);
     }
