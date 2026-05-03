@@ -602,6 +602,7 @@ function AguaApp({ onBackToSelector = null }) {
   const pointerRef = useRef({ x: 0, y: 0, inside: false });
   const suppressClearRef = useRef(false);
   const selectedIdsRef = useRef(new Set());
+  const usuarioSeleccionadoRef = useRef(null);
   const [tableViewportHeight, setTableViewportHeight] = useState(0);
   const [tableScrollRow, setTableScrollRow] = useState(0);
   const pendingScrollTopRef = useRef(0);
@@ -838,6 +839,10 @@ const anexoCajaPageStyle = `
   useEffect(() => {
     selectedIdsRef.current = selectedIds;
   }, [selectedIds]);
+
+  useEffect(() => {
+    usuarioSeleccionadoRef.current = usuarioSeleccionado;
+  }, [usuarioSeleccionado]);
 
   const setSelectedIdsIfChanged = useCallback((nextSelected) => {
     setSelectedIds((prev) => (areSetsEqual(prev, nextSelected) ? prev : nextSelected));
@@ -1115,19 +1120,35 @@ const anexoCajaPageStyle = `
     return () => cancelAnimationFrame(raf);
   }, [datosCortesImprimir, handlePrintCortes]);
 
-  const cargarContribuyentes = async (retry = 0) => {
+  const cargarContribuyentes = async (retry = 0, options = {}) => {
+    const forceFresh = options?.forceFresh === true;
     try {
-      const res = await api.get("/contribuyentes");
-      setContribuyentes(Array.isArray(res.data) ? res.data : []);
+      const res = await api.get("/contribuyentes", {
+        params: forceFresh ? { _ts: Date.now() } : undefined,
+        headers: forceFresh
+          ? {
+            "Cache-Control": "no-cache",
+            Pragma: "no-cache"
+          }
+          : undefined
+      });
+      const rows = Array.isArray(res.data) ? res.data : [];
+      setContribuyentes(rows);
+      const selectedId = Number(usuarioSeleccionadoRef.current?.id_contribuyente || 0);
+      if (selectedId > 0) {
+        const usuarioActualizado = rows.find((row) => Number(row?.id_contribuyente || 0) === selectedId) || null;
+        if (usuarioActualizado) {
+          setUsuarioSeleccionado(usuarioActualizado);
+        }
+      }
     } catch (error) {
       const mensaje = String(error?.message || "");
       const esTimeout = error?.code === "ECONNABORTED" || mensaje.toLowerCase().includes("timeout");
       if (esTimeout && retry < 1) {
-        setTimeout(() => cargarContribuyentes(retry + 1), 1200);
+        setTimeout(() => cargarContribuyentes(retry + 1, options), 1200);
         return;
       }
       console.error("Error datos:", error.response?.status, error.response?.data || error.message);
-      setContribuyentes([]);
     }
   };
   const cargarResumenPendientesCaja = useCallback(async () => {
@@ -1328,12 +1349,15 @@ const anexoCajaPageStyle = `
     });
   }, [usuarioSeleccionado, historialTabla, darkMode, formatMonto]);
 
-  const recargarTodo = () => {
+  const recargarTodo = async () => {
+    const selectedId = Number(usuarioSeleccionadoRef.current?.id_contribuyente || 0);
     historialCacheRef.current.clear();
-    cargarContribuyentes();
+    await cargarContribuyentes(0, { forceFresh: true });
     if (SHOW_LEGACY_CAJA_MENU && permisos.canCaja) cargarResumenPendientesCaja();
     if (permisos.canCaja) cargarResumenConteoEfectivo();
-    if (usuarioSeleccionado) cargarHistorial(usuarioSeleccionado.id_contribuyente, "all", true);
+    if (selectedId > 0) {
+      await cargarHistorial(selectedId, "all", true);
+    }
     setRefreshDashboard(prev => prev + 1);
     setSelectedIds(new Set());
   };
