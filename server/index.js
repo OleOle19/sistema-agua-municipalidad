@@ -827,6 +827,46 @@ const resolveCampoSolicitudResultado = (row = {}, changeEntries = []) => {
     ? `Cambios solicitados:\n${formatCampoSolicitudChangeEntries(changeEntries)}`
     : "Pendiente sin cambios estructurados.";
 };
+const resolveCampoCambioFlowLabel = (row = {}) => {
+  const metadata = getCampoSolicitudMetadata(row);
+  const estado = String(row?.estado_solicitud || "").trim().toUpperCase();
+  if (estado === ESTADOS_SOLICITUD_CAMPO.RECHAZADO) return "Rechazado";
+  if (estado === ESTADOS_SOLICITUD_CAMPO.APROBADO) {
+    return normalizeSN(metadata.aplicacion_pendiente_sn, "N") === "S"
+      ? "Aprobado sin aplicar"
+      : "Aplicado";
+  }
+  return "Solicitado";
+};
+const buildCampoSolicitudExtraEntries = (row = {}) => {
+  const metadata = getCampoSolicitudMetadata(row);
+  const extras = [];
+  const observacion = pickCampoText(row?.observacion_campo, metadata?.motivo_obs);
+  const motivoRevision = pickCampoText(row?.motivo_revision);
+  if (observacion) {
+    extras.push({
+      campo: "Observacion de campo",
+      antes: "",
+      despues: observacion,
+      tipo: "OBSERVACION"
+    });
+  }
+  if (motivoRevision) {
+    extras.push({
+      campo: "Motivo de revision",
+      antes: "",
+      despues: motivoRevision,
+      tipo: "REVISION"
+    });
+  }
+  return extras;
+};
+const toCampoCambioTipoExportLabel = (row = {}, item = {}) => {
+  const itemTipo = String(item?.tipo || "").trim().toUpperCase();
+  if (itemTipo === "OBSERVACION") return "Observacion";
+  if (itemTipo === "REVISION") return "Revision";
+  return resolveCampoCambioFlowLabel(row);
+};
 const pushCampoAuditoriaCambio = (items, label, nuevo, anterior) => {
   if (nuevo === null || nuevo === undefined || nuevo === "") return;
   if (auditTextEquals(nuevo, anterior)) return;
@@ -4745,6 +4785,7 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       const metadata = getCampoSolicitudMetadata(row);
       const snapshots = getCampoSolicitudSnapshots(row);
       const changes = getCampoSolicitudChangeEntries(row);
+      const extraEntries = buildCampoSolicitudExtraEntries(row);
       const contribuyenteLabel = buildCampoContribuyenteLabel(row);
       const usuarioSolicita = pickCampoText(row.usuario_solicita_nombre, row.nombre_solicitante, row.usuario_solicita_username);
       const usuarioRevision = pickCampoText(row.usuario_revision_nombre, row.usuario_revision_username);
@@ -4779,7 +4820,8 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
         aplicacion_label: normalizeSN(metadata.aplicacion_pendiente_sn, "N") === "S"
           ? "Pendiente manual"
           : (String(row.estado_solicitud || "").trim().toUpperCase() === ESTADOS_SOLICITUD_CAMPO.APROBADO ? "Aplicada / aprobada" : "Pendiente"),
-        cambios_items: changes
+        cambios_items: changes,
+        extra_items: extraEntries
       };
     });
 
@@ -4794,60 +4836,18 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
     wsResumen.addRow({ campo: "Pendientes", valor: exportRows.filter((row) => row.estado_solicitud === ESTADOS_SOLICITUD_CAMPO.PENDIENTE).length });
     wsResumen.addRow({ campo: "Aprobadas", valor: exportRows.filter((row) => row.estado_solicitud === ESTADOS_SOLICITUD_CAMPO.APROBADO).length });
     wsResumen.addRow({ campo: "Rechazadas", valor: exportRows.filter((row) => row.estado_solicitud === ESTADOS_SOLICITUD_CAMPO.RECHAZADO).length });
-
-    const wsSolicitudes = workbook.addWorksheet("Solicitudes");
-    wsSolicitudes.columns = [
-      { header: "id_solicitud", key: "id_solicitud", width: 14 },
-      { header: "estado_solicitud", key: "estado_solicitud_label", width: 16 },
-      { header: "tipo_solicitud", key: "tipo_solicitud_label", width: 24 },
-      { header: "creado_en", key: "creado_en_label", width: 22 },
-      { header: "revisado_en", key: "revisado_en_label", width: 22 },
-      { header: "usuario_solicita", key: "usuario_solicita_label", width: 28 },
-      { header: "usuario_revision", key: "usuario_revision_label", width: 28 },
-      { header: "id_contribuyente", key: "id_contribuyente", width: 16 },
-      { header: "codigo_municipal", key: "codigo_municipal", width: 16 },
-      { header: "contribuyente", key: "contribuyente_label", width: 38 },
-      { header: "sec_cod", key: "sec_cod", width: 12 },
-      { header: "sec_nombre", key: "sec_nombre", width: 28 },
-      { header: "nombre_actual", key: "nombre_actual_snapshot", width: 30 },
-      { header: "dni_actual", key: "dni_actual_snapshot", width: 18 },
-      { header: "telefono_actual", key: "telefono_actual_snapshot", width: 16 },
-      { header: "email", key: "email", width: 30 },
-      { header: "estado_actual", key: "estado_actual_snapshot", width: 18 },
-      { header: "nombre_solicitado", key: "nombre_verificado", width: 30 },
-      { header: "dni_solicitado", key: "dni_verificado", width: 18 },
-      { header: "telefono_solicitado", key: "telefono_verificado", width: 18 },
-      { header: "estado_solicitado", key: "estado_nuevo_label", width: 18 },
-      { header: "id_predio", key: "id_predio", width: 12 },
-      { header: "id_calle", key: "id_calle", width: 12 },
-      { header: "nombre_calle_actual", key: "nombre_calle_actual_snapshot", width: 24 },
-      { header: "direccion_actual", key: "direccion_actual_snapshot", width: 42 },
-      { header: "direccion_alterna_actual", key: "direccion_alterna_actual_snapshot", width: 36 },
-      { header: "referencia_direccion", key: "referencia_direccion", width: 34 },
-      { header: "numero_casa", key: "numero_casa", width: 14 },
-      { header: "direccion_solicitada", key: "direccion_verificada", width: 42 },
-      { header: "referencia_solicitada", key: "referencia_direccion_label", width: 34 },
-      { header: "agua_actual", key: "agua_actual_snapshot", width: 12 },
-      { header: "desague_actual", key: "desague_actual_snapshot", width: 14 },
-      { header: "limpieza_actual", key: "limpieza_actual_snapshot", width: 14 },
-      { header: "agua_solicitado", key: "agua_nuevo_label", width: 14 },
-      { header: "desague_solicitado", key: "desague_nuevo_label", width: 16 },
-      { header: "limpieza_solicitado", key: "limpieza_nuevo_label", width: 16 },
-      { header: "visitado_sn", key: "visitado_sn_label", width: 12 },
-      { header: "verificacion_estado", key: "verificacion_estado_label", width: 18 },
-      { header: "verificacion_motivo", key: "verificacion_motivo_label", width: 24 },
-      { header: "predio_temporal_sn", key: "predio_temporal_sn_label", width: 16 },
-      { header: "observacion_campo", key: "observacion_campo", width: 40 },
-      { header: "motivo_revision", key: "motivo_revision", width: 36 },
-      { header: "aplicacion", key: "aplicacion_label", width: 18 },
-      { header: "cambios_resumen", key: "cambios_resumen", width: 54 },
-      { header: "resultado_resumen", key: "resultado_resumen", width: 54 }
-    ];
+    wsResumen.addRow({
+      campo: "Solicitudes con observacion",
+      valor: exportRows.filter((row) => Array.isArray(row.extra_items) && row.extra_items.some((item) => item.tipo === "OBSERVACION")).length
+    });
+    wsResumen.addRow({
+      campo: "Total filas hoja Cambios",
+      valor: ""
+    });
 
     const wsCambios = workbook.addWorksheet("Cambios");
     wsCambios.columns = [
       { header: "id_solicitud", key: "id_solicitud", width: 14 },
-      { header: "estado_solicitud", key: "estado_solicitud", width: 16 },
       { header: "tipo_solicitud", key: "tipo_solicitud", width: 22 },
       { header: "id_contribuyente", key: "id_contribuyente", width: 16 },
       { header: "codigo_municipal", key: "codigo_municipal", width: 16 },
@@ -4855,48 +4855,43 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       { header: "campo", key: "campo", width: 22 },
       { header: "tipo", key: "tipo", width: 12 },
       { header: "valor_anterior", key: "valor_anterior", width: 32 },
-      { header: "valor_nuevo", key: "valor_nuevo", width: 32 },
-      { header: "resultado", key: "resultado", width: 28 }
+      { header: "valor_nuevo", key: "valor_nuevo", width: 44 }
     ];
 
     exportRows.forEach((row) => {
-      wsSolicitudes.addRow({
-        ...row,
-        creado_en_label: toDateText(row.creado_en),
-        revisado_en_label: toDateText(row.revisado_en)
-      });
-      if (Array.isArray(row.cambios_items) && row.cambios_items.length > 0) {
-        row.cambios_items.forEach((item) => {
+      const items = [
+        ...(Array.isArray(row.cambios_items) ? row.cambios_items : []),
+        ...(Array.isArray(row.extra_items) ? row.extra_items : [])
+      ];
+      if (items.length > 0) {
+        items.forEach((item) => {
           wsCambios.addRow({
             id_solicitud: row.id_solicitud,
-            estado_solicitud: row.estado_solicitud_label,
             tipo_solicitud: row.tipo_solicitud_label,
             id_contribuyente: row.id_contribuyente,
             codigo_municipal: row.codigo_municipal,
             contribuyente: row.contribuyente_label,
             campo: item.campo,
-            tipo: item.tipo,
+            tipo: toCampoCambioTipoExportLabel(row, item),
             valor_anterior: item.antes || "",
-            valor_nuevo: item.despues || "",
-            resultado: row.estado_solicitud === ESTADOS_SOLICITUD_CAMPO.APROBADO ? "Aplicado / aprobado" : "Solicitado"
+            valor_nuevo: item.despues || ""
           });
         });
       } else {
         wsCambios.addRow({
           id_solicitud: row.id_solicitud,
-          estado_solicitud: row.estado_solicitud_label,
           tipo_solicitud: row.tipo_solicitud_label,
           id_contribuyente: row.id_contribuyente,
           codigo_municipal: row.codigo_municipal,
           contribuyente: row.contribuyente_label,
           campo: "Sin cambios estructurados",
-          tipo: "INFO",
+          tipo: resolveCampoCambioFlowLabel(row),
           valor_anterior: "",
-          valor_nuevo: "",
-          resultado: row.resultado_resumen
+          valor_nuevo: row.resultado_resumen
         });
       }
     });
+    wsResumen.getCell("B8").value = wsCambios.rowCount > 1 ? wsCambios.rowCount - 1 : 0;
 
     const toExcelColumnName = (index) => {
       let n = Number(index || 0);
@@ -4909,7 +4904,7 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       return out || "A";
     };
 
-    [wsResumen, wsSolicitudes, wsCambios].forEach((ws) => {
+    [wsResumen, wsCambios].forEach((ws) => {
       ws.views = [{ state: "frozen", ySplit: 1 }];
       const lastCol = toExcelColumnName(ws.columns.length);
       ws.autoFilter = { from: "A1", to: `${lastCol}1` };
