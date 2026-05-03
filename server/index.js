@@ -606,6 +606,130 @@ const normalizeSN = (value, fallback = "N") => {
   if (["N", "0", "NO", "FALSE"].includes(raw)) return "N";
   return fallback;
 };
+const CAMPO_TIPO_SOLICITUD_AUDIT_LABELS = {
+  [TIPOS_SOLICITUD_CAMPO.ACTUALIZACION]: "Actualizacion ficha",
+  [TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA]: "Alta direccion alterna",
+  [TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO]: "Alta predio nuevo",
+  [TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO_TEMPORAL]: "Alta predio temporal"
+};
+const CAMPO_ESTADO_CONEXION_AUDIT_LABELS = {
+  [ESTADOS_CONEXION.CON_CONEXION]: "Con conexion",
+  [ESTADOS_CONEXION.SIN_CONEXION]: "Sin conexion",
+  [ESTADOS_CONEXION.CORTADO]: "Cortado"
+};
+const sanitizeAuditDetailValue = (value, fallback = "-") => {
+  if (value === null || value === undefined) return fallback;
+  const text = String(value)
+    .replace(/\r?\n+/g, " ")
+    .replace(/[|;]/g, ",")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text || fallback;
+};
+const toAuditComparableText = (value) => String(value ?? "")
+  .replace(/\s+/g, " ")
+  .trim()
+  .toUpperCase();
+const auditTextEquals = (a, b) => toAuditComparableText(a) === toAuditComparableText(b);
+const toCampoTipoSolicitudAuditLabel = (value) => (
+  CAMPO_TIPO_SOLICITUD_AUDIT_LABELS[normalizeTipoSolicitudCampo(value)]
+  || sanitizeAuditDetailValue(value)
+);
+const toCampoEstadoConexionAuditLabel = (value) => (
+  CAMPO_ESTADO_CONEXION_AUDIT_LABELS[normalizeEstadoConexion(value)]
+  || sanitizeAuditDetailValue(value)
+);
+const toCampoServicioAuditLabel = (value, fallback = "N") => (
+  normalizeSN(value, fallback) === "S" ? "Si" : "No"
+);
+const pushCampoAuditoriaCambio = (items, label, nuevo, anterior) => {
+  if (nuevo === null || nuevo === undefined || nuevo === "") return;
+  if (auditTextEquals(nuevo, anterior)) return;
+  items.push(
+    `${label}: ${sanitizeAuditDetailValue(nuevo)} (antes: ${sanitizeAuditDetailValue(anterior)})`
+  );
+};
+const buildCampoSolicitudCambiosAudit = ({
+  tipoSolicitud,
+  solicitud,
+  actual,
+  estadoActual,
+  estadoDestino,
+  aguaActual,
+  aguaDestino,
+  desagueActual,
+  desagueDestino,
+  limpiezaActual,
+  limpiezaDestino
+}) => {
+  const cambios = [];
+  if (!solicitud || !actual) return cambios;
+
+  pushCampoAuditoriaCambio(
+    cambios,
+    "Nombre",
+    normalizeLimitedText(solicitud.nombre_verificado, 200),
+    normalizeLimitedText(actual.nombre_completo, 200)
+  );
+  pushCampoAuditoriaCambio(
+    cambios,
+    "DNI/RUC",
+    normalizeLimitedText(solicitud.dni_verificado, 30),
+    normalizeLimitedText(actual.dni_ruc, 30)
+  );
+  pushCampoAuditoriaCambio(
+    cambios,
+    "Telefono",
+    normalizeLimitedText(solicitud.telefono_verificado, 40),
+    normalizeLimitedText(actual.telefono, 40)
+  );
+
+  const direccionNueva = normalizeLimitedText(solicitud.direccion_verificada, 250);
+  const direccionAnterior = tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA
+    ? normalizeLimitedText(actual.direccion_alterna, 250)
+    : normalizeLimitedText(actual.direccion_completa, 250);
+  pushCampoAuditoriaCambio(
+    cambios,
+    tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA ? "Direccion adicional" : "Direccion",
+    direccionNueva,
+    direccionAnterior
+  );
+
+  if (estadoActual !== estadoDestino) {
+    cambios.push(
+      `Estado de conexion: ${toCampoEstadoConexionAuditLabel(estadoDestino)} (antes: ${toCampoEstadoConexionAuditLabel(estadoActual)})`
+    );
+  }
+  if (aguaActual !== aguaDestino) {
+    cambios.push(
+      `Servicio agua: ${toCampoServicioAuditLabel(aguaDestino, "S")} (antes: ${toCampoServicioAuditLabel(aguaActual, "S")})`
+    );
+  }
+  if (desagueActual !== desagueDestino) {
+    cambios.push(
+      `Servicio desague: ${toCampoServicioAuditLabel(desagueDestino, "S")} (antes: ${toCampoServicioAuditLabel(desagueActual, "S")})`
+    );
+  }
+  if (limpiezaActual !== limpiezaDestino) {
+    cambios.push(
+      `Servicio limpieza: ${toCampoServicioAuditLabel(limpiezaDestino, "S")} (antes: ${toCampoServicioAuditLabel(limpiezaActual, "S")})`
+    );
+  }
+
+  return cambios;
+};
+const buildStructuredAuditDetail = (entries = {}) => {
+  const parts = [];
+  for (const [key, value] of Object.entries(entries || {})) {
+    if (value === undefined || value === null || value === "") continue;
+    if (Array.isArray(value) || (typeof value === "object" && value !== null)) {
+      parts.push(`${key}=${JSON.stringify(value)}`);
+      continue;
+    }
+    parts.push(`${key}=${sanitizeAuditDetailValue(value)}`);
+  }
+  return parts.join("; ");
+};
 const SQL_SN_POSITIVOS = "('S', '1', 'SI', 'TRUE', 'Y', 'YES')";
 const SQL_SN_NEGATIVOS = "('N', '0', 'NO', 'FALSE')";
 const sqlSnEsSi = (sqlExpr, fallback = "S") => {
@@ -4817,7 +4941,12 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       await registrarAuditoria(
         client,
         "CAMPO_SOLICITUD_APROBADA",
-        `Solicitud ${idSolicitud} (${tipoSolicitud}) aprobada sin aplicación automática.`,
+        buildStructuredAuditDetail({
+          solicitud: idSolicitud,
+          tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud),
+          aplicacion: "Pendiente manual",
+          nota_revision: motivoRevision
+        }),
         req.user?.nombre || req.user?.username || "SISTEMA"
       );
 
@@ -4849,7 +4978,12 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       await registrarAuditoria(
         null,
         "CAMPO_SOLICITUD_APROBAR",
-        `Solicitud ${idSolicitud} aprobada (ALTA_PREDIO).`,
+        buildStructuredAuditDetail({
+          solicitud: idSolicitud,
+          tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud),
+          aplicacion: "Pendiente registro manual",
+          nota_revision: motivoRevision
+        }),
         req.user?.nombre || req.user?.username || "SISTEMA"
       );
 
@@ -4876,14 +5010,16 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
 
     const predioData = await client.query(`
       SELECT
-        id_predio,
-        id_calle,
-        COALESCE(NULLIF(UPPER(TRIM(agua_sn)), ''), 'S') AS agua_sn,
-        COALESCE(NULLIF(UPPER(TRIM(desague_sn)), ''), 'S') AS desague_sn,
-        COALESCE(NULLIF(UPPER(TRIM(limpieza_sn)), ''), 'S') AS limpieza_sn,
-        COALESCE(NULLIF(TRIM(direccion_alterna), ''), '') AS direccion_alterna
-      FROM predios
-      WHERE id_contribuyente = $1
+        p.id_predio,
+        p.id_calle,
+        COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+        COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+        COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+        COALESCE(NULLIF(TRIM(p.direccion_alterna), ''), '') AS direccion_alterna,
+        ${buildDireccionSql("ca", "p")} AS direccion_completa
+      FROM predios p
+      LEFT JOIN calles ca ON ca.id_calle = p.id_calle
+      WHERE p.id_contribuyente = $1
       ORDER BY id_predio ASC
       LIMIT 1
       FOR UPDATE
@@ -4900,7 +5036,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       agua_sn: predioData.rows[0]?.agua_sn || "S",
       desague_sn: predioData.rows[0]?.desague_sn || "S",
       limpieza_sn: predioData.rows[0]?.limpieza_sn || "S",
-      direccion_alterna: predioData.rows[0]?.direccion_alterna || ""
+      direccion_alterna: predioData.rows[0]?.direccion_alterna || "",
+      direccion_completa: predioData.rows[0]?.direccion_completa || ""
     };
     const estadoActual = normalizeEstadoConexion(actual.estado_conexion);
     const estadoDestino = normalizeEstadoConexion(solicitud.estado_conexion_nuevo || estadoActual);
@@ -5079,6 +5216,19 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       aguaActual !== aguaDestino ||
       desagueActual !== desagueDestino ||
       limpiezaActual !== limpiezaDestino;
+    const cambiosAplicados = buildCampoSolicitudCambiosAudit({
+      tipoSolicitud,
+      solicitud,
+      actual,
+      estadoActual,
+      estadoDestino,
+      aguaActual,
+      aguaDestino,
+      desagueActual,
+      desagueDestino,
+      limpiezaActual,
+      limpiezaDestino
+    });
     let recibosRecalculados = 0;
     if (serviciosCambiaron || estadoActual !== estadoDestino) {
       const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente);
@@ -5109,7 +5259,16 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     await registrarAuditoria(
       client,
       "CAMPO_SOLICITUD_APROBADA",
-      `Solicitud ${idSolicitud} (${tipoSolicitud}) aplicada a contribuyente ${actual.codigo_municipal || actual.id_contribuyente}. Estado: ${estadoActual} -> ${estadoDestino}. Recibos futuros recalculados: ${recibosRecalculados}.`,
+      buildStructuredAuditDetail({
+        solicitud: idSolicitud,
+        tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud),
+        contribuyente: actual.codigo_municipal || actual.id_contribuyente,
+        aplicacion: "Automatica",
+        cambios_aplicados: cambiosAplicados.length > 0 ? cambiosAplicados : ["Sin cambios directos en ficha."],
+        recibos_recalculados: recibosRecalculados,
+        id_direccion_alterna: idDireccionAlterna,
+        nota_revision: motivoRevision
+      }),
       req.user?.nombre || req.user?.username || "SISTEMA"
     );
 
