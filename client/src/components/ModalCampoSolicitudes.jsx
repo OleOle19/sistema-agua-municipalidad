@@ -203,6 +203,29 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
     setOrdenGrupo(organizarPor === "CALLE" ? "ASC" : "DESC");
   }, [organizarPor]);
 
+  const abrirFotoSolicitud = async (idSolicitud) => {
+    const id = Number(idSolicitud || 0);
+    if (!id) return;
+    try {
+      const res = await api.get(`/campo/solicitudes/${id}/foto`);
+      const foto = String(res?.data?.foto_fachada_base64 || "").trim();
+      if (!foto) throw new Error("Sin foto.");
+      const link = document.createElement("a");
+      link.href = foto;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      const mensajeError = err?.response?.data?.error || "No se pudo abrir la foto de la solicitud.";
+      setError(mensajeError);
+      if (typeof onFlash === "function") {
+        onFlash("danger", mensajeError);
+      }
+    }
+  };
+
   const procesarSolicitud = async (solicitud, accion) => {
     const id = Number(solicitud?.solicitud?.id_solicitud || solicitud?.id_solicitud);
     if (!Number.isInteger(id) || id <= 0) return;
@@ -291,6 +314,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
     const verificacionMotivo = normalizeText(metadata?.verificacion_motivo || "");
     const predioTemporalSN = normalizeSN(metadata?.predio_temporal_sn, "N");
     const fotoFachada = metadata?.foto_fachada_base64 || null;
+    const fotoDisponible = Boolean(fotoFachada || s?.has_foto);
     const aguaActual = normalizeSN(s?.agua_actual_db, metadata.servicio_agua_actual || "S");
     const desagueActual = normalizeSN(s?.desague_actual_db, metadata.servicio_desague_actual || "S");
     const limpiezaActual = normalizeSN(s?.limpieza_actual_db, metadata.servicio_limpieza_actual || "S");
@@ -381,6 +405,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
       verificacionMotivo,
       predioTemporalSN,
       fotoFachada,
+      fotoDisponible,
       hasStructuredChanges,
       autoApplySafe
     };
@@ -594,7 +619,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
                       </tr>
                     );
                     const groupItems = group.items.map((rowData) => {
-                      const { solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt, calleLabel, verificacionEstado, verificacionMotivo, predioTemporalSN, fotoFachada, autoApplySafe } = rowData;
+                      const { solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt, calleLabel, verificacionEstado, verificacionMotivo, predioTemporalSN, fotoFachada, fotoDisponible, autoApplySafe } = rowData;
                       const pending = s.estado_solicitud === "PENDIENTE";
                       const disabled = procesandoId === s.id_solicitud;
                       const isAltaPredio = tipoSolicitud === "ALTA_PREDIO";
@@ -649,9 +674,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
                                     Pendiente proxima visita: <strong>SI</strong>
                                   </div>
                                 )}
-                                {fotoFachada && (
+                                {fotoDisponible && (
                                   <div className="mt-1">
-                                    <a href={fotoFachada} target="_blank" rel="noreferrer">Ver foto</a>
+                                    <button type="button" className="btn btn-link btn-sm p-0 align-baseline" onClick={() => abrirFotoSolicitud(s.id_solicitud)}>Ver foto</button>
                                   </div>
                                 )}
                               </>
@@ -675,9 +700,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
                                     <> | Motivo: <strong>{verificacionMotivoLabel(verificacionMotivo)}</strong></>
                                   )}
                                 </div>
-                                {fotoFachada && (
+                                {fotoDisponible && (
                                   <div className="mt-1">
-                                    <a href={fotoFachada} target="_blank" rel="noreferrer">Ver foto</a>
+                                    <button type="button" className="btn btn-link btn-sm p-0 align-baseline" onClick={() => abrirFotoSolicitud(s.id_solicitud)}>Ver foto</button>
                                   </div>
                                 )}
                                 <div className="mt-1">
