@@ -16,6 +16,12 @@ const ACTION_LABELS = {
   ADMIN_LUZ_USUARIO_ACTUALIZADO: "Usuario de luz actualizado",
   ADMIN_LUZ_USUARIO_ELIMINADO: "Usuario de luz eliminado"
 };
+const CAMPO_TIPO_SOLICITUD_LABELS = {
+  ACTUALIZACION: "Actualizacion ficha",
+  ALTA_DIRECCION_ALTERNA: "Alta direccion alterna",
+  ALTA_PREDIO: "Alta predio nuevo",
+  ALTA_PREDIO_TEMPORAL: "Alta predio temporal"
+};
 
 const SIMPLE_ROUTE_RULES = [
   { method: "POST", pattern: /^\/auth\/login$/i, label: "Inicio de sesion" },
@@ -71,7 +77,14 @@ const LABEL_TRANSLATIONS = {
   autorizacion: "Autorizacion",
   minutos: "Minutos",
   acceso: "Tipo acceso",
-  detalle_recibos: "Detalle recibos"
+  detalle_recibos: "Detalle recibos",
+  tipo_solicitud: "Tipo solicitud",
+  aplicacion: "Aplicacion",
+  cambios_aplicados: "Cambios aplicados",
+  cambios_solicitados: "Cambios solicitados",
+  recibos_recalculados: "Recibos futuros recalculados",
+  id_direccion_alterna: "ID direccion alterna",
+  nota_revision: "Nota revision"
 };
 
 const formatArrayHint = (value) => {
@@ -195,12 +208,30 @@ const formatValueForDisplay = (label, valueText, isJson) => {
     if (arrayHint) return arrayHint;
   }
 
+  if (key === "tipo_solicitud") {
+    const normalized = String(valueText || "").trim().toUpperCase();
+    return CAMPO_TIPO_SOLICITUD_LABELS[normalized] || valueText;
+  }
+
   if (isJson && (key === "params" || key === "body")) {
     try {
       const parsed = JSON.parse(valueText);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return valueText;
       const lines = Object.entries(parsed).map(([k, v]) => `${prettyLabel(k)}: ${formatScalar(v)}`);
       return lines.length > 0 ? lines.join("\n") : "Sin datos";
+    } catch {
+      return valueText;
+    }
+  }
+
+  if (isJson && (key === "cambios_aplicados" || key === "cambios_solicitados")) {
+    try {
+      const parsed = JSON.parse(valueText);
+      if (Array.isArray(parsed)) {
+        const lines = parsed.map((item) => String(item || "").trim()).filter(Boolean);
+        return lines.length > 0 ? lines.join("\n") : "Sin cambios";
+      }
+      return valueText;
     } catch {
       return valueText;
     }
@@ -429,7 +460,11 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                                 detalleRows.map((item, idx) => {
                                   const labelKey = String(item.label || "").trim().toLowerCase();
                                   const valueToRender = formatValueForDisplay(item.label, item.text, item.isJson);
-                                  const showAsCodeBlock = item.isJson && labelKey !== "params" && labelKey !== "body";
+                                  const showAsCodeBlock = item.isJson
+                                    && labelKey !== "params"
+                                    && labelKey !== "body"
+                                    && labelKey !== "cambios_aplicados"
+                                    && labelKey !== "cambios_solicitados";
                                   return (
                                   <div key={`${log.id_auditoria}-${idx}`} className={idx < detalleRows.length - 1 ? "mb-2" : ""}>
                                     <div className="small text-uppercase fw-semibold opacity-75">{prettyLabel(item.label)}</div>

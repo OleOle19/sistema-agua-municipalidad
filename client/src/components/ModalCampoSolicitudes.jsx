@@ -201,8 +201,6 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
 
     let payload = {};
     if (accion === "aprobar") {
-      const nota = window.prompt("Nota de aprobacion (opcional):", "");
-      if (nota === null) return;
       const puedeAplicarAutomatico = Boolean(solicitud?.autoApplySafe);
       let aplicarCambiosSN = "N";
       if (puedeAplicarAutomatico) {
@@ -212,7 +210,6 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
         window.alert("Esta solicitud quedara aprobada sin aplicacion automatica. Primero revisa ficha y haz cambios manuales si hace falta.");
       }
       payload = {
-        motivo_revision: nota.trim(),
         aplicar_cambios_sn: aplicarCambiosSN
       };
     } else {
