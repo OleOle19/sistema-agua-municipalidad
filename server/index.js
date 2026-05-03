@@ -617,6 +617,11 @@ const CAMPO_ESTADO_CONEXION_AUDIT_LABELS = {
   [ESTADOS_CONEXION.SIN_CONEXION]: "Sin conexion",
   [ESTADOS_CONEXION.CORTADO]: "Cortado"
 };
+const CAMPO_SOLICITUD_ESTADO_LABELS = {
+  [ESTADOS_SOLICITUD_CAMPO.PENDIENTE]: "Pendiente",
+  [ESTADOS_SOLICITUD_CAMPO.APROBADO]: "Aprobada",
+  [ESTADOS_SOLICITUD_CAMPO.RECHAZADO]: "Rechazada"
+};
 const sanitizeAuditDetailValue = (value, fallback = "-") => {
   if (value === null || value === undefined) return fallback;
   const text = String(value)
@@ -642,6 +647,186 @@ const toCampoEstadoConexionAuditLabel = (value) => (
 const toCampoServicioAuditLabel = (value, fallback = "N") => (
   normalizeSN(value, fallback) === "S" ? "Si" : "No"
 );
+const toCampoSolicitudEstadoLabel = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  return CAMPO_SOLICITUD_ESTADO_LABELS[raw] || sanitizeAuditDetailValue(value);
+};
+const pickCampoText = (...values) => {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const normalized = String(value).replace(/\s+/g, " ").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+};
+const buildCampoContribuyenteLabel = (row = {}) => {
+  const id = parsePositiveInt(row?.id_contribuyente, 0);
+  const codigo = pickCampoText(row?.codigo_municipal);
+  const nombre = pickCampoText(row?.nombre_completo, row?.nombre_actual_db, row?.nombre_verificado);
+  const codigoBase = codigo || (id > 0 ? `ID ${id}` : "");
+  if (codigoBase && nombre) return `${codigoBase} - ${nombre}`;
+  if (codigoBase) return codigoBase;
+  if (nombre) return nombre;
+  return id > 0 ? `ID ${id}` : "Sin contribuyente";
+};
+const getCampoSolicitudMetadata = (row = {}) => (
+  row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+    ? row.metadata
+    : {}
+);
+const getCampoSolicitudTipo = (row = {}) => normalizeTipoSolicitudCampo(
+  row?.tipo_solicitud || getCampoSolicitudMetadata(row)?.tipo_solicitud,
+  TIPOS_SOLICITUD_CAMPO.ACTUALIZACION
+);
+const getCampoSolicitudSnapshots = (row = {}) => {
+  const metadata = getCampoSolicitudMetadata(row);
+  return {
+    nombreActual: pickCampoText(metadata.nombre_actual_snapshot, row?.nombre_actual_db),
+    dniActual: pickCampoText(metadata.dni_actual_snapshot, row?.dni_actual_db),
+    telefonoActual: pickCampoText(metadata.telefono_actual_snapshot, row?.telefono_actual_db),
+    direccionActual: pickCampoText(metadata.direccion_actual_snapshot, row?.direccion_actual_db),
+    direccionAlternaActual: pickCampoText(metadata.direccion_alterna_actual_snapshot, row?.direccion_alterna_actual_db),
+    nombreCalleActual: pickCampoText(metadata.nombre_calle_actual_snapshot, row?.nombre_calle_db),
+    estadoActual: normalizeEstadoConexion(
+      metadata.estado_actual_snapshot || row?.estado_conexion_actual || row?.estado_actual_db
+    ),
+    aguaActual: normalizeSN(metadata.servicio_agua_actual, row?.agua_actual_db || "S"),
+    desagueActual: normalizeSN(metadata.servicio_desague_actual, row?.desague_actual_db || "S"),
+    limpiezaActual: normalizeSN(metadata.servicio_limpieza_actual, row?.limpieza_actual_db || "S")
+  };
+};
+const getCampoSolicitudChangeEntries = (row = {}) => {
+  const metadata = getCampoSolicitudMetadata(row);
+  const tipoSolicitud = getCampoSolicitudTipo(row);
+  const snapshots = getCampoSolicitudSnapshots(row);
+  const isAltaPredio = tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO || tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO_TEMPORAL;
+  const estadoNuevo = normalizeEstadoConexion(row?.estado_conexion_nuevo || metadata.estado_nuevo || snapshots.estadoActual);
+  const aguaNuevo = normalizeSN(metadata.servicio_agua_nuevo, snapshots.aguaActual);
+  const desagueNuevo = normalizeSN(metadata.servicio_desague_nuevo, snapshots.desagueActual);
+  const limpiezaNuevo = normalizeSN(metadata.servicio_limpieza_nuevo, snapshots.limpiezaActual);
+  const cambios = [];
+  const pushChange = (campo, antes, despues) => {
+    const antesTxt = pickCampoText(antes);
+    const despuesTxt = pickCampoText(despues);
+    if (!despuesTxt) return;
+    if (antesTxt && auditTextEquals(antesTxt, despuesTxt)) return;
+    cambios.push({
+      campo,
+      antes: antesTxt,
+      despues: despuesTxt,
+      tipo: antesTxt ? "CAMBIO" : "ALTA"
+    });
+  };
+
+  if (isAltaPredio) {
+    pushChange("Direccion", "", row?.direccion_verificada);
+    pushChange("Referencia", "", metadata.referencia_direccion);
+    pushChange("Nombre", "", row?.nombre_verificado);
+    pushChange("DNI/RUC", "", row?.dni_verificado);
+    pushChange("Telefono", "", row?.telefono_verificado);
+    return cambios;
+  }
+
+  pushChange("Nombre", snapshots.nombreActual, row?.nombre_verificado);
+  pushChange("DNI/RUC", snapshots.dniActual, row?.dni_verificado);
+  pushChange("Telefono", snapshots.telefonoActual, row?.telefono_verificado);
+  pushChange(
+    tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA ? "Direccion adicional" : "Direccion",
+    tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA ? snapshots.direccionAlternaActual : snapshots.direccionActual,
+    row?.direccion_verificada
+  );
+
+  if (snapshots.estadoActual !== estadoNuevo) {
+    cambios.push({
+      campo: "Estado conexion",
+      antes: toCampoEstadoConexionAuditLabel(snapshots.estadoActual),
+      despues: toCampoEstadoConexionAuditLabel(estadoNuevo),
+      tipo: "CAMBIO"
+    });
+  }
+  if (snapshots.aguaActual !== aguaNuevo) {
+    cambios.push({
+      campo: "Servicio agua",
+      antes: toCampoServicioAuditLabel(snapshots.aguaActual, "S"),
+      despues: toCampoServicioAuditLabel(aguaNuevo, "S"),
+      tipo: "CAMBIO"
+    });
+  }
+  if (snapshots.desagueActual !== desagueNuevo) {
+    cambios.push({
+      campo: "Servicio desague",
+      antes: toCampoServicioAuditLabel(snapshots.desagueActual, "S"),
+      despues: toCampoServicioAuditLabel(desagueNuevo, "S"),
+      tipo: "CAMBIO"
+    });
+  }
+  if (snapshots.limpiezaActual !== limpiezaNuevo) {
+    cambios.push({
+      campo: "Servicio limpieza",
+      antes: toCampoServicioAuditLabel(snapshots.limpiezaActual, "S"),
+      despues: toCampoServicioAuditLabel(limpiezaNuevo, "S"),
+      tipo: "CAMBIO"
+    });
+  }
+
+  if (
+    cambios.length === 0
+    && String(row?.estado_solicitud || "").trim().toUpperCase() === ESTADOS_SOLICITUD_CAMPO.APROBADO
+    && !metadata.nombre_actual_snapshot
+    && !metadata.dni_actual_snapshot
+    && !metadata.telefono_actual_snapshot
+    && !metadata.direccion_actual_snapshot
+    && !metadata.direccion_alterna_actual_snapshot
+  ) {
+    pushChange("Nombre aplicado", "", row?.nombre_verificado);
+    pushChange("DNI/RUC aplicado", "", row?.dni_verificado);
+    pushChange("Telefono aplicado", "", row?.telefono_verificado);
+    pushChange(
+      tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA ? "Direccion adicional aplicada" : "Direccion aplicada",
+      "",
+      row?.direccion_verificada
+    );
+  }
+
+  return cambios;
+};
+const formatCampoSolicitudChangeEntries = (entries = [], mode = "detallado") => {
+  const rows = Array.isArray(entries) ? entries : [];
+  if (rows.length === 0) return "Sin cambios estructurados de ficha.";
+  return rows.map((entry) => {
+    const campo = sanitizeAuditDetailValue(entry?.campo || "Cambio");
+    const antes = sanitizeAuditDetailValue(entry?.antes || "");
+    const despues = sanitizeAuditDetailValue(entry?.despues || "");
+    if (mode === "simple") {
+      return antes ? `${campo}: ${despues} (antes: ${antes})` : `${campo}: ${despues}`;
+    }
+    return antes
+      ? `${campo} | antes: ${antes} | despues: ${despues}`
+      : `${campo} | despues: ${despues}`;
+  }).join("\n");
+};
+const resolveCampoSolicitudResultado = (row = {}, changeEntries = []) => {
+  const metadata = getCampoSolicitudMetadata(row);
+  const estado = String(row?.estado_solicitud || "").trim().toUpperCase();
+  if (estado === ESTADOS_SOLICITUD_CAMPO.APROBADO) {
+    if (normalizeSN(metadata.aplicacion_pendiente_sn, "N") === "S") {
+      return "Aprobada sin aplicacion automatica.";
+    }
+    if (getCampoSolicitudTipo(row) === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO) {
+      return "Aprobada. Pendiente registro manual de predio.";
+    }
+    return changeEntries.length > 0
+      ? `Cambios aplicados:\n${formatCampoSolicitudChangeEntries(changeEntries)}`
+      : "Aprobada.";
+  }
+  if (estado === ESTADOS_SOLICITUD_CAMPO.RECHAZADO) {
+    const motivo = pickCampoText(row?.motivo_revision);
+    return motivo ? `Rechazada. Motivo: ${motivo}` : "Rechazada.";
+  }
+  return changeEntries.length > 0
+    ? `Cambios solicitados:\n${formatCampoSolicitudChangeEntries(changeEntries)}`
+    : "Pendiente sin cambios estructurados.";
+};
 const pushCampoAuditoriaCambio = (items, label, nuevo, anterior) => {
   if (nuevo === null || nuevo === undefined || nuevo === "") return;
   if (auditTextEquals(nuevo, anterior)) return;
@@ -1963,7 +2148,7 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/campo\/offline-snapshot$/, minRole: "BRIGADA" },
   { methods: ["POST"], pattern: /^\/campo\/solicitudes$/, minRole: "BRIGADA" },
   { methods: ["GET"], pattern: /^\/campo\/seguimiento(\/|$)/, minRole: "BRIGADA" },
-  { methods: ["GET"], pattern: /^\/campo\/solicitudes\/reporte-empadronados(?:\.xlsx)?$/, minRole: "ADMIN_SEC" },
+  { methods: ["GET"], pattern: /^\/campo\/solicitudes\/(?:reporte-empadronados|exportar)(?:\.xlsx)?$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/campo\/solicitudes$/, minRole: "ADMIN_SEC" },
   { methods: ["POST"], pattern: /^\/campo\/solicitudes\/\d+\/aprobar$/, minRole: "ADMIN_SEC" },
   { methods: ["POST"], pattern: /^\/campo\/solicitudes\/\d+\/rechazar$/, minRole: "ADMIN_SEC" },
@@ -3423,6 +3608,10 @@ const construirDetalleAuditoria = (req) => {
   if (req.file) {
     partes.push(`archivo=${req.file.originalname || "sin_nombre"} (${req.file.size || 0} bytes)`);
   }
+  if (req.auditExtraEntries && typeof req.auditExtraEntries === "object") {
+    const extra = buildStructuredAuditDetail(req.auditExtraEntries);
+    if (extra) partes.push(extra);
+  }
   return partes.join(" | ");
 };
 
@@ -4042,6 +4231,11 @@ app.post("/campo/solicitudes", async (req, res) => {
         `ID ${created.rows[0].id_solicitud} | Tipo ${tipoSolicitud} | Predio nuevo ${direccionVerificada}`,
         req.user?.nombre || req.user?.username || "SISTEMA"
       );
+      req.auditExtraEntries = {
+        solicitud: Number(created.rows[0].id_solicitud || 0),
+        tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud),
+        contribuyente: pickCampoText(nombreVerificado, direccionVerificada, referenciaDireccion) || "Predio nuevo"
+      };
 
       return res.status(201).json({
         mensaje: "Solicitud de predio nuevo registrada.",
@@ -4136,6 +4330,7 @@ app.post("/campo/solicitudes", async (req, res) => {
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
         p.referencia_direccion,
         p.direccion_alterna,
+        COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle,
         ${buildDireccionSql("ca", "p")} AS direccion_completa,
         COALESCE(rp.meses_deuda_total, 0) AS meses_deuda,
         COALESCE(rp.deuda_total, 0) AS deuda_total,
@@ -4230,6 +4425,12 @@ app.post("/campo/solicitudes", async (req, res) => {
       tipo_solicitud: tipoSolicitud,
       estado_actual: estadoActual,
       estado_nuevo: estadoNuevo,
+      nombre_actual_snapshot: normalizeLimitedText(row.nombre_completo, 200) || null,
+      dni_actual_snapshot: normalizeLimitedText(row.dni_ruc, 30) || null,
+      telefono_actual_snapshot: normalizeLimitedText(row.telefono, 40) || null,
+      direccion_actual_snapshot: normalizeLimitedText(row.direccion_completa || row.referencia_direccion, 250) || null,
+      direccion_alterna_actual_snapshot: normalizeLimitedText(row.direccion_alterna, 250) || null,
+      nombre_calle_actual_snapshot: normalizeLimitedText(row.nombre_calle, 150) || null,
       servicio_agua_actual: aguaActual,
       servicio_agua_nuevo: aguaNuevo,
       servicio_desague_actual: desagueActual,
@@ -4340,6 +4541,13 @@ app.post("/campo/solicitudes", async (req, res) => {
       `ID ${created.rows[0].id_solicitud} | Tipo ${tipoSolicitud} | Contribuyente ${row.codigo_municipal || idContribuyente} ${row.nombre_completo || ""}`,
       req.user?.nombre || req.user?.username || "SISTEMA"
     );
+    req.auditExtraEntries = {
+      solicitud: Number(created.rows[0].id_solicitud || 0),
+      id_contribuyente: Number(row.id_contribuyente || 0),
+      codigo_municipal: pickCampoText(row.codigo_municipal),
+      contribuyente: buildCampoContribuyenteLabel(row),
+      tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud)
+    };
 
     return res.status(201).json({
       mensaje: "Solicitud de campo registrada.",
@@ -4447,310 +4655,247 @@ app.get("/campo/solicitudes", async (req, res) => {
   }
 });
 
-const exportarReporteEmpadronados = async (req, res) => {
+const exportarSolicitudesCampoExcel = async (req, res) => {
   try {
     const estadoRaw = String(req.query?.estado || "TODOS").trim().toUpperCase();
-    const organizarPor = String(req.query?.organizar_por || "CALLE").trim().toUpperCase() === "CALLE" ? "CALLE" : "NOMBRE";
-    const ordenGrupo = String(req.query?.orden_grupo || "ASC").trim().toUpperCase() === "DESC" ? "DESC" : "ASC";
-    const ordenItems = String(req.query?.orden_items || "ASC").trim().toUpperCase() === "DESC" ? "DESC" : "ASC";
-
+    const estadoFiltro = (
+      estadoRaw !== "TODOS" && Object.prototype.hasOwnProperty.call(ESTADOS_SOLICITUD_CAMPO, estadoRaw)
+    ) ? estadoRaw : null;
+    const limit = Math.min(10000, Math.max(10, parsePositiveInt(req.query?.limit, 5000)));
+    const where = [];
+    const params = [];
+    if (estadoFiltro) {
+      params.push(estadoFiltro);
+      where.push(`s.estado_solicitud = $${params.length}`);
+    }
+    params.push(limit);
     const sql = `
-      WITH predio_base AS (
-        SELECT
-          c.id_contribuyente,
-          c.codigo_municipal,
-          c.sec_cod,
-          c.sec_nombre,
-          c.dni_ruc,
-          c.nombre_completo,
-          c.email,
-          c.telefono,
-          COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
-          COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion_fuente)), ''), 'INFERIDO') AS estado_conexion_fuente,
-          COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion_verificado_sn)), ''), 'N') AS estado_conexion_verificado_sn,
-          c.estado_conexion_fecha_verificacion,
-          c.estado_conexion_motivo_ultimo,
-          c.razon_social_motivo_ultimo,
-          c.razon_social_actualizado_en,
-          p.id_predio,
-          p.id_calle,
-          p.numero_casa,
-          p.manzana,
-          p.lote,
-          p.referencia_direccion,
-          p.direccion_alterna,
-          p.id_tarifa,
-          p.tipo_tarifa,
-          COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
-          COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
-          COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
-          COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
-          COALESCE(NULLIF(UPPER(TRIM(p.estado_servicio)), ''), '') AS estado_servicio,
-          COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle,
-          ${buildDireccionSql("ca", "p")} AS direccion_completa
-        FROM contribuyentes c
-        LEFT JOIN LATERAL (
-          SELECT
-            id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion,
-            direccion_alterna, id_tarifa, tipo_tarifa, agua_sn, desague_sn,
-            limpieza_sn, activo_sn, estado_servicio
-          FROM predios
-          WHERE id_contribuyente = c.id_contribuyente
-          ORDER BY id_predio ASC
-          LIMIT 1
-        ) p ON TRUE
-        LEFT JOIN calles ca ON ca.id_calle = p.id_calle
-      ),
-      solicitudes_stats AS (
-        SELECT
-          s.id_contribuyente,
-          COUNT(*)::int AS total_solicitudes,
-          COUNT(*) FILTER (WHERE s.estado_solicitud = 'PENDIENTE')::int AS solicitudes_pendientes,
-          COUNT(*) FILTER (WHERE s.estado_solicitud = 'APROBADO')::int AS solicitudes_aprobadas,
-          COUNT(*) FILTER (WHERE s.estado_solicitud = 'RECHAZADO')::int AS solicitudes_rechazadas,
-          MAX(s.creado_en) AS ultima_solicitud
-        FROM campo_solicitudes s
-        WHERE s.id_contribuyente IS NOT NULL
-        GROUP BY s.id_contribuyente
-      ),
-      recibos_base AS (
-        SELECT
-          r.id_recibo,
-          p.id_contribuyente,
-          r.anio,
-          r.mes,
-          COALESCE(r.subtotal_agua, 0) AS subtotal_agua,
-          COALESCE(r.subtotal_desague, 0) AS subtotal_desague,
-          COALESCE(r.subtotal_limpieza, 0) AS subtotal_limpieza,
-          COALESCE(r.subtotal_admin, 0) AS subtotal_admin,
-          COALESCE(r.total_pagar, 0) AS total_pagar
-        FROM recibos r
-        JOIN predios p ON p.id_predio = r.id_predio
-      ),
-      pagos_por_recibo AS (
-        SELECT p.id_recibo, SUM(p.monto_pagado)::numeric AS total_pagado
-        FROM pagos p
-        GROUP BY p.id_recibo
-      ),
-      recibos_calc AS (
-        SELECT
-          rb.*,
-          COALESCE(ppr.total_pagado, 0) AS total_pagado,
-          GREATEST(rb.total_pagar - COALESCE(ppr.total_pagado, 0), 0) AS saldo_pendiente
-        FROM recibos_base rb
-        LEFT JOIN pagos_por_recibo ppr ON ppr.id_recibo = rb.id_recibo
-      ),
-      fin_agg AS (
-        SELECT
-          rc.id_contribuyente,
-          COUNT(*)::int AS total_recibos_emitidos,
-          SUM(rc.total_pagar)::numeric AS facturado_total,
-          SUM(rc.total_pagado)::numeric AS pagado_total,
-          SUM(rc.saldo_pendiente)::numeric AS deuda_pendiente_total,
-          COUNT(*) FILTER (WHERE rc.saldo_pendiente > 0)::int AS meses_con_deuda,
-          MAX((rc.anio * 100) + rc.mes) AS ultimo_periodo_num,
-          SUM(rc.subtotal_agua)::numeric AS cargo_agua_historico,
-          SUM(rc.subtotal_desague)::numeric AS cargo_desague_historico,
-          SUM(rc.subtotal_limpieza)::numeric AS cargo_limpieza_historico,
-          SUM(rc.subtotal_admin)::numeric AS cargo_admin_historico
-        FROM recibos_calc rc
-        GROUP BY rc.id_contribuyente
-      ),
-      ultimo_periodo AS (
-        SELECT id_contribuyente, MAX((anio * 100) + mes) AS periodo_num
-        FROM recibos_base
-        GROUP BY id_contribuyente
-      ),
-      ultimo_mes AS (
-        SELECT
-          rb.id_contribuyente,
-          rb.anio,
-          rb.mes,
-          SUM(rb.subtotal_agua)::numeric AS cargo_agua_ultimo_mes,
-          SUM(rb.subtotal_desague)::numeric AS cargo_desague_ultimo_mes,
-          SUM(rb.subtotal_limpieza)::numeric AS cargo_limpieza_ultimo_mes,
-          SUM(rb.subtotal_admin)::numeric AS cargo_admin_ultimo_mes,
-          SUM(rb.total_pagar)::numeric AS total_cargo_ultimo_mes
-        FROM recibos_base rb
-        JOIN ultimo_periodo up
-          ON up.id_contribuyente = rb.id_contribuyente
-          AND up.periodo_num = ((rb.anio * 100) + rb.mes)
-        GROUP BY rb.id_contribuyente, rb.anio, rb.mes
-      )
       SELECT
-        pb.*,
-        COALESCE(ss.total_solicitudes, 0) AS total_solicitudes,
-        COALESCE(ss.solicitudes_pendientes, 0) AS solicitudes_pendientes,
-        COALESCE(ss.solicitudes_aprobadas, 0) AS solicitudes_aprobadas,
-        COALESCE(ss.solicitudes_rechazadas, 0) AS solicitudes_rechazadas,
-        ss.ultima_solicitud,
-        CASE WHEN ss.id_contribuyente IS NULL THEN 'N' ELSE 'S' END AS visitado_campo_sn,
-        COALESCE(fa.total_recibos_emitidos, 0) AS total_recibos_emitidos,
-        COALESCE(fa.facturado_total, 0) AS facturado_total,
-        COALESCE(fa.pagado_total, 0) AS pagado_total,
-        COALESCE(fa.deuda_pendiente_total, 0) AS deuda_pendiente_total,
-        COALESCE(fa.meses_con_deuda, 0) AS meses_con_deuda,
-        fa.ultimo_periodo_num,
-        COALESCE(fa.cargo_agua_historico, 0) AS cargo_agua_historico,
-        COALESCE(fa.cargo_desague_historico, 0) AS cargo_desague_historico,
-        COALESCE(fa.cargo_limpieza_historico, 0) AS cargo_limpieza_historico,
-        COALESCE(fa.cargo_admin_historico, 0) AS cargo_admin_historico,
-        COALESCE(um.cargo_agua_ultimo_mes, 0) AS cargo_agua_ultimo_mes,
-        COALESCE(um.cargo_desague_ultimo_mes, 0) AS cargo_desague_ultimo_mes,
-        COALESCE(um.cargo_limpieza_ultimo_mes, 0) AS cargo_limpieza_ultimo_mes,
-        COALESCE(um.cargo_admin_ultimo_mes, 0) AS cargo_admin_ultimo_mes,
-        COALESCE(um.total_cargo_ultimo_mes, 0) AS total_cargo_ultimo_mes,
-        um.anio AS ultimo_anio,
-        um.mes AS ultimo_mes
-      FROM predio_base pb
-      LEFT JOIN solicitudes_stats ss ON ss.id_contribuyente = pb.id_contribuyente
-      LEFT JOIN fin_agg fa ON fa.id_contribuyente = pb.id_contribuyente
-      LEFT JOIN ultimo_mes um ON um.id_contribuyente = pb.id_contribuyente
+        s.id_solicitud,
+        s.creado_en,
+        s.actualizado_en,
+        s.estado_solicitud,
+        s.id_contribuyente,
+        s.codigo_municipal,
+        s.id_usuario_solicita,
+        s.nombre_solicitante,
+        s.fuente,
+        s.tipo_solicitud,
+        s.estado_conexion_actual,
+        s.estado_conexion_nuevo,
+        s.nombre_verificado,
+        s.dni_verificado,
+        s.telefono_verificado,
+        s.direccion_verificada,
+        s.observacion_campo,
+        s.motivo_revision,
+        s.id_usuario_revision,
+        s.revisado_en,
+        s.metadata,
+        c.sec_cod,
+        c.sec_nombre,
+        c.email,
+        c.nombre_completo AS nombre_actual_db,
+        c.dni_ruc AS dni_actual_db,
+        c.telefono AS telefono_actual_db,
+        COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_actual_db,
+        COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_actual_db,
+        COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_actual_db,
+        COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_actual_db,
+        COALESCE(NULLIF(TRIM(p.direccion_alterna), ''), '') AS direccion_alterna_actual_db,
+        COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle_db,
+        ${buildDireccionSql("ca", "p")} AS direccion_actual_db,
+        p.id_predio,
+        p.id_calle,
+        p.numero_casa,
+        p.referencia_direccion,
+        us.username AS usuario_solicita_username,
+        us.nombre_completo AS usuario_solicita_nombre,
+        ur.username AS usuario_revision_username,
+        ur.nombre_completo AS usuario_revision_nombre
+      FROM campo_solicitudes s
+      LEFT JOIN contribuyentes c ON c.id_contribuyente = s.id_contribuyente
+      LEFT JOIN LATERAL (
+        SELECT
+          id_predio, id_calle, numero_casa, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
+        FROM predios
+        WHERE id_contribuyente = c.id_contribuyente
+        ORDER BY id_predio ASC
+        LIMIT 1
+      ) p ON TRUE
+      LEFT JOIN calles ca ON ca.id_calle = p.id_calle
+      LEFT JOIN usuarios_sistema us ON us.id_usuario = s.id_usuario_solicita
+      LEFT JOIN usuarios_sistema ur ON ur.id_usuario = s.id_usuario_revision
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY
+        CASE WHEN s.estado_solicitud = 'PENDIENTE' THEN 0 ELSE 1 END,
+        s.creado_en DESC
+      LIMIT $${params.length}
     `;
-    const data = await pool.query(sql);
+    const data = await pool.query(sql, params);
 
     const toDateText = (value) => {
       if (!value) return "";
       const d = new Date(value);
       return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("es-PE");
     };
-    const toPeriod = (anio, mes, fallbackNum) => {
-      const y = Number(anio || 0);
-      const m = Number(mes || 0);
-      if (y > 0 && m > 0) return `${y}-${String(m).padStart(2, "0")}`;
-      const n = Number(fallbackNum || 0);
-      if (!n) return "";
-      return `${Math.floor(n / 100)}-${String(n % 100).padStart(2, "0")}`;
-    };
 
-    let filtroVisita = "TODOS";
-    if (["VISITADOS", "CON_SOLICITUD", "EMPADRONADOS"].includes(estadoRaw)) filtroVisita = "VISITADOS";
-    if (["NO_VISITADOS", "SIN_SOLICITUD"].includes(estadoRaw)) filtroVisita = "NO_VISITADOS";
-
-    const rows = (Array.isArray(data.rows) ? data.rows : [])
-      .map((row) => {
-        const visitado = String(row?.visitado_campo_sn || "N") === "S";
-        return {
-          ...row,
-          visitado_campo_sn: visitado ? "S" : "N",
-          grupo_campo: visitado ? "VISITADO_CAMPO" : "NO_VISITADO"
-        };
-      })
-      .filter((row) => {
-        if (filtroVisita === "VISITADOS") return row.visitado_campo_sn === "S";
-        if (filtroVisita === "NO_VISITADOS") return row.visitado_campo_sn === "N";
-        return true;
-      });
-
-    rows.sort((a, b) => {
-      const rankA = a.visitado_campo_sn === "S" ? 0 : 1;
-      const rankB = b.visitado_campo_sn === "S" ? 0 : 1;
-      const groupFactor = ordenGrupo === "DESC" ? -1 : 1;
-      if (rankA !== rankB) return groupFactor * (rankA - rankB);
-
-      const itemFactor = ordenItems === "DESC" ? -1 : 1;
-      if (organizarPor === "CALLE") {
-        const calleA = String(a.nombre_calle || "").trim() || "Sin calle";
-        const calleB = String(b.nombre_calle || "").trim() || "Sin calle";
-        const byStreet = calleA.localeCompare(calleB, "es", { sensitivity: "base" });
-        if (byStreet !== 0) return itemFactor * byStreet;
-      }
-
-      const nombreA = String(a.nombre_completo || "").trim();
-      const nombreB = String(b.nombre_completo || "").trim();
-      const byName = nombreA.localeCompare(nombreB, "es", { sensitivity: "base" });
-      if (byName !== 0) return itemFactor * byName;
-
-      const codA = String(a.codigo_municipal || "");
-      const codB = String(b.codigo_municipal || "");
-      return itemFactor * codA.localeCompare(codB, "es", { sensitivity: "base" });
+    const sourceRows = Array.isArray(data.rows) ? data.rows : [];
+    const exportRows = sourceRows.map((row) => {
+      const metadata = getCampoSolicitudMetadata(row);
+      const snapshots = getCampoSolicitudSnapshots(row);
+      const changes = getCampoSolicitudChangeEntries(row);
+      const contribuyenteLabel = buildCampoContribuyenteLabel(row);
+      const usuarioSolicita = pickCampoText(row.usuario_solicita_nombre, row.nombre_solicitante, row.usuario_solicita_username);
+      const usuarioRevision = pickCampoText(row.usuario_revision_nombre, row.usuario_revision_username);
+      return {
+        ...row,
+        estado_solicitud_label: toCampoSolicitudEstadoLabel(row.estado_solicitud),
+        tipo_solicitud_label: toCampoTipoSolicitudAuditLabel(getCampoSolicitudTipo(row)),
+        contribuyente_label: contribuyenteLabel,
+        usuario_solicita_label: usuarioSolicita,
+        usuario_revision_label: usuarioRevision,
+        nombre_actual_snapshot: snapshots.nombreActual,
+        dni_actual_snapshot: snapshots.dniActual,
+        telefono_actual_snapshot: snapshots.telefonoActual,
+        direccion_actual_snapshot: snapshots.direccionActual,
+        direccion_alterna_actual_snapshot: snapshots.direccionAlternaActual,
+        nombre_calle_actual_snapshot: snapshots.nombreCalleActual,
+        estado_actual_snapshot: toCampoEstadoConexionAuditLabel(snapshots.estadoActual),
+        agua_actual_snapshot: toCampoServicioAuditLabel(snapshots.aguaActual, "S"),
+        desague_actual_snapshot: toCampoServicioAuditLabel(snapshots.desagueActual, "S"),
+        limpieza_actual_snapshot: toCampoServicioAuditLabel(snapshots.limpiezaActual, "S"),
+        agua_nuevo_label: toCampoServicioAuditLabel(metadata.servicio_agua_nuevo, snapshots.aguaActual),
+        desague_nuevo_label: toCampoServicioAuditLabel(metadata.servicio_desague_nuevo, snapshots.desagueActual),
+        limpieza_nuevo_label: toCampoServicioAuditLabel(metadata.servicio_limpieza_nuevo, snapshots.limpiezaActual),
+        estado_nuevo_label: toCampoEstadoConexionAuditLabel(row.estado_conexion_nuevo || metadata.estado_nuevo || snapshots.estadoActual),
+        verificacion_estado_label: normalizeVerificacionEstado(metadata.verificacion_estado || "VERIFICADO") === "NO_VERIFICADO" ? "No verificado" : "Verificado",
+        verificacion_motivo_label: pickCampoText(metadata.verificacion_motivo),
+        visitado_sn_label: toCampoServicioAuditLabel(metadata.visitado_sn, "N"),
+        predio_temporal_sn_label: toCampoServicioAuditLabel(metadata.predio_temporal_sn, "N"),
+        referencia_direccion_label: pickCampoText(metadata.referencia_direccion),
+        cambios_resumen: formatCampoSolicitudChangeEntries(changes),
+        resultado_resumen: resolveCampoSolicitudResultado(row, changes),
+        aplicacion_label: normalizeSN(metadata.aplicacion_pendiente_sn, "N") === "S"
+          ? "Pendiente manual"
+          : (String(row.estado_solicitud || "").trim().toUpperCase() === ESTADOS_SOLICITUD_CAMPO.APROBADO ? "Aplicada / aprobada" : "Pendiente"),
+        cambios_items: changes
+      };
     });
 
     const workbook = new ExcelJS.Workbook();
-    const wsUsuarios = workbook.addWorksheet("Usuarios");
-    wsUsuarios.columns = [
-      { header: "grupo_campo", key: "grupo_campo", width: 20 },
-      { header: "visitado_campo_sn", key: "visitado_campo_sn", width: 16 },
-      { header: "total_solicitudes", key: "total_solicitudes", width: 16 },
-      { header: "solicitudes_pendientes", key: "solicitudes_pendientes", width: 20 },
-      { header: "solicitudes_aprobadas", key: "solicitudes_aprobadas", width: 20 },
-      { header: "solicitudes_rechazadas", key: "solicitudes_rechazadas", width: 20 },
-      { header: "ultima_solicitud", key: "ultima_solicitud", width: 24 },
+    const wsResumen = workbook.addWorksheet("Resumen");
+    wsResumen.columns = [
+      { header: "campo", key: "campo", width: 28 },
+      { header: "valor", key: "valor", width: 28 }
+    ];
+    wsResumen.addRow({ campo: "Filtro estado", valor: estadoFiltro ? toCampoSolicitudEstadoLabel(estadoFiltro) : "Todas" });
+    wsResumen.addRow({ campo: "Total solicitudes", valor: exportRows.length });
+    wsResumen.addRow({ campo: "Pendientes", valor: exportRows.filter((row) => row.estado_solicitud === ESTADOS_SOLICITUD_CAMPO.PENDIENTE).length });
+    wsResumen.addRow({ campo: "Aprobadas", valor: exportRows.filter((row) => row.estado_solicitud === ESTADOS_SOLICITUD_CAMPO.APROBADO).length });
+    wsResumen.addRow({ campo: "Rechazadas", valor: exportRows.filter((row) => row.estado_solicitud === ESTADOS_SOLICITUD_CAMPO.RECHAZADO).length });
+
+    const wsSolicitudes = workbook.addWorksheet("Solicitudes");
+    wsSolicitudes.columns = [
+      { header: "id_solicitud", key: "id_solicitud", width: 14 },
+      { header: "estado_solicitud", key: "estado_solicitud_label", width: 16 },
+      { header: "tipo_solicitud", key: "tipo_solicitud_label", width: 24 },
+      { header: "creado_en", key: "creado_en_label", width: 22 },
+      { header: "revisado_en", key: "revisado_en_label", width: 22 },
+      { header: "usuario_solicita", key: "usuario_solicita_label", width: 28 },
+      { header: "usuario_revision", key: "usuario_revision_label", width: 28 },
       { header: "id_contribuyente", key: "id_contribuyente", width: 16 },
       { header: "codigo_municipal", key: "codigo_municipal", width: 16 },
+      { header: "contribuyente", key: "contribuyente_label", width: 38 },
       { header: "sec_cod", key: "sec_cod", width: 12 },
       { header: "sec_nombre", key: "sec_nombre", width: 28 },
-      { header: "dni_ruc", key: "dni_ruc", width: 18 },
-      { header: "nombre_completo", key: "nombre_completo", width: 36 },
+      { header: "nombre_actual", key: "nombre_actual_snapshot", width: 30 },
+      { header: "dni_actual", key: "dni_actual_snapshot", width: 18 },
+      { header: "telefono_actual", key: "telefono_actual_snapshot", width: 16 },
       { header: "email", key: "email", width: 30 },
-      { header: "telefono", key: "telefono", width: 16 },
-      { header: "estado_conexion", key: "estado_conexion", width: 18 },
-      { header: "estado_conexion_fuente", key: "estado_conexion_fuente", width: 18 },
-      { header: "estado_conexion_verificado_sn", key: "estado_conexion_verificado_sn", width: 22 },
-      { header: "estado_conexion_fecha_verificacion", key: "estado_conexion_fecha_verificacion", width: 24 },
-      { header: "estado_conexion_motivo_ultimo", key: "estado_conexion_motivo_ultimo", width: 34 },
-      { header: "razon_social_motivo_ultimo", key: "razon_social_motivo_ultimo", width: 30 },
-      { header: "razon_social_actualizado_en", key: "razon_social_actualizado_en", width: 24 },
+      { header: "estado_actual", key: "estado_actual_snapshot", width: 18 },
+      { header: "nombre_solicitado", key: "nombre_verificado", width: 30 },
+      { header: "dni_solicitado", key: "dni_verificado", width: 18 },
+      { header: "telefono_solicitado", key: "telefono_verificado", width: 18 },
+      { header: "estado_solicitado", key: "estado_nuevo_label", width: 18 },
       { header: "id_predio", key: "id_predio", width: 12 },
       { header: "id_calle", key: "id_calle", width: 12 },
-      { header: "nombre_calle", key: "nombre_calle", width: 24 },
-      { header: "direccion_completa", key: "direccion_completa", width: 42 },
-      { header: "direccion_alterna", key: "direccion_alterna", width: 36 },
+      { header: "nombre_calle_actual", key: "nombre_calle_actual_snapshot", width: 24 },
+      { header: "direccion_actual", key: "direccion_actual_snapshot", width: 42 },
+      { header: "direccion_alterna_actual", key: "direccion_alterna_actual_snapshot", width: 36 },
       { header: "referencia_direccion", key: "referencia_direccion", width: 34 },
       { header: "numero_casa", key: "numero_casa", width: 14 },
-      { header: "manzana", key: "manzana", width: 12 },
-      { header: "lote", key: "lote", width: 12 },
-      { header: "agua_sn", key: "agua_sn", width: 10 },
-      { header: "desague_sn", key: "desague_sn", width: 12 },
-      { header: "limpieza_sn", key: "limpieza_sn", width: 12 },
-      { header: "activo_sn", key: "activo_sn", width: 10 },
-      { header: "estado_servicio", key: "estado_servicio", width: 18 },
-      { header: "id_tarifa", key: "id_tarifa", width: 12 },
-      { header: "tipo_tarifa", key: "tipo_tarifa", width: 14 }
+      { header: "direccion_solicitada", key: "direccion_verificada", width: 42 },
+      { header: "referencia_solicitada", key: "referencia_direccion_label", width: 34 },
+      { header: "agua_actual", key: "agua_actual_snapshot", width: 12 },
+      { header: "desague_actual", key: "desague_actual_snapshot", width: 14 },
+      { header: "limpieza_actual", key: "limpieza_actual_snapshot", width: 14 },
+      { header: "agua_solicitado", key: "agua_nuevo_label", width: 14 },
+      { header: "desague_solicitado", key: "desague_nuevo_label", width: 16 },
+      { header: "limpieza_solicitado", key: "limpieza_nuevo_label", width: 16 },
+      { header: "visitado_sn", key: "visitado_sn_label", width: 12 },
+      { header: "verificacion_estado", key: "verificacion_estado_label", width: 18 },
+      { header: "verificacion_motivo", key: "verificacion_motivo_label", width: 24 },
+      { header: "predio_temporal_sn", key: "predio_temporal_sn_label", width: 16 },
+      { header: "observacion_campo", key: "observacion_campo", width: 40 },
+      { header: "motivo_revision", key: "motivo_revision", width: 36 },
+      { header: "aplicacion", key: "aplicacion_label", width: 18 },
+      { header: "cambios_resumen", key: "cambios_resumen", width: 54 },
+      { header: "resultado_resumen", key: "resultado_resumen", width: 54 }
     ];
 
-    const wsFin = workbook.addWorksheet("Financiero");
-    wsFin.columns = [
-      { header: "grupo_campo", key: "grupo_campo", width: 20 },
-      { header: "visitado_campo_sn", key: "visitado_campo_sn", width: 16 },
+    const wsCambios = workbook.addWorksheet("Cambios");
+    wsCambios.columns = [
+      { header: "id_solicitud", key: "id_solicitud", width: 14 },
+      { header: "estado_solicitud", key: "estado_solicitud", width: 16 },
+      { header: "tipo_solicitud", key: "tipo_solicitud", width: 22 },
       { header: "id_contribuyente", key: "id_contribuyente", width: 16 },
       { header: "codigo_municipal", key: "codigo_municipal", width: 16 },
-      { header: "nombre_completo", key: "nombre_completo", width: 34 },
-      { header: "nombre_calle", key: "nombre_calle", width: 24 },
-      { header: "direccion_completa", key: "direccion_completa", width: 42 },
-      { header: "agua_sn", key: "agua_sn", width: 10 },
-      { header: "desague_sn", key: "desague_sn", width: 12 },
-      { header: "limpieza_sn", key: "limpieza_sn", width: 12 },
-      { header: "tipo_tarifa", key: "tipo_tarifa", width: 14 },
-      { header: "total_recibos_emitidos", key: "total_recibos_emitidos", width: 18 },
-      { header: "facturado_total", key: "facturado_total", width: 16 },
-      { header: "pagado_total", key: "pagado_total", width: 16 },
-      { header: "deuda_pendiente_total", key: "deuda_pendiente_total", width: 20 },
-      { header: "meses_con_deuda", key: "meses_con_deuda", width: 16 },
-      { header: "periodo_ultimo_recibo", key: "periodo_ultimo_recibo", width: 18 },
-      { header: "cargo_agua_ultimo_mes", key: "cargo_agua_ultimo_mes", width: 18 },
-      { header: "cargo_desague_ultimo_mes", key: "cargo_desague_ultimo_mes", width: 20 },
-      { header: "cargo_limpieza_ultimo_mes", key: "cargo_limpieza_ultimo_mes", width: 20 },
-      { header: "cargo_admin_ultimo_mes", key: "cargo_admin_ultimo_mes", width: 18 },
-      { header: "total_cargo_ultimo_mes", key: "total_cargo_ultimo_mes", width: 20 },
-      { header: "cargo_agua_historico", key: "cargo_agua_historico", width: 18 },
-      { header: "cargo_desague_historico", key: "cargo_desague_historico", width: 20 },
-      { header: "cargo_limpieza_historico", key: "cargo_limpieza_historico", width: 20 },
-      { header: "cargo_admin_historico", key: "cargo_admin_historico", width: 18 }
+      { header: "contribuyente", key: "contribuyente", width: 38 },
+      { header: "campo", key: "campo", width: 22 },
+      { header: "tipo", key: "tipo", width: 12 },
+      { header: "valor_anterior", key: "valor_anterior", width: 32 },
+      { header: "valor_nuevo", key: "valor_nuevo", width: 32 },
+      { header: "resultado", key: "resultado", width: 28 }
     ];
 
-    rows.forEach((row) => {
-      wsUsuarios.addRow({
+    exportRows.forEach((row) => {
+      wsSolicitudes.addRow({
         ...row,
-        ultima_solicitud: toDateText(row.ultima_solicitud),
-        estado_conexion_fecha_verificacion: row.estado_conexion_fecha_verificacion ? String(row.estado_conexion_fecha_verificacion).slice(0, 10) : "",
-        razon_social_actualizado_en: toDateText(row.razon_social_actualizado_en)
+        creado_en_label: toDateText(row.creado_en),
+        revisado_en_label: toDateText(row.revisado_en)
       });
-
-      wsFin.addRow({
-        ...row,
-        periodo_ultimo_recibo: toPeriod(row.ultimo_anio, row.ultimo_mes, row.ultimo_periodo_num)
-      });
+      if (Array.isArray(row.cambios_items) && row.cambios_items.length > 0) {
+        row.cambios_items.forEach((item) => {
+          wsCambios.addRow({
+            id_solicitud: row.id_solicitud,
+            estado_solicitud: row.estado_solicitud_label,
+            tipo_solicitud: row.tipo_solicitud_label,
+            id_contribuyente: row.id_contribuyente,
+            codigo_municipal: row.codigo_municipal,
+            contribuyente: row.contribuyente_label,
+            campo: item.campo,
+            tipo: item.tipo,
+            valor_anterior: item.antes || "",
+            valor_nuevo: item.despues || "",
+            resultado: row.estado_solicitud === ESTADOS_SOLICITUD_CAMPO.APROBADO ? "Aplicado / aprobado" : "Solicitado"
+          });
+        });
+      } else {
+        wsCambios.addRow({
+          id_solicitud: row.id_solicitud,
+          estado_solicitud: row.estado_solicitud_label,
+          tipo_solicitud: row.tipo_solicitud_label,
+          id_contribuyente: row.id_contribuyente,
+          codigo_municipal: row.codigo_municipal,
+          contribuyente: row.contribuyente_label,
+          campo: "Sin cambios estructurados",
+          tipo: "INFO",
+          valor_anterior: "",
+          valor_nuevo: "",
+          resultado: row.resultado_resumen
+        });
+      }
     });
 
     const toExcelColumnName = (index) => {
@@ -4764,7 +4909,7 @@ const exportarReporteEmpadronados = async (req, res) => {
       return out || "A";
     };
 
-    [wsUsuarios, wsFin].forEach((ws) => {
+    [wsResumen, wsSolicitudes, wsCambios].forEach((ws) => {
       ws.views = [{ state: "frozen", ySplit: 1 }];
       const lastCol = toExcelColumnName(ws.columns.length);
       ws.autoFilter = { from: "A1", to: `${lastCol}1` };
@@ -4783,19 +4928,21 @@ const exportarReporteEmpadronados = async (req, res) => {
     });
 
     const fechaSafe = toISODate().replace(/-/g, "");
-    res.setHeader("X-Total-Usuarios", String(rows.length));
+    res.setHeader("X-Total-Solicitudes", String(exportRows.length));
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename=informe_usuarios_campo_${fechaSafe}.xlsx`);
+    res.setHeader("Content-Disposition", `attachment; filename=solicitudes_campo_${fechaSafe}.xlsx`);
     await workbook.xlsx.write(res);
     return res.end();
   } catch (err) {
-    console.error("Error exportando informe empadronados:", err);
-    return res.status(500).json({ error: "Error generando informe Excel de empadronados." });
+    console.error("Error exportando solicitudes de campo:", err);
+    return res.status(500).json({ error: "Error generando informe Excel de solicitudes de campo." });
   }
 };
 
-app.get("/campo/solicitudes/reporte-empadronados", exportarReporteEmpadronados);
-app.get("/campo/solicitudes/reporte-empadronados.xlsx", exportarReporteEmpadronados);
+app.get("/campo/solicitudes/reporte-empadronados", exportarSolicitudesCampoExcel);
+app.get("/campo/solicitudes/reporte-empadronados.xlsx", exportarSolicitudesCampoExcel);
+app.get("/campo/solicitudes/exportar", exportarSolicitudesCampoExcel);
+app.get("/campo/solicitudes/exportar.xlsx", exportarSolicitudesCampoExcel);
 
 app.get("/campo/seguimiento", async (req, res) => {
   try {
@@ -4914,6 +5061,27 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       solicitud.tipo_solicitud || metadataSolicitud.tipo_solicitud,
       TIPOS_SOLICITUD_CAMPO.ACTUALIZACION
     );
+    let contribuyenteAudit = {
+      id_contribuyente: solicitud.id_contribuyente,
+      codigo_municipal: solicitud.codigo_municipal,
+      nombre_completo: ""
+    };
+    if (parsePositiveInt(solicitud.id_contribuyente, 0)) {
+      const contribuyenteAuditData = await client.query(
+        `SELECT id_contribuyente, codigo_municipal, nombre_completo
+         FROM contribuyentes
+         WHERE id_contribuyente = $1
+         LIMIT 1`,
+        [solicitud.id_contribuyente]
+      );
+      if (contribuyenteAuditData.rows.length > 0) {
+        contribuyenteAudit = {
+          ...contribuyenteAudit,
+          ...contribuyenteAuditData.rows[0]
+        };
+      }
+    }
+    const contribuyenteAuditLabel = buildCampoContribuyenteLabel(contribuyenteAudit);
 
     if (aplicarCambiosSN !== "S") {
       await client.query(`
@@ -4944,11 +5112,21 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         buildStructuredAuditDetail({
           solicitud: idSolicitud,
           tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud),
+          id_contribuyente: parsePositiveInt(contribuyenteAudit.id_contribuyente, 0) || null,
+          codigo_municipal: pickCampoText(contribuyenteAudit.codigo_municipal),
+          contribuyente: contribuyenteAuditLabel,
           aplicacion: "Pendiente manual",
           nota_revision: motivoRevision
         }),
         req.user?.nombre || req.user?.username || "SISTEMA"
       );
+      req.auditExtraEntries = {
+        solicitud: idSolicitud,
+        id_contribuyente: parsePositiveInt(contribuyenteAudit.id_contribuyente, 0) || null,
+        codigo_municipal: pickCampoText(contribuyenteAudit.codigo_municipal),
+        contribuyente: contribuyenteAuditLabel,
+        tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud)
+      };
 
       await client.query("COMMIT");
       return res.json({
@@ -4981,11 +5159,21 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         buildStructuredAuditDetail({
           solicitud: idSolicitud,
           tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud),
+          id_contribuyente: parsePositiveInt(contribuyenteAudit.id_contribuyente, 0) || null,
+          codigo_municipal: pickCampoText(contribuyenteAudit.codigo_municipal),
+          contribuyente: contribuyenteAuditLabel,
           aplicacion: "Pendiente registro manual",
           nota_revision: motivoRevision
         }),
         req.user?.nombre || req.user?.username || "SISTEMA"
       );
+      req.auditExtraEntries = {
+        solicitud: idSolicitud,
+        id_contribuyente: parsePositiveInt(contribuyenteAudit.id_contribuyente, 0) || null,
+        codigo_municipal: pickCampoText(contribuyenteAudit.codigo_municipal),
+        contribuyente: contribuyenteAuditLabel,
+        tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud)
+      };
 
       await client.query("COMMIT");
       return res.json({ mensaje: "Solicitud aprobada. Pendiente de registro manual de predio.", id_solicitud: idSolicitud });
@@ -5242,10 +5430,15 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
            id_usuario_revision = $3,
            revisado_en = NOW(),
            actualizado_en = NOW(),
-           metadata = CASE
-             WHEN $5::bigint IS NULL THEN metadata
-             ELSE COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('id_direccion_alterna', $5::bigint)
-           END
+           metadata = COALESCE(metadata, '{}'::jsonb)
+             || jsonb_build_object(
+               'aplicacion_automatica_sn', 'S',
+               'aplicacion_pendiente_sn', 'N'
+             )
+             || CASE
+               WHEN $5::bigint IS NULL THEN '{}'::jsonb
+               ELSE jsonb_build_object('id_direccion_alterna', $5::bigint)
+             END
        WHERE id_solicitud = $4`,
       [
         ESTADOS_SOLICITUD_CAMPO.APROBADO,
@@ -5262,7 +5455,9 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       buildStructuredAuditDetail({
         solicitud: idSolicitud,
         tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud),
-        contribuyente: actual.codigo_municipal || actual.id_contribuyente,
+        id_contribuyente: actual.id_contribuyente,
+        codigo_municipal: pickCampoText(actual.codigo_municipal),
+        contribuyente: buildCampoContribuyenteLabel(actual),
         aplicacion: "Automatica",
         cambios_aplicados: cambiosAplicados.length > 0 ? cambiosAplicados : ["Sin cambios directos en ficha."],
         recibos_recalculados: recibosRecalculados,
@@ -5271,6 +5466,13 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       }),
       req.user?.nombre || req.user?.username || "SISTEMA"
     );
+    req.auditExtraEntries = {
+      solicitud: idSolicitud,
+      id_contribuyente: actual.id_contribuyente,
+      codigo_municipal: pickCampoText(actual.codigo_municipal),
+      contribuyente: buildCampoContribuyenteLabel(actual),
+      tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud)
+    };
 
     await client.query("COMMIT");
     invalidateContribuyentesCache();
@@ -5322,6 +5524,27 @@ app.post("/campo/solicitudes/:id/rechazar", async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "La solicitud ya fue procesada." });
     }
+    let contribuyenteAudit = {
+      id_contribuyente: solicitud.id_contribuyente,
+      codigo_municipal: solicitud.codigo_municipal,
+      nombre_completo: ""
+    };
+    if (parsePositiveInt(solicitud.id_contribuyente, 0)) {
+      const contribuyenteAuditData = await client.query(
+        `SELECT id_contribuyente, codigo_municipal, nombre_completo
+         FROM contribuyentes
+         WHERE id_contribuyente = $1
+         LIMIT 1`,
+        [solicitud.id_contribuyente]
+      );
+      if (contribuyenteAuditData.rows.length > 0) {
+        contribuyenteAudit = {
+          ...contribuyenteAudit,
+          ...contribuyenteAuditData.rows[0]
+        };
+      }
+    }
+    const contribuyenteAuditLabel = buildCampoContribuyenteLabel(contribuyenteAudit);
 
     await client.query(
       `UPDATE campo_solicitudes
@@ -5342,9 +5565,22 @@ app.post("/campo/solicitudes/:id/rechazar", async (req, res) => {
     await registrarAuditoria(
       client,
       "CAMPO_SOLICITUD_RECHAZADA",
-      `Solicitud ${idSolicitud} rechazada. Contribuyente ${solicitud.codigo_municipal || solicitud.id_contribuyente}. Motivo: ${motivoRevision}`,
+      buildStructuredAuditDetail({
+        solicitud: idSolicitud,
+        id_contribuyente: parsePositiveInt(contribuyenteAudit.id_contribuyente, 0) || null,
+        codigo_municipal: pickCampoText(contribuyenteAudit.codigo_municipal),
+        contribuyente: contribuyenteAuditLabel,
+        aplicacion: "Rechazada",
+        nota_revision: motivoRevision
+      }),
       req.user?.nombre || req.user?.username || "SISTEMA"
     );
+    req.auditExtraEntries = {
+      solicitud: idSolicitud,
+      id_contribuyente: parsePositiveInt(contribuyenteAudit.id_contribuyente, 0) || null,
+      codigo_municipal: pickCampoText(contribuyenteAudit.codigo_municipal),
+      contribuyente: contribuyenteAuditLabel
+    };
 
     await client.query("COMMIT");
     return res.json({ mensaje: "Solicitud rechazada.", id_solicitud: idSolicitud });
