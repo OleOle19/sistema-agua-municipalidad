@@ -230,7 +230,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
       setMensaje(accion === "aprobar" ? "Solicitud aprobada (sin aplicación automática)." : "Solicitud rechazada.");
       setMensaje(res?.data?.mensaje || (accion === "aprobar" ? "Solicitud aprobada." : "Solicitud rechazada."));
       await cargarSolicitudes();
-      if (onAplicado) onAplicado();
+      if (onAplicado) {
+        await Promise.resolve(onAplicado());
+      }
     } catch (err) {
       setError(err?.response?.data?.error || "No se pudo procesar la solicitud.");
     } finally {
