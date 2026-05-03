@@ -5288,9 +5288,9 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       FROM predios p
       LEFT JOIN calles ca ON ca.id_calle = p.id_calle
       WHERE p.id_contribuyente = $1
-      ORDER BY id_predio ASC
+      ORDER BY p.id_predio ASC
       LIMIT 1
-      FOR UPDATE
+      FOR UPDATE OF p
     `, [solicitud.id_contribuyente]);
     if (predioData.rows.length === 0) {
       await client.query("ROLLBACK");
