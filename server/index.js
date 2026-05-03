@@ -861,6 +861,22 @@ const buildCampoSolicitudExtraEntries = (row = {}) => {
   }
   return extras;
 };
+const buildCampoSolicitudExcelGroup = (row = {}, changes = [], extraEntries = []) => {
+  const metadata = getCampoSolicitudMetadata(row);
+  const visitado = normalizeSN(metadata?.visitado_sn, "N") === "S";
+  const hasObservacion = (Array.isArray(extraEntries) ? extraEntries : []).some((item) => String(item?.tipo || "").trim().toUpperCase() === "OBSERVACION");
+  const hasNovedad = (Array.isArray(changes) && changes.length > 0) || hasObservacion;
+  if (visitado && hasNovedad) {
+    return { key: "VISITADO_CON_NOVEDAD", label: "Visitados con cambios u observaciones", rank: 1, visitado: true, hasNovedad: true };
+  }
+  if (visitado && !hasNovedad) {
+    return { key: "VISITADO_SIN_NOVEDAD", label: "Visitados sin cambios ni observaciones", rank: 2, visitado: true, hasNovedad: false };
+  }
+  if (!visitado && hasNovedad) {
+    return { key: "NO_VISITADO_CON_NOVEDAD", label: "No visitados con cambios u observaciones", rank: 3, visitado: false, hasNovedad: true };
+  }
+  return { key: "NO_VISITADO_SIN_NOVEDAD", label: "No visitados sin cambios ni observaciones", rank: 4, visitado: false, hasNovedad: false };
+};
 const toCampoCambioTipoExportLabel = (row = {}, item = {}) => {
   const itemTipo = String(item?.tipo || "").trim().toUpperCase();
   if (itemTipo === "OBSERVACION") return "Observacion";
@@ -4786,6 +4802,7 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       const snapshots = getCampoSolicitudSnapshots(row);
       const changes = getCampoSolicitudChangeEntries(row);
       const extraEntries = buildCampoSolicitudExtraEntries(row);
+      const excelGroup = buildCampoSolicitudExcelGroup(row, changes, extraEntries);
       const contribuyenteLabel = buildCampoContribuyenteLabel(row);
       const usuarioSolicita = pickCampoText(row.usuario_solicita_nombre, row.nombre_solicitante, row.usuario_solicita_username);
       const usuarioRevision = pickCampoText(row.usuario_revision_nombre, row.usuario_revision_username);
@@ -4821,7 +4838,8 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
           ? "Pendiente manual"
           : (String(row.estado_solicitud || "").trim().toUpperCase() === ESTADOS_SOLICITUD_CAMPO.APROBADO ? "Aplicada / aprobada" : "Pendiente"),
         cambios_items: changes,
-        extra_items: extraEntries
+        extra_items: extraEntries,
+        excel_group: excelGroup
       };
     });
 
@@ -4841,6 +4859,14 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       valor: exportRows.filter((row) => Array.isArray(row.extra_items) && row.extra_items.some((item) => item.tipo === "OBSERVACION")).length
     });
     wsResumen.addRow({
+      campo: "Visitados con cambios u observaciones",
+      valor: exportRows.filter((row) => row?.excel_group?.key === "VISITADO_CON_NOVEDAD").length
+    });
+    wsResumen.addRow({
+      campo: "Visitados sin cambios ni observaciones",
+      valor: exportRows.filter((row) => row?.excel_group?.key === "VISITADO_SIN_NOVEDAD").length
+    });
+    wsResumen.addRow({
       campo: "Total filas hoja Cambios",
       valor: ""
     });
@@ -4858,13 +4884,37 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       { header: "valor_nuevo", key: "valor_nuevo", width: 44 }
     ];
 
-    exportRows.forEach((row) => {
+    const rowsOrdenadas = exportRows.slice().sort((a, b) => {
+      const rankA = Number(a?.excel_group?.rank || 99);
+      const rankB = Number(b?.excel_group?.rank || 99);
+      if (rankA !== rankB) return rankA - rankB;
+      return new Date(b?.creado_en || 0).getTime() - new Date(a?.creado_en || 0).getTime();
+    });
+    let totalCambiosRows = 0;
+    let currentGroupKey = "";
+    rowsOrdenadas.forEach((row) => {
+      const groupKey = String(row?.excel_group?.key || "");
+      if (groupKey && groupKey !== currentGroupKey) {
+        currentGroupKey = groupKey;
+        wsCambios.addRow({
+          id_solicitud: "",
+          tipo_solicitud: "",
+          id_contribuyente: "",
+          codigo_municipal: "",
+          contribuyente: "",
+          campo: row?.excel_group?.label || "Grupo",
+          tipo: "GRUPO",
+          valor_anterior: "",
+          valor_nuevo: ""
+        });
+      }
       const items = [
         ...(Array.isArray(row.cambios_items) ? row.cambios_items : []),
         ...(Array.isArray(row.extra_items) ? row.extra_items : [])
       ];
       if (items.length > 0) {
         items.forEach((item) => {
+          totalCambiosRows += 1;
           wsCambios.addRow({
             id_solicitud: row.id_solicitud,
             tipo_solicitud: row.tipo_solicitud_label,
@@ -4878,6 +4928,7 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
           });
         });
       } else {
+        totalCambiosRows += 1;
         wsCambios.addRow({
           id_solicitud: row.id_solicitud,
           tipo_solicitud: row.tipo_solicitud_label,
@@ -4891,7 +4942,7 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
         });
       }
     });
-    wsResumen.getCell("B8").value = wsCambios.rowCount > 1 ? wsCambios.rowCount - 1 : 0;
+    wsResumen.getCell("B10").value = totalCambiosRows;
 
     const toExcelColumnName = (index) => {
       let n = Number(index || 0);
