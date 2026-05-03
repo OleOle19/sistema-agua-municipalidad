@@ -718,6 +718,69 @@ const getCampoSolicitudSnapshots = (row = {}) => {
     limpiezaActual: normalizeSN(metadata.servicio_limpieza_actual, row?.limpieza_actual_db || "S")
   };
 };
+const campoSolicitudTextChanged = (nuevo, anterior) => {
+  const despues = pickCampoText(nuevo);
+  if (!despues) return false;
+  const antes = pickCampoText(anterior);
+  return !antes || !auditTextEquals(antes, despues);
+};
+const parseCampoSolicitudBooleanFlag = (value, fallback = false) => {
+  if (typeof value === "boolean") return value;
+  const raw = String(value || "").trim().toUpperCase();
+  if (!raw) return fallback;
+  if (["S", "SI", "TRUE", "1", "Y", "YES"].includes(raw)) return true;
+  if (["N", "NO", "FALSE", "0"].includes(raw)) return false;
+  return fallback;
+};
+const getCampoSolicitudRequestedChanges = (row = {}) => {
+  const metadata = getCampoSolicitudMetadata(row);
+  const tipoSolicitud = getCampoSolicitudTipo(row);
+  const snapshots = getCampoSolicitudSnapshots(row);
+  const direccionAnterior = tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA
+    ? snapshots.direccionAlternaActual
+    : snapshots.direccionActual;
+  const estadoNuevo = normalizeEstadoConexion(row?.estado_conexion_nuevo || metadata.estado_nuevo || snapshots.estadoActual);
+  const aguaNuevo = normalizeSN(metadata.servicio_agua_nuevo, snapshots.aguaActual);
+  const desagueNuevo = normalizeSN(metadata.servicio_desague_nuevo, snapshots.desagueActual);
+  const limpiezaNuevo = normalizeSN(metadata.servicio_limpieza_nuevo, snapshots.limpiezaActual);
+
+  const requested = {
+    nombre: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_nombre,
+      campoSolicitudTextChanged(row?.nombre_verificado, snapshots.nombreActual)
+    ),
+    dni: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_dni,
+      campoSolicitudTextChanged(row?.dni_verificado, snapshots.dniActual)
+    ),
+    telefono: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_telefono,
+      campoSolicitudTextChanged(row?.telefono_verificado, snapshots.telefonoActual)
+    ),
+    direccion: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_direccion,
+      campoSolicitudTextChanged(row?.direccion_verificada, direccionAnterior)
+    ),
+    estado: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_estado,
+      snapshots.estadoActual !== estadoNuevo
+    ),
+    agua: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_agua,
+      snapshots.aguaActual !== aguaNuevo
+    ),
+    desague: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_desague,
+      snapshots.desagueActual !== desagueNuevo
+    ),
+    limpieza: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_limpieza,
+      snapshots.limpiezaActual !== limpiezaNuevo
+    )
+  };
+  requested.servicios = requested.agua || requested.desague || requested.limpieza;
+  return requested;
+};
 const getCampoSolicitudChangeEntries = (row = {}) => {
   const metadata = getCampoSolicitudMetadata(row);
   const tipoSolicitud = getCampoSolicitudTipo(row);
@@ -944,57 +1007,67 @@ const buildCampoSolicitudCambiosAudit = ({
   desagueActual,
   desagueDestino,
   limpiezaActual,
-  limpiezaDestino
+  limpiezaDestino,
+  requestedChanges = null
 }) => {
   const cambios = [];
   if (!solicitud || !actual) return cambios;
+  const requested = requestedChanges || getCampoSolicitudRequestedChanges(solicitud);
 
-  pushCampoAuditoriaCambio(
-    cambios,
-    "Nombre",
-    normalizeLimitedText(solicitud.nombre_verificado, 200),
-    normalizeLimitedText(actual.nombre_completo, 200)
-  );
-  pushCampoAuditoriaCambio(
-    cambios,
-    "DNI/RUC",
-    normalizeLimitedText(solicitud.dni_verificado, 30),
-    normalizeLimitedText(actual.dni_ruc, 30)
-  );
-  pushCampoAuditoriaCambio(
-    cambios,
-    "Telefono",
-    normalizeLimitedText(solicitud.telefono_verificado, 40),
-    normalizeLimitedText(actual.telefono, 40)
-  );
+  if (requested.nombre) {
+    pushCampoAuditoriaCambio(
+      cambios,
+      "Nombre",
+      normalizeLimitedText(solicitud.nombre_verificado, 200),
+      normalizeLimitedText(actual.nombre_completo, 200)
+    );
+  }
+  if (requested.dni) {
+    pushCampoAuditoriaCambio(
+      cambios,
+      "DNI/RUC",
+      normalizeLimitedText(solicitud.dni_verificado, 30),
+      normalizeLimitedText(actual.dni_ruc, 30)
+    );
+  }
+  if (requested.telefono) {
+    pushCampoAuditoriaCambio(
+      cambios,
+      "Telefono",
+      normalizeLimitedText(solicitud.telefono_verificado, 40),
+      normalizeLimitedText(actual.telefono, 40)
+    );
+  }
 
   const direccionNueva = normalizeLimitedText(solicitud.direccion_verificada, 250);
   const direccionAnterior = tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA
     ? normalizeLimitedText(actual.direccion_alterna, 250)
     : normalizeLimitedText(actual.direccion_completa, 250);
-  pushCampoAuditoriaCambio(
-    cambios,
-    tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA ? "Direccion adicional" : "Direccion",
-    direccionNueva,
-    direccionAnterior
-  );
+  if (requested.direccion) {
+    pushCampoAuditoriaCambio(
+      cambios,
+      tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA ? "Direccion adicional" : "Direccion",
+      direccionNueva,
+      direccionAnterior
+    );
+  }
 
-  if (estadoActual !== estadoDestino) {
+  if (requested.estado && estadoActual !== estadoDestino) {
     cambios.push(
       `Estado de conexion: ${toCampoEstadoConexionAuditLabel(estadoDestino)} (antes: ${toCampoEstadoConexionAuditLabel(estadoActual)})`
     );
   }
-  if (aguaActual !== aguaDestino) {
+  if (requested.agua && aguaActual !== aguaDestino) {
     cambios.push(
       `Servicio agua: ${toCampoServicioAuditLabel(aguaDestino, "S")} (antes: ${toCampoServicioAuditLabel(aguaActual, "S")})`
     );
   }
-  if (desagueActual !== desagueDestino) {
+  if (requested.desague && desagueActual !== desagueDestino) {
     cambios.push(
       `Servicio desague: ${toCampoServicioAuditLabel(desagueDestino, "S")} (antes: ${toCampoServicioAuditLabel(desagueActual, "S")})`
     );
   }
-  if (limpiezaActual !== limpiezaDestino) {
+  if (requested.limpieza && limpiezaActual !== limpiezaDestino) {
     cambios.push(
       `Servicio limpieza: ${toCampoServicioAuditLabel(limpiezaDestino, "S")} (antes: ${toCampoServicioAuditLabel(limpiezaActual, "S")})`
     );
@@ -1892,6 +1965,12 @@ const generateNextCodigoMunicipal = async (client) => {
   return String(maxAny + 1);
 };
 
+const buildCampoSolicitudValidationError = (message) => {
+  const err = new Error(message);
+  err.statusCode = 400;
+  err.publicMessage = message;
+  return err;
+};
 const resolveCalleIdByNombre = async (client, calleNombreRaw, fallbackIdCalle = null) => {
   const fallback = parsePositiveInt(fallbackIdCalle, 0) || null;
   const nombreNormalizado = normalizarNombreCalle(calleNombreRaw || "");
@@ -1906,12 +1985,9 @@ const resolveCalleIdByNombre = async (client, calleNombreRaw, fallbackIdCalle = 
     [nombreNormalizado]
   );
   if (existente.rows.length > 0) return Number(existente.rows[0].id_calle);
-
-  const creado = await client.query(
-    "INSERT INTO calles (nombre) VALUES ($1) RETURNING id_calle",
-    [nombreNormalizado]
+  throw buildCampoSolicitudValidationError(
+    `La calle "${nombreNormalizado}" no existe en el sistema. Corrija la solicitud o registre la calle manualmente.`
   );
-  return Number(creado.rows[0].id_calle);
 };
 
 const estadoConexionToPredio = (estadoConexion) => {
@@ -4558,6 +4634,26 @@ app.post("/campo/solicitudes", async (req, res) => {
     const telefonoActual = normalizeLimitedText(row.telefono, 40);
     const direccionActual = normalizeLimitedText(row.direccion_completa || row.referencia_direccion, 250);
     const direccionAlternaActual = normalizeLimitedText(row.direccion_alterna, 250);
+    const requestedChangeNombre = Boolean(nombreVerificado && !equalsText(nombreVerificado, nombreActual));
+    const requestedChangeDni = Boolean(dniVerificado && !equalsText(dniVerificado, dniActual));
+    const requestedChangeTelefono = Boolean(telefonoVerificado && !equalsText(telefonoVerificado, telefonoActual));
+    const requestedChangeDireccion = tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA
+      ? Boolean(direccionVerificada && !equalsText(direccionVerificada, direccionAlternaActual))
+      : Boolean(direccionVerificada && !equalsText(direccionVerificada, direccionActual));
+    const requestedChangeEstado = estadoNuevo !== estadoActual;
+    const requestedChangeAgua = aguaNuevo !== aguaActual;
+    const requestedChangeDesague = desagueNuevo !== desagueActual;
+    const requestedChangeLimpieza = limpiezaNuevo !== limpiezaActual;
+
+    metadata.estado_actual_snapshot = estadoActual;
+    metadata.requested_change_nombre = requestedChangeNombre;
+    metadata.requested_change_dni = requestedChangeDni;
+    metadata.requested_change_telefono = requestedChangeTelefono;
+    metadata.requested_change_direccion = requestedChangeDireccion;
+    metadata.requested_change_estado = requestedChangeEstado;
+    metadata.requested_change_agua = requestedChangeAgua;
+    metadata.requested_change_desague = requestedChangeDesague;
+    metadata.requested_change_limpieza = requestedChangeLimpieza;
 
     if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA) {
       if (!direccionVerificada) {
@@ -4587,12 +4683,10 @@ app.post("/campo/solicitudes", async (req, res) => {
       aguaNuevo !== aguaActual ||
       desagueNuevo !== desagueActual ||
       limpiezaNuevo !== limpiezaActual ||
-      (nombreVerificado && !equalsText(nombreVerificado, nombreActual)) ||
-      (dniVerificado && !equalsText(dniVerificado, dniActual)) ||
-      (telefonoVerificado && !equalsText(telefonoVerificado, telefonoActual)) ||
-      (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA
-        ? (direccionVerificada && !equalsText(direccionVerificada, direccionAlternaActual))
-        : (direccionVerificada && !equalsText(direccionVerificada, direccionActual)))
+      requestedChangeNombre ||
+      requestedChangeDni ||
+      requestedChangeTelefono ||
+      requestedChangeDireccion
     );
     if (!hayCambio && !observacionCampo) {
       return res.status(400).json({
@@ -5172,6 +5266,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       solicitud.tipo_solicitud || metadataSolicitud.tipo_solicitud,
       TIPOS_SOLICITUD_CAMPO.ACTUALIZACION
     );
+    const requestedChanges = getCampoSolicitudRequestedChanges(solicitud);
     let contribuyenteAudit = {
       id_contribuyente: solicitud.id_contribuyente,
       codigo_municipal: solicitud.codigo_municipal,
@@ -5313,6 +5408,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         p.id_calle,
         p.manzana,
         p.lote,
+        COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+        COALESCE(NULLIF(TRIM(p.estado_servicio), ''), 'ACTIVO') AS estado_servicio,
         COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
@@ -5336,6 +5433,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       id_calle: predioData.rows[0]?.id_calle || null,
       manzana: predioData.rows[0]?.manzana || "",
       lote: predioData.rows[0]?.lote || "",
+      predio_activo_sn: predioData.rows[0]?.activo_sn || "S",
+      predio_estado_servicio: predioData.rows[0]?.estado_servicio || "ACTIVO",
       agua_sn: predioData.rows[0]?.agua_sn || "S",
       desague_sn: predioData.rows[0]?.desague_sn || "S",
       limpieza_sn: predioData.rows[0]?.limpieza_sn || "S",
@@ -5350,7 +5449,28 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     const aguaDestino = normalizeSN(metadataSolicitud.servicio_agua_nuevo, aguaActual);
     const desagueDestino = normalizeSN(metadataSolicitud.servicio_desague_nuevo, desagueActual);
     const limpiezaDestino = normalizeSN(metadataSolicitud.servicio_limpieza_nuevo, limpiezaActual);
-    const predioEstado = estadoConexionToPredio(estadoDestino);
+    const nombreDestino = normalizeLimitedText(
+      requestedChanges.nombre ? (solicitud.nombre_verificado || actual.nombre_completo) : actual.nombre_completo,
+      200
+    );
+    const dniDestino = normalizeLimitedText(
+      requestedChanges.dni ? (solicitud.dni_verificado || actual.dni_ruc) : actual.dni_ruc,
+      30
+    );
+    const telefonoDestino = normalizeLimitedText(
+      requestedChanges.telefono ? (solicitud.telefono_verificado || actual.telefono) : actual.telefono,
+      40
+    );
+    const estadoAplicado = requestedChanges.estado ? estadoDestino : estadoActual;
+    const aguaAplicado = requestedChanges.agua ? aguaDestino : aguaActual;
+    const desagueAplicado = requestedChanges.desague ? desagueDestino : desagueActual;
+    const limpiezaAplicado = requestedChanges.limpieza ? limpiezaDestino : limpiezaActual;
+    const predioEstado = requestedChanges.estado
+      ? estadoConexionToPredio(estadoDestino)
+      : {
+        activo_sn: normalizeSN(actual.predio_activo_sn, "S"),
+        estado_servicio: normalizeLimitedText(actual.predio_estado_servicio, 40) || "ACTIVO"
+      };
     const motivoCampo = [solicitud.observacion_campo || "", motivoRevision || ""]
       .filter(Boolean)
       .join(" | ")
@@ -5363,19 +5483,20 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
            dni_ruc = $2,
            telefono = $3,
            estado_conexion = $4,
-           estado_conexion_fuente = 'CAMPO',
-           estado_conexion_verificado_sn = 'S',
-           estado_conexion_fecha_verificacion = $5,
-           estado_conexion_motivo_ultimo = $6
+           estado_conexion_fuente = CASE WHEN $8::boolean THEN 'CAMPO' ELSE estado_conexion_fuente END,
+           estado_conexion_verificado_sn = CASE WHEN $8::boolean THEN 'S' ELSE estado_conexion_verificado_sn END,
+           estado_conexion_fecha_verificacion = CASE WHEN $8::boolean THEN $5 ELSE estado_conexion_fecha_verificacion END,
+           estado_conexion_motivo_ultimo = CASE WHEN $8::boolean THEN $6 ELSE estado_conexion_motivo_ultimo END
        WHERE id_contribuyente = $7`,
       [
-        normalizeLimitedText(solicitud.nombre_verificado || actual.nombre_completo, 200),
-        normalizeLimitedText(solicitud.dni_verificado || actual.dni_ruc, 30),
-        normalizeLimitedText(solicitud.telefono_verificado || actual.telefono, 40),
-        estadoDestino,
+        nombreDestino,
+        dniDestino,
+        telefonoDestino,
+        estadoAplicado,
         fechaVerificacion,
         motivoCampo || null,
-        actual.id_contribuyente
+        actual.id_contribuyente,
+        requestedChanges.estado
       ]
     );
 
@@ -5384,15 +5505,13 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     const idCalleBase = parsePositiveInt(actual.id_calle, 0) || null;
     let idDireccionAlterna = null;
     if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA) {
-      if (direccionNueva) {
+      if (requestedChanges.direccion && direccionNueva) {
         const partesDireccion = extraerCalleYNumero(direccionNueva);
-        const idCalleAlterna = partesDireccion?.esEstructurada
-          ? await resolveCalleIdByNombre(client, partesDireccion?.calle, idCalleBase)
-          : idCalleBase;
+        const idCalleAlterna = await resolveCalleIdByNombre(client, partesDireccion?.calle, idCalleBase);
         const payloadDireccion = {
           tipo_solicitud: tipoSolicitud,
           id_solicitud: idSolicitud,
-          estado_nuevo: estadoDestino
+          estado_nuevo: estadoAplicado
         };
         try {
           const nuevaDireccion = await client.query(
@@ -5408,10 +5527,10 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
               idCalleAlterna,
               partesDireccion?.esEstructurada ? (normalizeLimitedText(partesDireccion?.numero, 30) || null) : null,
               direccionNueva,
-              aguaDestino,
-              desagueDestino,
-              limpiezaDestino,
-              estadoDestino,
+              aguaAplicado,
+              desagueAplicado,
+              limpiezaAplicado,
+              estadoAplicado,
               idSolicitud,
               JSON.stringify(payloadDireccion)
             ]
@@ -5439,25 +5558,26 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         `UPDATE predios
          SET activo_sn = $1,
              estado_servicio = $2,
-             direccion_alterna = COALESCE(NULLIF($3, ''), direccion_alterna),
+             direccion_alterna = CASE WHEN $7::boolean THEN COALESCE(NULLIF($3, ''), direccion_alterna) ELSE direccion_alterna END,
              agua_sn = $4,
              desague_sn = $5,
              limpieza_sn = $6
-         WHERE id_predio = $7`,
+         WHERE id_predio = $8`,
         [
           predioEstado.activo_sn,
           predioEstado.estado_servicio,
           direccionNueva,
-          aguaDestino,
-          desagueDestino,
-          limpiezaDestino,
+          aguaAplicado,
+          desagueAplicado,
+          limpiezaAplicado,
+          requestedChanges.direccion,
           idPredioBase
         ]
       );
     } else {
       const partesDireccion = direccionNueva ? extraerCalleYNumero(direccionNueva) : null;
-      const aplicarDireccionNueva = Boolean(direccionNueva);
-      const idCalleNuevo = aplicarDireccionNueva && partesDireccion?.esEstructurada
+      const aplicarDireccionNueva = Boolean(requestedChanges.direccion && direccionNueva);
+      const idCalleNuevo = aplicarDireccionNueva
         ? await resolveCalleIdByNombre(client, partesDireccion?.calle, idCalleBase)
         : idCalleBase;
       const numeroCasaNuevo = aplicarDireccionNueva
@@ -5485,11 +5605,11 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
          SET activo_sn = $1,
              estado_servicio = $2,
              id_calle = CASE WHEN $8 THEN COALESCE($3, id_calle) ELSE id_calle END,
-             numero_casa = CASE WHEN $8 THEN COALESCE(NULLIF($4, ''), numero_casa) ELSE numero_casa END,
-             referencia_direccion = CASE WHEN $8 THEN NULLIF($5, '') ELSE referencia_direccion END,
-             agua_sn = $6,
-             desague_sn = $7,
-             limpieza_sn = $9,
+            numero_casa = CASE WHEN $8 THEN COALESCE(NULLIF($4, ''), numero_casa) ELSE numero_casa END,
+            referencia_direccion = CASE WHEN $8 THEN NULLIF($5, '') ELSE referencia_direccion END,
+            agua_sn = $6,
+            desague_sn = $7,
+            limpieza_sn = $9,
              manzana = CASE WHEN $8 THEN COALESCE(NULLIF($10, ''), manzana) ELSE manzana END,
              lote = CASE WHEN $8 THEN COALESCE(NULLIF($11, ''), lote) ELSE lote END
          WHERE id_predio = $12`,
@@ -5499,10 +5619,10 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
           idCalleNuevo,
           numeroCasaNuevo,
           referenciaDireccionNueva,
-          aguaDestino,
-          desagueDestino,
+          aguaAplicado,
+          desagueAplicado,
           aplicarDireccionNueva,
-          limpiezaDestino,
+          limpiezaAplicado,
           manzanaNueva,
           loteNuevo,
           idPredioBase
@@ -5510,7 +5630,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       );
     }
 
-    if (estadoActual !== estadoDestino) {
+    if (requestedChanges.estado && estadoActual !== estadoDestino) {
       await client.query(
         `INSERT INTO estado_conexion_eventos (
           id_usuario, id_contribuyente, estado_anterior, estado_nuevo, motivo
@@ -5526,25 +5646,29 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     }
 
     const serviciosCambiaron =
-      aguaActual !== aguaDestino ||
-      desagueActual !== desagueDestino ||
-      limpiezaActual !== limpiezaDestino;
+      aguaActual !== aguaAplicado ||
+      desagueActual !== desagueAplicado ||
+      limpiezaActual !== limpiezaAplicado;
     const cambiosAplicados = buildCampoSolicitudCambiosAudit({
       tipoSolicitud,
       solicitud,
       actual,
       estadoActual,
-      estadoDestino,
+      estadoDestino: estadoAplicado,
       aguaActual,
-      aguaDestino,
+      aguaDestino: aguaAplicado,
       desagueActual,
-      desagueDestino,
+      desagueDestino: desagueAplicado,
       limpiezaActual,
-      limpiezaDestino
+      limpiezaDestino: limpiezaAplicado,
+      requestedChanges
     });
     let recibosRecalculados = 0;
-    if (serviciosCambiaron || estadoActual !== estadoDestino) {
-      const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente);
+    if (serviciosCambiaron || (requestedChanges.estado && estadoActual !== estadoAplicado)) {
+      const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente, {
+        incluirPendientesHistoricos: true,
+        desdePeriodoNum: 0
+      });
       recibosRecalculados = Number(recalc?.actualizados || 0);
     }
 
@@ -5608,13 +5732,16 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       id_contribuyente: actual.id_contribuyente,
       tipo_solicitud: tipoSolicitud,
       estado_anterior: estadoActual,
-      estado_nuevo: estadoDestino,
+      estado_nuevo: estadoAplicado,
       recibos_recalculados: recibosRecalculados,
       id_direccion_alterna: idDireccionAlterna
     });
   } catch (err) {
     try { await client.query("ROLLBACK"); } catch {}
     console.error("Error aprobando solicitud de campo:", err);
+    if (Number(err?.statusCode) >= 400 && Number(err?.statusCode) < 500) {
+      return res.status(Number(err.statusCode)).json({ error: err.publicMessage || err.message || "Solicitud inválida." });
+    }
     return res.status(500).json({ error: "Error aprobando solicitud de campo." });
   } finally {
     client.release();
