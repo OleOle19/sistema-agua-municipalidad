@@ -4887,12 +4887,15 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       valor: exportRows.filter((row) => row?.excel_group?.key === "VISITADO_SIN_NOVEDAD").length
     });
     wsResumen.addRow({
-      campo: "Total filas hoja Cambios",
+      campo: "No visitados",
+      valor: exportRows.filter((row) => String(row?.excel_group?.key || "").startsWith("NO_VISITADO")).length
+    });
+    wsResumen.addRow({
+      campo: "Total filas hojas detalle",
       valor: ""
     });
 
-    const wsCambios = workbook.addWorksheet("Cambios");
-    wsCambios.columns = [
+    const detalleColumns = [
       { header: "id_solicitud", key: "id_solicitud", width: 14 },
       { header: "tipo_solicitud", key: "tipo_solicitud", width: 22 },
       { header: "id_contribuyente", key: "id_contribuyente", width: 16 },
@@ -4903,6 +4906,18 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       { header: "valor_anterior", key: "valor_anterior", width: 32 },
       { header: "valor_nuevo", key: "valor_nuevo", width: 44 }
     ];
+    const wsVisitadosConNovedad = workbook.addWorksheet("Visitados con novedad");
+    wsVisitadosConNovedad.columns = detalleColumns;
+    const wsVisitadosSinNovedad = workbook.addWorksheet("Visitados sin novedad");
+    wsVisitadosSinNovedad.columns = detalleColumns;
+    const wsNoVisitados = workbook.addWorksheet("No visitados");
+    wsNoVisitados.columns = detalleColumns;
+    const detailSheetByGroup = {
+      VISITADO_CON_NOVEDAD: wsVisitadosConNovedad,
+      VISITADO_SIN_NOVEDAD: wsVisitadosSinNovedad,
+      NO_VISITADO_CON_NOVEDAD: wsNoVisitados,
+      NO_VISITADO_SIN_NOVEDAD: wsNoVisitados
+    };
 
     const rowsOrdenadas = exportRows.slice().sort((a, b) => {
       const rankA = Number(a?.excel_group?.rank || 99);
@@ -4911,10 +4926,10 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       return new Date(b?.creado_en || 0).getTime() - new Date(a?.creado_en || 0).getTime();
     });
     let totalCambiosRows = 0;
-    let currentGroupKey = "";
     const dedupeKeys = new Set();
     rowsOrdenadas.forEach((row) => {
       const groupKey = String(row?.excel_group?.key || "");
+      const targetSheet = detailSheetByGroup[groupKey] || wsNoVisitados;
       const items = [
         ...(Array.isArray(row.cambios_items) ? row.cambios_items : []),
         ...(Array.isArray(row.extra_items) ? row.extra_items : [])
@@ -4924,22 +4939,8 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
           const dedupeKey = buildCampoCambioDedupeKey(row, item);
           if (dedupeKeys.has(dedupeKey)) return;
           dedupeKeys.add(dedupeKey);
-          if (groupKey && groupKey !== currentGroupKey) {
-            currentGroupKey = groupKey;
-            wsCambios.addRow({
-              id_solicitud: "",
-              tipo_solicitud: "",
-              id_contribuyente: "",
-              codigo_municipal: "",
-              contribuyente: "",
-              campo: row?.excel_group?.label || "Grupo",
-              tipo: "GRUPO",
-              valor_anterior: "",
-              valor_nuevo: ""
-            });
-          }
           totalCambiosRows += 1;
-          wsCambios.addRow({
+          targetSheet.addRow({
             id_solicitud: row.id_solicitud,
             tipo_solicitud: row.tipo_solicitud_label,
             id_contribuyente: row.id_contribuyente,
@@ -4961,22 +4962,8 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
         const dedupeKey = buildCampoCambioDedupeKey(row, item);
         if (dedupeKeys.has(dedupeKey)) return;
         dedupeKeys.add(dedupeKey);
-        if (groupKey && groupKey !== currentGroupKey) {
-          currentGroupKey = groupKey;
-          wsCambios.addRow({
-            id_solicitud: "",
-            tipo_solicitud: "",
-            id_contribuyente: "",
-            codigo_municipal: "",
-            contribuyente: "",
-            campo: row?.excel_group?.label || "Grupo",
-            tipo: "GRUPO",
-            valor_anterior: "",
-            valor_nuevo: ""
-          });
-        }
         totalCambiosRows += 1;
-        wsCambios.addRow({
+        targetSheet.addRow({
           id_solicitud: row.id_solicitud,
           tipo_solicitud: row.tipo_solicitud_label,
           id_contribuyente: row.id_contribuyente,
@@ -4989,7 +4976,7 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
         });
       }
     });
-    wsResumen.getCell("B10").value = totalCambiosRows;
+    wsResumen.getCell("B11").value = totalCambiosRows;
 
     const toExcelColumnName = (index) => {
       let n = Number(index || 0);
@@ -5002,7 +4989,7 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       return out || "A";
     };
 
-    [wsResumen, wsCambios].forEach((ws) => {
+    [wsResumen, wsVisitadosConNovedad, wsVisitadosSinNovedad, wsNoVisitados].forEach((ws) => {
       ws.views = [{ state: "frozen", ySplit: 1 }];
       const lastCol = toExcelColumnName(ws.columns.length);
       ws.autoFilter = { from: "A1", to: `${lastCol}1` };
