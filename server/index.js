@@ -6796,7 +6796,13 @@ app.get("/contribuyentes/detalle/:id", async (req, res) => {
       LEFT JOIN predios p ON c.id_contribuyente = p.id_contribuyente
       WHERE c.id_contribuyente = $1
     `, [id]);
-    res.json(data.rows[0]);
+    const detalle = data.rows[0] || null;
+    if (!detalle) return res.status(404).json({ error: "Contribuyente no encontrado." });
+    const tarifaReferencia = await getContribuyenteTarifaReferencia(pool, id);
+    res.json({
+      ...detalle,
+      ...(tarifaReferencia || {})
+    });
   } catch (err) { res.status(500).send("Error"); }
 });
 
@@ -14731,6 +14737,126 @@ const getBackupConfig = () => {
     PG_DUMP_PATH
   };
 };
+async function getContribuyenteTarifaReferencia(db, idContribuyente) {
+  const id = parsePositiveInt(idContribuyente, 0);
+  if (!id) return null;
+
+  const predioRs = await db.query(`
+    SELECT
+      p.id_predio,
+      COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+      COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+      COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+      p.tarifa_agua,
+      p.tarifa_desague,
+      p.tarifa_limpieza,
+      p.tarifa_admin,
+      p.tarifa_extra,
+      (
+        SELECT COALESCE(rh.subtotal_agua, 0)
+        FROM recibos rh
+        WHERE rh.id_predio = p.id_predio
+          AND COALESCE(rh.subtotal_agua, 0) > 0
+        ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+        LIMIT 1
+      ) AS agua_hist,
+      (
+        SELECT COALESCE(rh.subtotal_desague, 0)
+        FROM recibos rh
+        WHERE rh.id_predio = p.id_predio
+          AND COALESCE(rh.subtotal_desague, 0) > 0
+        ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+        LIMIT 1
+      ) AS desague_hist,
+      (
+        SELECT COALESCE(rh.subtotal_limpieza, 0)
+        FROM recibos rh
+        WHERE rh.id_predio = p.id_predio
+          AND COALESCE(rh.subtotal_limpieza, 0) > 0
+        ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+        LIMIT 1
+      ) AS limpieza_hist
+    FROM predios p
+    WHERE p.id_contribuyente = $1
+    ORDER BY p.id_predio ASC
+    LIMIT 1
+  `, [id]);
+  if (predioRs.rows.length === 0) return null;
+
+  const predio = predioRs.rows[0];
+  const historialContribuyenteRs = await db.query(`
+    SELECT
+      t.subtotal_agua,
+      t.subtotal_desague,
+      t.subtotal_limpieza,
+      t.subtotal_admin,
+      t.subtotal_extra
+    FROM (
+      SELECT
+        r.anio,
+        r.mes,
+        SUM(COALESCE(r.subtotal_agua, 0)) AS subtotal_agua,
+        SUM(COALESCE(r.subtotal_desague, 0)) AS subtotal_desague,
+        SUM(COALESCE(r.subtotal_limpieza, 0)) AS subtotal_limpieza,
+        SUM(COALESCE(r.subtotal_admin, 0)) AS subtotal_admin,
+        SUM(COALESCE(p2.tarifa_extra, 0)) AS subtotal_extra
+      FROM recibos r
+      JOIN predios p2 ON p2.id_predio = r.id_predio
+      WHERE p2.id_contribuyente = $1
+        AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+      GROUP BY r.anio, r.mes
+      HAVING (
+        SUM(COALESCE(r.subtotal_agua, 0)) +
+        SUM(COALESCE(r.subtotal_desague, 0)) +
+        SUM(COALESCE(r.subtotal_limpieza, 0)) +
+        SUM(COALESCE(r.subtotal_admin, 0))
+      ) > 0
+      ORDER BY r.anio DESC, r.mes DESC
+      LIMIT 1
+    ) t
+  `, [id]);
+  const historialContribuyente = historialContribuyenteRs.rows[0] || null;
+  const hasHistorialTarifario = Boolean(historialContribuyente);
+
+  const tarifaAguaActual = hasHistorialTarifario
+    ? roundMonto2(parseMonto(historialContribuyente?.subtotal_agua, 0))
+    : (
+      normalizeSN(predio.agua_sn, "S") === "S"
+        ? roundMonto2(parseMonto(predio.tarifa_agua, parseMonto(predio.agua_hist, AUTO_DEUDA_BASE.agua)))
+        : 0
+    );
+  const tarifaDesagueActual = hasHistorialTarifario
+    ? roundMonto2(parseMonto(historialContribuyente?.subtotal_desague, 0))
+    : (
+      normalizeSN(predio.desague_sn, "S") === "S"
+        ? roundMonto2(parseMonto(predio.tarifa_desague, parseMonto(predio.desague_hist, AUTO_DEUDA_BASE.desague)))
+        : 0
+    );
+  const tarifaLimpiezaActual = hasHistorialTarifario
+    ? roundMonto2(parseMonto(historialContribuyente?.subtotal_limpieza, 0))
+    : (
+      normalizeSN(predio.limpieza_sn, "S") === "S"
+        ? roundMonto2(parseMonto(predio.tarifa_limpieza, parseMonto(predio.limpieza_hist, AUTO_DEUDA_BASE.limpieza)))
+        : 0
+    );
+  const tarifaAdminActual = hasHistorialTarifario
+    ? roundMonto2(parseMonto(historialContribuyente?.subtotal_admin, parseMonto(predio.tarifa_admin, AUTO_DEUDA_BASE.admin)))
+    : roundMonto2(parseMonto(predio.tarifa_admin, AUTO_DEUDA_BASE.admin));
+  const tarifaExtraActual = hasHistorialTarifario
+    ? roundMonto2(parseMonto(historialContribuyente?.subtotal_extra, parseMonto(predio.tarifa_extra, 0)))
+    : roundMonto2(parseMonto(predio.tarifa_extra, 0));
+
+  return {
+    tarifa_actual_agua: tarifaAguaActual,
+    tarifa_actual_desague: tarifaDesagueActual,
+    tarifa_actual_limpieza: tarifaLimpiezaActual,
+    tarifa_actual_admin: tarifaAdminActual,
+    tarifa_actual_extra: tarifaExtraActual,
+    servicio_agua_activo_real_sn: tarifaAguaActual > 0 ? "S" : "N",
+    servicio_desague_activo_real_sn: tarifaDesagueActual > 0 ? "S" : "N",
+    servicio_limpieza_activo_real_sn: tarifaLimpiezaActual > 0 ? "S" : "N"
+  };
+}
 
 const getFechaHoraBackup = (date = new Date(), timeZone = APP_TIMEZONE) => {
   const { anio, mes, dia, hora, minuto, segundo } = getFechaPartesZona(date, timeZone);
