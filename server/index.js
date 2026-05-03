@@ -743,41 +743,78 @@ const getCampoSolicitudRequestedChanges = (row = {}) => {
   const aguaNuevo = normalizeSN(metadata.servicio_agua_nuevo, snapshots.aguaActual);
   const desagueNuevo = normalizeSN(metadata.servicio_desague_nuevo, snapshots.desagueActual);
   const limpiezaNuevo = normalizeSN(metadata.servicio_limpieza_nuevo, snapshots.limpiezaActual);
+  const hasFlag = (key) => Object.prototype.hasOwnProperty.call(metadata, key);
+
+  const inferredNombre = campoSolicitudTextChanged(row?.nombre_verificado, snapshots.nombreActual);
+  const inferredDni = campoSolicitudTextChanged(row?.dni_verificado, snapshots.dniActual);
+  const inferredTelefono = campoSolicitudTextChanged(row?.telefono_verificado, snapshots.telefonoActual);
+  const inferredDireccion = campoSolicitudTextChanged(row?.direccion_verificada, direccionAnterior);
+  const inferredEstado = snapshots.estadoActual !== estadoNuevo;
+  const inferredAgua = snapshots.aguaActual !== aguaNuevo;
+  const inferredDesague = snapshots.desagueActual !== desagueNuevo;
+  const inferredLimpieza = snapshots.limpiezaActual !== limpiezaNuevo;
+  const hasExplicitRequestedFlags = [
+    "requested_change_nombre",
+    "requested_change_dni",
+    "requested_change_telefono",
+    "requested_change_direccion",
+    "requested_change_estado",
+    "requested_change_agua",
+    "requested_change_desague",
+    "requested_change_limpieza"
+  ].some((key) => hasFlag(key));
+  const hasLegacyNonDireccionChanges = (
+    inferredNombre
+    || inferredDni
+    || inferredTelefono
+    || inferredEstado
+    || inferredAgua
+    || inferredDesague
+    || inferredLimpieza
+  );
 
   const requested = {
     nombre: parseCampoSolicitudBooleanFlag(
       metadata.requested_change_nombre,
-      campoSolicitudTextChanged(row?.nombre_verificado, snapshots.nombreActual)
+      inferredNombre
     ),
     dni: parseCampoSolicitudBooleanFlag(
       metadata.requested_change_dni,
-      campoSolicitudTextChanged(row?.dni_verificado, snapshots.dniActual)
+      inferredDni
     ),
     telefono: parseCampoSolicitudBooleanFlag(
       metadata.requested_change_telefono,
-      campoSolicitudTextChanged(row?.telefono_verificado, snapshots.telefonoActual)
+      inferredTelefono
     ),
-    direccion: parseCampoSolicitudBooleanFlag(
-      metadata.requested_change_direccion,
-      campoSolicitudTextChanged(row?.direccion_verificada, direccionAnterior)
-    ),
+    direccion: false,
     estado: parseCampoSolicitudBooleanFlag(
       metadata.requested_change_estado,
-      snapshots.estadoActual !== estadoNuevo
+      inferredEstado
     ),
     agua: parseCampoSolicitudBooleanFlag(
       metadata.requested_change_agua,
-      snapshots.aguaActual !== aguaNuevo
+      inferredAgua
     ),
     desague: parseCampoSolicitudBooleanFlag(
       metadata.requested_change_desague,
-      snapshots.desagueActual !== desagueNuevo
+      inferredDesague
     ),
     limpieza: parseCampoSolicitudBooleanFlag(
       metadata.requested_change_limpieza,
-      snapshots.limpiezaActual !== limpiezaNuevo
+      inferredLimpieza
     )
   };
+  if (hasFlag("requested_change_direccion")) {
+    requested.direccion = parseCampoSolicitudBooleanFlag(metadata.requested_change_direccion, false);
+  } else if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA) {
+    requested.direccion = inferredDireccion;
+  } else if (hasExplicitRequestedFlags) {
+    requested.direccion = false;
+  } else if (inferredDireccion && hasLegacyNonDireccionChanges) {
+    requested.direccion = false;
+  } else {
+    requested.direccion = inferredDireccion;
+  }
   requested.servicios = requested.agua || requested.desague || requested.limpieza;
   return requested;
 };
