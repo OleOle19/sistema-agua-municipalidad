@@ -20,7 +20,7 @@ const validarPeriodoNoFuturo = (anioInput, mesInput) => {
   return { ok: true, anio, mes };
 };
 
-const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkMode }) => {
+const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkMode, onFlash = null }) => {
   const [modo, setModo] = useState(idsSeleccionados.length > 0 ? "seleccion" : "todos");
   const [calles, setCalles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -42,6 +42,9 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
     limpieza: true,
     admin: true
   });
+  const showFlash = (type, text) => {
+    if (typeof onFlash === "function") onFlash(type, text);
+  };
 
   useEffect(() => {
     api.get("/calles").then(res => setCalles(res.data));
@@ -86,10 +89,10 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (modo === "calle" && !form.id_calle) return alert("Seleccione una calle");
-    if (totalServicios <= 0) return alert("Debe seleccionar al menos un servicio.");
+    if (modo === "calle" && !form.id_calle) return showFlash("warning", "Seleccione una calle.");
+    if (totalServicios <= 0) return showFlash("warning", "Debe seleccionar al menos un servicio.");
     const periodo = validarPeriodoNoFuturo(form.anio, form.mes);
-    if (!periodo.ok) return alert(periodo.error);
+    if (!periodo.ok) return showFlash("warning", periodo.error);
     if (!confirm(`¿Está seguro de generar deuda masiva en modo: ${modo.toUpperCase()}?`)) return;
 
     setLoading(true);
@@ -109,9 +112,12 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
         montos: montosPayload
       };
       const res = await api.post("/recibos/generar-masivo", payload);
-      alert(res.data.mensaje);
+      showFlash("success", res.data.mensaje || "Deuda masiva generada.");
       alGuardar();
-    } catch { alert("Error al generar deuda."); } 
+      cerrarModal();
+    } catch {
+      showFlash("danger", "Error al generar deuda.");
+    } 
     finally { setLoading(false); }
   };
 

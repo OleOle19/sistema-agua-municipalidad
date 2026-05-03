@@ -29,12 +29,15 @@ const getRolLabel = (rol) => {
   return found ? found.label : rol;
 };
 
-const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
+const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
   const [usuarios, setUsuarios] = useState([]);
   const [ediciones, setEdiciones] = useState({});
   const [guardandoId, setGuardandoId] = useState(null);
   const [usuarioEliminarId, setUsuarioEliminarId] = useState("");
   const [eliminandoId, setEliminandoId] = useState(null);
+  const showFlash = (type, text) => {
+    if (typeof onFlash === "function") onFlash(type, text);
+  };
 
   const cargarUsuarios = async () => {
     try {
@@ -51,7 +54,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
       });
       setEdiciones(draft);
     } catch (error) {
-      alert(error?.response?.data?.error || "Error al cargar usuarios");
+      showFlash("danger", error?.response?.data?.error || "Error al cargar usuarios");
     }
   };
 
@@ -83,7 +86,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
     const quiereCambiarPassword = nuevaPassword.length > 0;
 
     if (quiereCambiarPassword && nuevaPassword.length < MIN_PASSWORD_LEN) {
-      return alert(`La nueva contraseña debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
+      return showFlash("warning", `La nueva contraseña debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
     }
 
     const payload = {};
@@ -98,10 +101,12 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
       await api.put(`/admin/usuarios/${u.id_usuario}`, payload);
       await cargarUsuarios();
       if (quiereCambiarPassword) {
-        alert(`Contraseña actualizada para "${u.username}".`);
+        showFlash("success", `Contraseña actualizada para "${u.username}".`);
+      } else {
+        showFlash("success", `Usuario "${u.username}" actualizado.`);
       }
     } catch (error) {
-      alert(error?.response?.data?.error || "Error al actualizar usuario");
+      showFlash("danger", error?.response?.data?.error || "Error al actualizar usuario");
     } finally {
       setGuardandoId(null);
     }
@@ -110,12 +115,12 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
   const eliminarUsuarioSistema = async () => {
     const id = Number(usuarioEliminarId);
     if (!Number.isInteger(id) || id <= 0) {
-      alert("Seleccione un usuario para eliminar.");
+      showFlash("warning", "Seleccione un usuario para eliminar.");
       return;
     }
     const target = usuarios.find((u) => Number(u.id_usuario) === id);
     if (!target) {
-      alert("Usuario no encontrado.");
+      showFlash("warning", "Usuario no encontrado.");
       return;
     }
     if (!window.confirm(`Se eliminara el usuario "${target.username}". Esta accion no se puede deshacer. Continuar?`)) {
@@ -125,11 +130,11 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo }) => {
     try {
       setEliminandoId(id);
       await api.delete(`/admin/usuarios/${id}`);
-      alert("Usuario eliminado.");
+      showFlash("success", "Usuario eliminado.");
       setUsuarioEliminarId("");
       await cargarUsuarios();
     } catch (error) {
-      alert(error?.response?.data?.error || "Error al eliminar usuario");
+      showFlash("danger", error?.response?.data?.error || "Error al eliminar usuario");
     } finally {
       setEliminandoId(null);
     }

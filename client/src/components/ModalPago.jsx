@@ -37,7 +37,8 @@ const ModalPago = ({
   alGuardar,
   onImprimirAnexo,
   darkMode,
-  realtimeTick = 0
+  realtimeTick = 0,
+  onFlash = null
 }) => {
   const rol = normalizeRole(usuarioSistema?.rol);
   const isCaja = rol === "CAJERO";
@@ -49,6 +50,9 @@ const ModalPago = ({
   const [cargandoOrdenes, setCargandoOrdenes] = useState(false);
   const [avisoOrden, setAvisoOrden] = useState("");
   const maxOrdenConocidaRef = useRef(0);
+  const showFlash = useCallback((type, text) => {
+    if (typeof onFlash === "function") onFlash(type, text);
+  }, [onFlash]);
 
   const recibosPendientes = useMemo(
     () => (Array.isArray(usuario?.recibos) ? usuario.recibos : [])
@@ -131,11 +135,11 @@ const ModalPago = ({
         return Number(rows[0]?.id_orden || 0);
       });
     } catch (err) {
-      alert(err?.response?.data?.error || "No se pudo cargar ordenes pendientes.");
+      showFlash("danger", err?.response?.data?.error || "No se pudo cargar ordenes pendientes.");
     } finally {
       setCargandoOrdenes(false);
     }
-  }, [isCaja, usuario?.id_contribuyente]);
+  }, [isCaja, showFlash, usuario?.id_contribuyente]);
 
   useEffect(() => {
     cargarOrdenes().catch(() => {});
@@ -226,10 +230,10 @@ const ModalPago = ({
   ), [recibosPendientes, seleccion]);
 
   const emitirOrden = async () => {
-    if (!canEmitir) return alert("No tiene permisos para emitir ordenes.");
+    if (!canEmitir) return showFlash("warning", "No tiene permisos para emitir ordenes.");
     const items = itemsSeleccionadosParaOrden;
 
-    if (items.length === 0) return alert("Seleccione al menos un recibo con monto valido.");
+    if (items.length === 0) return showFlash("warning", "Seleccione al menos un recibo con monto valido.");
     if (!window.confirm(`Emitir orden por S/. ${totalOrden.toFixed(2)}?`)) return;
 
     setCargando(true);
@@ -240,11 +244,11 @@ const ModalPago = ({
         cargo_reimpresion: 0
       });
       const id = Number(res?.data?.orden?.id_orden || 0);
-      alert(`Orden emitida correctamente${id ? `: #${id}` : ""}.`);
+      showFlash("success", `Orden emitida correctamente${id ? `: #${id}` : ""}.`);
       alGuardar?.();
       cerrarModal?.();
     } catch (err) {
-      alert(err?.response?.data?.error || "No se pudo emitir la orden.");
+      showFlash("danger", err?.response?.data?.error || "No se pudo emitir la orden.");
     } finally {
       setCargando(false);
     }
@@ -252,7 +256,7 @@ const ModalPago = ({
 
   const cobrarOrden = async () => {
     if (!isCaja) return;
-    if (!ordenSeleccionada) return alert("Seleccione una orden pendiente.");
+    if (!ordenSeleccionada) return showFlash("warning", "Seleccione una orden pendiente.");
     if (!window.confirm(`Cobrar orden #${ordenSeleccionada.id_orden} por S/. ${totalCobroCaja.toFixed(2)}?`)) return;
 
     setCargando(true);
@@ -263,11 +267,11 @@ const ModalPago = ({
       if (typeof onImprimirAnexo === "function") {
         onImprimirAnexo(buildDatosAnexoCaja(ordenSeleccionada));
       }
-      alert("Cobro registrado correctamente.");
+      showFlash("success", "Cobro registrado correctamente.");
       alGuardar?.();
       cerrarModal?.();
     } catch (err) {
-      alert(err?.response?.data?.error || "No se pudo cobrar la orden.");
+      showFlash("danger", err?.response?.data?.error || "No se pudo cobrar la orden.");
     } finally {
       setCargando(false);
     }
