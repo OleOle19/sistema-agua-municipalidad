@@ -117,20 +117,28 @@ const inferCalleFromDireccion = (direccion) => {
   return raw;
 };
 
-const renderChangeLine = (label, nuevo, actual) => (
-  <div className="small" key={label}>
+const renderChangeLine = (label, nuevo, actual, key = label) => (
+  <div className="small" key={key}>
     <span className="fw-semibold">{label}:</span>{" "}
     <span className="text-success">{nuevo || "-"}</span>{" "}
     <span className="opacity-75">antes:</span>{" "}
     <span className="opacity-75">{actual || "-"}</span>
   </div>
 );
-const renderInfoLine = (label, value) => (
-  <div className="small" key={label}>
+const renderInfoLine = (label, value, key = label) => (
+  <div className="small" key={key}>
     <span className="fw-semibold">{label}:</span>{" "}
     <span className="text-success">{value || "-"}</span>
   </div>
 );
+const renderServerChangeEntry = (entry = {}, index = 0) => {
+  const campo = String(entry?.campo || "Cambio").trim() || "Cambio";
+  const nuevo = String(entry?.despues || entry?.valor_nuevo || "").trim();
+  const actual = String(entry?.antes || entry?.valor_anterior || "").trim();
+  if (!nuevo) return null;
+  if (actual) return renderChangeLine(campo, nuevo, actual, `api-${campo}-${index}`);
+  return renderInfoLine(campo, nuevo || "-", `api-${campo}-${index}`);
+};
 
 const estadoBadgeClass = (estado) => {
   if (estado === "APROBADO") return "bg-success";
@@ -241,7 +249,10 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
   };
 
   const rows = useMemo(() => solicitudes.map((s) => {
-    const changes = [];
+    const apiChanges = Array.isArray(s?.cambios_items)
+      ? s.cambios_items.map((entry, index) => renderServerChangeEntry(entry, index)).filter(Boolean)
+      : [];
+    const changes = apiChanges.length > 0 ? apiChanges : [];
     const metadata = s?.metadata && typeof s.metadata === "object" ? s.metadata : {};
     const tipoSolicitud = normalizeText(s?.tipo_solicitud || metadata?.tipo_solicitud || "ACTUALIZACION");
     const isAltaPredio = tipoSolicitud === "ALTA_PREDIO" || tipoSolicitud === "ALTA_PREDIO_TEMPORAL";
@@ -275,13 +286,13 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado }) => {
     const calleLabel = calleRaw || inferCalleFromDireccion(
       s?.direccion_actual_db || s?.direccion_verificada || metadata?.referencia_direccion
     ) || "Sin calle";
-    if (isAltaPredio) {
+    if (changes.length === 0 && isAltaPredio) {
       if (s?.direccion_verificada) changes.push(renderInfoLine("Direccion", s.direccion_verificada));
       if (metadata?.referencia_direccion) changes.push(renderInfoLine("Referencia", metadata.referencia_direccion));
       if (s?.nombre_verificado) changes.push(renderInfoLine("Nombre", s.nombre_verificado));
       if (s?.dni_verificado) changes.push(renderInfoLine("DNI/RUC", s.dni_verificado));
       if (s?.telefono_verificado) changes.push(renderInfoLine("Telefono", s.telefono_verificado));
-    } else {
+    } else if (changes.length === 0) {
       if (s?.nombre_verificado && isDifferent(s.nombre_verificado, s.nombre_actual_db)) {
         changes.push(renderChangeLine("Nombre", s.nombre_verificado, s.nombre_actual_db));
       }
