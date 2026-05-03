@@ -14,6 +14,12 @@ const normalizeServicioSN = (value, fallback = "S") => {
   if (["N", "0", "NO", "FALSE"].includes(raw)) return "N";
   return fallback;
 };
+const parseMontoNumber = (value, fallback = 0) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number.parseFloat(String(value).replace(",", "."));
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+const formatMontoPlaceholder = (value) => parseMontoNumber(value, 0).toFixed(2);
 const normalizeCodigoMunicipalInput = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -59,6 +65,13 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
   const [sectores, setSectores] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [nombreOriginal, setNombreOriginal] = useState("");
+  const [tarifasReferencia, setTarifasReferencia] = useState({
+    agua: 0,
+    desague: 0,
+    limpieza: 0,
+    admin: 0,
+    extra: 0
+  });
 
   useEffect(() => {
     if (!idContribuyente) return;
@@ -75,6 +88,18 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
         setCalles(resCalles.data);
         setSectores(Array.isArray(resSectores.data) ? resSectores.data : []);
         const u = resDetalle.data;
+        const tarifaRefAgua = parseMontoNumber(u.tarifa_actual_agua, 0);
+        const tarifaRefDesague = parseMontoNumber(u.tarifa_actual_desague, 0);
+        const tarifaRefLimpieza = parseMontoNumber(u.tarifa_actual_limpieza, 0);
+        const tarifaRefAdmin = parseMontoNumber(u.tarifa_actual_admin, 0);
+        const tarifaRefExtra = parseMontoNumber(u.tarifa_actual_extra, 0);
+        setTarifasReferencia({
+          agua: tarifaRefAgua,
+          desague: tarifaRefDesague,
+          limpieza: tarifaRefLimpieza,
+          admin: tarifaRefAdmin,
+          extra: tarifaRefExtra
+        });
         setFormData({
           nombre_completo: u.nombre_completo || "",
           codigo_municipal: u.codigo_municipal || "",
@@ -87,9 +112,9 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
           numero_casa: u.numero_casa || "",
           manzana: u.manzana || "",
           lote: u.lote || "",
-          agua_sn: normalizeServicioSN(u.agua_sn, "S"),
-          desague_sn: normalizeServicioSN(u.desague_sn, "S"),
-          limpieza_sn: normalizeServicioSN(u.limpieza_sn, "S"),
+          agua_sn: normalizeServicioSN(u.servicio_agua_activo_real_sn, normalizeServicioSN(u.agua_sn, "N")),
+          desague_sn: normalizeServicioSN(u.servicio_desague_activo_real_sn, normalizeServicioSN(u.desague_sn, "N")),
+          limpieza_sn: normalizeServicioSN(u.servicio_limpieza_activo_real_sn, normalizeServicioSN(u.limpieza_sn, "N")),
           tarifa_agua: u.tarifa_agua ?? "",
           tarifa_desague: u.tarifa_desague ?? "",
           tarifa_limpieza: u.tarifa_limpieza ?? "",
@@ -154,6 +179,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
     (s) => String(s?.sec_nombre || "").trim().toLowerCase() === sectorNormalizado
   );
   const cambioRazonSocial = String(formData.nombre_completo || "").trim().toUpperCase() !== String(nombreOriginal || "").trim().toUpperCase();
+  const placeholderHintClass = darkMode ? "text-secondary" : "text-muted";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -274,26 +300,26 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode }) => {
                       <div className="row g-2">
                         <div className="col-md-3">
                           <label className="form-label small">Agua</label>
-                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_agua" value={formData.tarifa_agua} onChange={handleChange} placeholder="7.50" />
+                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_agua" value={formData.tarifa_agua} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.agua)} />
                         </div>
                         <div className="col-md-3">
                           <label className="form-label small">Desague</label>
-                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_desague" value={formData.tarifa_desague} onChange={handleChange} placeholder="3.50" />
+                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_desague" value={formData.tarifa_desague} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.desague)} />
                         </div>
                         <div className="col-md-3">
                           <label className="form-label small">Limpieza</label>
-                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_limpieza" value={formData.tarifa_limpieza} onChange={handleChange} placeholder="3.50" />
+                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_limpieza" value={formData.tarifa_limpieza} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.limpieza)} />
                         </div>
                         <div className="col-md-3">
                           <label className="form-label small">Admin</label>
-                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_admin" value={formData.tarifa_admin} onChange={handleChange} placeholder="0.50" />
+                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_admin" value={formData.tarifa_admin} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.admin)} />
                         </div>
                         <div className="col-md-3">
                           <label className="form-label small">Extra</label>
-                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_extra" value={formData.tarifa_extra} onChange={handleChange} placeholder="0.00" />
+                          <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_extra" value={formData.tarifa_extra} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.extra)} />
                         </div>
                       </div>
-                      <div className="small text-muted mt-2">
+                      <div className={`small mt-2 ${placeholderHintClass}`}>
                         Deja vacío para usar la tarifa base del sistema.
                       </div>
                     </div>
