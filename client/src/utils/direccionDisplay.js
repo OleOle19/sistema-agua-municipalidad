@@ -39,10 +39,15 @@ const collapseRepeatedPhrase = (value) => {
 const stripGenericSinNumero = (value) => {
   const text = normalizeSpaces(value);
   if (!text) return "";
-  const cleaned = normalizeSpaces(
+  const sinNumeroRemoved = normalizeSpaces(
     text
       .replace(/\bS\s*\/?\s*N\b/gi, " ")
       .replace(/\bSIN\s+N[UÚ]MERO\b/gi, " ")
+  );
+  const hasStructuredHint = /(\bNRO\b|\bN[º°]\b|\bMZ\b|\bLT\b|[A-Z]*\d+[A-Z0-9-]*)/i.test(sinNumeroRemoved);
+  if (!hasStructuredHint) return text;
+  const cleaned = normalizeSpaces(
+    sinNumeroRemoved
   );
   return cleaned || text;
 };
