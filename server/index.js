@@ -7829,6 +7829,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
     if (err.code === '23505') {
       return res.status(400).json({ error: "Código municipal o código de sistema ya existen." });
     }
+    console.error("Error PUT /contribuyentes/:id:", err);
     res.status(500).send("Error al actualizar");
   } finally { client.release(); }
 });
@@ -15888,13 +15889,13 @@ app.post("/recibos/masivos", async (req, res) => {
     }
 
     let filtro = "";
-    const params = [anioSeleccionado, mesesSeleccionados];
+    const params = [anioSeleccionado, mesesSeleccionados, minMesSeleccionado];
 
     if (tipo_seleccion === 'calle') {
-        filtro = "AND p.id_calle = $3";
+        filtro = "AND p.id_calle = $4";
         params.push(id_calle);
     } else if (tipo_seleccion === 'seleccion') {
-        filtro = "AND p.id_contribuyente = ANY($3)";
+        filtro = "AND p.id_contribuyente = ANY($4::int[])";
         params.push(ids_usuarios);
     }
 
@@ -16121,6 +16122,7 @@ app.post("/recibos/masivos", async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: "No se encontraron recibos." });
     res.json(rows);
   } catch (err) {
+    console.error("Error POST /recibos/masivos:", err);
     res.status(500).send("Error al obtener recibos masivos");
   } finally {
     client.release();
