@@ -107,6 +107,36 @@ const extraerCalleYNumero = (direccionRaw, options = {}) => {
 
   return { calle: direccion, numero: '', manzana: '', lote: '', referencia: '', esEstructurada: false };
 };
+const sanitizeStructuredPredioReference = ({
+  currentReference = "",
+  currentStreet = "",
+  nextStreet = "",
+  numeroCasa = "",
+  manzana = "",
+  lote = ""
+} = {}) => {
+  const reference = normalizeLimitedText(currentReference, 250);
+  if (!reference) return null;
+  const numero = normalizeLimitedText(numeroCasa, 30);
+  const mz = normalizeLimitedText(manzana, 30);
+  const lt = normalizeLimitedText(lote, 30);
+  const hasStructuredDetail = Boolean(numero || mz || lt);
+  if (!hasStructuredDetail) return reference;
+
+  const referenceRawNormalized = String(reference || "").trim().toUpperCase();
+  if (/^S\s*\/?\s*N$/.test(referenceRawNormalized)) return null;
+
+  const referenceComparable = stripComparableText(stripAddressTags(reference));
+  if (!referenceComparable) return null;
+
+  const currentStreetComparable = stripComparableText(currentStreet);
+  if (currentStreetComparable && referenceComparable === currentStreetComparable) return null;
+
+  const nextStreetComparable = stripComparableText(nextStreet);
+  if (nextStreetComparable && referenceComparable === nextStreetComparable) return null;
+
+  return reference;
+};
 
 const getFechaPartesZona = (date = new Date(), timeZone = APP_TIMEZONE) => {
   const dtf = new Intl.DateTimeFormat("en-CA", {
@@ -7531,22 +7561,53 @@ app.put("/contribuyentes/:id", async (req, res) => {
     const cambioCodigoSistema = (codigoSistema || null) !== codigoSistemaActual;
     const predioActualData = await client.query(
       `SELECT
+         p.id_calle,
+         p.numero_casa,
+         p.manzana,
+         p.lote,
+         p.referencia_direccion,
          COALESCE(NULLIF(UPPER(TRIM(activo_sn)), ''), 'S') AS activo_sn,
          COALESCE(NULLIF(UPPER(TRIM(agua_sn)), ''), 'S') AS agua_sn,
          COALESCE(NULLIF(UPPER(TRIM(desague_sn)), ''), 'S') AS desague_sn,
          COALESCE(NULLIF(UPPER(TRIM(limpieza_sn)), ''), 'S') AS limpieza_sn,
-         tarifa_agua,
-         tarifa_desague,
-         tarifa_limpieza,
-         tarifa_admin
-       FROM predios
-       WHERE id_contribuyente = $1
-       ORDER BY id_predio ASC
+         p.tarifa_agua,
+         p.tarifa_desague,
+         p.tarifa_limpieza,
+         p.tarifa_admin,
+         p.tarifa_extra,
+         COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle
+       FROM predios p
+       LEFT JOIN calles ca ON ca.id_calle = p.id_calle
+       WHERE p.id_contribuyente = $1
+       ORDER BY p.id_predio ASC
        LIMIT 1
        FOR UPDATE`,
       [idContribuyente]
     );
     const predioActual = predioActualData.rows[0] || null;
+    const idCalleActual = parsePositiveInt(predioActual?.id_calle, 0) || null;
+    const numeroCasaActual = normalizeLimitedText(predioActual?.numero_casa, 30);
+    const manzanaActual = normalizeLimitedText(predioActual?.manzana, 30);
+    const loteActual = normalizeLimitedText(predioActual?.lote, 30);
+    const referenciaDireccionActual = normalizeLimitedText(predioActual?.referencia_direccion, 250);
+    const idCalleNuevo = parsePositiveInt(id_calle, 0) || null;
+    const numeroCasaNuevo = normalizeLimitedText(numero_casa, 30);
+    const manzanaNueva = normalizeLimitedText(manzana, 30);
+    const loteNuevo = normalizeLimitedText(lote, 30);
+    const cambioDireccionEstructurada =
+      idCalleNuevo !== idCalleActual
+      || numeroCasaNuevo !== numeroCasaActual
+      || manzanaNueva !== manzanaActual
+      || loteNuevo !== loteActual;
+    const referenciaDireccionNueva = cambioDireccionEstructurada
+      ? sanitizeStructuredPredioReference({
+        currentReference: referenciaDireccionActual,
+        currentStreet: predioActual?.nombre_calle,
+        numeroCasa: numeroCasaNuevo,
+        manzana: manzanaNueva,
+        lote: loteNuevo
+      })
+      : (referenciaDireccionActual || null);
 
     if (cambioCodigoMunicipal) {
       const exMunicipal = await client.query(
@@ -7637,6 +7698,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
            lote = $4,
            activo_sn = $5,
            estado_servicio = $6,
+           referencia_direccion = $16,
            tarifa_agua = $8,
            tarifa_desague = $9,
            tarifa_limpieza = $10,
@@ -7647,14 +7709,15 @@ app.put("/contribuyentes/:id", async (req, res) => {
            limpieza_sn = COALESCE($15, limpieza_sn)
        WHERE id_contribuyente = $7`,
       [
-        id_calle, numero_casa, manzana, lote, predioEstado.activo_sn, predioEstado.estado_servicio,
+        idCalleNuevo, numeroCasaNuevo || null, manzanaNueva || null, loteNuevo || null, predioEstado.activo_sn, predioEstado.estado_servicio,
         idContribuyente,
         tarifasActualizadas.tarifa_agua,
         tarifasActualizadas.tarifa_desague,
         tarifasActualizadas.tarifa_limpieza,
         tarifasActualizadas.tarifa_admin,
         tarifaExtra,
-        aguaSN, desagueSN, limpiezaSN
+        aguaSN, desagueSN, limpiezaSN,
+        referenciaDireccionNueva
       ]
     );
     const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
