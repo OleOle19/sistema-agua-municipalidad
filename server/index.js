@@ -34,9 +34,35 @@ const normalizarNombreCalle = (valor) => {
     .replace(/[^\w\s]/g, '');
 };
 
-const extraerCalleYNumero = (direccionRaw) => {
+const stripComparableText = (value) => String(value || "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .replace(/[^A-Z0-9 ]/gi, " ")
+  .replace(/\s+/g, " ")
+  .trim()
+  .toUpperCase();
+
+const extraerCalleYNumero = (direccionRaw, options = {}) => {
   const direccion = (direccionRaw || '').toString().trim();
   if (!direccion) return { calle: 'SIN CALLE', numero: '', referencia: '', esEstructurada: false };
+  const calleHint = normalizeLimitedText(options?.calleHint, 160);
+  const direccionComparable = stripComparableText(direccion);
+  const calleHintComparable = stripComparableText(calleHint);
+  if (calleHintComparable && direccionComparable.startsWith(calleHintComparable)) {
+    const resto = direccion.slice(calleHint.length).trim().replace(/^[-,;:/#.\s]+/, "").trim();
+    const partesResto = parseLegacyNumeroMzLt(resto);
+    const referenciaResto = normalizeLegacyReference(calleHint, stripAddressTags(resto));
+    if (resto) {
+      return {
+        calle: calleHint,
+        numero: partesResto.numero || resto,
+        manzana: partesResto.manzana || '',
+        lote: partesResto.lote || '',
+        referencia: referenciaResto,
+        esEstructurada: true
+      };
+    }
+  }
   const partes = parseLegacyNumeroMzLt(direccion);
 
   const match = direccion.match(/^(.*?)(?:\s*(?:N|N°|Nº|NÂ°|NÂº|NO|NUM|NUMERO|#)\s*[:.]?\s*)([A-Z0-9/-]+|S\/N)?(?:\s+(.*))?$/i);
@@ -715,7 +741,54 @@ const getCampoSolicitudSnapshots = (row = {}) => {
     ),
     aguaActual: normalizeSN(metadata.servicio_agua_actual, row?.agua_actual_db || "S"),
     desagueActual: normalizeSN(metadata.servicio_desague_actual, row?.desague_actual_db || "S"),
-    limpiezaActual: normalizeSN(metadata.servicio_limpieza_actual, row?.limpieza_actual_db || "S")
+    limpiezaActual: normalizeSN(metadata.servicio_limpieza_actual, row?.limpieza_actual_db || "S"),
+    tarifaAguaActual: parseCampoSolicitudTarifaValue(metadata.tarifa_agua_actual, row?.tarifa_agua_actual_db),
+    tarifaDesagueActual: parseCampoSolicitudTarifaValue(metadata.tarifa_desague_actual, row?.tarifa_desague_actual_db),
+    tarifaLimpiezaActual: parseCampoSolicitudTarifaValue(metadata.tarifa_limpieza_actual, row?.tarifa_limpieza_actual_db),
+    tarifaAdminActual: parseCampoSolicitudTarifaValue(metadata.tarifa_admin_actual, row?.tarifa_admin_actual_db),
+    tarifaExtraActual: parseCampoSolicitudTarifaValue(metadata.tarifa_extra_actual, row?.tarifa_extra_actual_db)
+  };
+};
+const CAMPO_SOLICITUD_TARIFA_CONFIG = [
+  { key: "tarifa_agua", label: "Tarifa agua", defaultValue: AUTO_DEUDA_BASE.agua },
+  { key: "tarifa_desague", label: "Tarifa desague", defaultValue: AUTO_DEUDA_BASE.desague },
+  { key: "tarifa_limpieza", label: "Tarifa limpieza", defaultValue: AUTO_DEUDA_BASE.limpieza },
+  { key: "tarifa_admin", label: "Tarifa admin", defaultValue: AUTO_DEUDA_BASE.admin },
+  { key: "tarifa_extra", label: "Tarifa extra", defaultValue: 0 }
+];
+const parseCampoSolicitudTarifaValue = (...values) => {
+  for (const value of values) {
+    if (value === undefined || value === null || String(value).trim() === "") continue;
+    const parsed = parseOptionalTarifaMonto(value);
+    if (parsed === "__INVALID__") return null;
+    return parsed;
+  }
+  return null;
+};
+const formatCampoTarifaAuditLabel = (value, defaultValue = null) => {
+  const parsed = parseCampoSolicitudTarifaValue(value);
+  if (parsed === null) {
+    if (Number.isFinite(defaultValue)) {
+      return `S/. ${roundMonto2(defaultValue).toFixed(2)} (base)`;
+    }
+    return "Base del sistema";
+  }
+  return `S/. ${roundMonto2(parsed).toFixed(2)}`;
+};
+const getCampoSolicitudTarifaTargets = (row = {}) => {
+  const metadata = getCampoSolicitudMetadata(row);
+  const snapshots = getCampoSolicitudSnapshots(row);
+  return {
+    tarifa_agua_actual: snapshots.tarifaAguaActual,
+    tarifa_desague_actual: snapshots.tarifaDesagueActual,
+    tarifa_limpieza_actual: snapshots.tarifaLimpiezaActual,
+    tarifa_admin_actual: snapshots.tarifaAdminActual,
+    tarifa_extra_actual: snapshots.tarifaExtraActual,
+    tarifa_agua_nueva: parseCampoSolicitudTarifaValue(metadata.tarifa_agua_nueva, metadata.tarifa_agua),
+    tarifa_desague_nueva: parseCampoSolicitudTarifaValue(metadata.tarifa_desague_nueva, metadata.tarifa_desague),
+    tarifa_limpieza_nueva: parseCampoSolicitudTarifaValue(metadata.tarifa_limpieza_nueva, metadata.tarifa_limpieza),
+    tarifa_admin_nueva: parseCampoSolicitudTarifaValue(metadata.tarifa_admin_nueva, metadata.tarifa_admin),
+    tarifa_extra_nueva: parseCampoSolicitudTarifaValue(metadata.tarifa_extra_nueva, metadata.tarifa_extra)
   };
 };
 const campoSolicitudTextChanged = (nuevo, anterior) => {
@@ -736,6 +809,7 @@ const getCampoSolicitudRequestedChanges = (row = {}) => {
   const metadata = getCampoSolicitudMetadata(row);
   const tipoSolicitud = getCampoSolicitudTipo(row);
   const snapshots = getCampoSolicitudSnapshots(row);
+  const tarifas = getCampoSolicitudTarifaTargets(row);
   const direccionAnterior = tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA
     ? snapshots.direccionAlternaActual
     : snapshots.direccionActual;
@@ -753,6 +827,11 @@ const getCampoSolicitudRequestedChanges = (row = {}) => {
   const inferredAgua = snapshots.aguaActual !== aguaNuevo;
   const inferredDesague = snapshots.desagueActual !== desagueNuevo;
   const inferredLimpieza = snapshots.limpiezaActual !== limpiezaNuevo;
+  const inferredTarifaAgua = tarifas.tarifa_agua_nueva !== null && tarifas.tarifa_agua_nueva !== tarifas.tarifa_agua_actual;
+  const inferredTarifaDesague = tarifas.tarifa_desague_nueva !== null && tarifas.tarifa_desague_nueva !== tarifas.tarifa_desague_actual;
+  const inferredTarifaLimpieza = tarifas.tarifa_limpieza_nueva !== null && tarifas.tarifa_limpieza_nueva !== tarifas.tarifa_limpieza_actual;
+  const inferredTarifaAdmin = tarifas.tarifa_admin_nueva !== null && tarifas.tarifa_admin_nueva !== tarifas.tarifa_admin_actual;
+  const inferredTarifaExtra = tarifas.tarifa_extra_nueva !== null && tarifas.tarifa_extra_nueva !== tarifas.tarifa_extra_actual;
   const hasExplicitRequestedFlags = [
     "requested_change_nombre",
     "requested_change_dni",
@@ -761,7 +840,12 @@ const getCampoSolicitudRequestedChanges = (row = {}) => {
     "requested_change_estado",
     "requested_change_agua",
     "requested_change_desague",
-    "requested_change_limpieza"
+    "requested_change_limpieza",
+    "requested_change_tarifa_agua",
+    "requested_change_tarifa_desague",
+    "requested_change_tarifa_limpieza",
+    "requested_change_tarifa_admin",
+    "requested_change_tarifa_extra"
   ].some((key) => hasFlag(key));
   const hasLegacyNonDireccionChanges = (
     inferredNombre
@@ -771,6 +855,11 @@ const getCampoSolicitudRequestedChanges = (row = {}) => {
     || inferredAgua
     || inferredDesague
     || inferredLimpieza
+    || inferredTarifaAgua
+    || inferredTarifaDesague
+    || inferredTarifaLimpieza
+    || inferredTarifaAdmin
+    || inferredTarifaExtra
   );
 
   const requested = {
@@ -802,6 +891,26 @@ const getCampoSolicitudRequestedChanges = (row = {}) => {
     limpieza: parseCampoSolicitudBooleanFlag(
       metadata.requested_change_limpieza,
       inferredLimpieza
+    ),
+    tarifa_agua: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_tarifa_agua,
+      inferredTarifaAgua
+    ),
+    tarifa_desague: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_tarifa_desague,
+      inferredTarifaDesague
+    ),
+    tarifa_limpieza: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_tarifa_limpieza,
+      inferredTarifaLimpieza
+    ),
+    tarifa_admin: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_tarifa_admin,
+      inferredTarifaAdmin
+    ),
+    tarifa_extra: parseCampoSolicitudBooleanFlag(
+      metadata.requested_change_tarifa_extra,
+      inferredTarifaExtra
     )
   };
   if (hasFlag("requested_change_direccion")) {
@@ -816,12 +925,33 @@ const getCampoSolicitudRequestedChanges = (row = {}) => {
     requested.direccion = inferredDireccion;
   }
   requested.servicios = requested.agua || requested.desague || requested.limpieza;
+  requested.tarifas = requested.tarifa_agua
+    || requested.tarifa_desague
+    || requested.tarifa_limpieza
+    || requested.tarifa_admin
+    || requested.tarifa_extra;
   return requested;
+};
+const formatCampoSolicitudChangeEntryLine = (entry = {}, mode = "detallado") => {
+  const campo = sanitizeAuditDetailValue(entry?.campo || "Cambio");
+  const antes = sanitizeAuditDetailValue(entry?.antes || "");
+  const despues = sanitizeAuditDetailValue(entry?.despues || "");
+  if (mode === "simple") {
+    return antes ? `${campo}: ${despues} (antes: ${antes})` : `${campo}: ${despues}`;
+  }
+  return antes
+    ? `${campo} | antes: ${antes} | despues: ${despues}`
+    : `${campo} | despues: ${despues}`;
+};
+const buildCampoSolicitudChangeLines = (entries = [], mode = "detallado") => {
+  const rows = Array.isArray(entries) ? entries : [];
+  return rows.map((entry) => formatCampoSolicitudChangeEntryLine(entry, mode)).filter(Boolean);
 };
 const getCampoSolicitudChangeEntries = (row = {}) => {
   const metadata = getCampoSolicitudMetadata(row);
   const tipoSolicitud = getCampoSolicitudTipo(row);
   const snapshots = getCampoSolicitudSnapshots(row);
+  const tarifas = getCampoSolicitudTarifaTargets(row);
   const isAltaPredio = tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO || tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO_TEMPORAL;
   const estadoNuevo = normalizeEstadoConexion(row?.estado_conexion_nuevo || metadata.estado_nuevo || snapshots.estadoActual);
   const aguaNuevo = normalizeSN(metadata.servicio_agua_nuevo, snapshots.aguaActual);
@@ -891,6 +1021,17 @@ const getCampoSolicitudChangeEntries = (row = {}) => {
       tipo: "CAMBIO"
     });
   }
+  CAMPO_SOLICITUD_TARIFA_CONFIG.forEach(({ key, label, defaultValue }) => {
+    const actualTarifa = tarifas[`${key}_actual`];
+    const nuevaTarifa = tarifas[`${key}_nueva`];
+    if (nuevaTarifa === null || actualTarifa === nuevaTarifa) return;
+    cambios.push({
+      campo: label,
+      antes: formatCampoTarifaAuditLabel(actualTarifa, defaultValue),
+      despues: formatCampoTarifaAuditLabel(nuevaTarifa, defaultValue),
+      tipo: "CAMBIO"
+    });
+  });
 
   if (
     cambios.length === 0
@@ -914,19 +1055,9 @@ const getCampoSolicitudChangeEntries = (row = {}) => {
   return cambios;
 };
 const formatCampoSolicitudChangeEntries = (entries = [], mode = "detallado") => {
-  const rows = Array.isArray(entries) ? entries : [];
+  const rows = buildCampoSolicitudChangeLines(entries, mode);
   if (rows.length === 0) return "Sin cambios estructurados de ficha.";
-  return rows.map((entry) => {
-    const campo = sanitizeAuditDetailValue(entry?.campo || "Cambio");
-    const antes = sanitizeAuditDetailValue(entry?.antes || "");
-    const despues = sanitizeAuditDetailValue(entry?.despues || "");
-    if (mode === "simple") {
-      return antes ? `${campo}: ${despues} (antes: ${antes})` : `${campo}: ${despues}`;
-    }
-    return antes
-      ? `${campo} | antes: ${antes} | despues: ${despues}`
-      : `${campo} | despues: ${despues}`;
-  }).join("\n");
+  return rows.join("\n");
 };
 const resolveCampoSolicitudResultado = (row = {}, changeEntries = []) => {
   const metadata = getCampoSolicitudMetadata(row);
@@ -1045,11 +1176,14 @@ const buildCampoSolicitudCambiosAudit = ({
   desagueDestino,
   limpiezaActual,
   limpiezaDestino,
+  tarifasActuales = null,
+  tarifasDestino = null,
   requestedChanges = null
 }) => {
   const cambios = [];
   if (!solicitud || !actual) return cambios;
   const requested = requestedChanges || getCampoSolicitudRequestedChanges(solicitud);
+  const tarifasSolicitud = getCampoSolicitudTarifaTargets(solicitud);
 
   if (requested.nombre) {
     pushCampoAuditoriaCambio(
@@ -1109,6 +1243,15 @@ const buildCampoSolicitudCambiosAudit = ({
       `Servicio limpieza: ${toCampoServicioAuditLabel(limpiezaDestino, "S")} (antes: ${toCampoServicioAuditLabel(limpiezaActual, "S")})`
     );
   }
+  CAMPO_SOLICITUD_TARIFA_CONFIG.forEach(({ key, label, defaultValue }) => {
+    if (!requested[key]) return;
+    const tarifaAnterior = tarifasActuales ? tarifasActuales[key] : tarifasSolicitud[`${key}_actual`];
+    const tarifaNueva = tarifasDestino ? tarifasDestino[key] : tarifasSolicitud[`${key}_nueva`];
+    if (tarifaNueva === null || tarifaAnterior === tarifaNueva) return;
+    cambios.push(
+      `${label}: ${formatCampoTarifaAuditLabel(tarifaNueva, defaultValue)} (antes: ${formatCampoTarifaAuditLabel(tarifaAnterior, defaultValue)})`
+    );
+  });
 
   return cambios;
 };
@@ -4486,7 +4629,16 @@ app.post("/campo/solicitudes", async (req, res) => {
       await registrarAuditoria(
         null,
         "CAMPO_SOLICITUD_CREAR",
-        `ID ${created.rows[0].id_solicitud} | Tipo ${tipoSolicitud} | Predio nuevo ${direccionVerificada}`,
+        buildStructuredAuditDetail({
+          solicitud: Number(created.rows[0].id_solicitud || 0),
+          tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud),
+          contribuyente: pickCampoText(nombreVerificado, direccionVerificada, referenciaDireccion) || "Predio nuevo",
+          direccion_verificada: direccionVerificada,
+          referencia_direccion: referenciaDireccion,
+          observacion_campo: observacionCampo,
+          verificacion_estado: verificacionEstado,
+          verificacion_motivo: verificacionMotivo
+        }),
         req.user?.nombre || req.user?.username || "SISTEMA"
       );
       req.auditExtraEntries = {
@@ -4586,6 +4738,11 @@ app.post("/campo/solicitudes", async (req, res) => {
         COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+        p.tarifa_agua,
+        p.tarifa_desague,
+        p.tarifa_limpieza,
+        p.tarifa_admin,
+        p.tarifa_extra,
         p.referencia_direccion,
         p.direccion_alterna,
         COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle,
@@ -4664,6 +4821,16 @@ app.post("/campo/solicitudes", async (req, res) => {
     const metadataInput = req.body?.metadata && typeof req.body.metadata === "object" && !Array.isArray(req.body.metadata)
       ? req.body.metadata
       : {};
+    const tarifaAguaNueva = parseCampoSolicitudTarifaValue(req.body?.tarifa_agua, metadataInput?.tarifa_agua_nueva, metadataInput?.tarifa_agua);
+    const tarifaDesagueNueva = parseCampoSolicitudTarifaValue(req.body?.tarifa_desague, metadataInput?.tarifa_desague_nueva, metadataInput?.tarifa_desague);
+    const tarifaLimpiezaNueva = parseCampoSolicitudTarifaValue(req.body?.tarifa_limpieza, metadataInput?.tarifa_limpieza_nueva, metadataInput?.tarifa_limpieza);
+    const tarifaAdminNueva = parseCampoSolicitudTarifaValue(req.body?.tarifa_admin, metadataInput?.tarifa_admin_nueva, metadataInput?.tarifa_admin);
+    const tarifaExtraNueva = parseCampoSolicitudTarifaValue(req.body?.tarifa_extra, metadataInput?.tarifa_extra_nueva, metadataInput?.tarifa_extra);
+    const tarifaAguaActual = parseCampoSolicitudTarifaValue(row.tarifa_agua);
+    const tarifaDesagueActual = parseCampoSolicitudTarifaValue(row.tarifa_desague);
+    const tarifaLimpiezaActual = parseCampoSolicitudTarifaValue(row.tarifa_limpieza);
+    const tarifaAdminActual = parseCampoSolicitudTarifaValue(row.tarifa_admin);
+    const tarifaExtraActual = parseCampoSolicitudTarifaValue(row.tarifa_extra);
     const metadata = {
       ...metadataInput,
       formato: "REPORTE_CORTES",
@@ -4695,6 +4862,16 @@ app.post("/campo/solicitudes", async (req, res) => {
       servicio_desague_nuevo: desagueNuevo,
       servicio_limpieza_actual: limpiezaActual,
       servicio_limpieza_nuevo: limpiezaNuevo,
+      tarifa_agua_actual: tarifaAguaActual,
+      tarifa_agua_nueva: tarifaAguaNueva,
+      tarifa_desague_actual: tarifaDesagueActual,
+      tarifa_desague_nueva: tarifaDesagueNueva,
+      tarifa_limpieza_actual: tarifaLimpiezaActual,
+      tarifa_limpieza_nueva: tarifaLimpiezaNueva,
+      tarifa_admin_actual: tarifaAdminActual,
+      tarifa_admin_nueva: tarifaAdminNueva,
+      tarifa_extra_actual: tarifaExtraActual,
+      tarifa_extra_nueva: tarifaExtraNueva,
       verificacion_estado: verificacionEstado,
       verificacion_motivo: verificacionMotivo,
       predio_temporal_sn: predioTemporalSN,
@@ -4719,6 +4896,11 @@ app.post("/campo/solicitudes", async (req, res) => {
     const requestedChangeAgua = aguaNuevo !== aguaActual;
     const requestedChangeDesague = desagueNuevo !== desagueActual;
     const requestedChangeLimpieza = limpiezaNuevo !== limpiezaActual;
+    const requestedChangeTarifaAgua = tarifaAguaNueva !== null && tarifaAguaNueva !== tarifaAguaActual;
+    const requestedChangeTarifaDesague = tarifaDesagueNueva !== null && tarifaDesagueNueva !== tarifaDesagueActual;
+    const requestedChangeTarifaLimpieza = tarifaLimpiezaNueva !== null && tarifaLimpiezaNueva !== tarifaLimpiezaActual;
+    const requestedChangeTarifaAdmin = tarifaAdminNueva !== null && tarifaAdminNueva !== tarifaAdminActual;
+    const requestedChangeTarifaExtra = tarifaExtraNueva !== null && tarifaExtraNueva !== tarifaExtraActual;
 
     metadata.estado_actual_snapshot = estadoActual;
     metadata.requested_change_nombre = requestedChangeNombre;
@@ -4729,6 +4911,11 @@ app.post("/campo/solicitudes", async (req, res) => {
     metadata.requested_change_agua = requestedChangeAgua;
     metadata.requested_change_desague = requestedChangeDesague;
     metadata.requested_change_limpieza = requestedChangeLimpieza;
+    metadata.requested_change_tarifa_agua = requestedChangeTarifaAgua;
+    metadata.requested_change_tarifa_desague = requestedChangeTarifaDesague;
+    metadata.requested_change_tarifa_limpieza = requestedChangeTarifaLimpieza;
+    metadata.requested_change_tarifa_admin = requestedChangeTarifaAdmin;
+    metadata.requested_change_tarifa_extra = requestedChangeTarifaExtra;
 
     if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA) {
       if (!direccionVerificada) {
@@ -4758,6 +4945,11 @@ app.post("/campo/solicitudes", async (req, res) => {
       aguaNuevo !== aguaActual ||
       desagueNuevo !== desagueActual ||
       limpiezaNuevo !== limpiezaActual ||
+      requestedChangeTarifaAgua ||
+      requestedChangeTarifaDesague ||
+      requestedChangeTarifaLimpieza ||
+      requestedChangeTarifaAdmin ||
+      requestedChangeTarifaExtra ||
       requestedChangeNombre ||
       requestedChangeDni ||
       requestedChangeTelefono ||
@@ -4814,7 +5006,54 @@ app.post("/campo/solicitudes", async (req, res) => {
     await registrarAuditoria(
       null,
       "CAMPO_SOLICITUD_CREAR",
-      `ID ${created.rows[0].id_solicitud} | Tipo ${tipoSolicitud} | Contribuyente ${row.codigo_municipal || idContribuyente} ${row.nombre_completo || ""}`,
+      buildStructuredAuditDetail({
+        solicitud: Number(created.rows[0].id_solicitud || 0),
+        tipo_solicitud: toCampoTipoSolicitudAuditLabel(tipoSolicitud),
+        id_contribuyente: Number(row.id_contribuyente || 0),
+        codigo_municipal: pickCampoText(row.codigo_municipal),
+        contribuyente: buildCampoContribuyenteLabel(row),
+        observacion_campo: observacionCampo,
+        cambios_solicitados: buildCampoSolicitudCambiosAudit({
+          tipoSolicitud,
+          solicitud: {
+            ...row,
+            tipo_solicitud: tipoSolicitud,
+            estado_conexion_nuevo: estadoNuevo,
+            nombre_verificado: nombreVerificado,
+            dni_verificado: dniVerificado,
+            telefono_verificado: telefonoVerificado,
+            direccion_verificada: direccionVerificada,
+            metadata
+          },
+          actual: {
+            ...row,
+            direccion_completa: row.direccion_completa,
+            direccion_alterna: row.direccion_alterna
+          },
+          estadoActual,
+          estadoDestino: estadoNuevo,
+          aguaActual,
+          aguaDestino: aguaNuevo,
+          desagueActual,
+          desagueDestino: desagueNuevo,
+          limpiezaActual,
+          limpiezaDestino: limpiezaNuevo,
+          tarifasActuales: {
+            tarifa_agua: tarifaAguaActual,
+            tarifa_desague: tarifaDesagueActual,
+            tarifa_limpieza: tarifaLimpiezaActual,
+            tarifa_admin: tarifaAdminActual,
+            tarifa_extra: tarifaExtraActual
+          },
+          tarifasDestino: {
+            tarifa_agua: tarifaAguaNueva,
+            tarifa_desague: tarifaDesagueNueva,
+            tarifa_limpieza: tarifaLimpiezaNueva,
+            tarifa_admin: tarifaAdminNueva,
+            tarifa_extra: tarifaExtraNueva
+          }
+        })
+      }),
       req.user?.nombre || req.user?.username || "SISTEMA"
     );
     req.auditExtraEntries = {
@@ -4904,6 +5143,11 @@ app.get("/campo/solicitudes", async (req, res) => {
         COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_actual_db,
         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_actual_db,
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_actual_db,
+        p.tarifa_agua AS tarifa_agua_actual_db,
+        p.tarifa_desague AS tarifa_desague_actual_db,
+        p.tarifa_limpieza AS tarifa_limpieza_actual_db,
+        p.tarifa_admin AS tarifa_admin_actual_db,
+        p.tarifa_extra AS tarifa_extra_actual_db,
         COALESCE(NULLIF(TRIM(p.direccion_alterna), ''), '') AS direccion_alterna_actual_db,
         COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle_db,
         ${buildDireccionSql("ca", "p")} AS direccion_actual_db
@@ -4928,6 +5172,12 @@ app.get("/campo/solicitudes", async (req, res) => {
       const metadata = row?.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
         ? { ...row.metadata }
         : {};
+      const hydratedRow = {
+        ...row,
+        metadata
+      };
+      const changes = getCampoSolicitudChangeEntries(hydratedRow);
+      const extraEntries = buildCampoSolicitudExtraEntries(hydratedRow);
       const hasFoto = Boolean(String(metadata?.foto_fachada_base64 || "").trim());
       if (Object.prototype.hasOwnProperty.call(metadata, "foto_fachada_base64")) {
         delete metadata.foto_fachada_base64;
@@ -4935,7 +5185,9 @@ app.get("/campo/solicitudes", async (req, res) => {
       return {
         ...row,
         metadata,
-        has_foto: hasFoto
+        has_foto: hasFoto,
+        cambios_items: changes,
+        extra_items: extraEntries
       };
     });
     return res.json(rows);
@@ -5016,6 +5268,11 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
         COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_actual_db,
         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_actual_db,
         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_actual_db,
+        p.tarifa_agua AS tarifa_agua_actual_db,
+        p.tarifa_desague AS tarifa_desague_actual_db,
+        p.tarifa_limpieza AS tarifa_limpieza_actual_db,
+        p.tarifa_admin AS tarifa_admin_actual_db,
+        p.tarifa_extra AS tarifa_extra_actual_db,
         COALESCE(NULLIF(TRIM(p.direccion_alterna), ''), '') AS direccion_alterna_actual_db,
         COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle_db,
         ${buildDireccionSql("ca", "p")} AS direccion_actual_db,
@@ -5403,6 +5660,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     const contribuyenteAuditLabel = buildCampoContribuyenteLabel(contribuyenteAudit);
 
     if (aplicarCambiosSN !== "S") {
+      const cambiosSolicitados = buildCampoSolicitudChangeLines(getCampoSolicitudChangeEntries(solicitud), "simple");
       await client.query(`
         UPDATE campo_solicitudes
         SET estado_solicitud = $1,
@@ -5435,6 +5693,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
           codigo_municipal: pickCampoText(contribuyenteAudit.codigo_municipal),
           contribuyente: contribuyenteAuditLabel,
           aplicacion: "Pendiente manual",
+          observacion_campo: pickCampoText(solicitud.observacion_campo),
+          cambios_solicitados: cambiosSolicitados,
           nota_revision: motivoRevision
         }),
         req.user?.nombre || req.user?.username || "SISTEMA"
@@ -5457,6 +5717,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     }
 
     if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_PREDIO) {
+      const cambiosSolicitados = buildCampoSolicitudChangeLines(getCampoSolicitudChangeEntries(solicitud), "simple");
       await client.query(`
         UPDATE campo_solicitudes
         SET estado_solicitud = $1,
@@ -5482,6 +5743,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
           codigo_municipal: pickCampoText(contribuyenteAudit.codigo_municipal),
           contribuyente: contribuyenteAuditLabel,
           aplicacion: "Pendiente registro manual",
+          observacion_campo: pickCampoText(solicitud.observacion_campo),
+          cambios_solicitados: cambiosSolicitados,
           nota_revision: motivoRevision
         }),
         req.user?.nombre || req.user?.username || "SISTEMA"
@@ -5530,7 +5793,9 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         p.tarifa_desague,
         p.tarifa_limpieza,
         p.tarifa_admin,
+        p.tarifa_extra,
         COALESCE(NULLIF(TRIM(p.direccion_alterna), ''), '') AS direccion_alterna,
+        COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle,
         ${buildDireccionSql("ca", "p")} AS direccion_completa
       FROM predios p
       LEFT JOIN calles ca ON ca.id_calle = p.id_calle
@@ -5559,7 +5824,9 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       tarifa_desague: predioData.rows[0]?.tarifa_desague ?? null,
       tarifa_limpieza: predioData.rows[0]?.tarifa_limpieza ?? null,
       tarifa_admin: predioData.rows[0]?.tarifa_admin ?? null,
+      tarifa_extra: predioData.rows[0]?.tarifa_extra ?? null,
       direccion_alterna: predioData.rows[0]?.direccion_alterna || "",
+      nombre_calle: predioData.rows[0]?.nombre_calle || "",
       direccion_completa: predioData.rows[0]?.direccion_completa || ""
     };
     const estadoActual = normalizeEstadoConexion(actual.estado_conexion);
@@ -5592,7 +5859,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         activo_sn: normalizeSN(actual.predio_activo_sn, "S"),
         estado_servicio: normalizeLimitedText(actual.predio_estado_servicio, 40) || "ACTIVO"
       };
-    const tarifasPredioAplicadas = resolveActivatedServiceTarifas({
+    const tarifasSolicitud = getCampoSolicitudTarifaTargets(solicitud);
+    const tarifasPredioBase = resolveActivatedServiceTarifas({
       activoAntes: actual.predio_activo_sn,
       activoDespues: predioEstado.activo_sn,
       aguaAntes: aguaActual,
@@ -5606,6 +5874,13 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       tarifaLimpieza: actual.tarifa_limpieza,
       tarifaAdmin: actual.tarifa_admin
     });
+    const tarifasPredioAplicadas = {
+      tarifa_agua: requestedChanges.tarifa_agua ? tarifasSolicitud.tarifa_agua_nueva : tarifasPredioBase.tarifa_agua,
+      tarifa_desague: requestedChanges.tarifa_desague ? tarifasSolicitud.tarifa_desague_nueva : tarifasPredioBase.tarifa_desague,
+      tarifa_limpieza: requestedChanges.tarifa_limpieza ? tarifasSolicitud.tarifa_limpieza_nueva : tarifasPredioBase.tarifa_limpieza,
+      tarifa_admin: requestedChanges.tarifa_admin ? tarifasSolicitud.tarifa_admin_nueva : tarifasPredioBase.tarifa_admin,
+      tarifa_extra: requestedChanges.tarifa_extra ? tarifasSolicitud.tarifa_extra_nueva : actual.tarifa_extra
+    };
     const motivoCampo = [solicitud.observacion_campo || "", motivoRevision || ""]
       .filter(Boolean)
       .join(" | ")
@@ -5641,7 +5916,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     let idDireccionAlterna = null;
     if (tipoSolicitud === TIPOS_SOLICITUD_CAMPO.ALTA_DIRECCION_ALTERNA) {
       if (requestedChanges.direccion && direccionNueva) {
-        const partesDireccion = extraerCalleYNumero(direccionNueva);
+        const partesDireccion = extraerCalleYNumero(direccionNueva, { calleHint: actual.nombre_calle });
         const idCalleAlterna = await resolveCalleIdByNombre(client, partesDireccion?.calle, idCalleBase);
         const payloadDireccion = {
           tipo_solicitud: tipoSolicitud,
@@ -5700,8 +5975,9 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
              tarifa_agua = $8,
              tarifa_desague = $9,
              tarifa_limpieza = $10,
-             tarifa_admin = $11
-         WHERE id_predio = $12`,
+             tarifa_admin = $11,
+             tarifa_extra = $12
+         WHERE id_predio = $13`,
         [
           predioEstado.activo_sn,
           predioEstado.estado_servicio,
@@ -5714,11 +5990,12 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
           tarifasPredioAplicadas.tarifa_desague,
           tarifasPredioAplicadas.tarifa_limpieza,
           tarifasPredioAplicadas.tarifa_admin,
+          tarifasPredioAplicadas.tarifa_extra,
           idPredioBase
         ]
       );
     } else {
-      const partesDireccion = direccionNueva ? extraerCalleYNumero(direccionNueva) : null;
+      const partesDireccion = direccionNueva ? extraerCalleYNumero(direccionNueva, { calleHint: actual.nombre_calle }) : null;
       const aplicarDireccionNueva = Boolean(requestedChanges.direccion && direccionNueva);
       const idCalleNuevo = aplicarDireccionNueva
         ? await resolveCalleIdByNombre(client, partesDireccion?.calle, idCalleBase)
@@ -5726,40 +6003,41 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       const numeroCasaNuevo = aplicarDireccionNueva
         ? (
           partesDireccion?.esEstructurada
-            ? (normalizeLimitedText(partesDireccion?.numero, 30) || null)
-            : null
+            ? normalizeLimitedText(partesDireccion?.numero, 30)
+            : ""
         )
-        : null;
+        : "";
       const manzanaNueva = aplicarDireccionNueva
-        ? (normalizeLimitedText(partesDireccion?.manzana, 30) || null)
-        : null;
+        ? normalizeLimitedText(partesDireccion?.manzana, 30)
+        : "";
       const loteNuevo = aplicarDireccionNueva
-        ? (normalizeLimitedText(partesDireccion?.lote, 30) || null)
-        : null;
+        ? normalizeLimitedText(partesDireccion?.lote, 30)
+        : "";
       const referenciaDireccionNueva = aplicarDireccionNueva
         ? (
           partesDireccion?.esEstructurada
-            ? (normalizeLimitedText(partesDireccion?.referencia, 250) || null)
+            ? normalizeLimitedText(partesDireccion?.referencia, 250)
             : direccionNueva
         )
-        : null;
+        : "";
       await client.query(
         `UPDATE predios
          SET activo_sn = $1,
              estado_servicio = $2,
              id_calle = CASE WHEN $8 THEN COALESCE($3, id_calle) ELSE id_calle END,
-            numero_casa = CASE WHEN $8 THEN COALESCE(NULLIF($4, ''), numero_casa) ELSE numero_casa END,
+            numero_casa = CASE WHEN $8 THEN NULLIF($4, '') ELSE numero_casa END,
             referencia_direccion = CASE WHEN $8 THEN NULLIF($5, '') ELSE referencia_direccion END,
             agua_sn = $6,
             desague_sn = $7,
             limpieza_sn = $9,
-             manzana = CASE WHEN $8 THEN COALESCE(NULLIF($10, ''), manzana) ELSE manzana END,
-             lote = CASE WHEN $8 THEN COALESCE(NULLIF($11, ''), lote) ELSE lote END,
+             manzana = CASE WHEN $8 THEN NULLIF($10, '') ELSE manzana END,
+             lote = CASE WHEN $8 THEN NULLIF($11, '') ELSE lote END,
              tarifa_agua = $12,
              tarifa_desague = $13,
              tarifa_limpieza = $14,
-             tarifa_admin = $15
-         WHERE id_predio = $16`,
+             tarifa_admin = $15,
+             tarifa_extra = $16
+         WHERE id_predio = $17`,
         [
           predioEstado.activo_sn,
           predioEstado.estado_servicio,
@@ -5776,6 +6054,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
           tarifasPredioAplicadas.tarifa_desague,
           tarifasPredioAplicadas.tarifa_limpieza,
           tarifasPredioAplicadas.tarifa_admin,
+          tarifasPredioAplicadas.tarifa_extra,
           idPredioBase
         ]
       );
@@ -5800,6 +6079,12 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       aguaActual !== aguaAplicado ||
       desagueActual !== desagueAplicado ||
       limpiezaActual !== limpiezaAplicado;
+    const tarifasCambiaron =
+      parseCampoSolicitudTarifaValue(actual.tarifa_agua) !== parseCampoSolicitudTarifaValue(tarifasPredioAplicadas.tarifa_agua) ||
+      parseCampoSolicitudTarifaValue(actual.tarifa_desague) !== parseCampoSolicitudTarifaValue(tarifasPredioAplicadas.tarifa_desague) ||
+      parseCampoSolicitudTarifaValue(actual.tarifa_limpieza) !== parseCampoSolicitudTarifaValue(tarifasPredioAplicadas.tarifa_limpieza) ||
+      parseCampoSolicitudTarifaValue(actual.tarifa_admin) !== parseCampoSolicitudTarifaValue(tarifasPredioAplicadas.tarifa_admin) ||
+      parseCampoSolicitudTarifaValue(actual.tarifa_extra) !== parseCampoSolicitudTarifaValue(tarifasPredioAplicadas.tarifa_extra);
     const cambiosAplicados = buildCampoSolicitudCambiosAudit({
       tipoSolicitud,
       solicitud,
@@ -5812,10 +6097,18 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       desagueDestino: desagueAplicado,
       limpiezaActual,
       limpiezaDestino: limpiezaAplicado,
+      tarifasActuales: {
+        tarifa_agua: actual.tarifa_agua,
+        tarifa_desague: actual.tarifa_desague,
+        tarifa_limpieza: actual.tarifa_limpieza,
+        tarifa_admin: actual.tarifa_admin,
+        tarifa_extra: actual.tarifa_extra
+      },
+      tarifasDestino: tarifasPredioAplicadas,
       requestedChanges
     });
     let recibosRecalculados = 0;
-    if (serviciosCambiaron || (requestedChanges.estado && estadoActual !== estadoAplicado)) {
+    if (serviciosCambiaron || tarifasCambiaron || (requestedChanges.estado && estadoActual !== estadoAplicado)) {
       const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente, {
         incluirPendientesHistoricos: true,
         desdePeriodoNum: 0
@@ -5860,6 +6153,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         contribuyente: buildCampoContribuyenteLabel(actual),
         aplicacion: "Automatica",
         cambios_aplicados: cambiosAplicados.length > 0 ? cambiosAplicados : ["Sin cambios directos en ficha."],
+        observacion_campo: pickCampoText(solicitud.observacion_campo),
         recibos_recalculados: recibosRecalculados,
         id_direccion_alterna: idDireccionAlterna,
         nota_revision: motivoRevision
