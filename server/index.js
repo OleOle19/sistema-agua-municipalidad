@@ -1670,23 +1670,36 @@ const buildTarifaActualComponentesSql = (predioAlias = "p2") => ({
 const buildAplicaAjusteTarifaSql = ({
   reciboAlias = "r",
   predioAlias = "p2",
-  pagosAlias = "p"
+  pagosAlias = "p",
+  requireCoveredPayment = true
 } = {}) => {
   const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
-  return `(
+  const pagoCoverageSql = requireCoveredPayment
+    ? `
     COALESCE(${pagosAlias}.total_pagado, 0) > 0
     AND (${tarifaActualSql}) > 0
     AND COALESCE(${reciboAlias}.total_pagar, 0) > (${tarifaActualSql}) + 0.001
     AND COALESCE(${pagosAlias}.total_pagado, 0) >= (${tarifaActualSql}) - 0.001
-  )`;
+  `
+    : `
+    (${tarifaActualSql}) > 0
+    AND COALESCE(${reciboAlias}.total_pagar, 0) > (${tarifaActualSql}) + 0.001
+  `;
+  return `(${pagoCoverageSql})`;
 };
 const buildTotalPagarReferenciaSql = ({
   reciboAlias = "r",
   predioAlias = "p2",
-  pagosAlias = "p"
+  pagosAlias = "p",
+  requireCoveredPayment = true
 } = {}) => {
   const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
-  const aplicaAjusteSql = buildAplicaAjusteTarifaSql({ reciboAlias, predioAlias, pagosAlias });
+  const aplicaAjusteSql = buildAplicaAjusteTarifaSql({
+    reciboAlias,
+    predioAlias,
+    pagosAlias,
+    requireCoveredPayment
+  });
   return `(CASE
     WHEN ${aplicaAjusteSql}
     THEN ROUND((${tarifaActualSql})::numeric, 2)
@@ -7694,12 +7707,12 @@ app.put("/contribuyentes/:id", async (req, res) => {
          p.tarifa_admin,
          p.tarifa_extra,
          COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle
-       FROM predios p
-       LEFT JOIN calles ca ON ca.id_calle = p.id_calle
-       WHERE p.id_contribuyente = $1
-       ORDER BY p.id_predio ASC
-       LIMIT 1
-       FOR UPDATE`,
+      FROM predios p
+      LEFT JOIN calles ca ON ca.id_calle = p.id_calle
+      WHERE p.id_contribuyente = $1
+      ORDER BY p.id_predio ASC
+      LIMIT 1
+      FOR UPDATE OF p`,
       [idContribuyente]
     );
     const predioActual = predioActualData.rows[0] || null;
@@ -11441,12 +11454,14 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     const totalPagarReferenciaHistorialSql = buildTotalPagarReferenciaSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p"
+      pagosAlias: "p",
+      requireCoveredPayment: false
     });
     const aplicaAjusteHistorialSql = buildAplicaAjusteTarifaSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p"
+      pagosAlias: "p",
+      requireCoveredPayment: false
     });
     const tarifaActualComponentesHistorialSql = buildTarifaActualComponentesSql("p2");
 
@@ -11524,12 +11539,14 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     const totalPagarReferenciaExportSql = buildTotalPagarReferenciaSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p"
+      pagosAlias: "p",
+      requireCoveredPayment: false
     });
     const aplicaAjusteExportSql = buildAplicaAjusteTarifaSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p"
+      pagosAlias: "p",
+      requireCoveredPayment: false
     });
     const tarifaActualComponentesExportSql = buildTarifaActualComponentesSql("p2");
     if (filtrarAnio && (!Number.isInteger(anio) || anio <= 1900 || anio >= 9999)) {
@@ -12163,12 +12180,13 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     if (totalBase <= 0) {
       return { agua: montoPagado, desague: 0, limpieza: 0, gastos: 0 };
     }
-    const factor = montoPagado / totalBase;
+    const montoDistribuible = aplicarTarifaActual ? Math.min(montoPagado, totalBase) : montoPagado;
+    const factor = montoDistribuible / totalBase;
     let agua = roundMonto2(baseAgua * factor);
     let desague = roundMonto2(baseDesague * factor);
     let limpieza = roundMonto2(baseLimpieza * factor);
     let gastos = roundMonto2(baseGastos * factor);
-    const ajuste = roundMonto2(montoPagado - (agua + desague + limpieza + gastos));
+    const ajuste = roundMonto2(montoDistribuible - (agua + desague + limpieza + gastos));
     gastos = roundMonto2(gastos + ajuste);
     return { agua, desague, limpieza, gastos };
   };
