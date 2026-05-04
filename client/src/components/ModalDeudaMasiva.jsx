@@ -3,6 +3,15 @@ import api from "../api";
 import { FaLayerGroup, FaBuilding, FaUsers } from "react-icons/fa";
 import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
 
+const getUltimoPeriodoCerrado = () => {
+  const now = new Date();
+  const mesActual = now.getMonth() + 1;
+  if (mesActual === 1) {
+    return { anio: now.getFullYear() - 1, mes: 12 };
+  }
+  return { anio: now.getFullYear(), mes: mesActual - 1 };
+};
+
 const validarPeriodoNoFuturo = (anioInput, mesInput) => {
   const anio = Number.parseInt(String(anioInput ?? ""), 10);
   const mes = Number.parseInt(String(mesInput ?? ""), 10);
@@ -12,10 +21,10 @@ const validarPeriodoNoFuturo = (anioInput, mesInput) => {
   if (!Number.isFinite(mes) || mes < 1 || mes > 12) {
     return { ok: false, error: "Mes inválido." };
   }
-  const now = new Date();
-  const periodoActual = (now.getFullYear() * 100) + (now.getMonth() + 1);
-  if ((anio * 100) + mes > periodoActual) {
-    return { ok: false, error: "No se puede generar deuda en un periodo futuro." };
+  const ultimoPeriodoCerrado = getUltimoPeriodoCerrado();
+  const periodoMaximo = (ultimoPeriodoCerrado.anio * 100) + ultimoPeriodoCerrado.mes;
+  if ((anio * 100) + mes > periodoMaximo) {
+    return { ok: false, error: "Solo se puede generar deuda en meses ya cerrados." };
   }
   return { ok: true, anio, mes };
 };
@@ -24,13 +33,13 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
   const [modo, setModo] = useState(idsSeleccionados.length > 0 ? "seleccion" : "todos");
   const [calles, setCalles] = useState([]);
   const [loading, setLoading] = useState(false);
-  const currentYear = new Date().getFullYear();
+  const periodoInicial = getUltimoPeriodoCerrado();
   const tarifasDefault = { agua: "7.50", desague: "3.50", limpieza: "3.50", admin: "0.50" };
 
   const [form, setForm] = useState({
     id_calle: "",
-    mes: new Date().getMonth() + 1,
-    anio: currentYear,
+    mes: periodoInicial.mes,
+    anio: periodoInicial.anio,
     agua: tarifasDefault.agua,
     desague: tarifasDefault.desague,
     limpieza: tarifasDefault.limpieza,
