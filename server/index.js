@@ -1518,6 +1518,17 @@ const parseDateYearMonth = (isoDateRaw, fallback = {}) => {
     periodoNum: (anio * 100) + mes
   };
 };
+const getUltimoPeriodoCerrado = ({ anio, mes } = {}) => {
+  const anioNum = Number(anio || 0);
+  const mesNum = Number(mes || 0);
+  if (!Number.isInteger(anioNum) || anioNum < 1900 || !Number.isInteger(mesNum) || mesNum < 1 || mesNum > 12) {
+    return { anio: 0, mes: 0, periodoNum: 0 };
+  }
+  if (mesNum === 1) {
+    return { anio: anioNum - 1, mes: 12, periodoNum: ((anioNum - 1) * 100) + 12 };
+  }
+  return { anio: anioNum, mes: mesNum - 1, periodoNum: (anioNum * 100) + (mesNum - 1) };
+};
 
 const normalizeLimitedText = (value, maxLen = 250) => {
   if (value === undefined || value === null) return "";
@@ -3141,6 +3152,10 @@ const ensureEstadoConexionContribuyentes = async (client) => {
     ADD COLUMN IF NOT EXISTS razon_social_actualizado_en TIMESTAMP NULL
   `);
   await client.query(`
+    ALTER TABLE contribuyentes
+    ADD COLUMN IF NOT EXISTS email VARCHAR(160) NULL
+  `);
+  await client.query(`
     UPDATE contribuyentes
     SET estado_conexion_fuente = 'INFERIDO'
     WHERE estado_conexion_fuente IS NULL
@@ -4143,8 +4158,12 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
     const hasTextFilter = q.length >= 2;
     if (!hasTextFilter && !idCalle) return res.json([]);
 
-    const anioActual = getCurrentYear();
-    const mesActual = getCurrentMonth();
+    const periodoCerradoActual = getUltimoPeriodoCerrado({
+      anio: getCurrentYear(),
+      mes: getCurrentMonth()
+    });
+    const anioActual = periodoCerradoActual.anio;
+    const mesActual = periodoCerradoActual.mes;
     const limit = Math.min(300, Math.max(10, parsePositiveInt(req.query?.limit, 120)));
     const params = [anioActual, mesActual];
     let idxLike = 0;
@@ -4381,8 +4400,13 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
 
 app.get("/campo/offline-snapshot", async (req, res) => {
   try {
-    const anioActual = getCurrentYear();
-    const mesActual = getCurrentMonth();
+    const periodoVisible = {
+      anio: getCurrentYear(),
+      mes: getCurrentMonth()
+    };
+    const periodoCerrado = getUltimoPeriodoCerrado(periodoVisible);
+    const anioActual = periodoCerrado.anio;
+    const mesActual = periodoCerrado.mes;
     const limit = Math.min(10000, Math.max(200, parsePositiveInt(req.query?.limit, 5000)));
 
     const contribuyentes = await pool.query(`
@@ -4726,8 +4750,12 @@ app.post("/campo/solicitudes", async (req, res) => {
     if (!idContribuyente) {
       return res.status(400).json({ error: "ID de contribuyente inválido." });
     }
-    const anioActual = getCurrentYear();
-    const mesActual = getCurrentMonth();
+    const periodoCerradoActual = getUltimoPeriodoCerrado({
+      anio: getCurrentYear(),
+      mes: getCurrentMonth()
+    });
+    const anioActual = periodoCerradoActual.anio;
+    const mesActual = periodoCerradoActual.mes;
 
     const actual = await pool.query(`
       WITH recibos_objetivo AS (
@@ -6635,8 +6663,11 @@ const resolvePeriodoCorteNoFuturo = (periodo = {}) => {
   const anioSolicitado = Number(periodo?.anio_corte || getCurrentYear());
   const mesSolicitado = Number(periodo?.mes_corte || getCurrentMonth());
   const periodoSolicitadoNum = (anioSolicitado * 100) + mesSolicitado;
-  const periodoActualNum = getCurrentPeriodoNum();
-  const periodoCorteNum = Math.min(periodoSolicitadoNum, periodoActualNum);
+  const periodoCerradoActual = getUltimoPeriodoCerrado({
+    anio: getCurrentYear(),
+    mes: getCurrentMonth()
+  });
+  const periodoCorteNum = Math.min(periodoSolicitadoNum, periodoCerradoActual.periodoNum || 0);
   return {
     anio: Math.trunc(periodoCorteNum / 100),
     mes: periodoCorteNum % 100
@@ -7359,8 +7390,13 @@ app.get("/contribuyentes", async (req, res) => {
       return res.json(contribuyentesCache.data);
     }
 
-    const anioActual = getCurrentYear();
-    const mesActual = getCurrentMonth();
+    const periodoVisible = {
+      anio: getCurrentYear(),
+      mes: getCurrentMonth()
+    };
+    const periodoCerrado = getUltimoPeriodoCerrado(periodoVisible);
+    const anioExigible = periodoCerrado.anio;
+    const mesExigible = periodoCerrado.mes;
     const totalPagarReferenciaContribSql = buildTotalPagarReferenciaSql({
       reciboAlias: "ro",
       predioAlias: "p3",
@@ -7457,7 +7493,7 @@ app.get("/contribuyentes", async (req, res) => {
         LIMIT 1
       ) cs ON TRUE
     `;
-    const todos = await pool.query(query, [anioActual, mesActual]);
+    const todos = await pool.query(query, [anioExigible, mesExigible]);
     contribuyentesCache = {
       expiresAt: Date.now() + CONTRIBUYENTES_CACHE_TTL_MS,
       data: todos.rows
@@ -11147,8 +11183,13 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "id_contribuyente invalido." });
     }
 
-    const anioActual = getCurrentYear();
-    const mesActual = getCurrentMonth();
+    const periodoVisible = {
+      anio: getCurrentYear(),
+      mes: getCurrentMonth()
+    };
+    const periodoCerrado = getUltimoPeriodoCerrado(periodoVisible);
+    const anioExigible = periodoCerrado.anio;
+    const mesExigible = periodoCerrado.mes;
 
     await client.query("BEGIN");
     await ensureActasCorteTable(client);
@@ -11174,7 +11215,7 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
       WHERE c.id_contribuyente = $1
       GROUP BY c.codigo_municipal, COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION')
-    `, [idContribuyente, anioActual, mesActual]);
+    `, [idContribuyente, anioExigible, mesExigible]);
 
     if (resumen.rows.length === 0) {
       await client.query("ROLLBACK");
@@ -11390,6 +11431,9 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     const fechaBase = parseDateYearMonth(fechaCorte, parseDateYearMonth(hoyIso));
     const anioActual = Number(fechaBase.anio || getCurrentYear());
     const mesActual = Number(fechaBase.mes || getCurrentMonth());
+    const periodoCerrado = getUltimoPeriodoCerrado({ anio: anioActual, mes: mesActual });
+    const anioExigible = Number(periodoCerrado.anio || 0);
+    const mesExigible = Number(periodoCerrado.mes || 0);
     const anioParam = req.query.anio;
     const filtrarAnio = anioParam !== 'all';
     const anio = filtrarAnio ? (Number(anioParam) || getCurrentYear()) : null;
@@ -11444,8 +11488,8 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
       ${filtrarAnio ? 'AND r.anio = $5' : ''}
       ORDER BY r.anio ASC, r.mes ASC
     `, filtrarAnio
-      ? [idContribuyente, anioActual, mesActual, fechaCorte, anio]
-      : [idContribuyente, anioActual, mesActual, fechaCorte]);
+      ? [idContribuyente, anioExigible, mesExigible, fechaCorte, anio]
+      : [idContribuyente, anioExigible, mesExigible, fechaCorte]);
     const rowsRaw = await appendProjectedArbitriosRows(client, historial.rows, idContribuyente, {
       incluirFuturos,
       anioActual,
@@ -11466,8 +11510,13 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     if (!idContribuyente) {
       return res.status(400).json({ error: "ID de contribuyente inválido." });
     }
-    const anioActual = getCurrentYear();
-    const mesActual = getCurrentMonth();
+    const periodoVisible = {
+      anio: getCurrentYear(),
+      mes: getCurrentMonth()
+    };
+    const periodoCerrado = getUltimoPeriodoCerrado(periodoVisible);
+    const anioExigible = periodoCerrado.anio;
+    const mesExigible = periodoCerrado.mes;
     const anioParam = String(req.query?.anio || "all").trim().toLowerCase();
     const filtrarAnio = anioParam !== "all";
     const anio = filtrarAnio ? Number(anioParam) : null;
@@ -11529,14 +11578,14 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
-        AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))
+      ${incluirFuturos ? "" : "AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))"}
       ${filtrarAnio ? "AND r.anio = $4" : ""}
       ORDER BY r.anio ASC, r.mes ASC, r.id_recibo ASC
-    `, filtrarAnio ? [idContribuyente, anioActual, mesActual, anio] : [idContribuyente, anioActual, mesActual]);
+    `, filtrarAnio ? [idContribuyente, anioExigible, mesExigible, anio] : [idContribuyente, anioExigible, mesExigible]);
     const historialRowsRaw = await appendProjectedArbitriosRows(client, historial.rows, idContribuyente, {
       incluirFuturos,
-      anioActual,
-      mesActual,
+      anioActual: periodoVisible.anio,
+      mesActual: periodoVisible.mes,
       filtrarAnio,
       anioFiltro: anio
     });
