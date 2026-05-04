@@ -230,8 +230,19 @@ const ModalImpresionMasiva = ({
       .map((m) => Number(m))
       .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
     const mesesNoEmitidosSeleccionados = mesesNormalizados.filter((m) => esMesNoEmitido(m, anioNum));
+    const mesesConSaldoSeleccionados = soloSeleccion
+      ? mesesNormalizados.filter((m) => {
+          const periodo = historialPeriodosMap.get(`${anioNum}-${m}`) || null;
+          if (!periodo) return true;
+          return normalizePeriodoEstado(periodo?.estado) !== "PAGADO";
+        })
+      : mesesNormalizados;
     if (mesesNoEmitidosSeleccionados.length > 0 && !permitirMesesNoEmitidos) {
       return alert("Solo se permiten meses ya emitidos. Active \"Habilitar meses futuros\" para adelantos.");
+    }
+    if (soloSeleccion && mesesConSaldoSeleccionados.length === 0) {
+      showFlash("warning", "Los meses seleccionados ya figuran como pagados para ese contribuyente.");
+      return;
     }
     setCargando(true);
     try {
@@ -302,7 +313,10 @@ const ModalImpresionMasiva = ({
       }
       cerrarModal();
     } catch (error) {
-      showFlash("danger", error.response?.data?.error || "Error al buscar recibos.");
+      const errorText = typeof error?.response?.data === "string"
+        ? error.response.data
+        : (error?.response?.data?.error || error?.message || "Error al buscar recibos.");
+      showFlash("danger", errorText);
     } finally {
       setCargando(false);
     }
