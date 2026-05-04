@@ -32,6 +32,7 @@ const buildReciboGroupKey = (item = {}) => {
 const normalizeRow = (item = {}) => ({
   ...item,
   deuda_anio: parseAmount(item.deuda_anio ?? 0),
+  deuda_detalle: Array.isArray(item.deuda_detalle) ? item.deuda_detalle : [],
   subtotal_agua: round2(parseAmount(item.subtotal_agua)),
   subtotal_desague: round2(parseAmount(item.subtotal_desague)),
   subtotal_limpieza: round2(parseAmount(item.subtotal_limpieza)),
@@ -83,9 +84,9 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
       merged.push({
         ...last,
         id_recibo: 0,
-        numero_recibo: "",
-        codigo_impresion: "",
-        codigo_recibo: "",
+        numero_recibo: last.numero_recibo || first.numero_recibo || "",
+        codigo_impresion: last.codigo_impresion || first.codigo_impresion || "",
+        codigo_recibo: last.codigo_recibo || first.codigo_recibo || "",
         mes: first?.mes || "",
         anio: anioUnico ? (first?.anio || "") : "VARIOS",
         mes_nombre: buildMesResumenLabel(periodos),
@@ -94,6 +95,8 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
         subtotal_desague: resumenServicios.desague,
         subtotal_limpieza: resumenServicios.limpieza,
         subtotal_admin: resumenServicios.admin,
+        deuda_anio: parseAmount(last?.deuda_anio ?? first?.deuda_anio ?? 0),
+        deuda_detalle: Array.isArray(last?.deuda_detalle) ? last.deuda_detalle : (Array.isArray(first?.deuda_detalle) ? first.deuda_detalle : []),
         deuda_meses_label: "",
         detalles_por_periodo: periodos,
         es_agrupado_meses: true
@@ -156,6 +159,7 @@ const ReciboRender = ({ item }) => {
       codigo_municipal: item.codigo_municipal,
       dni_ruc: item.dni_ruc,
       deuda_anio: item.deuda_anio ?? 0,
+      deuda_detalle: Array.isArray(item.deuda_detalle) ? item.deuda_detalle : [],
       deuda_meses_label: item.deuda_meses_label
     },
     predio: {
