@@ -50,10 +50,10 @@ const RECIBO_TEXTOS = {
 const CAL = {
   nudgeX: 5.2,
   nudgeY: 0,
-  topBlockOffsetX: -14.2,
-  topBlockOffsetY: -6.2,
+  topBlockOffsetX: -4.2,
+  topBlockOffsetY: -1.2,
   bottomBlockOffsetX: 0,
-  bottomBlockOffsetY: 21.8,
+  bottomBlockOffsetY: 11.8,
   // Coordenadas del bloque superior.
   top: {
     // IMPORTANTE: estos nombres deben mantenerse exactos (xMes, xAnio, xNumero).

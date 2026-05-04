@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import api from "../api";
 import { FaLayerGroup, FaBuilding, FaUsers, FaPrint } from "react-icons/fa";
 
@@ -21,6 +21,31 @@ const getPeriodoNum = (anio, mes) => (Number(anio || 0) * 100) + Number(mes || 0
 const formatPeriodoLabel = (anio, mes) => {
   const month = MONTH_OPTIONS.find((m) => Number(m.value) === Number(mes));
   return `${month?.label || String(mes || "-")} ${String(anio || "-")}`;
+};
+const normalizePeriodoEstado = (value) => String(value || "").trim().toUpperCase();
+const getPeriodoEstadoMeta = (estado, darkMode = false) => {
+  const normalized = normalizePeriodoEstado(estado);
+  if (normalized === "PAGADO") {
+    return darkMode
+      ? { label: "Pagado", bg: "#153b2d", border: "#2f855a", text: "#d1fae5" }
+      : { label: "Pagado", bg: "#dcfce7", border: "#86efac", text: "#166534" };
+  }
+  if (normalized === "PARCIAL") {
+    return darkMode
+      ? { label: "Parcial", bg: "#4a3410", border: "#d69e2e", text: "#fef3c7" }
+      : { label: "Parcial", bg: "#fef3c7", border: "#fcd34d", text: "#92400e" };
+  }
+  if (normalized === "NO_EXIGIBLE") {
+    return darkMode
+      ? { label: "No exigible", bg: "#1e3a5f", border: "#60a5fa", text: "#dbeafe" }
+      : { label: "No exigible", bg: "#dbeafe", border: "#93c5fd", text: "#1d4ed8" };
+  }
+  if (normalized === "PENDIENTE") {
+    return darkMode
+      ? { label: "Pendiente", bg: "#2d3748", border: "#4a5568", text: "#e2e8f0" }
+      : { label: "Pendiente", bg: "#f8fafc", border: "#cbd5e1", text: "#475569" };
+  }
+  return null;
 };
 const canUnlockNextMonthForMensual = () => {
   const now = new Date();
@@ -88,6 +113,26 @@ const ModalImpresionMasiva = ({
   const opcionesMeses = !permitirMesesNoEmitidos
     ? MONTH_OPTIONS.filter((m) => !esMesNoEmitido(m.value, anioSeleccionado))
     : MONTH_OPTIONS;
+  const historialPeriodosMap = useMemo(() => {
+    const map = new Map();
+    for (const periodo of Array.isArray(periodosHistorial) ? periodosHistorial : []) {
+      const anio = Number(periodo?.anio || 0);
+      const mes = Number(periodo?.mes || 0);
+      if (anio < 1900 || mes < 1 || mes > 12) continue;
+      const key = `${anio}-${mes}`;
+      if (map.has(key)) continue;
+      map.set(key, {
+        ...periodo,
+        anio,
+        mes,
+        estado: normalizePeriodoEstado(periodo?.estado)
+      });
+    }
+    return map;
+  }, [periodosHistorial]);
+  const totalMesesPagadosAnio = useMemo(() => (
+    opcionesMeses.filter((m) => normalizePeriodoEstado(historialPeriodosMap.get(`${anioSeleccionado}-${m.value}`)?.estado) === "PAGADO").length
+  ), [anioSeleccionado, historialPeriodosMap, opcionesMeses]);
 
   useEffect(() => {
     api.get("/calles").then((res) => setCalles(res.data)).catch((err) => console.error(err));
@@ -133,7 +178,10 @@ const ModalImpresionMasiva = ({
           .filter((row) => Number(row?.id_recibo || 0) > 0)
           .map((row) => ({
             anio: Number(row?.anio || 0),
-            mes: Number(row?.mes || 0)
+            mes: Number(row?.mes || 0),
+            estado: normalizePeriodoEstado(row?.estado),
+            abono_mes: Number(row?.abono_mes || 0),
+            deuda_mes: Number(row?.deuda_mes || 0)
           }))
           .filter((row) => row.anio >= 1900 && row.mes >= 1 && row.mes <= 12)
           .sort((a, b) => ((b.anio * 100 + b.mes) - (a.anio * 100 + a.mes)));
@@ -345,18 +393,53 @@ const ModalImpresionMasiva = ({
                   <label className="form-label fw-bold">Meses</label>
                   <div className={`border rounded p-2 ${darkMode ? "border-secondary" : ""}`} style={{ maxHeight: "160px", overflowY: "auto" }}>
                     <div className="d-flex flex-wrap gap-2">
-                      {opcionesMeses.map((m) => (
-                        <label key={m.value} className="form-check form-check-inline m-0">
-                          <input
-                            className="form-check-input"
-                            type="checkbox"
-                            checked={(seleccion.meses || []).includes(m.value)}
-                            onChange={() => toggleMes(m.value)}
-                          />
-                          <span className="form-check-label ms-1">{m.label}</span>
-                        </label>
-                      ))}
+                      {opcionesMeses.map((m) => {
+                        const periodoHistorial = historialPeriodosMap.get(`${anioSeleccionado}-${m.value}`) || null;
+                        const estadoMeta = getPeriodoEstadoMeta(periodoHistorial?.estado, darkMode);
+                        const checked = (seleccion.meses || []).includes(m.value);
+                        return (
+                          <label
+                            key={m.value}
+                            className="m-0"
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "0.4rem",
+                              padding: "0.4rem 0.6rem",
+                              borderRadius: "0.65rem",
+                              border: `1px solid ${estadoMeta?.border || (darkMode ? "#495057" : "#dee2e6")}`,
+                              backgroundColor: checked
+                                ? (darkMode ? "#1d4ed8" : "#dbeafe")
+                                : (estadoMeta?.bg || "transparent"),
+                              color: checked
+                                ? (darkMode ? "#eff6ff" : "#1e3a8a")
+                                : (estadoMeta?.text || "inherit"),
+                              cursor: "pointer",
+                              minWidth: "88px"
+                            }}
+                            title={estadoMeta ? `${m.label} ${anioSeleccionado}: ${estadoMeta.label}` : `${m.label} ${anioSeleccionado}`}
+                          >
+                            <input
+                              className="form-check-input"
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleMes(m.value)}
+                            />
+                            <span className="form-check-label ms-1 fw-semibold">{m.label}</span>
+                            {estadoMeta && (
+                              <span className="small" style={{ opacity: 0.9 }}>
+                                {estadoMeta.label}
+                              </span>
+                            )}
+                          </label>
+                        );
+                      })}
                     </div>
+                    {soloSeleccion && periodosHistorial.length > 0 && (
+                      <div className="small mt-2" style={{ opacity: 0.85 }}>
+                        Meses pagados en {anioSeleccionado}: <strong>{totalMesesPagadosAnio}</strong>. Se pueden seleccionar igual; solo quedan sombreados para diferenciarlos.
+                      </div>
+                    )}
                     {opcionesMeses.length === 0 && (
                       <div className="small text-muted">
                         No hay meses habilitados para ese año. Active "Habilitar meses futuros" para adelantos.
