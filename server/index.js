@@ -2320,9 +2320,32 @@ const buildEffectivePredioReferenceSql = (predioAlias = "p") => `
       OR COALESCE(TRIM(${predioAlias}.manzana), '') <> ''
       OR COALESCE(TRIM(${predioAlias}.lote), '') <> ''
     )
-      AND COALESCE(TRIM(${predioAlias}.referencia_direccion), '') ~* '^\\s*(s\\s*\\/?\\s*n|sin\\s+n[uú]mero)(\\s+[[:alnum:]-]+)*\\s*$'
-    THEN ''
+    THEN TRIM(
+      REGEXP_REPLACE(
+        COALESCE(TRIM(${predioAlias}.referencia_direccion), ''),
+        '(^|\\s)(s\\s*\\/?\\s*n|sin\\s+n[uú]mero)(?=\\s|$)',
+        ' ',
+        'gi'
+      )
+    )
     ELSE COALESCE(TRIM(${predioAlias}.referencia_direccion), '')
+  END
+`;
+const buildSqlMesCorto = (expr) => `
+  CASE ${expr}
+    WHEN 1 THEN 'ENE'
+    WHEN 2 THEN 'FEB'
+    WHEN 3 THEN 'MAR'
+    WHEN 4 THEN 'ABR'
+    WHEN 5 THEN 'MAY'
+    WHEN 6 THEN 'JUN'
+    WHEN 7 THEN 'JUL'
+    WHEN 8 THEN 'AGO'
+    WHEN 9 THEN 'SEP'
+    WHEN 10 THEN 'OCT'
+    WHEN 11 THEN 'NOV'
+    WHEN 12 THEN 'DIC'
+    ELSE '-'
   END
 `;
 const buildDireccionSql = (calleAlias = "ca", predioAlias = "p") => {
@@ -15748,13 +15771,39 @@ app.post("/recibos/masivos", async (req, res) => {
     if (mesesSeleccionados.length === 0) {
       return res.status(400).json({ error: "Seleccione al menos un mes valido." });
     }
+    const minMesSeleccionado = mesesSeleccionados.reduce((acc, value) => Math.min(acc, Number(value || 0)), 12);
+    const idsObjetivoSeleccion = Array.from(new Set((Array.isArray(ids_usuarios) ? ids_usuarios : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0)));
     const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
     const bloquearMesesNoEmitidos = !incluirPagados || !permitirMesesFuturos;
     if (bloquearMesesNoEmitidos) {
-      const tieneMesNoEmitido = mesesSeleccionados.some((mesSel) =>
+      const mesesNoEmitidos = mesesSeleccionados.filter((mesSel) =>
         ((anioSeleccionado * 100) + Number(mesSel || 0)) > periodoEmitidoMaximo
       );
-      if (tieneMesNoEmitido) {
+      let mesesNoEmitidosSinRecibo = [...mesesNoEmitidos];
+      if (mesesNoEmitidos.length > 0 && incluirPagados && tipo_seleccion === "seleccion" && idsObjetivoSeleccion.length > 0) {
+        const existentesRs = await client.query(`
+          SELECT DISTINCT
+            p.id_contribuyente,
+            r.anio,
+            r.mes
+          FROM recibos r
+          JOIN predios p ON p.id_predio = r.id_predio
+          WHERE p.id_contribuyente = ANY($1)
+            AND r.anio = $2
+            AND r.mes = ANY($3::int[])
+        `, [idsObjetivoSeleccion, anioSeleccionado, mesesNoEmitidos]);
+        const existentesSet = new Set(
+          existentesRs.rows.map((row) => `${Number(row.id_contribuyente || 0)}-${Number(row.anio || 0)}-${Number(row.mes || 0)}`)
+        );
+        mesesNoEmitidosSinRecibo = mesesNoEmitidos.filter((mesSel) =>
+          idsObjetivoSeleccion.some((idContribuyente) =>
+            !existentesSet.has(`${idContribuyente}-${anioSeleccionado}-${Number(mesSel || 0)}`)
+          )
+        );
+      }
+      if (mesesNoEmitidosSinRecibo.length > 0) {
         return res.status(400).json({
           error: incluirPagados
             ? "Para reimpresión solo se permiten meses ya emitidos. Active 'habilitar meses futuros' para pago adelantado."
@@ -15862,10 +15911,34 @@ app.post("/recibos/masivos", async (req, res) => {
           SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
         FROM recibos r
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-        WHERE (r.anio < $1) OR (r.anio = $1 AND r.mes <= (
-          SELECT MAX(m) FROM unnest($2::int[]) AS t(m)
-        ))
+        WHERE ((r.anio < $1) OR (r.anio = $1 AND r.mes < $3))
+          AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
         GROUP BY r.id_predio
+      ),
+      detalle_deuda_predio AS (
+        SELECT
+          t.id_predio,
+          json_agg(
+            json_build_object(
+              'anio', t.anio,
+              'meses_label', t.meses_label,
+              'monto', t.monto
+            )
+            ORDER BY t.anio
+          ) AS detalle
+        FROM (
+          SELECT
+            r.id_predio,
+            r.anio,
+            STRING_AGG(${buildSqlMesCorto("r.mes")}, '/' ORDER BY r.mes) AS meses_label,
+            SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS monto
+          FROM recibos r
+          LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+          WHERE ((r.anio < $1) OR (r.anio = $1 AND r.mes < $3))
+            AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+          GROUP BY r.id_predio, r.anio
+        ) t
+        GROUP BY t.id_predio
       )
       SELECT
         r.*,
@@ -15877,15 +15950,14 @@ app.post("/recibos/masivos", async (req, res) => {
         p.numero_casa,
         ca.nombre as nombre_calle,
         LPAD(r.id_recibo::text, 6, '0') AS numero_recibo,
-        GREATEST(
-          COALESCE(rp.deuda_total, 0) - GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0),
-          0
-        ) AS deuda_anio
+        COALESCE(rp.deuda_total, 0) AS deuda_anio,
+        COALESCE(dd.detalle, '[]'::json) AS deuda_detalle
       FROM recibos r
       JOIN predios p ON r.id_predio = p.id_predio
       JOIN contribuyentes c ON p.id_contribuyente = c.id_contribuyente
       LEFT JOIN calles ca ON p.id_calle = ca.id_calle
       LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
+      LEFT JOIN detalle_deuda_predio dd ON dd.id_predio = p.id_predio
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
       WHERE r.anio = $1
         AND r.mes = ANY($2::int[])
@@ -15924,7 +15996,6 @@ app.post("/recibos/masivos", async (req, res) => {
         );
 
         if (permisosSet.size > 0) {
-          const maxMesSeleccionado = mesesSeleccionados.reduce((acc, value) => Math.max(acc, Number(value || 0)), 0);
           const syntheticBaseRs = await client.query(`
             WITH pagos_por_recibo AS (
               SELECT id_recibo, SUM(monto_pagado) AS total_pagado
@@ -15937,8 +16008,34 @@ app.post("/recibos/masivos", async (req, res) => {
                 SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
               FROM recibos r
               LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-              WHERE (r.anio < $2) OR (r.anio = $2 AND r.mes <= $3)
+              WHERE ((r.anio < $2) OR (r.anio = $2 AND r.mes < $3))
+                AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
               GROUP BY r.id_predio
+            ),
+            detalle_deuda_predio AS (
+              SELECT
+                t.id_predio,
+                json_agg(
+                  json_build_object(
+                    'anio', t.anio,
+                    'meses_label', t.meses_label,
+                    'monto', t.monto
+                  )
+                  ORDER BY t.anio
+                ) AS detalle
+              FROM (
+                SELECT
+                  r.id_predio,
+                  r.anio,
+                  STRING_AGG(${buildSqlMesCorto("r.mes")}, '/' ORDER BY r.mes) AS meses_label,
+                  SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS monto
+                FROM recibos r
+                LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+                WHERE ((r.anio < $2) OR (r.anio = $2 AND r.mes < $3))
+                  AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+                GROUP BY r.id_predio, r.anio
+              ) t
+              GROUP BY t.id_predio
             )
             SELECT
               c.id_contribuyente,
@@ -15950,6 +16047,7 @@ app.post("/recibos/masivos", async (req, res) => {
               ca.nombre AS nombre_calle,
               p.id_predio,
               COALESCE(rp.deuda_total, 0) AS deuda_anio,
+              COALESCE(dd.detalle, '[]'::json) AS deuda_detalle,
               COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
               COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
               COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
@@ -15963,8 +16061,9 @@ app.post("/recibos/masivos", async (req, res) => {
             JOIN predios p ON p.id_contribuyente = c.id_contribuyente
             LEFT JOIN calles ca ON ca.id_calle = p.id_calle
             LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
+            LEFT JOIN detalle_deuda_predio dd ON dd.id_predio = p.id_predio
             WHERE c.id_contribuyente = ANY($1)
-          `, [idsObjetivo, anioSeleccionado, maxMesSeleccionado]);
+          `, [idsObjetivo, anioSeleccionado, minMesSeleccionado]);
 
           for (const baseRow of syntheticBaseRs.rows) {
             const idContribuyente = Number(baseRow?.id_contribuyente || 0);
@@ -16002,6 +16101,7 @@ app.post("/recibos/masivos", async (req, res) => {
                 numero_casa: baseRow?.numero_casa || "",
                 nombre_calle: baseRow?.nombre_calle || "",
                 deuda_anio: parseMonto(baseRow?.deuda_anio, 0),
+                deuda_detalle: Array.isArray(baseRow?.deuda_detalle) ? baseRow.deuda_detalle : [],
                 estado: "ADELANTADO"
               });
               existentesSet.add(key);

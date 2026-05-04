@@ -60,7 +60,7 @@ const CAL = {
     // Si escribes xMesS u otro nombre, no se reflejara ningun cambio.
     xMes: 54.2,
     xAnio: 90.2,
-    xNumero: 119.2,
+    xNumero: 109.2,
     yCabecera: 24.8,
     xCodigo: 37.2,
     yCodigo: 31.4,
@@ -227,16 +227,34 @@ const Recibo = forwardRef(({ datos }, ref) => {
     ? Math.min(100.2, detalleStartY + (Math.max(detalleRows.length, 1) * detalleGap) + 1.4)
     : CAL.top.yTotal;
 
-  const deudaAnualMonto = formatMonto(contribuyente.deuda_anio || 0);
-  const periodosDeudaBox = usePeriodDetail
-    ? periodos.slice(0, 3).map((p) => ({
-      label: p.label || `${getMesNombre(p.mes)} ${p.anio > 0 ? p.anio : ""}`.trim(),
-      monto: formatMonto(p.monto)
-    }))
+  const deudaDetalleRows = Array.isArray(contribuyente?.deuda_detalle)
+    ? contribuyente.deuda_detalle
+        .map((row) => ({
+          anio: Number(row?.anio || 0),
+          mesesLabel: String(row?.meses_label || "").trim(),
+          monto: toNum(row?.monto)
+        }))
+        .filter((row) => row.anio >= 1900 && row.monto > 0)
     : [];
-  const totalDeudaMesBox = periodosDeudaBox.length > 0
-    ? formatMonto(periodosDeudaBox.reduce((acc, p) => acc + toNum(p.monto), 0))
-    : "";
+  const deudaAnualRows = deudaDetalleRows.length > 0
+    ? deudaDetalleRows.slice(0, 4).map((row) => ({
+        label: String(row.anio),
+        monto: formatMonto(row.monto)
+      }))
+    : (toNum(contribuyente.deuda_anio) > 0
+      ? [{ label: deudaAnioLabel, monto: formatMonto(contribuyente.deuda_anio || 0) }]
+      : []);
+  const periodosDeudaBox = deudaDetalleRows.length > 0
+    ? deudaDetalleRows.slice(0, 4).map((row) => ({
+        label: row.mesesLabel || "-",
+        monto: formatMonto(row.monto)
+      }))
+    : [];
+  const totalDeudaAnterior = deudaDetalleRows.length > 0
+    ? deudaDetalleRows.reduce((acc, row) => acc + toNum(row.monto), 0)
+    : toNum(contribuyente.deuda_anio || 0);
+  const deudaAnualMonto = formatMonto(totalDeudaAnterior);
+  const totalDeudaMesBox = periodosDeudaBox.length > 0 ? deudaAnualMonto : "";
 
   return (
     <div
@@ -372,10 +390,29 @@ const Recibo = forwardRef(({ datos }, ref) => {
           <span>Año</span>
           <span>{RECIBO_TEXTOS.labelDeuda}</span>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.5), textAlign: "center", fontWeight: 700 }}>
-          <span>{deudaAnioLabel}</span>
-          <span>{deudaAnualMonto}</span>
-        </div>
+        {deudaAnualRows.length > 0 ? (
+          deudaAnualRows.map((row, idx) => (
+            <div
+              key={`${row.label}-${idx}`}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                marginTop: mm(idx === 0 ? 0.5 : 0.35),
+                textAlign: "center",
+                fontWeight: 700,
+                fontSize: "2.7mm"
+              }}
+            >
+              <span>{row.label}</span>
+              <span>{row.monto}</span>
+            </div>
+          ))
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.5), textAlign: "center", fontWeight: 700 }}>
+            <span>&nbsp;</span>
+            <span>&nbsp;</span>
+          </div>
+        )}
         <div style={{ borderTop: "0.35mm solid #000", marginTop: mm(0.6) }} />
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", marginTop: mm(0.6), textAlign: "center", fontWeight: 700 }}>
           <span>Total</span>

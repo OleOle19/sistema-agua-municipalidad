@@ -77,7 +77,6 @@ const ModalImpresionMasiva = ({
     incluirMesActual: false,
     permitirMesSiguiente: permitirMesSiguienteMensual
   });
-  const maxPeriodoEmitidoNum = getPeriodoNum(ultimoPeriodoEmitido.anio, ultimoPeriodoEmitido.mes);
   const [modo, setModo] = useState(soloSeleccion ? "seleccion" : (idsSeleccionados.length > 0 ? "seleccion" : "calle"));
   const [seleccion, setSeleccion] = useState({
     id_calle: "",
@@ -91,13 +90,6 @@ const ModalImpresionMasiva = ({
     if (typeof onFlash === "function") onFlash(type, text);
   };
 
-  const anioSeleccionado = Number(seleccion.anio || ultimoPeriodoEmitido.anio);
-  const permitirMesesNoEmitidos = soloSeleccion && permitirMesesFuturos;
-  const idContribuyenteSeleccionado = Number(Array.isArray(idsSeleccionados) ? idsSeleccionados[0] : 0);
-  const esMesNoEmitido = (mes, anio = anioSeleccionado) => getPeriodoNum(anio, mes) > maxPeriodoEmitidoNum;
-  const opcionesMeses = !permitirMesesNoEmitidos
-    ? MONTH_OPTIONS.filter((m) => !esMesNoEmitido(m.value, anioSeleccionado))
-    : MONTH_OPTIONS;
   const historialPeriodosMap = useMemo(() => {
     const map = new Map();
     for (const periodo of Array.isArray(periodosHistorial) ? periodosHistorial : []) {
@@ -115,6 +107,22 @@ const ModalImpresionMasiva = ({
     }
     return map;
   }, [periodosHistorial]);
+  const maxPeriodoEmitidoNum = useMemo(() => {
+    const base = getPeriodoNum(ultimoPeriodoEmitido.anio, ultimoPeriodoEmitido.mes);
+    if (!soloSeleccion) return base;
+    return (Array.isArray(periodosHistorial) ? periodosHistorial : []).reduce((acc, periodo) => {
+      const periodoNum = getPeriodoNum(periodo?.anio, periodo?.mes);
+      return Math.max(acc, periodoNum);
+    }, base);
+  }, [periodosHistorial, soloSeleccion, ultimoPeriodoEmitido.anio, ultimoPeriodoEmitido.mes]);
+  const anioMaximoEmitido = Math.floor(maxPeriodoEmitidoNum / 100) || ultimoPeriodoEmitido.anio;
+  const anioSeleccionado = Number(seleccion.anio || anioMaximoEmitido);
+  const permitirMesesNoEmitidos = soloSeleccion && permitirMesesFuturos;
+  const idContribuyenteSeleccionado = Number(Array.isArray(idsSeleccionados) ? idsSeleccionados[0] : 0);
+  const esMesNoEmitido = (mes, anio = anioSeleccionado) => getPeriodoNum(anio, mes) > maxPeriodoEmitidoNum;
+  const opcionesMeses = !permitirMesesNoEmitidos
+    ? MONTH_OPTIONS.filter((m) => !esMesNoEmitido(m.value, anioSeleccionado))
+    : MONTH_OPTIONS;
   useEffect(() => {
     api.get("/calles").then((res) => setCalles(res.data)).catch((err) => console.error(err));
   }, []);
@@ -128,8 +136,8 @@ const ModalImpresionMasiva = ({
   useEffect(() => {
     if (permitirMesesNoEmitidos) return;
     setSeleccion((prev) => {
-      const anioPrev = Number(prev.anio || ultimoPeriodoEmitido.anio);
-      const anioAjustado = anioPrev > ultimoPeriodoEmitido.anio ? ultimoPeriodoEmitido.anio : anioPrev;
+      const anioPrev = Number(prev.anio || anioMaximoEmitido);
+      const anioAjustado = anioPrev > anioMaximoEmitido ? anioMaximoEmitido : anioPrev;
       const mesesPrev = Array.isArray(prev.meses) ? prev.meses : [];
       const mesesFiltrados = mesesPrev.filter((m) => getPeriodoNum(anioAjustado, Number(m)) <= maxPeriodoEmitidoNum);
       const cambioAnio = String(prev.anio) !== String(anioAjustado);
@@ -137,7 +145,7 @@ const ModalImpresionMasiva = ({
       if (!cambioAnio && !cambioMeses) return prev;
       return { ...prev, anio: anioAjustado, meses: mesesFiltrados };
     });
-  }, [maxPeriodoEmitidoNum, permitirMesesNoEmitidos, ultimoPeriodoEmitido.anio]);
+  }, [anioMaximoEmitido, maxPeriodoEmitidoNum, permitirMesesNoEmitidos]);
 
   useEffect(() => {
     let cancelado = false;

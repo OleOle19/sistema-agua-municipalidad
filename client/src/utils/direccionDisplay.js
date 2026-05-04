@@ -36,8 +36,19 @@ const collapseRepeatedPhrase = (value) => {
   return normalizeComparable(first) === normalizeComparable(second) ? first : text;
 };
 
+const stripGenericSinNumero = (value) => {
+  const text = normalizeSpaces(value);
+  if (!text) return "";
+  const cleaned = normalizeSpaces(
+    text
+      .replace(/\bS\s*\/?\s*N\b/gi, " ")
+      .replace(/\bSIN\s+N[UÚ]MERO\b/gi, " ")
+  );
+  return cleaned || text;
+};
+
 const stripAddressTags = (value) => collapseRepeatedPhrase(
-  normalizeSpaces(value)
+  stripGenericSinNumero(value)
     .replace(/\bNRO\s*:?\s*[A-Z0-9-]+/gi, " ")
     .replace(/\bMZ\s*:?\s*[A-Z0-9-]*/gi, " ")
     .replace(/\bLT\s*:?\s*[A-Z0-9-]*/gi, " ")
@@ -49,10 +60,11 @@ export const formatDireccionDisplay = (value) => {
   const raw = normalizeSpaces(value);
   if (!raw) return "";
 
-  const nro = extractTag(raw, "NRO") || extractTag(raw, "N[º°]");
-  const mz = extractTag(raw, "MZ");
-  const lt = extractTag(raw, "LT");
-  const base = stripAddressTags(raw);
+  const source = stripGenericSinNumero(raw);
+  const nro = extractTag(source, "NRO") || extractTag(source, "N[º°]");
+  const mz = extractTag(source, "MZ");
+  const lt = extractTag(source, "LT");
+  const base = stripAddressTags(source);
 
   const parts = [];
   if (base) parts.push(base);
@@ -60,5 +72,5 @@ export const formatDireccionDisplay = (value) => {
   if (mz) parts.push(`MZ: ${mz}`);
   if (lt) parts.push(`LT: ${lt}`);
 
-  return normalizeSpaces(parts.join(" ")) || raw;
+  return normalizeSpaces(parts.join(" ")) || source || raw;
 };
