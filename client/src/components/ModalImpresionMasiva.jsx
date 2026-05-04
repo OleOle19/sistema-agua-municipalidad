@@ -89,7 +89,7 @@ const ModalImpresionMasiva = ({
   const soloSeleccion = modoOperacion === "reimpresion";
   const permitirMesSiguienteMensual = !soloSeleccion && canUnlockNextMonthForMensual();
   const ultimoPeriodoEmitido = getUltimoPeriodoDisponible({
-    incluirMesActual: soloSeleccion,
+    incluirMesActual: false,
     permitirMesSiguiente: permitirMesSiguienteMensual
   });
   const maxPeriodoEmitidoNum = getPeriodoNum(ultimoPeriodoEmitido.anio, ultimoPeriodoEmitido.mes);
@@ -265,6 +265,7 @@ const ModalImpresionMasiva = ({
         tipo_seleccion: modo,
         ids_usuarios: idsSeleccionados,
         incluir_pagados: "S",
+        solo_con_deuda: "S",
         permitir_meses_futuros: (soloSeleccion && permitirMesesFuturos) ? "S" : "N"
       };
 

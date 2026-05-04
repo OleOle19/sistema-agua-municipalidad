@@ -1546,8 +1546,8 @@ const validateReciboPeriodoNoFuturo = (anioInput, mesInput) => {
   if (!anio || mes < 1 || mes > 12) {
     return { ok: false, error: "Año y mes son requeridos." };
   }
-  if ((anio * 100) + mes > getCurrentPeriodoNum()) {
-    return { ok: false, error: "No se permite registrar deuda en un periodo futuro." };
+  if ((anio * 100) + mes > getUltimoPeriodoEmitidoNum()) {
+    return { ok: false, error: "Solo se permite registrar deuda en meses ya cerrados." };
   }
   return { ok: true, anio, mes };
 };
@@ -4791,7 +4791,22 @@ app.post("/campo/solicitudes", async (req, res) => {
         END AS ultimo_mes_pagado_periodo
       FROM contribuyentes c
       LEFT JOIN LATERAL (
-        SELECT id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
+        SELECT
+          id_predio,
+          id_calle,
+          numero_casa,
+          manzana,
+          lote,
+          referencia_direccion,
+          direccion_alterna,
+          agua_sn,
+          desague_sn,
+          limpieza_sn,
+          tarifa_agua,
+          tarifa_desague,
+          tarifa_limpieza,
+          tarifa_admin,
+          tarifa_extra
         FROM predios
         WHERE id_contribuyente = c.id_contribuyente
         ORDER BY id_predio ASC
@@ -5184,7 +5199,22 @@ app.get("/campo/solicitudes", async (req, res) => {
       FROM campo_solicitudes s
       LEFT JOIN contribuyentes c ON c.id_contribuyente = s.id_contribuyente
       LEFT JOIN LATERAL (
-        SELECT id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
+        SELECT
+          id_predio,
+          id_calle,
+          numero_casa,
+          manzana,
+          lote,
+          referencia_direccion,
+          direccion_alterna,
+          agua_sn,
+          desague_sn,
+          limpieza_sn,
+          tarifa_agua,
+          tarifa_desague,
+          tarifa_limpieza,
+          tarifa_admin,
+          tarifa_extra
         FROM predios
         WHERE id_contribuyente = c.id_contribuyente
         ORDER BY id_predio ASC
@@ -5318,7 +5348,21 @@ const exportarSolicitudesCampoExcel = async (req, res) => {
       LEFT JOIN contribuyentes c ON c.id_contribuyente = s.id_contribuyente
       LEFT JOIN LATERAL (
         SELECT
-          id_predio, id_calle, numero_casa, manzana, lote, referencia_direccion, direccion_alterna, agua_sn, desague_sn, limpieza_sn
+          id_predio,
+          id_calle,
+          numero_casa,
+          manzana,
+          lote,
+          referencia_direccion,
+          direccion_alterna,
+          agua_sn,
+          desague_sn,
+          limpieza_sn,
+          tarifa_agua,
+          tarifa_desague,
+          tarifa_limpieza,
+          tarifa_admin,
+          tarifa_extra
         FROM predios
         WHERE id_contribuyente = c.id_contribuyente
         ORDER BY id_predio ASC
@@ -15677,6 +15721,7 @@ app.post("/recibos/masivos", async (req, res) => {
   try {
     const { tipo_seleccion, ids_usuarios, id_calle, anio, mes, meses } = req.body;
     const incluirPagados = normalizeSN(req.body?.incluir_pagados, "N") === "S";
+    const soloConDeuda = normalizeSN(req.body?.solo_con_deuda, incluirPagados ? "N" : "S") === "S";
     const permitirMesesFuturos = normalizeSN(req.body?.permitir_meses_futuros, "N") === "S";
     const anioSeleccionado = parsePositiveInt(anio, 0);
     if (!anioSeleccionado) {
@@ -15688,9 +15733,7 @@ app.post("/recibos/masivos", async (req, res) => {
     if (mesesSeleccionados.length === 0) {
       return res.status(400).json({ error: "Seleccione al menos un mes valido." });
     }
-    const periodoEmitidoMaximo = incluirPagados
-      ? getCurrentPeriodoNum()
-      : getUltimoPeriodoEmitidoNum();
+    const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
     const bloquearMesesNoEmitidos = !incluirPagados || !permitirMesesFuturos;
     if (bloquearMesesNoEmitidos) {
       const tieneMesNoEmitido = mesesSeleccionados.some((mesSel) =>
@@ -15831,7 +15874,7 @@ app.post("/recibos/masivos", async (req, res) => {
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
       WHERE r.anio = $1
         AND r.mes = ANY($2::int[])
-        ${incluirPagados ? "" : "AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0"}
+        ${soloConDeuda ? "AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0" : ""}
         ${filtro}
       ORDER BY r.mes ASC, ca.nombre ASC, p.numero_casa ASC, c.nombre_completo ASC
     `;
