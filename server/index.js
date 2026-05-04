@@ -8992,10 +8992,10 @@ app.post("/caja/permisos-adelantado/solicitar", async (req, res) => {
     if (periodos.length === 0) {
       return res.status(400).json({ error: "Debe indicar al menos un periodo válido (mes/año)." });
     }
-    const periodoActual = getCurrentPeriodoNum();
-    const periodosFuturos = periodos.filter((p) => Number(p.periodo_num || 0) > periodoActual);
+    const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
+    const periodosFuturos = periodos.filter((p) => Number(p.periodo_num || 0) > periodoEmitidoMaximo);
     if (periodosFuturos.length === 0) {
-      return res.status(400).json({ error: "Solo se pueden habilitar periodos futuros para Caja." });
+      return res.status(400).json({ error: "Solo se pueden habilitar periodos no emitidos para Caja." });
     }
     const motivo = normalizeLimitedText(
       req.body?.motivo,

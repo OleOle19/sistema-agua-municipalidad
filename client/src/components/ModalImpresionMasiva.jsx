@@ -30,11 +30,6 @@ const getPeriodoEstadoMeta = (estado, darkMode = false) => {
       ? { title: "Pagado", highlight: "#166534", text: "#dcfce7" }
       : { title: "Pagado", highlight: "#bbf7d0", text: "#166534" };
   }
-  if (normalized) {
-    return darkMode
-      ? { title: "Pendiente", highlight: "#854d0e", text: "#fef3c7" }
-      : { title: "Pendiente", highlight: "#fde68a", text: "#854d0e" };
-  }
   return null;
 };
 const canUnlockNextMonthForMensual = () => {
