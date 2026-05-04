@@ -15698,6 +15698,318 @@ const cleanupBackupsAntiguos = (backupDir, retentionDays = 30) => {
   return eliminados;
 };
 
+const queryRecibosMasivosRows = async (client, {
+  anioSeleccionado,
+  mesesSeleccionados,
+  minMesSeleccionado,
+  filtroSql = "",
+  filtroParams = [],
+  soloConDeuda = false
+} = {}) => {
+  const params = [anioSeleccionado, mesesSeleccionados, minMesSeleccionado, ...filtroParams];
+  const filtroClause = filtroSql ? `AND ${filtroSql}` : "";
+  const query = `
+    WITH pagos_por_recibo AS (
+      SELECT id_recibo, SUM(monto_pagado) AS total_pagado
+      FROM pagos
+      GROUP BY id_recibo
+    ),
+    resumen_predio AS (
+      SELECT
+        r.id_predio,
+        SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
+      FROM recibos r
+      LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+      WHERE ((r.anio < $1) OR (r.anio = $1 AND r.mes < $3))
+        AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+      GROUP BY r.id_predio
+    ),
+    detalle_deuda_predio AS (
+      SELECT
+        t.id_predio,
+        json_agg(
+          json_build_object(
+            'anio', t.anio,
+            'meses_label', t.meses_label,
+            'monto', t.monto
+          )
+          ORDER BY t.anio
+        ) AS detalle
+      FROM (
+        SELECT
+          r.id_predio,
+          r.anio,
+          STRING_AGG(${buildSqlMesCorto("r.mes")}, '/' ORDER BY r.mes) AS meses_label,
+          SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS monto
+        FROM recibos r
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+        WHERE ((r.anio < $1) OR (r.anio = $1 AND r.mes < $3))
+          AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+        GROUP BY r.id_predio, r.anio
+      ) t
+      GROUP BY t.id_predio
+    )
+    SELECT
+      r.*,
+      c.id_contribuyente,
+      c.nombre_completo,
+      c.codigo_municipal,
+      c.dni_ruc,
+      ${buildDireccionSql("ca", "p")} AS direccion_completa,
+      p.numero_casa,
+      ca.nombre AS nombre_calle,
+      LPAD(r.id_recibo::text, 6, '0') AS numero_recibo,
+      COALESCE(rp.deuda_total, 0) AS deuda_anio,
+      COALESCE(dd.detalle, '[]'::json) AS deuda_detalle
+    FROM recibos r
+    JOIN predios p ON r.id_predio = p.id_predio
+    JOIN contribuyentes c ON p.id_contribuyente = c.id_contribuyente
+    LEFT JOIN calles ca ON p.id_calle = ca.id_calle
+    LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
+    LEFT JOIN detalle_deuda_predio dd ON dd.id_predio = p.id_predio
+    LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+    WHERE r.anio = $1
+      AND r.mes = ANY($2::int[])
+      ${soloConDeuda ? "AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0" : ""}
+      ${filtroClause}
+    ORDER BY r.mes ASC, ca.nombre ASC, p.numero_casa ASC, c.nombre_completo ASC
+  `;
+  const rs = await client.query(query, params);
+  return Array.isArray(rs.rows) ? rs.rows : [];
+};
+
+const queryRecibosSyntheticBaseRows = async (client, {
+  idsObjetivo = [],
+  anioSeleccionado,
+  minMesSeleccionado
+} = {}) => {
+  const rs = await client.query(`
+    WITH pagos_por_recibo AS (
+      SELECT id_recibo, SUM(monto_pagado) AS total_pagado
+      FROM pagos
+      GROUP BY id_recibo
+    ),
+    resumen_predio AS (
+      SELECT
+        r.id_predio,
+        SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
+      FROM recibos r
+      LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+      WHERE ((r.anio < $2) OR (r.anio = $2 AND r.mes < $3))
+        AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+      GROUP BY r.id_predio
+    ),
+    detalle_deuda_predio AS (
+      SELECT
+        t.id_predio,
+        json_agg(
+          json_build_object(
+            'anio', t.anio,
+            'meses_label', t.meses_label,
+            'monto', t.monto
+          )
+          ORDER BY t.anio
+        ) AS detalle
+      FROM (
+        SELECT
+          r.id_predio,
+          r.anio,
+          STRING_AGG(${buildSqlMesCorto("r.mes")}, '/' ORDER BY r.mes) AS meses_label,
+          SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS monto
+        FROM recibos r
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
+        WHERE ((r.anio < $2) OR (r.anio = $2 AND r.mes < $3))
+          AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+        GROUP BY r.id_predio, r.anio
+      ) t
+      GROUP BY t.id_predio
+    )
+    SELECT
+      c.id_contribuyente,
+      c.nombre_completo,
+      c.codigo_municipal,
+      c.dni_ruc,
+      ${buildDireccionSql("ca", "p")} AS direccion_completa,
+      p.numero_casa,
+      ca.nombre AS nombre_calle,
+      p.id_predio,
+      COALESCE(rp.deuda_total, 0) AS deuda_anio,
+      COALESCE(dd.detalle, '[]'::json) AS deuda_detalle,
+      COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+      COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+      COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+      COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+      p.tarifa_agua,
+      p.tarifa_desague,
+      p.tarifa_limpieza,
+      p.tarifa_admin,
+      p.tarifa_extra
+    FROM contribuyentes c
+    JOIN predios p ON p.id_contribuyente = c.id_contribuyente
+    LEFT JOIN calles ca ON ca.id_calle = p.id_calle
+    LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
+    LEFT JOIN detalle_deuda_predio dd ON dd.id_predio = p.id_predio
+    WHERE c.id_contribuyente = ANY($1)
+  `, [idsObjetivo, anioSeleccionado, minMesSeleccionado]);
+  return Array.isArray(rs.rows) ? rs.rows : [];
+};
+
+const buildReimpresionSeleccionRows = async (client, {
+  idsObjetivo = [],
+  anioSeleccionado,
+  mesesSeleccionados,
+  minMesSeleccionado
+} = {}) => {
+  const idsNormalizados = Array.from(new Set((Array.isArray(idsObjetivo) ? idsObjetivo : [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0)));
+  if (idsNormalizados.length === 0) return [];
+
+  const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
+  const mesesEmitibles = Array.from(new Set(mesesSeleccionados
+    .map((m) => Number(m))
+    .filter((m) => Number.isInteger(m) && m >= 1 && m <= 12)
+    .filter((m) => ((anioSeleccionado * 100) + m) <= periodoEmitidoMaximo)));
+
+  if (mesesEmitibles.length > 0) {
+    const autoEmitidos = await client.query(`
+      INSERT INTO recibos (
+        id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, total_pagar, estado
+      )
+      SELECT
+        p.id_predio,
+        $1::int AS anio,
+        m.mes,
+        CASE
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, ${AUTO_DEUDA_BASE.agua})
+          ELSE 0
+        END AS subtotal_agua,
+        CASE
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, ${AUTO_DEUDA_BASE.desague})
+          ELSE 0
+        END AS subtotal_desague,
+        CASE
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza})
+          ELSE 0
+        END AS subtotal_limpieza,
+        CASE
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) + COALESCE(p.tarifa_extra, 0)
+          ELSE 0
+        END AS subtotal_admin,
+        (
+          CASE
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, ${AUTO_DEUDA_BASE.agua})
+            ELSE 0
+          END
+          + CASE
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, ${AUTO_DEUDA_BASE.desague})
+            ELSE 0
+          END
+          + CASE
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza})
+            ELSE 0
+          END
+          + CASE
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) + COALESCE(p.tarifa_extra, 0)
+            ELSE 0
+          END
+        ) AS total_pagar,
+        'PENDIENTE' AS estado
+      FROM predios p
+      JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
+      JOIN unnest($2::int[]) AS m(mes) ON true
+      WHERE p.id_contribuyente = ANY($3::int[])
+        AND ${sqlSnEsSi("p.activo_sn", "S")}
+        AND COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'
+        AND (($1::int * 100) + m.mes) <= $4::int
+      ON CONFLICT DO NOTHING
+      RETURNING id_recibo
+    `, [anioSeleccionado, mesesEmitibles, idsNormalizados, periodoEmitidoMaximo]);
+    if (Number(autoEmitidos?.rowCount || 0) > 0) {
+      invalidateContribuyentesCache();
+      realtimeHub.broadcast("deuda", "recibo_generado", {
+        id_contribuyente: null,
+        total_recibos: Number(autoEmitidos.rowCount || 0),
+        origen: "recibos_reimpresion_auto"
+      });
+    }
+  }
+
+  const rows = await queryRecibosMasivosRows(client, {
+    anioSeleccionado,
+    mesesSeleccionados,
+    minMesSeleccionado,
+    filtroSql: "p.id_contribuyente = ANY($4::int[])",
+    filtroParams: [idsNormalizados],
+    soloConDeuda: false
+  });
+  const existingSet = new Set(
+    rows.map((row) => `${Number(row.id_contribuyente || 0)}-${Number(row.anio || 0)}-${Number(row.mes || 0)}`)
+  );
+  const mesesFuturos = mesesSeleccionados.filter((mesSel) =>
+    ((anioSeleccionado * 100) + Number(mesSel || 0)) > periodoEmitidoMaximo
+  );
+
+  if (mesesFuturos.length > 0) {
+    const baseRows = await queryRecibosSyntheticBaseRows(client, {
+      idsObjetivo: idsNormalizados,
+      anioSeleccionado,
+      minMesSeleccionado
+    });
+    for (const baseRow of baseRows) {
+      const idContribuyente = Number(baseRow?.id_contribuyente || 0);
+      const activoSN = normalizeSN(baseRow?.activo_sn, "S");
+      const aguaHabilitado = activoSN === "S" && normalizeSN(baseRow?.agua_sn, "S") === "S";
+      const desagueHabilitado = activoSN === "S" && normalizeSN(baseRow?.desague_sn, "S") === "S";
+      const limpiezaHabilitado = activoSN === "S" && normalizeSN(baseRow?.limpieza_sn, "S") === "S";
+      const subtotalAgua = aguaHabilitado ? parseMonto(baseRow?.tarifa_agua, AUTO_DEUDA_BASE.agua) : 0;
+      const subtotalDesague = desagueHabilitado ? parseMonto(baseRow?.tarifa_desague, AUTO_DEUDA_BASE.desague) : 0;
+      const subtotalLimpieza = limpiezaHabilitado ? parseMonto(baseRow?.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0;
+      const subtotalAdmin = activoSN === "S"
+        ? parseMonto(baseRow?.tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(baseRow?.tarifa_extra, 0)
+        : 0;
+      const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin);
+      if (totalPagar <= 0) continue;
+
+      for (const mesSel of mesesFuturos) {
+        const key = `${idContribuyente}-${anioSeleccionado}-${mesSel}`;
+        if (existingSet.has(key)) continue;
+        rows.push({
+          id_recibo: null,
+          id_contribuyente: idContribuyente,
+          id_predio: Number(baseRow?.id_predio || 0),
+          anio: anioSeleccionado,
+          mes: mesSel,
+          subtotal_agua: subtotalAgua,
+          subtotal_desague: subtotalDesague,
+          subtotal_limpieza: subtotalLimpieza,
+          subtotal_admin: subtotalAdmin,
+          total_pagar: totalPagar,
+          nombre_completo: baseRow?.nombre_completo || "",
+          codigo_municipal: baseRow?.codigo_municipal || "",
+          dni_ruc: baseRow?.dni_ruc || "",
+          direccion_completa: baseRow?.direccion_completa || "",
+          numero_casa: baseRow?.numero_casa || "",
+          nombre_calle: baseRow?.nombre_calle || "",
+          numero_recibo: "",
+          deuda_anio: parseMonto(baseRow?.deuda_anio, 0),
+          deuda_detalle: Array.isArray(baseRow?.deuda_detalle) ? baseRow.deuda_detalle : [],
+          estado: "ADELANTADO"
+        });
+        existingSet.add(key);
+      }
+    }
+  }
+
+  rows.sort((a, b) =>
+    ((Number(a?.mes || 0) - Number(b?.mes || 0))
+    || String(a?.nombre_calle || "").localeCompare(String(b?.nombre_calle || ""))
+    || String(a?.numero_casa || "").localeCompare(String(b?.numero_casa || ""))
+    || String(a?.nombre_completo || "").localeCompare(String(b?.nombre_completo || "")))
+  );
+  return rows;
+};
+
 app.get("/admin/backup", authenticateToken, requireSuperAdmin, async (req, res) => {
   let backupConfig;
   try {
@@ -15776,6 +16088,16 @@ app.post("/recibos/masivos", async (req, res) => {
     const idsObjetivoSeleccion = Array.from(new Set((Array.isArray(ids_usuarios) ? ids_usuarios : [])
       .map((id) => Number(id))
       .filter((id) => Number.isInteger(id) && id > 0)));
+    if (incluirPagados && tipo_seleccion === "seleccion") {
+      const rows = await buildReimpresionSeleccionRows(client, {
+        idsObjetivo: idsObjetivoSeleccion,
+        anioSeleccionado,
+        mesesSeleccionados,
+        minMesSeleccionado
+      });
+      if (rows.length === 0) return res.status(404).json({ error: "No se encontraron recibos." });
+      return res.json(rows);
+    }
     const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
     const bloquearMesesNoEmitidos = !incluirPagados || !permitirMesesFuturos;
     if (bloquearMesesNoEmitidos) {
@@ -15812,163 +16134,24 @@ app.post("/recibos/masivos", async (req, res) => {
         });
       }
     }
-
-    // Reimpresion: si el periodo ya es emitible y no existe recibo, lo registramos aqui.
-    // Asi ventanilla puede reimprimir sin depender de que el recibo haya sido creado antes.
-    if (incluirPagados && tipo_seleccion === "seleccion") {
-      const idsObjetivo = Array.from(new Set((Array.isArray(ids_usuarios) ? ids_usuarios : [])
-        .map((id) => Number(id))
-        .filter((id) => Number.isInteger(id) && id > 0)));
-      const mesesEmitibles = Array.from(new Set(mesesSeleccionados
-        .map((m) => Number(m))
-        .filter((m) => Number.isInteger(m) && m >= 1 && m <= 12)
-        .filter((m) => ((anioSeleccionado * 100) + m) <= periodoEmitidoMaximo)));
-      if (idsObjetivo.length > 0 && mesesEmitibles.length > 0) {
-        const autoEmitidos = await client.query(`
-          INSERT INTO recibos (
-            id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, total_pagar, estado
-          )
-          SELECT
-            p.id_predio,
-            $1::int AS anio,
-            m.mes,
-            CASE
-              WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, ${AUTO_DEUDA_BASE.agua})
-              ELSE 0
-            END AS subtotal_agua,
-            CASE
-              WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, ${AUTO_DEUDA_BASE.desague})
-              ELSE 0
-            END AS subtotal_desague,
-            CASE
-              WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza})
-              ELSE 0
-            END AS subtotal_limpieza,
-            CASE
-              WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) + COALESCE(p.tarifa_extra, 0)
-              ELSE 0
-            END AS subtotal_admin,
-            (
-              CASE
-                WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, ${AUTO_DEUDA_BASE.agua})
-                ELSE 0
-              END
-              + CASE
-                WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, ${AUTO_DEUDA_BASE.desague})
-                ELSE 0
-              END
-              + CASE
-                WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza})
-                ELSE 0
-              END
-              + CASE
-                WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) + COALESCE(p.tarifa_extra, 0)
-                ELSE 0
-              END
-            ) AS total_pagar,
-            'PENDIENTE' AS estado
-          FROM predios p
-          JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
-          JOIN unnest($2::int[]) AS m(mes) ON true
-          WHERE p.id_contribuyente = ANY($3::int[])
-            AND ${sqlSnEsSi("p.activo_sn", "S")}
-            AND COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'
-            AND (($1::int * 100) + m.mes) <= $4::int
-          ON CONFLICT DO NOTHING
-          RETURNING id_recibo
-        `, [anioSeleccionado, mesesEmitibles, idsObjetivo, periodoEmitidoMaximo]);
-        if (Number(autoEmitidos?.rowCount || 0) > 0) {
-          invalidateContribuyentesCache();
-          realtimeHub.broadcast("deuda", "recibo_generado", {
-            id_contribuyente: null,
-            total_recibos: Number(autoEmitidos.rowCount || 0),
-            origen: "recibos_masivos_reimpresion_auto"
-          });
-        }
-      }
-    }
-
     let filtro = "";
-    const params = [anioSeleccionado, mesesSeleccionados, minMesSeleccionado];
+    let filtroParams = [];
 
     if (tipo_seleccion === 'calle') {
-        filtro = "AND p.id_calle = $4";
-        params.push(id_calle);
+        filtro = "p.id_calle = $4";
+        filtroParams = [id_calle];
     } else if (tipo_seleccion === 'seleccion') {
-        filtro = "AND p.id_contribuyente = ANY($4::int[])";
-        params.push(ids_usuarios);
+        filtro = "p.id_contribuyente = ANY($4::int[])";
+        filtroParams = [idsObjetivoSeleccion];
     }
-
-    // Incluimos deuda acumulada para completar la tabla "Deuda Anterior" del recibo.
-    const query = `
-      WITH pagos_por_recibo AS (
-        SELECT id_recibo, SUM(monto_pagado) AS total_pagado
-        FROM pagos
-        GROUP BY id_recibo
-      ),
-      resumen_predio AS (
-        SELECT
-          r.id_predio,
-          SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
-        FROM recibos r
-        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-        WHERE ((r.anio < $1) OR (r.anio = $1 AND r.mes < $3))
-          AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
-        GROUP BY r.id_predio
-      ),
-      detalle_deuda_predio AS (
-        SELECT
-          t.id_predio,
-          json_agg(
-            json_build_object(
-              'anio', t.anio,
-              'meses_label', t.meses_label,
-              'monto', t.monto
-            )
-            ORDER BY t.anio
-          ) AS detalle
-        FROM (
-          SELECT
-            r.id_predio,
-            r.anio,
-            STRING_AGG(${buildSqlMesCorto("r.mes")}, '/' ORDER BY r.mes) AS meses_label,
-            SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS monto
-          FROM recibos r
-          LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-          WHERE ((r.anio < $1) OR (r.anio = $1 AND r.mes < $3))
-            AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
-          GROUP BY r.id_predio, r.anio
-        ) t
-        GROUP BY t.id_predio
-      )
-      SELECT
-        r.*,
-        c.id_contribuyente,
-        c.nombre_completo,
-        c.codigo_municipal,
-        c.dni_ruc,
-        ${buildDireccionSql("ca", "p")} AS direccion_completa,
-        p.numero_casa,
-        ca.nombre as nombre_calle,
-        LPAD(r.id_recibo::text, 6, '0') AS numero_recibo,
-        COALESCE(rp.deuda_total, 0) AS deuda_anio,
-        COALESCE(dd.detalle, '[]'::json) AS deuda_detalle
-      FROM recibos r
-      JOIN predios p ON r.id_predio = p.id_predio
-      JOIN contribuyentes c ON p.id_contribuyente = c.id_contribuyente
-      LEFT JOIN calles ca ON p.id_calle = ca.id_calle
-      LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
-      LEFT JOIN detalle_deuda_predio dd ON dd.id_predio = p.id_predio
-      LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-      WHERE r.anio = $1
-        AND r.mes = ANY($2::int[])
-        ${soloConDeuda ? "AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0" : ""}
-        ${filtro}
-      ORDER BY r.mes ASC, ca.nombre ASC, p.numero_casa ASC, c.nombre_completo ASC
-    `;
-    
-    const resultados = await client.query(query, params);
-    const rows = Array.isArray(resultados.rows) ? [...resultados.rows] : [];
+    const rows = await queryRecibosMasivosRows(client, {
+      anioSeleccionado,
+      mesesSeleccionados,
+      minMesSeleccionado,
+      filtroSql: filtro,
+      filtroParams,
+      soloConDeuda
+    });
 
     if (incluirPagados && permitirMesesFuturos && tipo_seleccion === "seleccion") {
       const idsObjetivo = (Array.isArray(ids_usuarios) ? ids_usuarios : [])
@@ -15979,134 +16162,55 @@ app.post("/recibos/masivos", async (req, res) => {
       );
 
       if (idsObjetivo.length > 0 && mesesNoEmitidos.length > 0) {
-        await ensureCajaPermisosAdelantadoTable(client);
-        const permisosRs = await client.query(`
-          SELECT id_contribuyente, anio, mes, periodo_num
-          FROM caja_permisos_adelantado
-          WHERE id_contribuyente = ANY($1)
-            AND anio = $2
-            AND mes = ANY($3::int[])
-            AND estado = 'APROBADO'
-        `, [idsObjetivo, anioSeleccionado, mesesNoEmitidos]);
-
-        const permisosSet = new Set(
-          permisosRs.rows.map((row) => `${Number(row.id_contribuyente || 0)}-${Number(row.anio || 0)}-${Number(row.mes || 0)}`)
-        );
         const existentesSet = new Set(
           rows.map((row) => `${Number(row.id_contribuyente || 0)}-${Number(row.anio || 0)}-${Number(row.mes || 0)}`)
         );
+        const syntheticBaseRows = await queryRecibosSyntheticBaseRows(client, {
+          idsObjetivo,
+          anioSeleccionado,
+          minMesSeleccionado
+        });
+        for (const baseRow of syntheticBaseRows) {
+          const idContribuyente = Number(baseRow?.id_contribuyente || 0);
+          const activoSN = normalizeSN(baseRow?.activo_sn, "S");
+          const aguaHabilitado = activoSN === "S" && normalizeSN(baseRow?.agua_sn, "S") === "S";
+          const desagueHabilitado = activoSN === "S" && normalizeSN(baseRow?.desague_sn, "S") === "S";
+          const limpiezaHabilitado = activoSN === "S" && normalizeSN(baseRow?.limpieza_sn, "S") === "S";
+          const subtotalAgua = aguaHabilitado ? parseMonto(baseRow?.tarifa_agua, AUTO_DEUDA_BASE.agua) : 0;
+          const subtotalDesague = desagueHabilitado ? parseMonto(baseRow?.tarifa_desague, AUTO_DEUDA_BASE.desague) : 0;
+          const subtotalLimpieza = limpiezaHabilitado ? parseMonto(baseRow?.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0;
+          const subtotalAdmin = activoSN === "S"
+            ? parseMonto(baseRow?.tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(baseRow?.tarifa_extra, 0)
+            : 0;
+          const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin);
+          if (totalPagar <= 0) continue;
 
-        if (permisosSet.size > 0) {
-          const syntheticBaseRs = await client.query(`
-            WITH pagos_por_recibo AS (
-              SELECT id_recibo, SUM(monto_pagado) AS total_pagado
-              FROM pagos
-              GROUP BY id_recibo
-            ),
-            resumen_predio AS (
-              SELECT
-                r.id_predio,
-                SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
-              FROM recibos r
-              LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-              WHERE ((r.anio < $2) OR (r.anio = $2 AND r.mes < $3))
-                AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
-              GROUP BY r.id_predio
-            ),
-            detalle_deuda_predio AS (
-              SELECT
-                t.id_predio,
-                json_agg(
-                  json_build_object(
-                    'anio', t.anio,
-                    'meses_label', t.meses_label,
-                    'monto', t.monto
-                  )
-                  ORDER BY t.anio
-                ) AS detalle
-              FROM (
-                SELECT
-                  r.id_predio,
-                  r.anio,
-                  STRING_AGG(${buildSqlMesCorto("r.mes")}, '/' ORDER BY r.mes) AS meses_label,
-                  SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS monto
-                FROM recibos r
-                LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
-                WHERE ((r.anio < $2) OR (r.anio = $2 AND r.mes < $3))
-                  AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
-                GROUP BY r.id_predio, r.anio
-              ) t
-              GROUP BY t.id_predio
-            )
-            SELECT
-              c.id_contribuyente,
-              c.nombre_completo,
-              c.codigo_municipal,
-              c.dni_ruc,
-              ${buildDireccionSql("ca", "p")} AS direccion_completa,
-              p.numero_casa,
-              ca.nombre AS nombre_calle,
-              p.id_predio,
-              COALESCE(rp.deuda_total, 0) AS deuda_anio,
-              COALESCE(dd.detalle, '[]'::json) AS deuda_detalle,
-              COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
-              COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
-              COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
-              COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
-              p.tarifa_agua,
-              p.tarifa_desague,
-              p.tarifa_limpieza,
-              p.tarifa_admin,
-              p.tarifa_extra
-            FROM contribuyentes c
-            JOIN predios p ON p.id_contribuyente = c.id_contribuyente
-            LEFT JOIN calles ca ON ca.id_calle = p.id_calle
-            LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
-            LEFT JOIN detalle_deuda_predio dd ON dd.id_predio = p.id_predio
-            WHERE c.id_contribuyente = ANY($1)
-          `, [idsObjetivo, anioSeleccionado, minMesSeleccionado]);
-
-          for (const baseRow of syntheticBaseRs.rows) {
-            const idContribuyente = Number(baseRow?.id_contribuyente || 0);
-            const activoSN = normalizeSN(baseRow?.activo_sn, "S");
-            const aguaHabilitado = activoSN === "S" && normalizeSN(baseRow?.agua_sn, "S") === "S";
-            const desagueHabilitado = activoSN === "S" && normalizeSN(baseRow?.desague_sn, "S") === "S";
-            const limpiezaHabilitado = activoSN === "S" && normalizeSN(baseRow?.limpieza_sn, "S") === "S";
-            const subtotalAgua = aguaHabilitado ? parseMonto(baseRow?.tarifa_agua, AUTO_DEUDA_BASE.agua) : 0;
-            const subtotalDesague = desagueHabilitado ? parseMonto(baseRow?.tarifa_desague, AUTO_DEUDA_BASE.desague) : 0;
-            const subtotalLimpieza = limpiezaHabilitado ? parseMonto(baseRow?.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0;
-            const subtotalAdmin = activoSN === "S"
-              ? parseMonto(baseRow?.tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(baseRow?.tarifa_extra, 0)
-              : 0;
-            const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin);
-            if (totalPagar <= 0) continue;
-
-            for (const mesSel of mesesNoEmitidos) {
-              const key = `${idContribuyente}-${anioSeleccionado}-${mesSel}`;
-              if (!permisosSet.has(key) || existentesSet.has(key)) continue;
-              rows.push({
-                id_recibo: null,
-                id_contribuyente: idContribuyente,
-                id_predio: Number(baseRow?.id_predio || 0),
-                anio: anioSeleccionado,
-                mes: mesSel,
-                subtotal_agua: subtotalAgua,
-                subtotal_desague: subtotalDesague,
-                subtotal_limpieza: subtotalLimpieza,
-                subtotal_admin: subtotalAdmin,
-                total_pagar: totalPagar,
-                nombre_completo: baseRow?.nombre_completo || "",
-                codigo_municipal: baseRow?.codigo_municipal || "",
-                dni_ruc: baseRow?.dni_ruc || "",
-                direccion_completa: baseRow?.direccion_completa || "",
-                numero_casa: baseRow?.numero_casa || "",
-                nombre_calle: baseRow?.nombre_calle || "",
-                deuda_anio: parseMonto(baseRow?.deuda_anio, 0),
-                deuda_detalle: Array.isArray(baseRow?.deuda_detalle) ? baseRow.deuda_detalle : [],
-                estado: "ADELANTADO"
-              });
-              existentesSet.add(key);
-            }
+          for (const mesSel of mesesNoEmitidos) {
+            const key = `${idContribuyente}-${anioSeleccionado}-${mesSel}`;
+            if (existentesSet.has(key)) continue;
+            rows.push({
+              id_recibo: null,
+              id_contribuyente: idContribuyente,
+              id_predio: Number(baseRow?.id_predio || 0),
+              anio: anioSeleccionado,
+              mes: mesSel,
+              subtotal_agua: subtotalAgua,
+              subtotal_desague: subtotalDesague,
+              subtotal_limpieza: subtotalLimpieza,
+              subtotal_admin: subtotalAdmin,
+              total_pagar: totalPagar,
+              nombre_completo: baseRow?.nombre_completo || "",
+              codigo_municipal: baseRow?.codigo_municipal || "",
+              dni_ruc: baseRow?.dni_ruc || "",
+              direccion_completa: baseRow?.direccion_completa || "",
+              numero_casa: baseRow?.numero_casa || "",
+              nombre_calle: baseRow?.nombre_calle || "",
+              numero_recibo: "",
+              deuda_anio: parseMonto(baseRow?.deuda_anio, 0),
+              deuda_detalle: Array.isArray(baseRow?.deuda_detalle) ? baseRow.deuda_detalle : [],
+              estado: "ADELANTADO"
+            });
+            existentesSet.add(key);
           }
         }
       }

@@ -117,7 +117,7 @@ const ModalImpresionMasiva = ({
   }, [periodosHistorial, soloSeleccion, ultimoPeriodoEmitido.anio, ultimoPeriodoEmitido.mes]);
   const anioMaximoEmitido = Math.floor(maxPeriodoEmitidoNum / 100) || ultimoPeriodoEmitido.anio;
   const anioSeleccionado = Number(seleccion.anio || anioMaximoEmitido);
-  const permitirMesesNoEmitidos = soloSeleccion && permitirMesesFuturos;
+  const permitirMesesNoEmitidos = soloSeleccion ? true : false;
   const idContribuyenteSeleccionado = Number(Array.isArray(idsSeleccionados) ? idsSeleccionados[0] : 0);
   const esMesNoEmitido = (mes, anio = anioSeleccionado) => getPeriodoNum(anio, mes) > maxPeriodoEmitidoNum;
   const opcionesMeses = !permitirMesesNoEmitidos
@@ -229,10 +229,6 @@ const ModalImpresionMasiva = ({
     const mesesNormalizados = (seleccion.meses || [])
       .map((m) => Number(m))
       .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
-    const mesesNoEmitidosSeleccionados = mesesNormalizados.filter((m) => esMesNoEmitido(m, anioNum));
-    if (mesesNoEmitidosSeleccionados.length > 0 && !permitirMesesNoEmitidos) {
-      return alert("Solo se permiten meses ya emitidos. Active \"Habilitar meses futuros\" para adelantos.");
-    }
     setCargando(true);
     try {
       const payload = {
@@ -243,51 +239,16 @@ const ModalImpresionMasiva = ({
         ids_usuarios: idsSeleccionados,
         incluir_pagados: "S",
         solo_con_deuda: soloSeleccion ? "N" : "S",
-        permitir_meses_futuros: (soloSeleccion && permitirMesesFuturos) ? "S" : "N"
+        permitir_meses_futuros: soloSeleccion ? "S" : "N"
       };
 
-      let mensajePermiso = "";
-      const debeSolicitarPermisoCaja = soloSeleccion
-        && permitirMesesNoEmitidos
-        && mesesNoEmitidosSeleccionados.length > 0
-        && Array.isArray(idsSeleccionados)
-        && idsSeleccionados.length === 1;
-
-      if (debeSolicitarPermisoCaja) {
-        const permisoRes = await api.post("/caja/permisos-adelantado/solicitar", {
-          id_contribuyente: Number(idsSeleccionados[0]),
-          anio: anioNum,
-          meses: mesesNoEmitidosSeleccionados,
-          origen: "VENTANILLA_REIMPRESION",
-          motivo: "Habilitacion de meses futuros desde reimpresion en ventanilla."
-        });
-        mensajePermiso = String(permisoRes?.data?.mensaje || "").trim();
-      }
-
-      let datosImpresion = [];
-      try {
-        const res = await api.post("/recibos/masivos", payload);
-        datosImpresion = (Array.isArray(res.data) ? res.data : []).map((row) => ({
-          ...row,
-          cargo_reimpresion: 0
-        }));
-      } catch (error) {
-        if (debeSolicitarPermisoCaja && Number(error?.response?.status || 0) === 404) {
-          showFlash(
-            "warning",
-            `${mensajePermiso || "Solicitud enviada a Caja."}\n` +
-            "No se encontraron recibos para imprimir en los meses seleccionados.\n" +
-            "Para reimpresión, seleccione un mes ya emitido."
-          );
-          return;
-        }
-        throw error;
-      }
+      const res = await api.post("/recibos/masivos", payload);
+      const datosImpresion = (Array.isArray(res.data) ? res.data : []).map((row) => ({
+        ...row,
+        cargo_reimpresion: 0
+      }));
 
       alConfirmar(datosImpresion);
-      if (mensajePermiso) {
-        showFlash("success", `${mensajePermiso}\nCaja ya puede cobrar esos meses para el contribuyente seleccionado.`);
-      }
       cerrarModal();
     } catch (error) {
       const errorText = typeof error?.response?.data === "string"
