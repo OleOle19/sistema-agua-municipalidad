@@ -27,23 +27,13 @@ const getPeriodoEstadoMeta = (estado, darkMode = false) => {
   const normalized = normalizePeriodoEstado(estado);
   if (normalized === "PAGADO") {
     return darkMode
-      ? { label: "Pagado", bg: "#153b2d", border: "#2f855a", text: "#d1fae5" }
-      : { label: "Pagado", bg: "#dcfce7", border: "#86efac", text: "#166534" };
+      ? { title: "Pagado", highlight: "#166534", text: "#dcfce7" }
+      : { title: "Pagado", highlight: "#bbf7d0", text: "#166534" };
   }
-  if (normalized === "PARCIAL") {
+  if (normalized) {
     return darkMode
-      ? { label: "Parcial", bg: "#4a3410", border: "#d69e2e", text: "#fef3c7" }
-      : { label: "Parcial", bg: "#fef3c7", border: "#fcd34d", text: "#92400e" };
-  }
-  if (normalized === "NO_EXIGIBLE") {
-    return darkMode
-      ? { label: "No exigible", bg: "#1e3a5f", border: "#60a5fa", text: "#dbeafe" }
-      : { label: "No exigible", bg: "#dbeafe", border: "#93c5fd", text: "#1d4ed8" };
-  }
-  if (normalized === "PENDIENTE") {
-    return darkMode
-      ? { label: "Pendiente", bg: "#2d3748", border: "#4a5568", text: "#e2e8f0" }
-      : { label: "Pendiente", bg: "#f8fafc", border: "#cbd5e1", text: "#475569" };
+      ? { title: "Pendiente", highlight: "#854d0e", text: "#fef3c7" }
+      : { title: "Pendiente", highlight: "#fde68a", text: "#854d0e" };
   }
   return null;
 };
@@ -130,10 +120,6 @@ const ModalImpresionMasiva = ({
     }
     return map;
   }, [periodosHistorial]);
-  const totalMesesPagadosAnio = useMemo(() => (
-    opcionesMeses.filter((m) => normalizePeriodoEstado(historialPeriodosMap.get(`${anioSeleccionado}-${m.value}`)?.estado) === "PAGADO").length
-  ), [anioSeleccionado, historialPeriodosMap, opcionesMeses]);
-
   useEffect(() => {
     api.get("/calles").then((res) => setCalles(res.data)).catch((err) => console.error(err));
   }, []);
@@ -406,19 +392,18 @@ const ModalImpresionMasiva = ({
                               display: "inline-flex",
                               alignItems: "center",
                               gap: "0.4rem",
-                              padding: "0.4rem 0.6rem",
-                              borderRadius: "0.65rem",
-                              border: `1px solid ${estadoMeta?.border || (darkMode ? "#495057" : "#dee2e6")}`,
+                              padding: "0.15rem 0.25rem",
+                              borderRadius: "0.45rem",
                               backgroundColor: checked
-                                ? (darkMode ? "#1d4ed8" : "#dbeafe")
-                                : (estadoMeta?.bg || "transparent"),
+                                ? (darkMode ? "rgba(29, 78, 216, 0.14)" : "rgba(59, 130, 246, 0.10)")
+                                : "transparent",
                               color: checked
                                 ? (darkMode ? "#eff6ff" : "#1e3a8a")
-                                : (estadoMeta?.text || "inherit"),
+                                : "inherit",
                               cursor: "pointer",
-                              minWidth: "88px"
+                              minWidth: "70px"
                             }}
-                            title={estadoMeta ? `${m.label} ${anioSeleccionado}: ${estadoMeta.label}` : `${m.label} ${anioSeleccionado}`}
+                            title={estadoMeta ? `${m.label} ${anioSeleccionado}: ${estadoMeta.title}` : `${m.label} ${anioSeleccionado}`}
                           >
                             <input
                               className="form-check-input"
@@ -426,21 +411,23 @@ const ModalImpresionMasiva = ({
                               checked={checked}
                               onChange={() => toggleMes(m.value)}
                             />
-                            <span className="form-check-label ms-1 fw-semibold">{m.label}</span>
-                            {estadoMeta && (
-                              <span className="small" style={{ opacity: 0.9 }}>
-                                {estadoMeta.label}
-                              </span>
-                            )}
+                            <span
+                              className="form-check-label ms-1 fw-semibold"
+                              style={estadoMeta ? {
+                                display: "inline-block",
+                                padding: "0.02rem 0.28rem",
+                                borderRadius: "0.3rem",
+                                backgroundColor: estadoMeta.highlight,
+                                color: estadoMeta.text,
+                                lineHeight: 1.2
+                              } : undefined}
+                            >
+                              {m.label}
+                            </span>
                           </label>
                         );
                       })}
                     </div>
-                    {soloSeleccion && periodosHistorial.length > 0 && (
-                      <div className="small mt-2" style={{ opacity: 0.85 }}>
-                        Meses pagados en {anioSeleccionado}: <strong>{totalMesesPagadosAnio}</strong>. Se pueden seleccionar igual; solo quedan sombreados para diferenciarlos.
-                      </div>
-                    )}
                     {opcionesMeses.length === 0 && (
                       <div className="small text-muted">
                         No hay meses habilitados para ese año. Active "Habilitar meses futuros" para adelantos.
