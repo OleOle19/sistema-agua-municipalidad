@@ -230,34 +230,11 @@ const ModalImpresionMasiva = ({
       .map((m) => Number(m))
       .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
     const mesesNoEmitidosSeleccionados = mesesNormalizados.filter((m) => esMesNoEmitido(m, anioNum));
-    const mesesConSaldoSeleccionados = soloSeleccion
-      ? mesesNormalizados.filter((m) => {
-          const periodo = historialPeriodosMap.get(`${anioNum}-${m}`) || null;
-          if (!periodo) return true;
-          return normalizePeriodoEstado(periodo?.estado) !== "PAGADO";
-        })
-      : mesesNormalizados;
     if (mesesNoEmitidosSeleccionados.length > 0 && !permitirMesesNoEmitidos) {
       return alert("Solo se permiten meses ya emitidos. Active \"Habilitar meses futuros\" para adelantos.");
     }
-    if (soloSeleccion && mesesConSaldoSeleccionados.length === 0) {
-      showFlash("warning", "Los meses seleccionados ya figuran como pagados para ese contribuyente.");
-      return;
-    }
     setCargando(true);
     try {
-      if (soloSeleccion && idContribuyenteSeleccionado > 0) {
-        const mesesEmitibles = mesesNormalizados.filter((m) => !esMesNoEmitido(m, anioNum));
-        for (const mesEmitible of mesesEmitibles) {
-          await api.post("/recibos/generar-masivo", {
-            tipo_seleccion: "seleccion",
-            ids_usuarios: [idContribuyenteSeleccionado],
-            anio: anioNum,
-            mes: Number(mesEmitible)
-          });
-        }
-      }
-
       const payload = {
         ...seleccion,
         anio: anioNum,
@@ -265,7 +242,7 @@ const ModalImpresionMasiva = ({
         tipo_seleccion: modo,
         ids_usuarios: idsSeleccionados,
         incluir_pagados: "S",
-        solo_con_deuda: "S",
+        solo_con_deuda: soloSeleccion ? "N" : "S",
         permitir_meses_futuros: (soloSeleccion && permitirMesesFuturos) ? "S" : "N"
       };
 
