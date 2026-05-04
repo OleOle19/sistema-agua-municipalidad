@@ -87,7 +87,12 @@ const LABEL_TRANSLATIONS = {
   id_direccion_alterna: "ID direccion alterna",
   nota_revision: "Nota revision",
   codigo_municipal: "Codigo municipal",
-  nombre_completo: "Nombre completo"
+  nombre_completo: "Nombre completo",
+  observacion_campo: "Observacion de campo",
+  direccion_verificada: "Direccion verificada",
+  referencia_direccion: "Referencia direccion",
+  verificacion_estado: "Estado verificacion",
+  verificacion_motivo: "Motivo verificacion"
 };
 
 const formatArrayHint = (value) => {
