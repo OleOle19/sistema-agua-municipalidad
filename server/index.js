@@ -124,7 +124,7 @@ const sanitizeStructuredPredioReference = ({
   if (!hasStructuredDetail) return reference;
 
   const referenceRawNormalized = String(reference || "").trim().toUpperCase();
-  if (/^S\s*\/?\s*N$/.test(referenceRawNormalized)) return null;
+  if (/^(S\s*\/?\s*N|SIN\s+N[UÚ]MERO)(\s+[A-Z0-9-]+)*$/.test(referenceRawNormalized)) return null;
 
   const referenceComparable = stripComparableText(stripAddressTags(reference));
   if (!referenceComparable) return null;
@@ -2313,43 +2313,57 @@ const clearLoginFailure = (usernameKey) => {
   loginUserFailMap.delete(usernameKey);
 };
 
-const buildDireccionSql = (calleAlias = "ca", predioAlias = "p") => `
+const buildEffectivePredioReferenceSql = (predioAlias = "p") => `
+  CASE
+    WHEN (
+      COALESCE(TRIM(${predioAlias}.numero_casa), '') <> ''
+      OR COALESCE(TRIM(${predioAlias}.manzana), '') <> ''
+      OR COALESCE(TRIM(${predioAlias}.lote), '') <> ''
+    )
+      AND COALESCE(TRIM(${predioAlias}.referencia_direccion), '') ~* '^\\s*(s\\s*\\/?\\s*n|sin\\s+n[uú]mero)(\\s+[[:alnum:]-]+)*\\s*$'
+    THEN ''
+    ELSE COALESCE(TRIM(${predioAlias}.referencia_direccion), '')
+  END
+`;
+const buildDireccionSql = (calleAlias = "ca", predioAlias = "p") => {
+  const effectiveReferenceSql = buildEffectivePredioReferenceSql(predioAlias);
+  return `
   TRIM(
     REGEXP_REPLACE(
       CONCAT_WS(
         ' ',
         CASE
-          WHEN COALESCE(TRIM(${calleAlias}.nombre), '') = '' THEN NULLIF(TRIM(${predioAlias}.referencia_direccion), '')
-          WHEN COALESCE(TRIM(${predioAlias}.referencia_direccion), '') = '' THEN TRIM(${calleAlias}.nombre)
+          WHEN COALESCE(TRIM(${calleAlias}.nombre), '') = '' THEN NULLIF(${effectiveReferenceSql}, '')
+          WHEN NULLIF(${effectiveReferenceSql}, '') IS NULL THEN TRIM(${calleAlias}.nombre)
           WHEN POSITION(
             REGEXP_REPLACE(LOWER(COALESCE(TRIM(${calleAlias}.nombre), '')), '[^[:alnum:]]', '', 'g')
-            IN REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.referencia_direccion), '')), '[^[:alnum:]]', '', 'g')
+            IN REGEXP_REPLACE(LOWER(${effectiveReferenceSql}), '[^[:alnum:]]', '', 'g')
           ) = 0
-            AND COALESCE(TRIM(${predioAlias}.referencia_direccion), '') ~* '(^|\\s)(av\\.?|avenida|jr\\.?|jiron|calle|psje?\\.?|pasaje|carretera|prol\\.?|prolongacion|urb\\.?|sector|aa\\.?hh\\.?)\\s+'
-          THEN TRIM(${predioAlias}.referencia_direccion)
+            AND ${effectiveReferenceSql} ~* '(^|\\s)(av\\.?|avenida|jr\\.?|jiron|calle|psje?\\.?|pasaje|carretera|prol\\.?|prolongacion|urb\\.?|sector|aa\\.?hh\\.?)\\s+'
+          THEN ${effectiveReferenceSql}
           WHEN POSITION(
             REGEXP_REPLACE(LOWER(COALESCE(TRIM(${calleAlias}.nombre), '')), '[^[:alnum:]]', '', 'g')
-            IN REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.referencia_direccion), '')), '[^[:alnum:]]', '', 'g')
+            IN REGEXP_REPLACE(LOWER(${effectiveReferenceSql}), '[^[:alnum:]]', '', 'g')
           ) > 0
             OR POSITION(
-              REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.referencia_direccion), '')), '[^[:alnum:]]', '', 'g')
+              REGEXP_REPLACE(LOWER(${effectiveReferenceSql}), '[^[:alnum:]]', '', 'g')
               IN REGEXP_REPLACE(LOWER(COALESCE(TRIM(${calleAlias}.nombre), '')), '[^[:alnum:]]', '', 'g')
             ) > 0
           THEN
             CASE
-              WHEN LENGTH(REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.referencia_direccion), '')), '[^[:alnum:]]', '', 'g'))
+              WHEN LENGTH(REGEXP_REPLACE(LOWER(${effectiveReferenceSql}), '[^[:alnum:]]', '', 'g'))
                    >= LENGTH(REGEXP_REPLACE(LOWER(COALESCE(TRIM(${calleAlias}.nombre), '')), '[^[:alnum:]]', '', 'g'))
-              THEN TRIM(${predioAlias}.referencia_direccion)
+              THEN ${effectiveReferenceSql}
               ELSE TRIM(${calleAlias}.nombre)
             END
-          ELSE CONCAT(TRIM(${calleAlias}.nombre), ' ', TRIM(${predioAlias}.referencia_direccion))
+          ELSE CONCAT(TRIM(${calleAlias}.nombre), ' ', ${effectiveReferenceSql})
         END,
         CASE
           WHEN COALESCE(TRIM(${predioAlias}.numero_casa), '') = '' THEN NULL
           WHEN POSITION(
             REGEXP_REPLACE(LOWER(COALESCE(TRIM(${predioAlias}.numero_casa), '')), '[^[:alnum:]]', '', 'g')
             IN REGEXP_REPLACE(
-              LOWER(CONCAT(COALESCE(TRIM(${calleAlias}.nombre), ''), ' ', COALESCE(TRIM(${predioAlias}.referencia_direccion), ''))),
+              LOWER(CONCAT(COALESCE(TRIM(${calleAlias}.nombre), ''), ' ', ${effectiveReferenceSql})),
               '[^[:alnum:]]',
               '',
               'g'
@@ -2372,6 +2386,7 @@ const buildDireccionSql = (calleAlias = "ca", predioAlias = "p") => `
     )
   )
 `;
+};
 
 // --- CONFIGURACIÓN JWT (SEGURIDAD) ---
 const NODE_ENV = String(process.env.NODE_ENV || "development").trim().toLowerCase();
