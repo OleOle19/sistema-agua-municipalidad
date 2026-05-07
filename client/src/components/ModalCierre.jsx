@@ -165,6 +165,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
         params: {
           tipo: reporteTipo,
           fecha: fechaConsulta,
+          all_movimientos: isProyeccion ? "N" : "S",
           ...(reporteTipo === "rango" ? {
             fecha_desde: fechaDesdeRango,
             fecha_hasta: fechaHastaRango
@@ -561,7 +562,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   <div className="small text-muted">Base mensual estimada: S/. {baseMensualProyeccion}</div>
                 )}
                 {esAdminPrincipal && (
-                  <div className="small text-muted">Admin: movimientos de correccion en rango = {movimientosAdmin.length}</div>
+                  <div className="small text-muted">Admin: movimientos de correccion y pendientes abiertos = {movimientosAdmin.length}</div>
                 )}
               </div>
               <div className="col-12 col-md-auto d-flex justify-content-md-end">
@@ -905,7 +906,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                     <div className="small fw-semibold">Pendiente sin reintegro: S/. {totalPendienteReintegroAdmin}</div>
                   </div>
                   <div className="small mb-2">
-                    Este anexo es solo para administrador e incluye trazabilidad completa de correcciones: eliminacion, reintegracion y edicion de monto.
+                    Este anexo es solo para administrador e incluye trazabilidad completa de correcciones: eliminacion, reintegracion y edicion de monto. Las anulaciones pendientes siguen visibles hasta que se reintegren.
                   </div>
                   {cargandoAdmin && (
                     <div className="small text-muted mb-2">Actualizando movimientos administrativos...</div>

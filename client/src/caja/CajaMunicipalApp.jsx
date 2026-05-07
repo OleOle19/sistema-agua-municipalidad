@@ -1091,18 +1091,29 @@ function CajaMunicipalApp({ onBackToSelector }) {
       return;
     }
     setEditandoPagoCobroAguaId(idPago);
+    const idContribuyenteActual = Number(
+      selectedContribuyenteAgua?.id_contribuyente
+      || row?.id_contribuyente
+      || 0
+    );
+    const fecha = String(fechaCobroAgua || "").trim() || toIsoDate();
     try {
       const res = await api.post(`/pagos/${idPago}/editar`, {
         monto_pagado: nuevoMonto,
         motivo
       });
       showFlash("success", res?.data?.mensaje || "Monto del pago actualizado.");
-      const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
-      const fecha = String(fechaCobroAgua || "").trim();
-      await Promise.all([
-        cargarPeriodosCobroAgua(idContribuyente, fecha || toIsoDate(), {
+      const idContribuyenteRefresco = Number(
+        res?.data?.pago?.id_contribuyente
+        || idContribuyenteActual
+        || 0
+      );
+      if (idContribuyenteRefresco > 0) {
+        await cargarPeriodosCobroAgua(idContribuyenteRefresco, fecha, {
           permitirContingencia: permitirContingenciaAgua
-        }),
+        });
+      }
+      await Promise.all([
         recargarAgua(),
         buscarContribuyentesAgua()
       ]);
@@ -1140,16 +1151,22 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
     const confirmado = window.confirm(`Anular el ultimo pago del periodo ${periodo} para volver a registrarlo correctamente?`);
     if (!confirmado) return;
-    const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
-    const fecha = String(fechaCobroAgua || "").trim();
+    const idContribuyente = Number(
+      selectedContribuyenteAgua?.id_contribuyente
+      || row?.id_contribuyente
+      || 0
+    );
+    const fecha = String(fechaCobroAgua || "").trim() || toIsoDate();
     setAnulandoReciboCobroAguaId(idRecibo);
     try {
       const res = await api.post(`/pagos/recibo/${idRecibo}/anular-ultimo`, { motivo });
       showFlash("success", res?.data?.mensaje || "Pago anulado para correccion.");
-      await Promise.all([
-        cargarPeriodosCobroAgua(idContribuyente, fecha || toIsoDate(), {
+      if (idContribuyente > 0) {
+        await cargarPeriodosCobroAgua(idContribuyente, fecha, {
           permitirContingencia: permitirContingenciaAgua
-        }),
+        });
+      }
+      await Promise.all([
         recargarAgua(),
         buscarContribuyentesAgua()
       ]);
