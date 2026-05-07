@@ -11516,8 +11516,14 @@ app.get("/admin/pagos-anulados", async (req, res) => {
         LEFT JOIN pagos pr ON pr.id_pago = pa.id_pago_reintegrado
         LEFT JOIN recibos r ON r.id_recibo = pa.id_recibo
         LEFT JOIN contribuyentes c ON c.id_contribuyente = pa.id_contribuyente
-        WHERE DATE(pa.anulado_en) >= $1::date
-          AND DATE(pa.anulado_en) <= $2::date
+        WHERE (
+            DATE(pa.anulado_en) >= $1::date
+            AND DATE(pa.anulado_en) <= $2::date
+          )
+          OR (
+            pa.id_pago_reintegrado IS NULL
+            AND DATE(pa.anulado_en) <= $2::date
+          )
       ),
       correcciones AS (
         SELECT
@@ -12936,10 +12942,12 @@ app.get("/caja/reporte", async (req, res) => {
     }
     const page = Number(req.query.page || 1);
     const pageSize = Number(req.query.page_size || 200);
+    const includeAllMovimientos = normalizeSN(req.query?.all_movimientos ?? req.query?.todos, "N") === "S";
     const mostrarCodigoImpresion = true;
     const data = await construirReporteCaja(tipo, fecha, {
       page,
       pageSize,
+      includeAllMovimientos,
       includeCodigoImpresion: mostrarCodigoImpresion,
       rangoManual,
       mesesProyeccion
