@@ -74,7 +74,7 @@ const ESTADO_CONEXION_LABELS = {
 
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const SHOW_LEGACY_CAJA_MENU = false;
-const HISTORIAL_CACHE_VERSION = "futuros-v3";
+const HISTORIAL_CACHE_VERSION = "futuros-v4-admin";
 const HISTORIAL_ROW_COLORS = {
   idle: "transparent",
   deuda: "#f7cfd4",
@@ -114,6 +114,20 @@ const getHistorialRowTone = ({ deuda, abono } = {}) => {
   if (deudaNum > 0) return "deuda";
   if (abonoNum > 0) return "pagado";
   return "idle";
+};
+const getHistorialMovimientoBadge = (row = {}) => {
+  const tipo = String(row?.tipo_movimiento_admin || "").trim().toUpperCase();
+  const estado = String(row?.estado_movimiento_admin || "").trim().toUpperCase();
+  if (tipo === "ANULACION" && estado === "PENDIENTE_REINTEGRO") {
+    return { label: "ELIMINADO", className: "text-bg-danger" };
+  }
+  if (tipo === "REINTEGRACION" || estado === "REINTEGRADO") {
+    return { label: "REINTEGRADO", className: "text-bg-success" };
+  }
+  if (tipo === "EDICION_MONTO" || estado === "EDITADO") {
+    return { label: "EDITADO", className: "text-bg-info" };
+  }
+  return null;
 };
 
 // Iconos
@@ -1271,7 +1285,13 @@ const anexoCajaPageStyle = `
         subtotal_extra: 0,
         deuda_mes: 0,
         abono_mes: 0,
-        has_future_charge: false
+        has_future_charge: false,
+        tipo_movimiento_admin: "",
+        estado_movimiento_admin: "",
+        fecha_movimiento_admin: "",
+        motivo_movimiento_admin: "",
+        monto_anterior_movimiento_admin: 0,
+        monto_nuevo_movimiento_admin: 0
       };
       const estadoRow = String(r.estado || "").trim().toUpperCase();
       current.subtotal_agua += parseFloat(r.subtotal_agua) || 0;
@@ -1286,6 +1306,16 @@ const anexoCajaPageStyle = `
         || estadoRow === "PROYECTADO"
         || estadoRow === "NO_EXIGIBLE"
         || estadoRow === "ADELANTADO";
+      const fechaMovimientoAdmin = String(r?.fecha_movimiento_admin || "").trim();
+      const fechaMovimientoActual = String(current.fecha_movimiento_admin || "").trim();
+      if (fechaMovimientoAdmin && (!fechaMovimientoActual || fechaMovimientoAdmin >= fechaMovimientoActual)) {
+        current.tipo_movimiento_admin = String(r?.tipo_movimiento_admin || "");
+        current.estado_movimiento_admin = String(r?.estado_movimiento_admin || "");
+        current.fecha_movimiento_admin = fechaMovimientoAdmin;
+        current.motivo_movimiento_admin = String(r?.motivo_movimiento_admin || "");
+        current.monto_anterior_movimiento_admin = parseFloat(r?.monto_anterior_movimiento_admin) || 0;
+        current.monto_nuevo_movimiento_admin = parseFloat(r?.monto_nuevo_movimiento_admin) || 0;
+      }
       dataMap.set(key, current);
     });
 
@@ -1314,7 +1344,13 @@ const anexoCajaPageStyle = `
           subtotal_extra: 0,
           deuda_mes: 0,
           abono_mes: 0,
-          has_future_charge: false
+          has_future_charge: false,
+          tipo_movimiento_admin: "",
+          estado_movimiento_admin: "",
+          fecha_movimiento_admin: "",
+          motivo_movimiento_admin: "",
+          monto_anterior_movimiento_admin: 0,
+          monto_nuevo_movimiento_admin: 0
         };
         rows.push({ type: "month", ...data });
       }
@@ -1353,6 +1389,13 @@ const anexoCajaPageStyle = `
         : HISTORIAL_ROW_STYLES[rowTone];
       const deudaVisual = Number(h.deuda_mes || 0);
       const deudaClassName = "fw-bold text-danger";
+      const movimientoBadge = getHistorialMovimientoBadge(h);
+      const movimientoTitle = [
+        h?.fecha_movimiento_admin ? `Movimiento: ${String(h.fecha_movimiento_admin).replace("T", " ")}` : "",
+        h?.motivo_movimiento_admin ? `Motivo: ${h.motivo_movimiento_admin}` : "",
+        Number(h?.monto_anterior_movimiento_admin || 0) > 0 ? `Monto anterior: ${formatMonto(h.monto_anterior_movimiento_admin)}` : "",
+        Number(h?.monto_nuevo_movimiento_admin || 0) > 0 ? `Monto nuevo: ${formatMonto(h.monto_nuevo_movimiento_admin)}` : ""
+      ].filter(Boolean).join(" | ");
       return (
         <tr
           key={`${h.anio}-${h.mes}-${i}`}
@@ -1364,7 +1407,17 @@ const anexoCajaPageStyle = `
             : undefined}
           style={rowStyle}
         >
-          <td className="fw-bold text-start ps-3">{MONTH_LABELS[h.mes] || "-"}</td>
+          <td className="fw-bold text-start ps-3">
+            <span>{MONTH_LABELS[h.mes] || "-"}</span>
+            {movimientoBadge && (
+              <span
+                className={`badge ms-2 ${movimientoBadge.className}`}
+                title={movimientoTitle || movimientoBadge.label}
+              >
+                {movimientoBadge.label}
+              </span>
+            )}
+          </td>
           <td>{formatMonto(h.subtotal_agua)}</td>
           <td>{formatMonto(h.subtotal_desague)}</td>
           <td>{formatMonto(h.subtotal_limpieza)}</td>

@@ -1373,7 +1373,11 @@ const getRetroactiveCobroMinDate = (baseDateIso = toISODate(), yearsBack = MAX_R
   }
   return `${String(targetYear).padStart(4, "0")}-${monthText}-01`;
 };
-const validateCobroDateWindow = (requestedDateRaw, hoyIso = toISODate()) => {
+const validateCobroDateWindow = (
+  requestedDateRaw,
+  hoyIso = toISODate(),
+  { enforceRetroactiveLimit = true } = {}
+) => {
   const hoy = normalizeDateOnly(hoyIso) || toISODate();
   const fechaSolicitada = normalizeDateOnly(requestedDateRaw) || hoy;
   if (fechaSolicitada > hoy) {
@@ -1384,6 +1388,9 @@ const validateCobroDateWindow = (requestedDateRaw, hoyIso = toISODate()) => {
       minPermitida: getRetroactiveCobroMinDate(hoy),
       error: "No se permite registrar cobros con fecha futura."
     };
+  }
+  if (!enforceRetroactiveLimit) {
+    return { ok: true, fecha: fechaSolicitada, hoy, minPermitida: null };
   }
   const minPermitida = getRetroactiveCobroMinDate(hoy);
   if (minPermitida && fechaSolicitada < minPermitida) {
@@ -3915,6 +3922,101 @@ const registrarCorreccionPagoAdmin = async (client, {
     JSON.stringify(payload_json || {})
   ]);
   return Number(inserted.rows?.[0]?.id_correccion || 0) || null;
+};
+
+const consultarMovimientosAdministrativosPago = async (
+  client,
+  fechaDesde,
+  fechaHasta,
+  limite = 1000
+) => {
+  const safeLimit = Math.min(1000, Math.max(1, parsePositiveInt(limite, 200)));
+  await ensurePagosAnuladosTable(client);
+  await ensurePagosCorreccionesTable(client);
+  const rows = await client.query(`
+    WITH anulaciones AS (
+      SELECT
+        'ANULACION'::text AS tipo_movimiento,
+        CASE
+          WHEN pa.id_pago_reintegrado IS NULL THEN 'PENDIENTE_REINTEGRO'
+          ELSE 'REINTEGRADO'
+        END AS estado_correccion,
+        pa.id_anulacion::bigint AS id_movimiento,
+        pa.id_anulacion,
+        pa.id_pago_original,
+        pa.id_pago_reintegrado,
+        pa.id_recibo,
+        pa.id_contribuyente,
+        pa.anulado_en AS fecha_evento,
+        pa.fecha_pago_original,
+        pa.reintegrado_en AS fecha_evento_secundario,
+        pa.monto_pagado AS monto_anterior,
+        pr.monto_pagado AS monto_nuevo,
+        pa.motivo_anulacion AS motivo,
+        pa.username_anula AS username_accion,
+        pa.username_reintegra AS username_secundario,
+        pa.payload_json,
+        r.mes,
+        r.anio,
+        c.codigo_municipal,
+        COALESCE(NULLIF(TRIM(c.nombre_completo), ''), NULLIF(TRIM(c.sec_nombre), ''), '') AS nombre_completo
+      FROM pagos_anulados pa
+      LEFT JOIN pagos pr ON pr.id_pago = pa.id_pago_reintegrado
+      LEFT JOIN recibos r ON r.id_recibo = pa.id_recibo
+      LEFT JOIN contribuyentes c ON c.id_contribuyente = pa.id_contribuyente
+      WHERE (
+          DATE(pa.anulado_en) >= $1::date
+          AND DATE(pa.anulado_en) <= $2::date
+        )
+        OR (
+          pa.id_pago_reintegrado IS NULL
+          AND DATE(pa.anulado_en) <= $2::date
+        )
+    ),
+    correcciones AS (
+      SELECT
+        pc.tipo_movimiento,
+        CASE
+          WHEN pc.tipo_movimiento = 'REINTEGRACION' THEN 'REINTEGRADO'
+          WHEN pc.tipo_movimiento = 'EDICION_MONTO' THEN 'EDITADO'
+          ELSE pc.tipo_movimiento
+        END AS estado_correccion,
+        pc.id_correccion::bigint AS id_movimiento,
+        pc.id_anulacion,
+        pc.id_pago_original,
+        pc.id_pago_afectado AS id_pago_reintegrado,
+        pc.id_recibo,
+        pc.id_contribuyente,
+        pc.realizado_en AS fecha_evento,
+        pc.fecha_pago_original,
+        pc.fecha_pago_nueva AS fecha_evento_secundario,
+        pc.monto_anterior,
+        pc.monto_nuevo,
+        pc.motivo,
+        pc.username_accion,
+        NULL::varchar AS username_secundario,
+        pc.payload_json,
+        r.mes,
+        r.anio,
+        c.codigo_municipal,
+        COALESCE(NULLIF(TRIM(c.nombre_completo), ''), NULLIF(TRIM(c.sec_nombre), ''), '') AS nombre_completo
+      FROM pagos_correcciones pc
+      LEFT JOIN recibos r ON r.id_recibo = pc.id_recibo
+      LEFT JOIN contribuyentes c ON c.id_contribuyente = pc.id_contribuyente
+      WHERE pc.tipo_movimiento IN ('REINTEGRACION', 'EDICION_MONTO')
+        AND DATE(pc.realizado_en) >= $1::date
+        AND DATE(pc.realizado_en) <= $2::date
+    )
+    SELECT *
+    FROM (
+      SELECT * FROM anulaciones
+      UNION ALL
+      SELECT * FROM correcciones
+    ) movimientos
+    ORDER BY fecha_evento DESC, id_movimiento DESC
+    LIMIT $3
+  `, [fechaDesde, fechaHasta, safeLimit]);
+  return rows.rows;
 };
 
 const ensurePerformanceIndexes = async (client) => {
@@ -10113,8 +10215,11 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
     if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
+    const puedeGestionarPagosHistoricos = hasMinRole(req.user?.rol, "ADMIN");
     const validacionFecha = validateCobroDateWindow(
-      req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha
+      req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha,
+      toISODate(),
+      { enforceRetroactiveLimit: !puedeGestionarPagosHistoricos }
     );
     if (!validacionFecha.ok) {
       return res.status(400).json({
@@ -10125,7 +10230,6 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
     }
     const hoy = validacionFecha.hoy;
     const fechaPagoSolicitada = validacionFecha.fecha || hoy;
-    const puedeGestionarPagosHistoricos = hasMinRole(req.user?.rol, "ADMIN");
     if (fechaPagoSolicitada !== hoy && !puedeGestionarPagosHistoricos) {
       return res.status(403).json({
         error: "Solo administrador puede registrar cobros con fecha distinta de hoy."
@@ -10473,8 +10577,11 @@ const normalizePagoInputs = (body = {}) => {
 app.post("/pagos", async (req, res) => {
   const client = await pool.connect();
   try {
+    const puedeGestionarPagosHistoricos = hasMinRole(req.user?.rol, "ADMIN");
     const validacionFecha = validateCobroDateWindow(
-      req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha
+      req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha,
+      toISODate(),
+      { enforceRetroactiveLimit: !puedeGestionarPagosHistoricos }
     );
     if (!validacionFecha.ok) {
       return res.status(400).json({
@@ -10485,7 +10592,6 @@ app.post("/pagos", async (req, res) => {
     }
     const hoy = validacionFecha.hoy;
     const fechaPagoSolicitada = validacionFecha.fecha || hoy;
-    const puedeGestionarPagosHistoricos = hasMinRole(req.user?.rol, "ADMIN");
     if (fechaPagoSolicitada !== hoy && !puedeGestionarPagosHistoricos) {
       return res.status(403).json({
         error: "Solo administrador puede registrar cobros con fecha distinta de hoy."
@@ -11482,100 +11588,15 @@ app.get("/admin/pagos-anulados", async (req, res) => {
       return res.status(400).json({ error: "La fecha desde no puede ser mayor que la fecha hasta." });
     }
     const limite = Math.min(1000, Math.max(1, parsePositiveInt(req.query?.limit, 200)));
-    await ensurePagosAnuladosTable(client);
-    await ensurePagosCorreccionesTable(client);
-
-    const rows = await client.query(`
-      WITH anulaciones AS (
-        SELECT
-          'ANULACION'::text AS tipo_movimiento,
-          CASE
-            WHEN pa.id_pago_reintegrado IS NULL THEN 'PENDIENTE_REINTEGRO'
-            ELSE 'REINTEGRADO'
-          END AS estado_correccion,
-          pa.id_anulacion::bigint AS id_movimiento,
-          pa.id_anulacion,
-          pa.id_pago_original,
-          pa.id_pago_reintegrado,
-          pa.id_recibo,
-          pa.id_contribuyente,
-          pa.anulado_en AS fecha_evento,
-          pa.fecha_pago_original,
-          pa.reintegrado_en AS fecha_evento_secundario,
-          pa.monto_pagado AS monto_anterior,
-          pr.monto_pagado AS monto_nuevo,
-          pa.motivo_anulacion AS motivo,
-          pa.username_anula AS username_accion,
-          pa.username_reintegra AS username_secundario,
-          pa.payload_json,
-          r.mes,
-          r.anio,
-          c.codigo_municipal,
-          COALESCE(NULLIF(TRIM(c.nombre_completo), ''), NULLIF(TRIM(c.sec_nombre), ''), '') AS nombre_completo
-        FROM pagos_anulados pa
-        LEFT JOIN pagos pr ON pr.id_pago = pa.id_pago_reintegrado
-        LEFT JOIN recibos r ON r.id_recibo = pa.id_recibo
-        LEFT JOIN contribuyentes c ON c.id_contribuyente = pa.id_contribuyente
-        WHERE (
-            DATE(pa.anulado_en) >= $1::date
-            AND DATE(pa.anulado_en) <= $2::date
-          )
-          OR (
-            pa.id_pago_reintegrado IS NULL
-            AND DATE(pa.anulado_en) <= $2::date
-          )
-      ),
-      correcciones AS (
-        SELECT
-          pc.tipo_movimiento,
-          CASE
-            WHEN pc.tipo_movimiento = 'REINTEGRACION' THEN 'REINTEGRADO'
-            WHEN pc.tipo_movimiento = 'EDICION_MONTO' THEN 'EDITADO'
-            ELSE pc.tipo_movimiento
-          END AS estado_correccion,
-          pc.id_correccion::bigint AS id_movimiento,
-          pc.id_anulacion,
-          pc.id_pago_original,
-          pc.id_pago_afectado AS id_pago_reintegrado,
-          pc.id_recibo,
-          pc.id_contribuyente,
-          pc.realizado_en AS fecha_evento,
-          pc.fecha_pago_original,
-          pc.fecha_pago_nueva AS fecha_evento_secundario,
-          pc.monto_anterior,
-          pc.monto_nuevo,
-          pc.motivo,
-          pc.username_accion,
-          NULL::varchar AS username_secundario,
-          pc.payload_json,
-          r.mes,
-          r.anio,
-          c.codigo_municipal,
-          COALESCE(NULLIF(TRIM(c.nombre_completo), ''), NULLIF(TRIM(c.sec_nombre), ''), '') AS nombre_completo
-        FROM pagos_correcciones pc
-        LEFT JOIN recibos r ON r.id_recibo = pc.id_recibo
-        LEFT JOIN contribuyentes c ON c.id_contribuyente = pc.id_contribuyente
-        WHERE pc.tipo_movimiento IN ('REINTEGRACION', 'EDICION_MONTO')
-          AND DATE(pc.realizado_en) >= $1::date
-          AND DATE(pc.realizado_en) <= $2::date
-      )
-      SELECT *
-      FROM (
-        SELECT * FROM anulaciones
-        UNION ALL
-        SELECT * FROM correcciones
-      ) movimientos
-      ORDER BY fecha_evento DESC, id_movimiento DESC
-      LIMIT $3
-    `, [fechaDesde, fechaHasta, limite]);
+    const movimientos = await consultarMovimientosAdministrativosPago(client, fechaDesde, fechaHasta, limite);
 
     return res.json({
       rango: {
         desde: fechaDesde,
         hasta: fechaHasta
       },
-      cantidad: Number(rows.rowCount || 0),
-      movimientos: rows.rows
+      cantidad: Number(movimientos.length || 0),
+      movimientos
     });
   } catch (err) {
     console.error("Error listando movimientos administrativos de pagos:", err.message);
@@ -11908,6 +11929,7 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
   const client = await pool.connect();
   try {
     await ensurePagosAnuladosTable(client);
+    await ensurePagosCorreccionesTable(client);
     const idContribuyente = parsePositiveInt(req.params?.id_contribuyente, 0);
     if (!idContribuyente) {
       return res.status(400).json({ error: "ID de contribuyente inválido." });
@@ -11956,6 +11978,12 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
         pa_admin.anulado_en AS anulado_en_pendiente,
         pa_admin.monto_pagado AS monto_anulado_pendiente,
         pa_admin.motivo_anulacion AS motivo_anulacion_pendiente,
+        mov_admin.tipo_movimiento AS tipo_movimiento_admin,
+        mov_admin.estado_correccion AS estado_movimiento_admin,
+        mov_admin.fecha_evento AS fecha_movimiento_admin,
+        mov_admin.monto_anterior AS monto_anterior_movimiento_admin,
+        mov_admin.monto_nuevo AS monto_nuevo_movimiento_admin,
+        mov_admin.motivo AS motivo_movimiento_admin,
         CASE
           WHEN (r.anio > $2) OR (r.anio = $2 AND r.mes > $3) THEN 0
           ELSE GREATEST(${totalPagarReferenciaHistorialSql} - COALESCE(p.total_pagado, 0), 0)
@@ -11987,9 +12015,55 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
         FROM pagos_anulados pa
         WHERE pa.id_recibo = r.id_recibo
           AND pa.id_pago_reintegrado IS NULL
+          AND DATE(pa.anulado_en) <= $4::date
         ORDER BY pa.anulado_en DESC, pa.id_anulacion DESC
         LIMIT 1
       ) pa_admin ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          movimientos.tipo_movimiento,
+          movimientos.estado_correccion,
+          movimientos.fecha_evento,
+          movimientos.monto_anterior,
+          movimientos.monto_nuevo,
+          movimientos.motivo
+        FROM (
+          SELECT
+            'ANULACION'::text AS tipo_movimiento,
+            CASE
+              WHEN pa.id_pago_reintegrado IS NULL THEN 'PENDIENTE_REINTEGRO'
+              ELSE 'REINTEGRADO'
+            END AS estado_correccion,
+            pa.anulado_en AS fecha_evento,
+            pa.monto_pagado AS monto_anterior,
+            pr.monto_pagado AS monto_nuevo,
+            pa.motivo_anulacion AS motivo,
+            pa.id_anulacion::bigint AS orden_id
+          FROM pagos_anulados pa
+          LEFT JOIN pagos pr ON pr.id_pago = pa.id_pago_reintegrado
+          WHERE pa.id_recibo = r.id_recibo
+            AND DATE(pa.anulado_en) <= $4::date
+          UNION ALL
+          SELECT
+            pc.tipo_movimiento,
+            CASE
+              WHEN pc.tipo_movimiento = 'REINTEGRACION' THEN 'REINTEGRADO'
+              WHEN pc.tipo_movimiento = 'EDICION_MONTO' THEN 'EDITADO'
+              ELSE pc.tipo_movimiento
+            END AS estado_correccion,
+            pc.realizado_en AS fecha_evento,
+            pc.monto_anterior,
+            pc.monto_nuevo,
+            pc.motivo,
+            pc.id_correccion::bigint AS orden_id
+          FROM pagos_correcciones pc
+          WHERE pc.id_recibo = r.id_recibo
+            AND pc.tipo_movimiento IN ('REINTEGRACION', 'EDICION_MONTO')
+            AND DATE(pc.realizado_en) <= $4::date
+        ) movimientos
+        ORDER BY movimientos.fecha_evento DESC, movimientos.orden_id DESC
+        LIMIT 1
+      ) mov_admin ON TRUE
       WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
       ${incluirFuturos ? '' : 'AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))'}
       ${filtrarAnio ? 'AND r.anio = $5' : ''}
@@ -12538,6 +12612,8 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   }
   const includeAllMovimientos = Boolean(options.includeAllMovimientos);
   const includeCodigoImpresion = Boolean(options.includeCodigoImpresion);
+  const includeAdminMovimientos = Boolean(options.includeAdminMovimientos);
+  const adminAllowed = Boolean(options.adminAllowed);
   const pageRaw = Number(options.page ?? 1);
   const pageSizeRaw = Number(options.pageSize ?? 200);
   const safePage = Number.isFinite(pageRaw) ? Math.max(1, pageRaw) : 1;
@@ -12731,6 +12807,18 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       monto_extra: montos.extra
     };
   });
+  const totalComponentes = roundMonto2(movimientosSanitizados.reduce((acc, row) => (
+    acc
+    + parseMonto(row?.monto_agua, 0)
+    + parseMonto(row?.monto_desague, 0)
+    + parseMonto(row?.monto_limpieza, 0)
+    + parseMonto(row?.monto_gastos, 0)
+    + parseMonto(row?.monto_extra, 0)
+  ), 0));
+  const diferenciaDesglose = roundMonto2(parseMonto(resumen.total_general, 0) - totalComponentes);
+  const movimientosAdmin = (includeAdminMovimientos && adminAllowed)
+    ? await consultarMovimientosAdministrativosPago(pool, desde, shiftIsoDateByDays(hasta, -1) || desde, 1000)
+    : [];
   const pageSizeRespuesta = includeAllMovimientos
     ? Math.max(1, cantidadMovimientos)
     : safePageSize;
@@ -12740,13 +12828,16 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
 
   return {
     ...resumen,
+    total_componentes: totalComponentes.toFixed(2),
+    diferencia_desglose: diferenciaDesglose.toFixed(2),
     cantidad_movimientos: cantidadMovimientos,
     paginacion: {
       pagina: includeAllMovimientos ? 1 : safePage,
       page_size: pageSizeRespuesta,
       total_paginas: totalPaginas
     },
-    movimientos: movimientosSanitizados
+    movimientos: movimientosSanitizados,
+    movimientos_admin: movimientosAdmin
   };
 };
 
@@ -12943,11 +13034,14 @@ app.get("/caja/reporte", async (req, res) => {
     const page = Number(req.query.page || 1);
     const pageSize = Number(req.query.page_size || 200);
     const includeAllMovimientos = normalizeSN(req.query?.all_movimientos ?? req.query?.todos, "N") === "S";
+    const includeAdminMovimientos = normalizeSN(req.query?.include_admin_movimientos ?? req.query?.admin_movimientos, "N") === "S";
     const mostrarCodigoImpresion = true;
     const data = await construirReporteCaja(tipo, fecha, {
       page,
       pageSize,
       includeAllMovimientos,
+      includeAdminMovimientos,
+      adminAllowed: hasMinRole(req.user?.rol, "ADMIN"),
       includeCodigoImpresion: mostrarCodigoImpresion,
       rangoManual,
       mesesProyeccion
