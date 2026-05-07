@@ -11901,6 +11901,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
 app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
   const client = await pool.connect();
   try {
+    await ensurePagosAnuladosTable(client);
     const idContribuyente = parsePositiveInt(req.params?.id_contribuyente, 0);
     if (!idContribuyente) {
       return res.status(400).json({ error: "ID de contribuyente inválido." });
@@ -11971,6 +11972,18 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
         WHERE DATE(fecha_pago) <= $4::date
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
+      LEFT JOIN LATERAL (
+        SELECT
+          pa.id_anulacion,
+          pa.anulado_en,
+          pa.monto_pagado,
+          pa.motivo_anulacion
+        FROM pagos_anulados pa
+        WHERE pa.id_recibo = r.id_recibo
+          AND pa.id_pago_reintegrado IS NULL
+        ORDER BY pa.anulado_en DESC, pa.id_anulacion DESC
+        LIMIT 1
+      ) pa_admin ON TRUE
       WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
       ${incluirFuturos ? '' : 'AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))'}
       ${filtrarAnio ? 'AND r.anio = $5' : ''}
@@ -11994,6 +12007,7 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
 app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
   const client = await pool.connect();
   try {
+    await ensurePagosAnuladosTable(client);
     const idContribuyente = parsePositiveInt(req.params?.id_contribuyente, 0);
     if (!idContribuyente) {
       return res.status(400).json({ error: "ID de contribuyente inválido." });
@@ -12575,9 +12589,14 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
         END AS tarifa_actual_limpieza,
         CASE
           WHEN ${sqlSnEsSi("pr.activo_sn", "S")}
-            THEN COALESCE(pr.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) + COALESCE(pr.tarifa_extra, 0)
+            THEN COALESCE(pr.tarifa_admin, ${AUTO_DEUDA_BASE.admin})
           ELSE 0::numeric
         END AS tarifa_actual_admin,
+        CASE
+          WHEN ${sqlSnEsSi("pr.activo_sn", "S")}
+            THEN COALESCE(pr.tarifa_extra, 0)
+          ELSE 0::numeric
+        END AS tarifa_actual_extra,
         CASE
           WHEN ci.id_codigo IS NOT NULL THEN LPAD(ci.id_codigo::text, 6, '0')
           ELSE NULL
@@ -12627,6 +12646,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       tarifa_actual_desague,
       tarifa_actual_limpieza,
       tarifa_actual_admin,
+      tarifa_actual_extra,
       codigo_impresion,
       0::numeric AS cargo_reimpresion
     FROM movimientos_base
@@ -12643,12 +12663,17 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     const tarifaActualDesague = roundMonto2(parseMonto(row?.tarifa_actual_desague, 0));
     const tarifaActualLimpieza = roundMonto2(parseMonto(row?.tarifa_actual_limpieza, 0));
     const tarifaActualGastos = roundMonto2(parseMonto(row?.tarifa_actual_admin, 0));
-    const tarifaActualTotal = roundMonto2(tarifaActualAgua + tarifaActualDesague + tarifaActualLimpieza + tarifaActualGastos);
+    const tarifaActualExtra = roundMonto2(parseMonto(row?.tarifa_actual_extra, 0));
+    const tarifaActualTotal = roundMonto2(
+      tarifaActualAgua + tarifaActualDesague + tarifaActualLimpieza + tarifaActualGastos + tarifaActualExtra
+    );
     let baseAgua = roundMonto2(parseMonto(row?.subtotal_agua, 0));
     let baseDesague = roundMonto2(parseMonto(row?.subtotal_desague, 0));
     let baseLimpieza = roundMonto2(parseMonto(row?.subtotal_limpieza, 0));
-    let baseGastos = roundMonto2(parseMonto(row?.subtotal_admin, 0));
-    let totalBase = roundMonto2(parseMonto(row?.total_pagar, (baseAgua + baseDesague + baseLimpieza + baseGastos)));
+    const subtotalAdminSplit = splitAdminExtraDisplay(row?.subtotal_admin, row?.tarifa_actual_extra);
+    let baseGastos = roundMonto2(parseMonto(subtotalAdminSplit?.subtotal_admin, 0));
+    let baseExtra = roundMonto2(parseMonto(subtotalAdminSplit?.subtotal_extra, 0));
+    let totalBase = roundMonto2(parseMonto(row?.total_pagar, (baseAgua + baseDesague + baseLimpieza + baseGastos + baseExtra)));
     const aplicarTarifaActual = tarifaActualTotal > 0
       && totalBase > tarifaActualTotal + 0.001
       && montoPagado >= tarifaActualTotal - 0.001;
@@ -12657,13 +12682,14 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       baseDesague = tarifaActualDesague;
       baseLimpieza = tarifaActualLimpieza;
       baseGastos = tarifaActualGastos;
+      baseExtra = tarifaActualExtra;
       totalBase = tarifaActualTotal;
     }
     if (montoPagado <= 0) {
-      return { agua: 0, desague: 0, limpieza: 0, gastos: 0 };
+      return { agua: 0, desague: 0, limpieza: 0, gastos: 0, extra: 0 };
     }
     if (totalBase <= 0) {
-      return { agua: montoPagado, desague: 0, limpieza: 0, gastos: 0 };
+      return { agua: montoPagado, desague: 0, limpieza: 0, gastos: 0, extra: 0 };
     }
     const montoDistribuible = aplicarTarifaActual ? Math.min(montoPagado, totalBase) : montoPagado;
     const factor = montoDistribuible / totalBase;
@@ -12671,9 +12697,10 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     let desague = roundMonto2(baseDesague * factor);
     let limpieza = roundMonto2(baseLimpieza * factor);
     let gastos = roundMonto2(baseGastos * factor);
-    const ajuste = roundMonto2(montoDistribuible - (agua + desague + limpieza + gastos));
-    gastos = roundMonto2(gastos + ajuste);
-    return { agua, desague, limpieza, gastos };
+    let extra = roundMonto2(baseExtra * factor);
+    const ajuste = roundMonto2(montoDistribuible - (agua + desague + limpieza + gastos + extra));
+    extra = roundMonto2(extra + ajuste);
+    return { agua, desague, limpieza, gastos, extra };
   };
   const movimientosSanitizados = movimientos.rows.map((row) => {
     const montos = prorratearPagoComponentes(row);
@@ -12694,7 +12721,8 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       monto_agua: montos.agua,
       monto_desague: montos.desague,
       monto_limpieza: montos.limpieza,
-      monto_gastos: montos.gastos
+      monto_gastos: montos.gastos,
+      monto_extra: montos.extra
     };
   });
   const pageSizeRespuesta = includeAllMovimientos
