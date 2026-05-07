@@ -117,7 +117,7 @@ const ModalImpresionMasiva = ({
   }, [periodosHistorial, soloSeleccion, ultimoPeriodoEmitido.anio, ultimoPeriodoEmitido.mes]);
   const anioMaximoEmitido = Math.floor(maxPeriodoEmitidoNum / 100) || ultimoPeriodoEmitido.anio;
   const anioSeleccionado = Number(seleccion.anio || anioMaximoEmitido);
-  const permitirMesesNoEmitidos = soloSeleccion ? true : false;
+  const permitirMesesNoEmitidos = soloSeleccion ? permitirMesesFuturos : false;
   const idContribuyenteSeleccionado = Number(Array.isArray(idsSeleccionados) ? idsSeleccionados[0] : 0);
   const esMesNoEmitido = (mes, anio = anioSeleccionado) => getPeriodoNum(anio, mes) > maxPeriodoEmitidoNum;
   const opcionesMeses = !permitirMesesNoEmitidos
@@ -229,6 +229,10 @@ const ModalImpresionMasiva = ({
     const mesesNormalizados = (seleccion.meses || [])
       .map((m) => Number(m))
       .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
+    const mesesFuturosSeleccionados = mesesNormalizados.filter((mes) => esMesNoEmitido(mes, anioNum));
+    if (soloSeleccion && mesesFuturosSeleccionados.length > 0 && !permitirMesesFuturos) {
+      return showFlash("warning", "Active \"Habilitar meses futuros\" para reimprimir periodos no emitidos y solicitar permiso para Caja.");
+    }
     setCargando(true);
     try {
       const payload = {
@@ -239,10 +243,27 @@ const ModalImpresionMasiva = ({
         ids_usuarios: idsSeleccionados,
         incluir_pagados: "S",
         solo_con_deuda: soloSeleccion ? "N" : "S",
-        permitir_meses_futuros: soloSeleccion ? "S" : "N"
+        permitir_meses_futuros: (soloSeleccion && permitirMesesFuturos) ? "S" : "N"
       };
 
       const res = await api.post("/recibos/masivos", payload);
+      if (
+        soloSeleccion
+        && permitirMesesFuturos
+        && idContribuyenteSeleccionado > 0
+        && mesesFuturosSeleccionados.length > 0
+      ) {
+        const periodosTexto = mesesFuturosSeleccionados
+          .map((mes) => formatPeriodoLabel(anioNum, mes))
+          .join(", ");
+        await api.post("/caja/permisos-adelantado/solicitar", {
+          id_contribuyente: idContribuyenteSeleccionado,
+          anio: anioNum,
+          meses: mesesFuturosSeleccionados,
+          origen: "VENTANILLA_REIMPRESION",
+          motivo: `Habilitacion desde reimpresion para Caja: ${periodosTexto}`
+        });
+      }
       const datosImpresion = (Array.isArray(res.data) ? res.data : []).map((row) => ({
         ...row,
         cargo_reimpresion: 0
