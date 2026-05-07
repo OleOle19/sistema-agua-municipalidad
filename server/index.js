@@ -7114,6 +7114,7 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
       SUM(COALESCE(r.subtotal_desague, 0)) AS subtotal_desague,
       SUM(COALESCE(r.subtotal_limpieza, 0)) AS subtotal_limpieza,
       SUM(COALESCE(r.subtotal_admin, 0)) AS subtotal_admin,
+      SUM(COALESCE(p.tarifa_extra, 0)) AS tarifa_extra_actual,
       SUM(COALESCE(r.total_pagar, 0)) AS total_mes,
       SUM(COALESCE(pp.total_pagado, 0)) AS abono_mes,
       SUM(
@@ -7141,6 +7142,7 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
 
   const rs = await pool.query(query, params);
   return rs.rows.map((row) => {
+    const split = splitAdminExtraDisplay(row.subtotal_admin, row.tarifa_extra_actual);
     const totalMes = roundMonto2(parseMonto(row.total_mes, 0));
     const abonoMes = roundMonto2(parseMonto(row.abono_mes, 0));
     const deudaMes = roundMonto2(parseMonto(row.deuda_mes, 0));
@@ -7160,7 +7162,8 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
       subtotal_agua: roundMonto2(parseMonto(row.subtotal_agua, 0)),
       subtotal_desague: roundMonto2(parseMonto(row.subtotal_desague, 0)),
       subtotal_limpieza: roundMonto2(parseMonto(row.subtotal_limpieza, 0)),
-      subtotal_admin: roundMonto2(parseMonto(row.subtotal_admin, 0)),
+      subtotal_admin: split.subtotal_admin,
+      subtotal_extra: split.subtotal_extra,
       total_mes: totalMes,
       deuda_mes: deudaMes,
       abono_mes: abonoMes,
@@ -7407,6 +7410,7 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
         { header: "DESAGUE", key: "subtotal_desague", width: 12 },
         { header: "LIMPIEZA", key: "subtotal_limpieza", width: 12 },
         { header: "ADMIN", key: "subtotal_admin", width: 12 },
+        { header: "EXTRA", key: "subtotal_extra", width: 12 },
         { header: "TOTAL MES", key: "total_mes", width: 14 },
         { header: "DEUDA MES", key: "deuda_mes", width: 14 },
         { header: "ABONO MES", key: "abono_mes", width: 14 },
@@ -7418,6 +7422,7 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
       let totalDesague = 0;
       let totalLimpieza = 0;
       let totalAdmin = 0;
+      let totalExtra = 0;
       let totalMes = 0;
       let totalDeudaMes = 0;
       let totalAbonoMes = 0;
@@ -7427,6 +7432,7 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
         totalDesague += parseMonto(row.subtotal_desague, 0);
         totalLimpieza += parseMonto(row.subtotal_limpieza, 0);
         totalAdmin += parseMonto(row.subtotal_admin, 0);
+        totalExtra += parseMonto(row.subtotal_extra, 0);
         totalMes += parseMonto(row.total_mes, 0);
         totalDeudaMes += parseMonto(row.deuda_mes, 0);
         totalAbonoMes += parseMonto(row.abono_mes, 0);
@@ -7441,6 +7447,7 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
           subtotal_desague: row.subtotal_desague,
           subtotal_limpieza: row.subtotal_limpieza,
           subtotal_admin: row.subtotal_admin,
+          subtotal_extra: row.subtotal_extra,
           total_mes: row.total_mes,
           deuda_mes: row.deuda_mes,
           abono_mes: row.abono_mes,
@@ -7459,6 +7466,7 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
         subtotal_desague: roundMonto2(totalDesague),
         subtotal_limpieza: roundMonto2(totalLimpieza),
         subtotal_admin: roundMonto2(totalAdmin),
+        subtotal_extra: roundMonto2(totalExtra),
         total_mes: roundMonto2(totalMes),
         deuda_mes: roundMonto2(totalDeudaMes),
         abono_mes: roundMonto2(totalAbonoMes),
@@ -14111,6 +14119,7 @@ app.get("/exportar/finanzas-completo", authenticateToken, requireSuperAdmin, asy
       { header: "DESAGUE", key: "subtotal_desague", width: 12 },
       { header: "LIMPIEZA", key: "subtotal_limpieza", width: 12 },
       { header: "ADMIN", key: "subtotal_admin", width: 12 },
+      { header: "EXTRA", key: "subtotal_extra", width: 12 },
       { header: "TOTAL RECIBO", key: "total_pagar", width: 16 },
       { header: "TOTAL PAGADO", key: "total_pagado", width: 16 },
       { header: "SALDO", key: "saldo", width: 14 },
@@ -14149,6 +14158,7 @@ app.get("/exportar/finanzas-completo", authenticateToken, requireSuperAdmin, asy
           rc.subtotal_limpieza,
           rc.subtotal_admin,
           rc.total_pagar,
+          pr.tarifa_extra,
           c.codigo_municipal,
           c.dni_ruc,
           c.nombre_completo,
@@ -14164,6 +14174,7 @@ app.get("/exportar/finanzas-completo", authenticateToken, requireSuperAdmin, asy
       const ids = recibos.rows.map((r) => Number(r.id_recibo)).filter(Number.isFinite);
       const pagosMap = await fetchPagosMapByRecibos(ids);
       for (const rowData of recibos.rows) {
+        const split = splitAdminExtraDisplay(rowData.subtotal_admin, rowData.tarifa_extra);
         const totalPagar = toNumber(rowData.total_pagar);
         const totalPagado = pagosMap.get(Number(rowData.id_recibo)) || 0;
         const saldo = Math.max(totalPagar - totalPagado, 0);
@@ -14187,7 +14198,8 @@ app.get("/exportar/finanzas-completo", authenticateToken, requireSuperAdmin, asy
           subtotal_agua: toNumber(rowData.subtotal_agua),
           subtotal_desague: toNumber(rowData.subtotal_desague),
           subtotal_limpieza: toNumber(rowData.subtotal_limpieza),
-          subtotal_admin: toNumber(rowData.subtotal_admin),
+          subtotal_admin: toNumber(split.subtotal_admin),
+          subtotal_extra: toNumber(split.subtotal_extra),
           total_pagar: totalPagar,
           total_pagado: totalPagado,
           saldo,
