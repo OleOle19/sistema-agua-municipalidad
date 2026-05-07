@@ -157,6 +157,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
 
   const esCaja = origen === "caja";
   const esAdminPrincipal = esCaja && hasMinRole(usuarioSistema?.rol, "ADMIN");
+  const isProyeccion = reporteTipo === "proyeccion";
 
   const cargarCaja = useCallback(async (signal) => {
     try {
@@ -166,6 +167,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
           tipo: reporteTipo,
           fecha: fechaConsulta,
           all_movimientos: isProyeccion ? "N" : "S",
+          include_admin_movimientos: esAdminPrincipal ? "S" : "N",
           ...(reporteTipo === "rango" ? {
             fecha_desde: fechaDesdeRango,
             fecha_hasta: fechaHastaRango
@@ -186,7 +188,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     } finally {
       if (!signal?.aborted) setCargando(false);
     }
-  }, [fechaConsulta, fechaDesdeRango, fechaHastaRango, mesesProyeccion, paginaMovimientos, reporteTipo]);
+  }, [esAdminPrincipal, fechaConsulta, fechaDesdeRango, fechaHastaRango, isProyeccion, mesesProyeccion, paginaMovimientos, reporteTipo]);
 
   const cargarAlertasRiesgo = useCallback(async (signal) => {
     try {
@@ -312,10 +314,15 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     const hasta = addIsoDays(hastaExclusivo, -1);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(desde) || !/^\d{4}-\d{2}-\d{2}$/.test(hasta)) return;
     adminRangeRef.current = { desde, hasta };
+    if (Array.isArray(reporte?.movimientos_admin)) {
+      setCargandoAdmin(false);
+      setMovimientosAdmin(reporte.movimientos_admin);
+      return;
+    }
     const controller = new AbortController();
     cargarMovimientosAdmin(desde, hasta, controller.signal);
     return () => controller.abort();
-  }, [cargarMovimientosAdmin, esAdminPrincipal, reporte?.rango?.desde, reporte?.rango?.hasta_exclusivo]);
+  }, [cargarMovimientosAdmin, esAdminPrincipal, reporte?.movimientos_admin, reporte?.rango?.desde, reporte?.rango?.hasta_exclusivo]);
 
   const movimientos = Array.isArray(reporte.movimientos) ? reporte.movimientos : [];
   const totalPaginas = Math.max(1, Number(reporte?.paginacion?.total_paginas || 1));
@@ -323,7 +330,8 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   const pageSizeActual = Math.max(1, Number(reporte?.paginacion?.page_size || MOVIMIENTOS_PAGE_SIZE));
   const inicioIndice = (paginaActual - 1) * pageSizeActual;
   const totalGeneral = formatMoney(reporte.total_general || reporte.total || 0);
-  const isProyeccion = reporteTipo === "proyeccion";
+  const totalComponentesReporteApi = Number(reporte?.total_componentes || 0);
+  const diferenciaDesgloseApi = Number(reporte?.diferencia_desglose || 0);
   const alertasResumen = alertasRiesgo?.resumen || {};
   const alertasDetalle = alertasRiesgo?.alertas || {};
   const totalPendienteReintegroAdmin = formatMoney(
@@ -420,6 +428,14 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   const totalAbonoReporte = useMemo(
     () => movimientosReporte.reduce((acc, row) => acc + Number(row?.monto_pagado || 0), 0),
     [movimientosReporte]
+  );
+  const totalComponentesReporte = useMemo(
+    () => totalAguaReporte + totalDesagueReporte + totalLimpiezaReporte + totalGastosReporte + totalExtraReporte,
+    [totalAguaReporte, totalDesagueReporte, totalLimpiezaReporte, totalGastosReporte, totalExtraReporte]
+  );
+  const diferenciaDesgloseReporte = useMemo(
+    () => Number((totalAbonoReporte - totalComponentesReporte).toFixed(2)),
+    [totalAbonoReporte, totalComponentesReporte]
   );
   const proyeccionResumen = reporte?.proyeccion || {};
   const proyeccionDetalle = Array.isArray(proyeccionResumen?.detalle_mensual) ? proyeccionResumen.detalle_mensual : [];
@@ -560,6 +576,11 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                 <div className={`fs-5 fw-bold ${colorTotal}`}>{isProyeccion ? "Total Proyectado" : "Total Caja"}: S/. {totalGeneral}</div>
                 {isProyeccion && (
                   <div className="small text-muted">Base mensual estimada: S/. {baseMensualProyeccion}</div>
+                )}
+                {!isProyeccion && Math.abs(diferenciaDesgloseApi) >= 0.01 && (
+                  <div className="small text-danger">
+                    Desglose visible: S/. {formatMoney(totalComponentesReporteApi)} | Diferencia por revisar: S/. {formatMoney(diferenciaDesgloseApi)}
+                  </div>
                 )}
                 {esAdminPrincipal && (
                   <div className="small text-muted">Admin: movimientos de correccion y pendientes abiertos = {movimientosAdmin.length}</div>
@@ -866,6 +887,12 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                       <td className="text-end fw-bold">{formatMontoReporte(totalExtraReporte)}</td>
                       <td className="text-end fw-bold">{formatMontoReporte(totalAbonoReporte)}</td>
                     </tr>
+                    {Math.abs(diferenciaDesgloseReporte) >= 0.01 && (
+                      <tr>
+                        <td colSpan={9} className="text-end fw-bold text-danger">Diferencia entre abono y desglose</td>
+                        <td className="text-end fw-bold text-danger">{formatMontoReporte(diferenciaDesgloseReporte)}</td>
+                      </tr>
+                    )}
                   </tfoot>
                 </table>
               )}

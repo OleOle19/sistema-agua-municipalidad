@@ -1013,8 +1013,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
     if (!idContribuyente || !isValidIsoDate(fecha)) return;
     const hoy = toIsoDate();
-    const fechaMinima = shiftIsoDateByYears(hoy, -1);
-    if (fecha > hoy || fecha < fechaMinima) return;
+    if (fecha > hoy) return;
     setLoadingPendientesCobroAgua(true);
     try {
       await cargarPeriodosCobroAgua(idContribuyente, fecha, {
@@ -2004,7 +2003,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       type="date"
                       className="form-control form-control-sm"
                       value={fechaCobroAgua}
-                      min={permisos.canAdminPagos ? shiftIsoDateByYears(toIsoDate(), -1) : toIsoDate()}
+                      min={permisos.canAdminPagos ? "" : toIsoDate()}
                       max={toIsoDate()}
                       onChange={(e) => onChangeFechaCobroAgua(e.target.value)}
                       disabled={!permisos.canAdminPagos || cobrandoDirectoAgua || loadingPendientesCobroAgua}
@@ -2013,7 +2012,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   <div className="col-sm-8 col-md-6">
                     <div className="small text-muted">
                       {permisos.canAdminPagos
-                        ? "El cobro se registrara en el reporte de la fecha seleccionada. Retroactivo maximo: 1 anio."
+                        ? "El cobro se registrara en el reporte de la fecha seleccionada. Administrador puede usar cualquier fecha pasada."
                         : "Los cobros normales se registran con la fecha de hoy. Solo administrador puede usar una fecha retroactiva."}
                     </div>
                   </div>
@@ -2065,8 +2064,12 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         const esAdelantado = Boolean(row?.es_adelantado) || idRecibo <= 0;
                         const puedeCobrar = canSelectCobroAguaRow(row);
                         const estadoUpper = String(row?.estado || "").trim().toUpperCase();
+                        const tipoMovimientoAdmin = String(row?.tipo_movimiento_admin || "").trim().toUpperCase();
+                        const estadoMovimientoAdmin = String(row?.estado_movimiento_admin || "").trim().toUpperCase();
                         const idAnulacionPendiente = Number(row?.id_anulacion_pendiente || 0);
                         const tieneReintegroPendiente = idAnulacionPendiente > 0 && estadoUpper !== "PAGADO";
+                        const fueEditado = tipoMovimientoAdmin === "EDICION_MONTO" || estadoMovimientoAdmin === "EDITADO";
+                        const fueReintegrado = tipoMovimientoAdmin === "REINTEGRACION" || estadoMovimientoAdmin === "REINTEGRADO";
                         const puedeEditarMontoPago = permisos.canAdminPagos && estadoUpper === "PAGADO" && idPagoUltimo > 0;
                         const puedeAnularPagoPeriodo = permisos.canAdminPagos && estadoUpper === "PAGADO" && idRecibo > 0;
                         const estadoNoCobro = estadoUpper === "PAGADO" ? "PAGADO" : "BLOQUEADO";
@@ -2095,6 +2098,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
                               {String(row?.mes || "").padStart(2, "0")}/{row?.anio || "-"}
                               {esAdelantado && <span className="badge text-bg-warning ms-2">ADELANTADO</span>}
                               {tieneReintegroPendiente && <span className="badge text-bg-danger ms-2">REINGRESO PENDIENTE</span>}
+                              {!tieneReintegroPendiente && fueReintegrado && <span className="badge text-bg-success ms-2">REINTEGRADO</span>}
+                              {fueEditado && <span className="badge text-bg-info ms-2">EDITADO</span>}
                               {!puedeCobrar && <span className="badge text-bg-secondary ms-2">{estadoNoCobro}</span>}
                               {!puedeCobrar && puedeEditarMontoPago && (
                                 <button
