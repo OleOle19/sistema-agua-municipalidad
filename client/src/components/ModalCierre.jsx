@@ -412,6 +412,10 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     () => movimientosReporte.reduce((acc, row) => acc + Number(row?.monto_gastos || 0), 0),
     [movimientosReporte]
   );
+  const totalExtraReporte = useMemo(
+    () => movimientosReporte.reduce((acc, row) => acc + Number(row?.monto_extra || 0), 0),
+    [movimientosReporte]
+  );
   const totalAbonoReporte = useMemo(
     () => movimientosReporte.reduce((acc, row) => acc + Number(row?.monto_pagado || 0), 0),
     [movimientosReporte]
@@ -789,32 +793,33 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                       <th className="text-end" style={{ width: "8%" }}>Desague</th>
                       <th className="text-end" style={{ width: "8%" }}>Limpieza</th>
                       <th className="text-end" style={{ width: "7%" }}>Gastos</th>
+                      <th className="text-end" style={{ width: "7%" }}>Extra</th>
                       <th className="text-end" style={{ width: "8%" }}>Abono</th>
                     </tr>
                   </thead>
                   <tbody>
                     {gruposReporte.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="text-center py-3 border">No hay movimientos para el rango consultado.</td>
+                        <td colSpan={10} className="text-center py-3 border">No hay movimientos para el rango consultado.</td>
                       </tr>
                     ) : (
                       gruposReporte.map((grupoFecha) => (
                         <tr key={`fecha-${grupoFecha.fecha}`}>
-                          <td colSpan={9} className="p-0 border-0">
+                          <td colSpan={10} className="p-0 border-0">
                             <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
                               <tbody>
                                 <tr>
-                                  <td colSpan={9} className="fw-bold border-top border-dark border-bottom">
+                                  <td colSpan={10} className="fw-bold border-top border-dark border-bottom">
                                     Fecha {formatFechaCorta(grupoFecha.fecha)}
                                   </td>
                                 </tr>
                                 {grupoFecha.contribuyentes.map((contrib, idxContrib) => (
                                   <tr key={`contrib-${grupoFecha.fecha}-${idxContrib}`}>
-                                    <td colSpan={9} className="p-0 border-0">
+                                    <td colSpan={10} className="p-0 border-0">
                                       <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
                                         <tbody>
                                           <tr>
-                                            <td colSpan={9} className="fw-semibold border-bottom">
+                                            <td colSpan={10} className="fw-semibold border-bottom">
                                               {String(contrib.nombre_completo || "-").toUpperCase()}
                                               <div className="small fw-normal text-muted">
                                                 Cod: {contrib.codigo_municipal || "-"} | Contribuyente ID: {contrib.id_contribuyente || "-"} | Predio ID: {contrib.id_predio || "-"} | Direccion: {contrib.direccion_completa || "-"}
@@ -831,6 +836,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                                               <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_desague || 0)}</td>
                                               <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_limpieza || 0)}</td>
                                               <td className="text-end" style={{ width: "7%" }}>{formatMontoReporte(item.monto_gastos || 0)}</td>
+                                              <td className="text-end" style={{ width: "7%" }}>{formatMontoReporte(item.monto_extra || 0)}</td>
                                               <td className="text-end fw-bold" style={{ width: "8%" }}>{formatMontoReporte(item.monto_pagado || 0)}</td>
                                             </tr>
                                           ))}
@@ -856,6 +862,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                       <td className="text-end fw-bold">{formatMontoReporte(totalDesagueReporte)}</td>
                       <td className="text-end fw-bold">{formatMontoReporte(totalLimpiezaReporte)}</td>
                       <td className="text-end fw-bold">{formatMontoReporte(totalGastosReporte)}</td>
+                      <td className="text-end fw-bold">{formatMontoReporte(totalExtraReporte)}</td>
                       <td className="text-end fw-bold">{formatMontoReporte(totalAbonoReporte)}</td>
                     </tr>
                   </tfoot>
