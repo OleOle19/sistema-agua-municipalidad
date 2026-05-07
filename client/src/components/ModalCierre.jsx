@@ -70,6 +70,23 @@ const formatMontoReporte = (value) => {
   return Number.isFinite(num) ? num.toFixed(2) : "0.00";
 };
 
+const getMovimientoAdminMontoAnterior = (row = {}) => Number(row?.monto_anterior ?? row?.monto_pagado ?? 0);
+const getMovimientoAdminMontoNuevo = (row = {}) => Number(row?.monto_nuevo ?? 0);
+const getMovimientoAdminTipoLabel = (row = {}) => {
+  const tipo = String(row?.tipo_movimiento || "").trim().toUpperCase();
+  if (tipo === "ANULACION") return "Eliminacion";
+  if (tipo === "REINTEGRACION") return "Reintegracion";
+  if (tipo === "EDICION_MONTO") return "Edicion";
+  return tipo || "-";
+};
+const getMovimientoAdminEstadoLabel = (row = {}) => {
+  const estado = String(row?.estado_correccion || "").trim().toUpperCase();
+  if (estado === "PENDIENTE_REINTEGRO") return "Pendiente";
+  if (estado === "REINTEGRADO") return "Reintegrado";
+  if (estado === "EDITADO") return "Editado";
+  return estado || "-";
+};
+
 const todayIso = () => {
   const d = new Date();
   const y = d.getFullYear();
@@ -308,8 +325,12 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   const isProyeccion = reporteTipo === "proyeccion";
   const alertasResumen = alertasRiesgo?.resumen || {};
   const alertasDetalle = alertasRiesgo?.alertas || {};
-  const totalAnuladoAdmin = formatMoney(
-    movimientosAdmin.reduce((acc, row) => acc + Number(row?.monto_pagado || 0), 0)
+  const totalPendienteReintegroAdmin = formatMoney(
+    movimientosAdmin.reduce((acc, row) => {
+      const esPendiente = String(row?.tipo_movimiento || "").toUpperCase() === "ANULACION"
+        && String(row?.estado_correccion || "").toUpperCase() === "PENDIENTE_REINTEGRO";
+      return acc + (esPendiente ? getMovimientoAdminMontoAnterior(row) : 0);
+    }, 0)
   );
   const periodoLabel = reporteTipo === "semanal"
     ? "Semanal"
@@ -536,7 +557,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   <div className="small text-muted">Base mensual estimada: S/. {baseMensualProyeccion}</div>
                 )}
                 {esAdminPrincipal && (
-                  <div className="small text-muted">Admin: anulados en rango = {movimientosAdmin.length}</div>
+                  <div className="small text-muted">Admin: movimientos de correccion en rango = {movimientosAdmin.length}</div>
                 )}
               </div>
               <div className="col-12 col-md-auto d-flex justify-content-md-end">
@@ -873,11 +894,11 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
               {esAdminPrincipal && (
                 <div className="mt-4 pt-3 border-top border-2 border-dark">
                   <div className="d-flex justify-content-between align-items-center mb-2">
-                    <h6 className="fw-bold m-0">ANEXO ADMINISTRATIVO - PAGOS ANULADOS/EDITADOS</h6>
-                    <div className="small fw-semibold">Total anulado: S/. {totalAnuladoAdmin}</div>
+                    <h6 className="fw-bold m-0">ANEXO ADMINISTRATIVO - PAGOS ELIMINADOS/EDITADOS/REINTEGRADOS</h6>
+                    <div className="small fw-semibold">Pendiente sin reintegro: S/. {totalPendienteReintegroAdmin}</div>
                   </div>
                   <div className="small mb-2">
-                    Este anexo es solo para administrador e incluye trazabilidad de correcciones (anulaciones para reingreso de pago).
+                    Este anexo es solo para administrador e incluye trazabilidad completa de correcciones: eliminacion, reintegracion y edicion de monto.
                   </div>
                   {cargandoAdmin && (
                     <div className="small text-muted mb-2">Actualizando movimientos administrativos...</div>
@@ -886,35 +907,63 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                     <thead className="table-secondary">
                       <tr>
                         <th className="text-center">#</th>
-                        <th>PAGO ORIGINAL</th>
-                        <th>ANULADO EN</th>
+                        <th>TIPO</th>
+                        <th>ESTADO</th>
+                        <th>MOVIMIENTO</th>
                         <th>CODIGO</th>
                         <th>CONTRIBUYENTE</th>
                         <th className="text-center">PERIODO</th>
-                        <th className="text-end">MONTO</th>
+                        <th className="text-end">MONTO ANT.</th>
+                        <th className="text-end">MONTO NUEVO</th>
                         <th>MOTIVO</th>
-                        <th>ANULADO POR</th>
+                        <th>USUARIO</th>
                       </tr>
                     </thead>
                     <tbody>
                       {movimientosAdmin.length === 0 ? (
                         <tr>
-                          <td colSpan={9} className="text-center py-2">Sin anulaciones en este rango.</td>
+                          <td colSpan={11} className="text-center py-2">Sin movimientos administrativos en este rango.</td>
                         </tr>
                       ) : (
-                        movimientosAdmin.map((row, idx) => (
-                          <tr key={`adm-${row?.id_anulacion || idx}`}>
+                        movimientosAdmin.map((row, idx) => {
+                          const esPendiente = String(row?.tipo_movimiento || "").toUpperCase() === "ANULACION"
+                            && String(row?.estado_correccion || "").toUpperCase() === "PENDIENTE_REINTEGRO";
+                          const rowClassName = esPendiente
+                            ? "text-danger text-decoration-underline"
+                            : String(row?.tipo_movimiento || "").toUpperCase() === "REINTEGRACION"
+                              ? "text-success"
+                              : "";
+                          return (
+                          <tr key={`adm-${row?.tipo_movimiento || "mov"}-${row?.id_movimiento || idx}`} className={rowClassName}>
                             <td className="text-center">{idx + 1}</td>
-                            <td>{formatFechaHoraLocal(row?.fecha_pago_original) || "-"}</td>
-                            <td>{formatFechaHoraLocal(row?.anulado_en) || "-"}</td>
+                            <td>{getMovimientoAdminTipoLabel(row)}</td>
+                            <td>{getMovimientoAdminEstadoLabel(row)}</td>
+                            <td>
+                              <div>{formatFechaHoraLocal(row?.fecha_evento) || "-"}</div>
+                              {!!row?.fecha_pago_original && (
+                                <div className="small">Pago original: {formatFechaHoraLocal(row?.fecha_pago_original)}</div>
+                              )}
+                              {!!row?.fecha_evento_secundario && (
+                                <div className="small">
+                                  {String(row?.tipo_movimiento || "").toUpperCase() === "ANULACION" ? "Reintegrado" : "Fecha aplicada"}: {formatFechaHoraLocal(row?.fecha_evento_secundario)}
+                                </div>
+                              )}
+                            </td>
                             <td>{row?.codigo_municipal || "-"}</td>
                             <td>{row?.nombre_completo || "-"}</td>
                             <td className="text-center">{row?.mes ? `${row.mes}/${row?.anio || ""}` : "-"}</td>
-                            <td className="text-end fw-bold">{formatMoney(row?.monto_pagado || 0)}</td>
-                            <td>{row?.motivo_anulacion || "-"}</td>
-                            <td>{row?.username_anula || "-"}</td>
+                            <td className="text-end fw-bold">{formatMoney(getMovimientoAdminMontoAnterior(row))}</td>
+                            <td className="text-end fw-bold">{getMovimientoAdminMontoNuevo(row) > 0 ? formatMoney(getMovimientoAdminMontoNuevo(row)) : "-"}</td>
+                            <td>{row?.motivo || row?.motivo_anulacion || "-"}</td>
+                            <td>
+                              <div>{row?.username_accion || row?.username_anula || "-"}</div>
+                              {!!row?.username_secundario && (
+                                <div className="small">Sec.: {row?.username_secundario}</div>
+                              )}
+                            </td>
                           </tr>
-                        ))
+                        );
+                        })
                       )}
                     </tbody>
                   </table>
