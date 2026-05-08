@@ -1682,21 +1682,42 @@ const buildAplicaAjusteTarifaSql = ({
   `;
   return `(${pagoCoverageSql})`;
 };
-const buildTotalPagarReferenciaSql = ({
+const buildUsaTarifaActualSql = ({
   reciboAlias = "r",
   predioAlias = "p2",
   pagosAlias = "p",
-  requireCoveredPayment = true
+  requireCoveredPayment = true,
+  onlyWhenUnpaid = false
 } = {}) => {
-  const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
   const aplicaAjusteSql = buildAplicaAjusteTarifaSql({
     reciboAlias,
     predioAlias,
     pagosAlias,
     requireCoveredPayment
   });
+  if (!onlyWhenUnpaid) return aplicaAjusteSql;
+  return `(
+    COALESCE(${pagosAlias}.total_pagado, 0) <= 0.001
+    AND ${aplicaAjusteSql}
+  )`;
+};
+const buildTotalPagarReferenciaSql = ({
+  reciboAlias = "r",
+  predioAlias = "p2",
+  pagosAlias = "p",
+  requireCoveredPayment = true,
+  onlyWhenUnpaid = false
+} = {}) => {
+  const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
+  const usaTarifaActualSql = buildUsaTarifaActualSql({
+    reciboAlias,
+    predioAlias,
+    pagosAlias,
+    requireCoveredPayment,
+    onlyWhenUnpaid
+  });
   return `(CASE
-    WHEN ${aplicaAjusteSql}
+    WHEN ${usaTarifaActualSql}
     THEN ROUND((${tarifaActualSql})::numeric, 2)
     ELSE COALESCE(${reciboAlias}.total_pagar, 0)
   END)`;
@@ -1879,10 +1900,16 @@ const appendProjectedArbitriosRows = async (
 };
 const normalizeHistorialArbitriosRows = (rows = []) => {
   return (Array.isArray(rows) ? rows : []).map((row) => {
-    const split = splitAdminExtraDisplay(
-      row?.subtotal_admin,
-      row?.subtotal_extra ?? row?.tarifa_extra_actual ?? 0
-    );
+    const explicitExtra = row?.subtotal_extra;
+    const usaTarifaActual = normalizeSN(row?.usa_tarifa_actual, "N") === "S" || Boolean(row?.es_proyectado);
+    const split = explicitExtra !== undefined && explicitExtra !== null
+      ? splitAdminExtraDisplay(row?.subtotal_admin, explicitExtra)
+      : (usaTarifaActual
+        ? splitAdminExtraDisplay(row?.subtotal_admin, row?.tarifa_extra_actual ?? 0)
+        : {
+          subtotal_admin: roundMonto2(parseMonto(row?.subtotal_admin, 0)),
+          subtotal_extra: 0
+        });
     return {
       ...row,
       subtotal_admin: split.subtotal_admin,
@@ -9068,12 +9095,16 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     const totalPagarReferenciaPendSql = buildTotalPagarReferenciaSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p"
+      pagosAlias: "p",
+      requireCoveredPayment: false,
+      onlyWhenUnpaid: true
     });
-    const aplicaAjustePendSql = buildAplicaAjusteTarifaSql({
+    const usaTarifaActualPendSql = buildUsaTarifaActualSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p"
+      pagosAlias: "p",
+      requireCoveredPayment: false,
+      onlyWhenUnpaid: true
     });
     const tarifaActualComponentesPendSql = buildTarifaActualComponentesSql("p2");
     const whereParts = [
@@ -9087,10 +9118,10 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     }
     const pendientes = await client.query(`
       SELECT r.id_recibo, r.mes, r.anio,
-        (CASE WHEN ${aplicaAjustePendSql} THEN ${tarifaActualComponentesPendSql.agua} ELSE COALESCE(r.subtotal_agua, 0) END) AS subtotal_agua,
-        (CASE WHEN ${aplicaAjustePendSql} THEN ${tarifaActualComponentesPendSql.desague} ELSE COALESCE(r.subtotal_desague, 0) END) AS subtotal_desague,
-        (CASE WHEN ${aplicaAjustePendSql} THEN ${tarifaActualComponentesPendSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END) AS subtotal_limpieza,
-        (CASE WHEN ${aplicaAjustePendSql} THEN ${tarifaActualComponentesPendSql.admin} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
+        (CASE WHEN ${usaTarifaActualPendSql} THEN ${tarifaActualComponentesPendSql.agua} ELSE COALESCE(r.subtotal_agua, 0) END) AS subtotal_agua,
+        (CASE WHEN ${usaTarifaActualPendSql} THEN ${tarifaActualComponentesPendSql.desague} ELSE COALESCE(r.subtotal_desague, 0) END) AS subtotal_desague,
+        (CASE WHEN ${usaTarifaActualPendSql} THEN ${tarifaActualComponentesPendSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END) AS subtotal_limpieza,
+        (CASE WHEN ${usaTarifaActualPendSql} THEN ${tarifaActualComponentesPendSql.admin} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
         ${totalPagarReferenciaPendSql} AS total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
         GREATEST(${totalPagarReferenciaPendSql} - COALESCE(p.total_pagado, 0), 0) as deuda_mes,
@@ -11953,22 +11984,25 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
       reciboAlias: "r",
       predioAlias: "p2",
       pagosAlias: "p",
-      requireCoveredPayment: false
+      requireCoveredPayment: false,
+      onlyWhenUnpaid: true
     });
-    const aplicaAjusteHistorialSql = buildAplicaAjusteTarifaSql({
+    const usaTarifaActualHistorialSql = buildUsaTarifaActualSql({
       reciboAlias: "r",
       predioAlias: "p2",
       pagosAlias: "p",
-      requireCoveredPayment: false
+      requireCoveredPayment: false,
+      onlyWhenUnpaid: true
     });
     const tarifaActualComponentesHistorialSql = buildTarifaActualComponentesSql("p2");
 
     const historial = await client.query(`
       SELECT r.id_recibo, r.mes, r.anio,
-        (CASE WHEN ${aplicaAjusteHistorialSql} THEN ${tarifaActualComponentesHistorialSql.agua} ELSE COALESCE(r.subtotal_agua, 0) END) AS subtotal_agua,
-        (CASE WHEN ${aplicaAjusteHistorialSql} THEN ${tarifaActualComponentesHistorialSql.desague} ELSE COALESCE(r.subtotal_desague, 0) END) AS subtotal_desague,
-        (CASE WHEN ${aplicaAjusteHistorialSql} THEN ${tarifaActualComponentesHistorialSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END) AS subtotal_limpieza,
-        (CASE WHEN ${aplicaAjusteHistorialSql} THEN ${tarifaActualComponentesHistorialSql.admin} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
+        (CASE WHEN ${usaTarifaActualHistorialSql} THEN ${tarifaActualComponentesHistorialSql.agua} ELSE COALESCE(r.subtotal_agua, 0) END) AS subtotal_agua,
+        (CASE WHEN ${usaTarifaActualHistorialSql} THEN ${tarifaActualComponentesHistorialSql.desague} ELSE COALESCE(r.subtotal_desague, 0) END) AS subtotal_desague,
+        (CASE WHEN ${usaTarifaActualHistorialSql} THEN ${tarifaActualComponentesHistorialSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END) AS subtotal_limpieza,
+        (CASE WHEN ${usaTarifaActualHistorialSql} THEN ${tarifaActualComponentesHistorialSql.admin} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
+        CASE WHEN ${usaTarifaActualHistorialSql} THEN 'S' ELSE 'N' END AS usa_tarifa_actual,
         COALESCE(p2.tarifa_extra, 0) AS tarifa_extra_actual,
         ${totalPagarReferenciaHistorialSql} AS total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
@@ -12107,13 +12141,15 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       reciboAlias: "r",
       predioAlias: "p2",
       pagosAlias: "p",
-      requireCoveredPayment: false
+      requireCoveredPayment: false,
+      onlyWhenUnpaid: true
     });
-    const aplicaAjusteExportSql = buildAplicaAjusteTarifaSql({
+    const usaTarifaActualExportSql = buildUsaTarifaActualSql({
       reciboAlias: "r",
       predioAlias: "p2",
       pagosAlias: "p",
-      requireCoveredPayment: false
+      requireCoveredPayment: false,
+      onlyWhenUnpaid: true
     });
     const tarifaActualComponentesExportSql = buildTarifaActualComponentesSql("p2");
     if (filtrarAnio && (!Number.isInteger(anio) || anio <= 1900 || anio >= 9999)) {
@@ -12137,10 +12173,11 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
         r.id_recibo,
         r.mes,
         r.anio,
-        (CASE WHEN ${aplicaAjusteExportSql} THEN ${tarifaActualComponentesExportSql.agua} ELSE COALESCE(r.subtotal_agua, 0) END) AS subtotal_agua,
-        (CASE WHEN ${aplicaAjusteExportSql} THEN ${tarifaActualComponentesExportSql.desague} ELSE COALESCE(r.subtotal_desague, 0) END) AS subtotal_desague,
-        (CASE WHEN ${aplicaAjusteExportSql} THEN ${tarifaActualComponentesExportSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END) AS subtotal_limpieza,
-        (CASE WHEN ${aplicaAjusteExportSql} THEN ${tarifaActualComponentesExportSql.admin} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
+        (CASE WHEN ${usaTarifaActualExportSql} THEN ${tarifaActualComponentesExportSql.agua} ELSE COALESCE(r.subtotal_agua, 0) END) AS subtotal_agua,
+        (CASE WHEN ${usaTarifaActualExportSql} THEN ${tarifaActualComponentesExportSql.desague} ELSE COALESCE(r.subtotal_desague, 0) END) AS subtotal_desague,
+        (CASE WHEN ${usaTarifaActualExportSql} THEN ${tarifaActualComponentesExportSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END) AS subtotal_limpieza,
+        (CASE WHEN ${usaTarifaActualExportSql} THEN ${tarifaActualComponentesExportSql.admin} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
+        CASE WHEN ${usaTarifaActualExportSql} THEN 'S' ELSE 'N' END AS usa_tarifa_actual,
         COALESCE(p2.tarifa_extra, 0) AS tarifa_extra_actual,
         ${totalPagarReferenciaExportSql} AS total_pagar,
         COALESCE(p.total_pagado, 0) AS abono_mes,
@@ -12741,14 +12778,6 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   const movimientos = await pool.query(movimientosSql, movimientosParams);
   const prorratearPagoComponentes = (row) => {
     const montoPagado = roundMonto2(parseMonto(row?.monto_pagado, 0));
-    const tarifaActualAgua = roundMonto2(parseMonto(row?.tarifa_actual_agua, 0));
-    const tarifaActualDesague = roundMonto2(parseMonto(row?.tarifa_actual_desague, 0));
-    const tarifaActualLimpieza = roundMonto2(parseMonto(row?.tarifa_actual_limpieza, 0));
-    const tarifaActualGastos = roundMonto2(parseMonto(row?.tarifa_actual_admin, 0));
-    const tarifaActualExtra = roundMonto2(parseMonto(row?.tarifa_actual_extra, 0));
-    const tarifaActualTotal = roundMonto2(
-      tarifaActualAgua + tarifaActualDesague + tarifaActualLimpieza + tarifaActualGastos + tarifaActualExtra
-    );
     let baseAgua = roundMonto2(parseMonto(row?.subtotal_agua, 0));
     let baseDesague = roundMonto2(parseMonto(row?.subtotal_desague, 0));
     let baseLimpieza = roundMonto2(parseMonto(row?.subtotal_limpieza, 0));
@@ -12756,24 +12785,13 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     let baseGastos = roundMonto2(parseMonto(subtotalAdminSplit?.subtotal_admin, 0));
     let baseExtra = roundMonto2(parseMonto(subtotalAdminSplit?.subtotal_extra, 0));
     let totalBase = roundMonto2(parseMonto(row?.total_pagar, (baseAgua + baseDesague + baseLimpieza + baseGastos + baseExtra)));
-    const aplicarTarifaActual = tarifaActualTotal > 0
-      && totalBase > tarifaActualTotal + 0.001
-      && montoPagado >= tarifaActualTotal - 0.001;
-    if (aplicarTarifaActual) {
-      baseAgua = tarifaActualAgua;
-      baseDesague = tarifaActualDesague;
-      baseLimpieza = tarifaActualLimpieza;
-      baseGastos = tarifaActualGastos;
-      baseExtra = tarifaActualExtra;
-      totalBase = tarifaActualTotal;
-    }
     if (montoPagado <= 0) {
       return { agua: 0, desague: 0, limpieza: 0, gastos: 0, extra: 0 };
     }
     if (totalBase <= 0) {
       return { agua: montoPagado, desague: 0, limpieza: 0, gastos: 0, extra: 0 };
     }
-    const montoDistribuible = aplicarTarifaActual ? Math.min(montoPagado, totalBase) : montoPagado;
+    const montoDistribuible = Math.min(montoPagado, totalBase);
     const factor = montoDistribuible / totalBase;
     let agua = roundMonto2(baseAgua * factor);
     let desague = roundMonto2(baseDesague * factor);
@@ -12782,6 +12800,9 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     let extra = roundMonto2(baseExtra * factor);
     const ajuste = roundMonto2(montoDistribuible - (agua + desague + limpieza + gastos + extra));
     extra = roundMonto2(extra + ajuste);
+    if (montoPagado > montoDistribuible) {
+      extra = roundMonto2(extra + (montoPagado - montoDistribuible));
+    }
     return { agua, desague, limpieza, gastos, extra };
   };
   const movimientosSanitizados = movimientos.rows.map((row) => {
