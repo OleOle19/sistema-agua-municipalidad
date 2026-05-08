@@ -1612,6 +1612,18 @@ const splitAdminExtraDisplay = (subtotalAdminRaw, extraTarifaRaw) => {
     subtotal_extra: subtotalExtra
   };
 };
+const applyRoundedDeltaToComponents = (components = {}, delta = 0, targetOrder = []) => {
+  const ajuste = roundMonto2(parseMonto(delta, 0));
+  if (Math.abs(ajuste) <= 0.0001) return { ...components };
+  const next = { ...components };
+  const targets = (Array.isArray(targetOrder) ? targetOrder : [])
+    .filter((key) => Object.prototype.hasOwnProperty.call(next, key));
+  let target = targets.find((key) => roundMonto2(parseMonto(next[key], 0)) > 0);
+  if (!target && targets.length > 0) target = targets[0];
+  if (!target) return next;
+  next[target] = roundMonto2(parseMonto(next[target], 0) + ajuste);
+  return next;
+};
 const resolveActivatedServiceTarifas = ({
   activoAntes = "S",
   activoDespues = "S",
@@ -1966,6 +1978,11 @@ const recalcularRecibosFuturosPorServicios = async (
     WITH objetivo AS (
       SELECT
         r.id_recibo,
+        COALESCE(r.subtotal_agua, 0) AS subtotal_agua_actual,
+        COALESCE(r.subtotal_desague, 0) AS subtotal_desague_actual,
+        COALESCE(r.subtotal_limpieza, 0) AS subtotal_limpieza_actual,
+        COALESCE(r.subtotal_admin, 0) AS subtotal_admin_actual,
+        COALESCE(r.total_pagar, 0) AS total_pagar_actual,
         CASE
           WHEN ${sqlSnEsSi("p.activo_sn", "S")}
             AND (
@@ -2012,7 +2029,8 @@ const recalcularRecibosFuturosPorServicios = async (
           WHEN ${sqlSnEsSi("p.activo_sn", "S")}
             THEN COALESCE(p.tarifa_admin, $5::numeric) + COALESCE(p.tarifa_extra, 0::numeric)
           ELSE 0::numeric
-        END AS nuevo_admin
+        END AS nuevo_admin,
+        COALESCE(pagos.total_pagado, 0)::numeric AS total_pagado
       FROM recibos r
       INNER JOIN predios p ON p.id_predio = r.id_predio
       LEFT JOIN LATERAL (
@@ -2045,34 +2063,62 @@ const recalcularRecibosFuturosPorServicios = async (
             LIMIT 1
           ) AS limpieza_hist
       ) hist ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(SUM(pg.monto_pagado), 0)::numeric AS total_pagado
+        FROM pagos pg
+        WHERE pg.id_recibo = r.id_recibo
+      ) pagos ON TRUE
       WHERE p.id_contribuyente = $1
         AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
         AND (
           $7::boolean = true
           OR ((r.anio::int * 100) + r.mes::int) >= $6::int
         )
-        AND NOT EXISTS (
-          SELECT 1
-          FROM pagos pg
-          WHERE pg.id_recibo = r.id_recibo
-        )
+    ),
+    actualizables AS (
+      SELECT
+        id_recibo,
+        subtotal_agua_actual,
+        subtotal_desague_actual,
+        subtotal_limpieza_actual,
+        subtotal_admin_actual,
+        total_pagar_actual,
+        nuevo_agua,
+        nuevo_desague,
+        nuevo_limpieza,
+        nuevo_admin,
+        (nuevo_agua + nuevo_desague + nuevo_limpieza + nuevo_admin) AS nuevo_total,
+        total_pagado
+      FROM objetivo
+      WHERE (
+        subtotal_agua_actual <> nuevo_agua OR
+        subtotal_desague_actual <> nuevo_desague OR
+        subtotal_limpieza_actual <> nuevo_limpieza OR
+        subtotal_admin_actual <> nuevo_admin OR
+        total_pagar_actual <> (nuevo_agua + nuevo_desague + nuevo_limpieza + nuevo_admin)
+      )
+      AND total_pagado <= (nuevo_agua + nuevo_desague + nuevo_limpieza + nuevo_admin) + 0.001
     )
     UPDATE recibos r
     SET
-      subtotal_agua = o.nuevo_agua,
-      subtotal_desague = o.nuevo_desague,
-      subtotal_limpieza = o.nuevo_limpieza,
-      subtotal_admin = o.nuevo_admin,
-      total_pagar = o.nuevo_agua + o.nuevo_desague + o.nuevo_limpieza + o.nuevo_admin
-    FROM objetivo o
-    WHERE r.id_recibo = o.id_recibo
-      AND (
-        COALESCE(r.subtotal_agua, 0) <> o.nuevo_agua OR
-        COALESCE(r.subtotal_desague, 0) <> o.nuevo_desague OR
-        COALESCE(r.subtotal_limpieza, 0) <> o.nuevo_limpieza OR
-        COALESCE(r.subtotal_admin, 0) <> o.nuevo_admin OR
-        COALESCE(r.total_pagar, 0) <> (o.nuevo_agua + o.nuevo_desague + o.nuevo_limpieza + o.nuevo_admin)
-      )
+      subtotal_agua = a.nuevo_agua,
+      subtotal_desague = a.nuevo_desague,
+      subtotal_limpieza = a.nuevo_limpieza,
+      subtotal_admin = a.nuevo_admin,
+      total_pagar = a.nuevo_total,
+      estado = CASE
+        WHEN a.nuevo_total <= 0.001 THEN 'PAGADO'
+        WHEN a.total_pagado >= a.nuevo_total - 0.001 THEN 'PAGADO'
+        WHEN a.total_pagado > 0.001 THEN 'PARCIAL'
+        ELSE 'PENDIENTE'
+      END
+    FROM actualizables a
+    WHERE r.id_recibo = a.id_recibo
+      AND COALESCE(r.subtotal_agua, 0) = a.subtotal_agua_actual
+      AND COALESCE(r.subtotal_desague, 0) = a.subtotal_desague_actual
+      AND COALESCE(r.subtotal_limpieza, 0) = a.subtotal_limpieza_actual
+      AND COALESCE(r.subtotal_admin, 0) = a.subtotal_admin_actual
+      AND COALESCE(r.total_pagar, 0) = a.total_pagar_actual
     RETURNING r.id_recibo
   `, [id, montoAgua, montoDesague, montoLimpieza, montoAdmin, periodo, incluirPendientesHistoricos]);
 
@@ -12793,17 +12839,29 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     }
     const montoDistribuible = Math.min(montoPagado, totalBase);
     const factor = montoDistribuible / totalBase;
-    let agua = roundMonto2(baseAgua * factor);
-    let desague = roundMonto2(baseDesague * factor);
-    let limpieza = roundMonto2(baseLimpieza * factor);
-    let gastos = roundMonto2(baseGastos * factor);
-    let extra = roundMonto2(baseExtra * factor);
-    const ajuste = roundMonto2(montoDistribuible - (agua + desague + limpieza + gastos + extra));
-    extra = roundMonto2(extra + ajuste);
+    let componentes = {
+      agua: roundMonto2(baseAgua * factor),
+      desague: roundMonto2(baseDesague * factor),
+      limpieza: roundMonto2(baseLimpieza * factor),
+      gastos: roundMonto2(baseGastos * factor),
+      extra: roundMonto2(baseExtra * factor)
+    };
+    const targetOrder = baseExtra > 0
+      ? ["extra", "gastos", "limpieza", "desague", "agua"]
+      : ["gastos", "limpieza", "desague", "agua", "extra"];
+    const ajuste = roundMonto2(
+      montoDistribuible
+      - (componentes.agua + componentes.desague + componentes.limpieza + componentes.gastos + componentes.extra)
+    );
+    componentes = applyRoundedDeltaToComponents(componentes, ajuste, targetOrder);
     if (montoPagado > montoDistribuible) {
-      extra = roundMonto2(extra + (montoPagado - montoDistribuible));
+      componentes = applyRoundedDeltaToComponents(
+        componentes,
+        roundMonto2(montoPagado - montoDistribuible),
+        targetOrder
+      );
     }
-    return { agua, desague, limpieza, gastos, extra };
+    return componentes;
   };
   const movimientosSanitizados = movimientos.rows.map((row) => {
     const montos = prorratearPagoComponentes(row);
