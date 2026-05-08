@@ -118,6 +118,33 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\deploy_from_github.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\deploy_from_github.ps1 -SkipPull -SkipRestart
 ```
 
+## 3.1) Corregir tarifa de agua de un contribuyente en la base del servidor
+
+Usar cuando la edicion de tarifa ya se guardo, pero algunos recibos con pagos parciales o meses historicos siguen mostrando el total anterior en caja.
+
+Ejemplo real para bajar agua a `7.50` en `02/2026` y `03/2026` del codigo municipal `002663`:
+
+```powershell
+# primero vista previa
+node .\server\scripts\reparar_tarifa_agua_contribuyente.js `
+  --codigo-municipal=002663 `
+  --tarifa-agua=7.50 `
+  --periodos=2026-02,2026-03
+
+# luego aplicar
+node .\server\scripts\reparar_tarifa_agua_contribuyente.js `
+  --codigo-municipal=002663 `
+  --tarifa-agua=7.50 `
+  --periodos=2026-02,2026-03 `
+  --apply
+```
+
+Notas:
+- El script actualiza `predios.tarifa_agua` del contribuyente.
+- Recalcula `subtotal_agua`, `total_pagar` y `estado` de los recibos indicados.
+- Si algun recibo ya quedara con sobrepago al bajar la tarifa, no lo toca y lo reporta para revision manual.
+- Si el contribuyente tuviera varios predios, el script se detiene por seguridad salvo que agregues `--allow-multiple-predios`.
+
 ### Si hay cambios locales en el servidor y quieres continuar
 
 ```powershell
