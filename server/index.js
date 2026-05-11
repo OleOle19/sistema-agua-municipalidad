@@ -589,7 +589,7 @@ const LOGIN_LOCK_DURATION_MS = Number(process.env.LOGIN_LOCK_DURATION_MS || (15 
 const CAJA_CIERRE_ALERTA_UMBRAL = parseMonto(process.env.CAJA_CIERRE_ALERTA_UMBRAL, 2);
 const CAJA_RIESGO_WINDOW_HOURS = Math.min(168, Math.max(1, Number(process.env.CAJA_RIESGO_WINDOW_HOURS || 24)));
 const CAJA_RIESGO_ANULACIONES_UMBRAL = Math.min(20, Math.max(1, Number(process.env.CAJA_RIESGO_ANULACIONES_UMBRAL || 3)));
-const MAX_RETROACTIVE_COBRO_YEARS = Math.min(5, Math.max(0, Number(process.env.MAX_RETROACTIVE_COBRO_YEARS || 1)));
+const MAX_RETROACTIVE_COBRO_DAYS_CAJA = Math.min(30, Math.max(0, Number(process.env.MAX_RETROACTIVE_COBRO_DAYS_CAJA || 4)));
 const MAX_DIAS_CORRECCION_PAGO = Math.min(30, Math.max(1, Number(process.env.MAX_DIAS_CORRECCION_PAGO || 7)));
 const PAGO_OPERATIVO_CAJA_SQL = `(
   (p.id_orden_cobro IS NOT NULL OR COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '')
@@ -1359,47 +1359,60 @@ const normalizeDateOnly = (value) => {
 
   return null;
 };
-const getRetroactiveCobroMinDate = (baseDateIso = toISODate(), yearsBack = MAX_RETROACTIVE_COBRO_YEARS) => {
+const getRetroactiveCobroMinDateByDays = (baseDateIso = toISODate(), daysBack = MAX_RETROACTIVE_COBRO_DAYS_CAJA) => {
   const base = normalizeDateOnly(baseDateIso);
   if (!base) return null;
-  const safeYearsBack = Math.max(0, Number.isFinite(Number(yearsBack)) ? Number(yearsBack) : 0);
-  if (safeYearsBack <= 0) return base;
-  const [baseYear, baseMonth, baseDay] = base.split("-").map((v) => Number(v));
-  const targetYear = baseYear - safeYearsBack;
-  const monthText = String(baseMonth).padStart(2, "0");
-  for (let day = baseDay; day >= 1; day -= 1) {
-    const candidate = `${String(targetYear).padStart(4, "0")}-${monthText}-${String(day).padStart(2, "0")}`;
-    if (normalizeDateOnly(candidate)) return candidate;
+  const safeDaysBack = Math.max(0, Number.isFinite(Number(daysBack)) ? Number(daysBack) : 0);
+  if (safeDaysBack <= 0) return base;
+  return shiftIsoDateByDays(base, -safeDaysBack) || base;
+};
+const resolveCobroDateWindowForRole = (role, hoyIso = toISODate()) => {
+  const hoy = normalizeDateOnly(hoyIso) || toISODate();
+  if (hasMinRole(role, "ADMIN")) {
+    return {
+      hoy,
+      minPermitida: null,
+      maxDiasRetroactivo: null
+    };
   }
-  return `${String(targetYear).padStart(4, "0")}-${monthText}-01`;
+  if (hasMinRole(role, "CAJERO")) {
+    return {
+      hoy,
+      minPermitida: getRetroactiveCobroMinDateByDays(hoy, MAX_RETROACTIVE_COBRO_DAYS_CAJA),
+      maxDiasRetroactivo: MAX_RETROACTIVE_COBRO_DAYS_CAJA
+    };
+  }
+  return {
+    hoy,
+    minPermitida: hoy,
+    maxDiasRetroactivo: 0
+  };
 };
 const validateCobroDateWindow = (
   requestedDateRaw,
-  hoyIso = toISODate(),
-  { enforceRetroactiveLimit = true } = {}
+  { role = null, hoyIso = toISODate() } = {}
 ) => {
-  const hoy = normalizeDateOnly(hoyIso) || toISODate();
+  const { hoy, minPermitida, maxDiasRetroactivo } = resolveCobroDateWindowForRole(role, hoyIso);
   const fechaSolicitada = normalizeDateOnly(requestedDateRaw) || hoy;
   if (fechaSolicitada > hoy) {
     return {
       ok: false,
       fecha: fechaSolicitada,
       hoy,
-      minPermitida: getRetroactiveCobroMinDate(hoy),
+      minPermitida,
       error: "No se permite registrar cobros con fecha futura."
     };
   }
-  if (!enforceRetroactiveLimit) {
-    return { ok: true, fecha: fechaSolicitada, hoy, minPermitida: null };
-  }
-  const minPermitida = getRetroactiveCobroMinDate(hoy);
   if (minPermitida && fechaSolicitada < minPermitida) {
+    const error = maxDiasRetroactivo === null
+      ? `No se permite registrar cobros con fecha menor a ${minPermitida}.`
+      : `Solo se permite registrar cobros con antiguedad maxima de ${maxDiasRetroactivo} dia(s). Fecha minima permitida: ${minPermitida}.`;
     return {
       ok: false,
       fecha: fechaSolicitada,
       hoy,
       minPermitida,
-      error: `Solo se permite registrar cobros con antiguedad maxima de ${MAX_RETROACTIVE_COBRO_YEARS} año(s). Fecha minima permitida: ${minPermitida}.`
+      error
     };
   }
   return { ok: true, fecha: fechaSolicitada, hoy, minPermitida };
@@ -10292,11 +10305,9 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
     if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
-    const puedeGestionarPagosHistoricos = hasMinRole(req.user?.rol, "ADMIN");
     const validacionFecha = validateCobroDateWindow(
       req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha,
-      toISODate(),
-      { enforceRetroactiveLimit: !puedeGestionarPagosHistoricos }
+      { role: req.user?.rol, hoyIso: toISODate() }
     );
     if (!validacionFecha.ok) {
       return res.status(400).json({
@@ -10307,11 +10318,6 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
     }
     const hoy = validacionFecha.hoy;
     const fechaPagoSolicitada = validacionFecha.fecha || hoy;
-    if (fechaPagoSolicitada !== hoy && !puedeGestionarPagosHistoricos) {
-      return res.status(403).json({
-        error: "Solo administrador puede registrar cobros con fecha distinta de hoy."
-      });
-    }
     const cierreHoy = await consultarCierreCajaBloqueante(client, hoy);
     if (cierreHoy.cerrada && fechaPagoSolicitada === hoy) {
       return res.status(409).json({
@@ -10654,11 +10660,9 @@ const normalizePagoInputs = (body = {}) => {
 app.post("/pagos", async (req, res) => {
   const client = await pool.connect();
   try {
-    const puedeGestionarPagosHistoricos = hasMinRole(req.user?.rol, "ADMIN");
     const validacionFecha = validateCobroDateWindow(
       req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha,
-      toISODate(),
-      { enforceRetroactiveLimit: !puedeGestionarPagosHistoricos }
+      { role: req.user?.rol, hoyIso: toISODate() }
     );
     if (!validacionFecha.ok) {
       return res.status(400).json({
@@ -10669,11 +10673,6 @@ app.post("/pagos", async (req, res) => {
     }
     const hoy = validacionFecha.hoy;
     const fechaPagoSolicitada = validacionFecha.fecha || hoy;
-    if (fechaPagoSolicitada !== hoy && !puedeGestionarPagosHistoricos) {
-      return res.status(403).json({
-        error: "Solo administrador puede registrar cobros con fecha distinta de hoy."
-      });
-    }
     const cierreHoy = await consultarCierreCajaBloqueante(client, hoy);
     if (cierreHoy.cerrada && fechaPagoSolicitada === hoy) {
       return res.status(409).json({
@@ -12605,13 +12604,21 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) =
   const hasta = rango.hasta;
 
   const resumenPagos = await pool.query(`
+    WITH movimientos_resumen AS (
+      SELECT
+        DATE(p.fecha_pago) AS fecha_operativa,
+        p.id_recibo,
+        SUM(p.monto_pagado)::numeric AS monto_pagado
+      FROM pagos p
+      WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+        AND p.fecha_pago >= $1::date
+        AND p.fecha_pago < $2::date
+      GROUP BY DATE(p.fecha_pago), p.id_recibo
+    )
     SELECT
       COUNT(*)::int AS cantidad,
-      COALESCE(SUM(p.monto_pagado), 0)::numeric AS total
-    FROM pagos p
-    WHERE ${PAGO_OPERATIVO_CAJA_SQL}
-      AND p.fecha_pago >= $1::date
-      AND p.fecha_pago < $2::date
+      COALESCE(SUM(monto_pagado), 0)::numeric AS total
+    FROM movimientos_resumen
   `, [desde, hasta]);
   const cantidadMovimientos = Number(resumenPagos.rows[0]?.cantidad || 0);
   const total = parseFloat(resumenPagos.rows[0]?.total || 0) || 0;
@@ -12711,7 +12718,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   const cantidadMovimientos = Number(resumen.cantidad_movimientos || 0);
 
   const movimientosSql = `
-    WITH movimientos_base AS (
+    WITH movimientos_detalle AS (
       SELECT
         p.id_pago,
         p.id_orden_cobro,
@@ -12765,11 +12772,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
         CASE
           WHEN ci.id_codigo IS NOT NULL THEN LPAD(ci.id_codigo::text, 6, '0')
           ELSE NULL
-        END AS codigo_impresion,
-        CASE
-          WHEN p.id_orden_cobro IS NULL THEN 0
-          ELSE ROW_NUMBER() OVER (PARTITION BY p.id_orden_cobro ORDER BY p.id_pago DESC)
-        END AS orden_rank
+        END AS codigo_impresion
       FROM pagos p
       JOIN recibos r ON p.id_recibo = r.id_recibo
       JOIN predios pr ON r.id_predio = pr.id_predio
@@ -12786,6 +12789,57 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       WHERE ${PAGO_OPERATIVO_CAJA_SQL}
         AND p.fecha_pago >= $1::date
         AND p.fecha_pago < $2::date
+    ),
+    movimientos_base AS (
+      SELECT
+        MAX(id_pago) AS id_pago,
+        MAX(id_orden_cobro) AS id_orden_cobro,
+        id_recibo,
+        MAX(codigo_recibo) AS codigo_recibo,
+        MAX(fecha_pago) AS fecha_pago,
+        fecha,
+        to_char(MAX(fecha_pago), 'HH24:MI:SS') AS hora,
+        ROUND(SUM(monto_pagado)::numeric, 2) AS monto_pagado,
+        nombre_completo,
+        id_contribuyente,
+        id_predio,
+        codigo_municipal,
+        direccion_completa,
+        mes,
+        anio,
+        subtotal_agua,
+        subtotal_desague,
+        subtotal_limpieza,
+        subtotal_admin,
+        total_pagar,
+        tarifa_actual_agua,
+        tarifa_actual_desague,
+        tarifa_actual_limpieza,
+        tarifa_actual_admin,
+        tarifa_actual_extra,
+        codigo_impresion
+      FROM movimientos_detalle
+      GROUP BY
+        fecha,
+        id_recibo,
+        nombre_completo,
+        id_contribuyente,
+        id_predio,
+        codigo_municipal,
+        direccion_completa,
+        mes,
+        anio,
+        subtotal_agua,
+        subtotal_desague,
+        subtotal_limpieza,
+        subtotal_admin,
+        total_pagar,
+        tarifa_actual_agua,
+        tarifa_actual_desague,
+        tarifa_actual_limpieza,
+        tarifa_actual_admin,
+        tarifa_actual_extra,
+        codigo_impresion
     )
     SELECT
       id_pago,
