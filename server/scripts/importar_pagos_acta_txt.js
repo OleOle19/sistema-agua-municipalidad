@@ -69,6 +69,7 @@ function parseArgs(argv) {
     ignorePeriod: null,
     maxPeriod: null,
     createMissingReceipts: true,
+    restoreReceiptTotals: argv.includes("--restore-receipt-totals"),
     fileArg: null
   };
 
@@ -154,8 +155,22 @@ function loadRowsFromTxt(filePath, options = {}) {
     const codigo = String(parts[0] || "").trim();
     const anio = parsePositiveInt(parts[1]);
     const mes = parsePositiveInt(parts[2]);
+    const subtotalAgua = parseMonto(parts[3]);
+    const subtotalDesague = parseMonto(parts[4]);
+    const subtotalLimpieza = parseMonto(parts[5]);
+    const subtotalAdmin = parseMonto(parts[6]);
+    const subtotalExtra = parseMonto(parts[7]);
+    const totalArchivo = parseMonto(parts[8]);
     const abono = parseMonto(parts[9]);
-    if (!codigo || !anio || mes < 1 || mes > 12 || abono <= 0) return;
+    const totalPartes = round2(
+      subtotalAgua
+      + subtotalDesague
+      + subtotalLimpieza
+      + subtotalAdmin
+      + subtotalExtra
+    );
+    if (!codigo || !anio || mes < 1 || mes > 12) return;
+    if (abono <= 0 && totalArchivo <= 0 && totalPartes <= 0) return;
 
     const periodo = periodKey(anio, mes);
     if (ignorePeriod && periodo === ignorePeriod) return;
@@ -167,12 +182,12 @@ function loadRowsFromTxt(filePath, options = {}) {
       anio,
       mes,
       periodo,
-      subtotal_agua: parseMonto(parts[3]),
-      subtotal_desague: parseMonto(parts[4]),
-      subtotal_limpieza: parseMonto(parts[5]),
-      subtotal_admin: parseMonto(parts[6]),
-      subtotal_extra: parseMonto(parts[7]),
-      total_archivo: parseMonto(parts[8]),
+      subtotal_agua: subtotalAgua,
+      subtotal_desague: subtotalDesague,
+      subtotal_limpieza: subtotalLimpieza,
+      subtotal_admin: subtotalAdmin,
+      subtotal_extra: subtotalExtra,
+      total_archivo: totalArchivo,
       abono_archivo: abono,
       recibo_legacy: String(parts[10] || "").trim(),
       pagado_sn: String(parts[11] || "").trim().toUpperCase()
@@ -204,6 +219,10 @@ function buildReceiptSnapshot(row) {
     id_predio: Number(row.id_predio),
     anio: Number(row.anio),
     mes: Number(row.mes),
+    subtotal_agua: parseMonto(row.subtotal_agua),
+    subtotal_desague: parseMonto(row.subtotal_desague),
+    subtotal_limpieza: parseMonto(row.subtotal_limpieza),
+    subtotal_admin: parseMonto(row.subtotal_admin),
     total_pagar: parseMonto(row.total_pagar),
     total_pagado: parseMonto(row.total_pagado),
     has_hidden_user: Boolean(row.has_hidden_user),
@@ -218,13 +237,26 @@ async function loadRecibosMap(client, targetKeys) {
       r.id_recibo,
       r.anio,
       r.mes,
+      r.subtotal_agua,
+      r.subtotal_desague,
+      r.subtotal_limpieza,
+      r.subtotal_admin,
       r.total_pagar,
       COALESCE(SUM(p.monto_pagado), 0)::numeric AS total_pagado,
       BOOL_OR(COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') = 'IMPORTACION_HISTORIAL') AS has_hidden_user,
       BOOL_OR(COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') = $1) AS has_target_user
     FROM recibos r
     LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
-    GROUP BY r.id_predio, r.id_recibo, r.anio, r.mes, r.total_pagar
+    GROUP BY
+      r.id_predio,
+      r.id_recibo,
+      r.anio,
+      r.mes,
+      r.subtotal_agua,
+      r.subtotal_desague,
+      r.subtotal_limpieza,
+      r.subtotal_admin,
+      r.total_pagar
   `, [IMPORT_USER]);
   const map = new Map();
   rs.rows.forEach((row) => {
@@ -242,6 +274,10 @@ async function loadReciboByKey(client, idPredio, anio, mes) {
       r.id_recibo,
       r.anio,
       r.mes,
+      r.subtotal_agua,
+      r.subtotal_desague,
+      r.subtotal_limpieza,
+      r.subtotal_admin,
       r.total_pagar,
       COALESCE(SUM(p.monto_pagado), 0)::numeric AS total_pagado,
       BOOL_OR(COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') = 'IMPORTACION_HISTORIAL') AS has_hidden_user,
@@ -249,7 +285,16 @@ async function loadReciboByKey(client, idPredio, anio, mes) {
     FROM recibos r
     LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
     WHERE r.id_predio = $1 AND r.anio = $2 AND r.mes = $3
-    GROUP BY r.id_predio, r.id_recibo, r.anio, r.mes, r.total_pagar
+    GROUP BY
+      r.id_predio,
+      r.id_recibo,
+      r.anio,
+      r.mes,
+      r.subtotal_agua,
+      r.subtotal_desague,
+      r.subtotal_limpieza,
+      r.subtotal_admin,
+      r.total_pagar
     LIMIT 1
   `, [idPredio, anio, mes, IMPORT_USER]);
   if (rs.rowCount === 0) return null;
@@ -324,6 +369,44 @@ async function syncReceiptState(client, idRecibo) {
   `, [idRecibo]);
 }
 
+function receiptBreakdownMatches(recibo, row) {
+  return Math.abs(parseMonto(recibo?.subtotal_agua) - parseMonto(row?.subtotal_agua)) <= 0.009
+    && Math.abs(parseMonto(recibo?.subtotal_desague) - parseMonto(row?.subtotal_desague)) <= 0.009
+    && Math.abs(parseMonto(recibo?.subtotal_limpieza) - parseMonto(row?.subtotal_limpieza)) <= 0.009
+    && Math.abs(parseMonto(recibo?.subtotal_admin) - computeReceiptAdmin(row)) <= 0.009
+    && Math.abs(parseMonto(recibo?.total_pagar) - computeReceiptTotal(row)) <= 0.009;
+}
+
+function canSafelyRestoreReceiptBreakdown(recibo, row) {
+  const totalArchivo = round2(row?.total_archivo);
+  const abonoArchivo = round2(row?.abono_archivo);
+  if (totalArchivo <= EPS) return false;
+  if (abonoArchivo - totalArchivo > 0.009) return false;
+  return Math.abs(parseMonto(recibo?.total_pagado) - abonoArchivo) <= 0.009;
+}
+
+async function restoreReceiptBreakdown(client, idRecibo, row) {
+  const subtotalAdmin = computeReceiptAdmin(row);
+  const totalPagar = computeReceiptTotal(row);
+  await client.query(`
+    UPDATE recibos
+    SET subtotal_agua = $2,
+        subtotal_desague = $3,
+        subtotal_limpieza = $4,
+        subtotal_admin = $5,
+        total_pagar = $6
+    WHERE id_recibo = $1
+  `, [
+    idRecibo,
+    round2(row.subtotal_agua),
+    round2(row.subtotal_desague),
+    round2(row.subtotal_limpieza),
+    round2(subtotalAdmin),
+    round2(totalPagar)
+  ]);
+  await syncReceiptState(client, idRecibo);
+}
+
 function createStats(filePath, options, rows) {
   return {
     archivo: filePath,
@@ -340,6 +423,8 @@ function createStats(filePath, options, rows) {
     insertar_pago: 0,
     ya_visible: 0,
     monto_distinto: 0,
+    recibo_descuadrado: 0,
+    recibo_restaurable: 0,
     sin_pago_en_bd: 0,
     monto_recortado: 0,
     muestras: {
@@ -347,6 +432,8 @@ function createStats(filePath, options, rows) {
       sin_recibo: [],
       crear_recibo: [],
       monto_distinto: [],
+      recibo_descuadrado: [],
+      recibo_restaurable: [],
       sin_pago_en_bd: [],
       monto_recortado: []
     }
@@ -356,7 +443,7 @@ function createStats(filePath, options, rows) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options.fileArg) {
-    throw new Error("Uso: node server/scripts/importar_pagos_acta_txt.js <ruta-txt> [--apply] [--max-period=YYYY-MM] [--ignore-period=YYYY-MM]");
+    throw new Error("Uso: node server/scripts/importar_pagos_acta_txt.js <ruta-txt> [--apply] [--restore-receipt-totals] [--max-period=YYYY-MM] [--ignore-period=YYYY-MM]");
   }
 
   options.ignorePeriod = validatePeriodText(options.ignorePeriod, "--ignore-period");
@@ -386,6 +473,7 @@ async function main() {
     const retagTargets = [];
     const insertTargets = [];
     const createTargets = [];
+    const restoreReceiptTargets = [];
 
     rows.forEach((row) => {
       const idPredio = prediosMap.get(row.codigo_municipal);
@@ -404,14 +492,16 @@ async function main() {
           return;
         }
         stats.crear_recibo += 1;
-        stats.insertar_pago += 1;
+        if (row.abono_archivo > EPS) {
+          stats.insertar_pago += 1;
+        }
         createTargets.push({ row, idPredio });
         pickSample(stats.muestras.crear_recibo, row, {
           id_predio: idPredio,
           total_recibo_objetivo: computeReceiptTotal(row)
         });
         const pagoAInsertar = clampPayment(row.abono_archivo, computeReceiptTotal(row));
-        if (Math.abs(pagoAInsertar - row.abono_archivo) > 0.009) {
+        if (row.abono_archivo > EPS && Math.abs(pagoAInsertar - row.abono_archivo) > 0.009) {
           stats.monto_recortado += 1;
           pickSample(stats.muestras.monto_recortado, row, {
             motivo: "recibo_nuevo",
@@ -422,14 +512,16 @@ async function main() {
         return;
       }
 
-      if (recibo.total_pagado <= EPS) {
+      if (recibo.total_pagado <= EPS && row.abono_archivo > EPS) {
         stats.sin_pago_en_bd += 1;
         stats.insertar_pago += 1;
-        const pagoAInsertar = clampPayment(row.abono_archivo, recibo.total_pagar);
+        const totalObjetivoPago = Math.max(parseMonto(recibo.total_pagar), computeReceiptTotal(row));
+        const pagoAInsertar = clampPayment(row.abono_archivo, totalObjetivoPago);
         insertTargets.push({ row, recibo, montoAplicar: pagoAInsertar });
         pickSample(stats.muestras.sin_pago_en_bd, row, {
           id_recibo: recibo.id_recibo,
           total_pagar_bd: recibo.total_pagar,
+          total_pagar_archivo: computeReceiptTotal(row),
           pago_aplicar: pagoAInsertar
         });
         if (Math.abs(pagoAInsertar - row.abono_archivo) > 0.009) {
@@ -438,10 +530,10 @@ async function main() {
             motivo: "recibo_existente",
             id_recibo: recibo.id_recibo,
             pago_aplicado: pagoAInsertar,
-            total_pagar_bd: recibo.total_pagar
+            total_pagar_bd: recibo.total_pagar,
+            total_pagar_archivo: computeReceiptTotal(row)
           });
         }
-        return;
       }
 
       if (Math.abs(recibo.total_pagado - row.abono_archivo) > 0.009) {
@@ -451,6 +543,23 @@ async function main() {
           total_pagado_bd: recibo.total_pagado,
           total_pagar_bd: recibo.total_pagar
         });
+      }
+
+      if (!receiptBreakdownMatches(recibo, row)) {
+        stats.recibo_descuadrado += 1;
+        const totalEsperado = computeReceiptTotal(row);
+        const muestra = {
+          id_recibo: recibo.id_recibo,
+          total_pagado_bd: recibo.total_pagado,
+          total_pagar_bd: recibo.total_pagar,
+          total_pagar_archivo: totalEsperado
+        };
+        pickSample(stats.muestras.recibo_descuadrado, row, muestra);
+        if (canSafelyRestoreReceiptBreakdown(recibo, row)) {
+          stats.recibo_restaurable += 1;
+          restoreReceiptTargets.push({ row, recibo });
+          pickSample(stats.muestras.recibo_restaurable, row, muestra);
+        }
       }
 
       if (recibo.has_hidden_user) {
@@ -473,6 +582,7 @@ async function main() {
     let pagosActualizados = 0;
     let pagosInsertados = 0;
     let recibosInsertados = 0;
+    let recibosRestaurados = 0;
 
     for (const idRecibo of uniqueRetagTargets) {
       pagosActualizados += await retagHiddenPayments(client, idRecibo);
@@ -502,6 +612,19 @@ async function main() {
       pagosInsertados += 1;
     }
 
+    if (options.restoreReceiptTotals) {
+      const uniqueRestoreTargets = new Map();
+      restoreReceiptTargets.forEach((item) => {
+        if (!uniqueRestoreTargets.has(item.recibo.id_recibo)) {
+          uniqueRestoreTargets.set(item.recibo.id_recibo, item);
+        }
+      });
+      for (const item of uniqueRestoreTargets.values()) {
+        await restoreReceiptBreakdown(client, item.recibo.id_recibo, item.row);
+        recibosRestaurados += 1;
+      }
+    }
+
     await client.query("COMMIT");
 
     console.log(JSON.stringify({
@@ -511,7 +634,10 @@ async function main() {
       recibos_retaggeados: uniqueRetagTargets.length,
       pagos_actualizados: pagosActualizados,
       pagos_insertados: pagosInsertados,
+      recibos_restaurados: recibosRestaurados,
       monto_distinto: stats.monto_distinto,
+      recibo_descuadrado: stats.recibo_descuadrado,
+      recibo_restaurable: stats.recibo_restaurable,
       monto_recortado: stats.monto_recortado,
       sin_pago_en_bd: stats.sin_pago_en_bd,
       sin_recibo: stats.sin_recibo

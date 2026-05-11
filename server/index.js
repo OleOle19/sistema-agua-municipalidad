@@ -1297,6 +1297,33 @@ const buildStructuredAuditDetail = (entries = {}) => {
   }
   return parts.join("; ");
 };
+const parseStructuredAuditDetail = (detailRaw = "") => {
+  const detail = String(detailRaw || "").trim();
+  if (!detail) return {};
+  const entries = {};
+  detail
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((part) => {
+      const idx = part.indexOf("=");
+      if (idx <= 0) return;
+      const key = String(part.slice(0, idx) || "").trim();
+      const rawValue = String(part.slice(idx + 1) || "").trim();
+      if (!key) return;
+      if (
+        (rawValue.startsWith("{") && rawValue.endsWith("}"))
+        || (rawValue.startsWith("[") && rawValue.endsWith("]"))
+      ) {
+        try {
+          entries[key] = JSON.parse(rawValue);
+          return;
+        } catch {}
+      }
+      entries[key] = rawValue;
+    });
+  return entries;
+};
 const SQL_SN_POSITIVOS = "('S', '1', 'SI', 'TRUE', 'Y', 'YES')";
 const SQL_SN_NEGATIVOS = "('N', '0', 'NO', 'FALSE')";
 const sqlSnEsSi = (sqlExpr, fallback = "S") => {
@@ -1941,6 +1968,238 @@ const normalizeHistorialArbitriosRows = (rows = []) => {
       subtotal_extra: split.subtotal_extra
     };
   });
+};
+
+const buildCampoSolicitudUndoSnapshot = async (
+  client,
+  idContribuyente,
+  { desdePeriodoNum = getNextPeriod().periodoNum } = {}
+) => {
+  const id = parsePositiveInt(idContribuyente, 0);
+  if (!id) return null;
+  const contribuyenteRs = await client.query(`
+    SELECT
+      id_contribuyente,
+      codigo_municipal,
+      nombre_completo,
+      dni_ruc,
+      telefono,
+      estado_conexion,
+      estado_conexion_fuente,
+      estado_conexion_verificado_sn,
+      estado_conexion_fecha_verificacion,
+      estado_conexion_motivo_ultimo
+    FROM contribuyentes
+    WHERE id_contribuyente = $1
+    LIMIT 1
+  `, [id]);
+  const predioRs = await client.query(`
+    SELECT
+      id_predio,
+      id_calle,
+      numero_casa,
+      referencia_direccion,
+      manzana,
+      lote,
+      activo_sn,
+      estado_servicio,
+      agua_sn,
+      desague_sn,
+      limpieza_sn,
+      tarifa_agua,
+      tarifa_desague,
+      tarifa_limpieza,
+      tarifa_admin,
+      tarifa_extra,
+      direccion_alterna
+    FROM predios
+    WHERE id_contribuyente = $1
+    ORDER BY id_predio ASC
+    LIMIT 1
+  `, [id]);
+  const recibosRs = await client.query(`
+    SELECT
+      r.id_recibo,
+      r.subtotal_agua,
+      r.subtotal_desague,
+      r.subtotal_limpieza,
+      r.subtotal_admin,
+      r.total_pagar,
+      r.estado
+    FROM recibos r
+    JOIN predios p ON p.id_predio = r.id_predio
+    WHERE p.id_contribuyente = $1
+      AND ((r.anio::int * 100) + r.mes::int) >= $2::int
+      AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+    ORDER BY r.anio ASC, r.mes ASC, r.id_recibo ASC
+  `, [id, Math.max(0, Number(desdePeriodoNum || 0))]);
+  return {
+    version: 1,
+    desde_periodo_num: Math.max(0, Number(desdePeriodoNum || 0)),
+    contribuyente: contribuyenteRs.rows[0] || null,
+    predio: predioRs.rows[0] || null,
+    recibos: recibosRs.rows.map((row) => ({
+      id_recibo: Number(row.id_recibo || 0),
+      subtotal_agua: parseMonto(row.subtotal_agua, 0),
+      subtotal_desague: parseMonto(row.subtotal_desague, 0),
+      subtotal_limpieza: parseMonto(row.subtotal_limpieza, 0),
+      subtotal_admin: parseMonto(row.subtotal_admin, 0),
+      total_pagar: parseMonto(row.total_pagar, 0),
+      estado: String(row.estado || "PENDIENTE").trim().toUpperCase() || "PENDIENTE"
+    }))
+  };
+};
+const syncRecibosStateByIds = async (client, reciboIds = []) => {
+  const ids = Array.from(new Set((Array.isArray(reciboIds) ? reciboIds : []).map((id) => parsePositiveInt(id, 0)).filter((id) => id > 0)));
+  if (ids.length === 0) return 0;
+  const result = await client.query(`
+    WITH pagos_totales AS (
+      SELECT
+        r.id_recibo,
+        COALESCE(SUM(p.monto_pagado), 0)::numeric AS total_pagado
+      FROM recibos r
+      LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
+      WHERE r.id_recibo = ANY($1::int[])
+      GROUP BY r.id_recibo
+    )
+    UPDATE recibos r
+    SET estado = CASE
+      WHEN COALESCE(r.total_pagar, 0) <= 0.001 THEN 'PAGADO'
+      WHEN COALESCE(pt.total_pagado, 0) >= COALESCE(r.total_pagar, 0) - 0.001 THEN 'PAGADO'
+      WHEN COALESCE(pt.total_pagado, 0) > 0.001 THEN 'PARCIAL'
+      ELSE 'PENDIENTE'
+    END
+    FROM pagos_totales pt
+    WHERE r.id_recibo = pt.id_recibo
+    RETURNING r.id_recibo
+  `, [ids]);
+  return Number(result.rowCount || 0);
+};
+const restoreCampoSolicitudUndoSnapshot = async (
+  client,
+  snapshotRaw,
+  { idDireccionAlterna = null } = {}
+) => {
+  const snapshot = snapshotRaw && typeof snapshotRaw === "object" ? snapshotRaw : null;
+  const contribuyente = snapshot?.contribuyente && typeof snapshot.contribuyente === "object"
+    ? snapshot.contribuyente
+    : null;
+  const predio = snapshot?.predio && typeof snapshot.predio === "object"
+    ? snapshot.predio
+    : null;
+  if (!contribuyente || !predio) {
+    const err = new Error("La solicitud no tiene snapshot suficiente para deshacer.");
+    err.statusCode = 409;
+    err.publicMessage = "La solicitud fue aprobada antes de habilitar el deshacer completo.";
+    throw err;
+  }
+  const idContribuyente = parsePositiveInt(contribuyente.id_contribuyente, 0);
+  const idPredio = parsePositiveInt(predio.id_predio, 0);
+  if (!idContribuyente || !idPredio) {
+    const err = new Error("Snapshot inválido para deshacer solicitud.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  await client.query(`
+    UPDATE contribuyentes
+    SET nombre_completo = $1,
+        dni_ruc = $2,
+        telefono = $3,
+        estado_conexion = $4,
+        estado_conexion_fuente = $5,
+        estado_conexion_verificado_sn = $6,
+        estado_conexion_fecha_verificacion = $7,
+        estado_conexion_motivo_ultimo = $8
+    WHERE id_contribuyente = $9
+  `, [
+    normalizeLimitedText(contribuyente.nombre_completo, 200) || null,
+    normalizeLimitedText(contribuyente.dni_ruc, 30) || null,
+    normalizeLimitedText(contribuyente.telefono, 40) || null,
+    normalizeEstadoConexion(contribuyente.estado_conexion),
+    normalizeLimitedText(contribuyente.estado_conexion_fuente, 30) || null,
+    normalizeSN(contribuyente.estado_conexion_verificado_sn, "N"),
+    normalizeDateOnly(contribuyente.estado_conexion_fecha_verificacion),
+    normalizeLimitedText(contribuyente.estado_conexion_motivo_ultimo, 1200) || null,
+    idContribuyente
+  ]);
+  await client.query(`
+    UPDATE predios
+    SET id_calle = $1,
+        numero_casa = $2,
+        referencia_direccion = $3,
+        manzana = $4,
+        lote = $5,
+        activo_sn = $6,
+        estado_servicio = $7,
+        agua_sn = $8,
+        desague_sn = $9,
+        limpieza_sn = $10,
+        tarifa_agua = $11,
+        tarifa_desague = $12,
+        tarifa_limpieza = $13,
+        tarifa_admin = $14,
+        tarifa_extra = $15,
+        direccion_alterna = $16
+    WHERE id_predio = $17
+  `, [
+    parsePositiveInt(predio.id_calle, 0) || null,
+    normalizeLimitedText(predio.numero_casa, 30) || null,
+    normalizeLimitedText(predio.referencia_direccion, 250) || null,
+    normalizeLimitedText(predio.manzana, 30) || null,
+    normalizeLimitedText(predio.lote, 30) || null,
+    normalizeSN(predio.activo_sn, "S"),
+    normalizeLimitedText(predio.estado_servicio, 40) || "ACTIVO",
+    normalizeSN(predio.agua_sn, "S"),
+    normalizeSN(predio.desague_sn, "S"),
+    normalizeSN(predio.limpieza_sn, "S"),
+    parseOptionalTarifaMonto(predio.tarifa_agua),
+    parseOptionalTarifaMonto(predio.tarifa_desague),
+    parseOptionalTarifaMonto(predio.tarifa_limpieza),
+    parseOptionalTarifaMonto(predio.tarifa_admin),
+    parseOptionalTarifaMonto(predio.tarifa_extra),
+    normalizeLimitedText(predio.direccion_alterna, 250) || null,
+    idPredio
+  ]);
+  if (parsePositiveInt(idDireccionAlterna, 0) > 0) {
+    await client.query(`
+      UPDATE predios_direcciones_alternas
+      SET activo_sn = 'N'
+      WHERE id_direccion_alterna = $1
+    `, [parsePositiveInt(idDireccionAlterna, 0)]);
+  }
+
+  const recibos = Array.isArray(snapshot?.recibos) ? snapshot.recibos : [];
+  const reciboIds = [];
+  for (const recibo of recibos) {
+    const idRecibo = parsePositiveInt(recibo?.id_recibo, 0);
+    if (!idRecibo) continue;
+    reciboIds.push(idRecibo);
+    await client.query(`
+      UPDATE recibos
+      SET subtotal_agua = $2,
+          subtotal_desague = $3,
+          subtotal_limpieza = $4,
+          subtotal_admin = $5,
+          total_pagar = $6
+      WHERE id_recibo = $1
+    `, [
+      idRecibo,
+      roundMonto2(parseMonto(recibo?.subtotal_agua, 0)),
+      roundMonto2(parseMonto(recibo?.subtotal_desague, 0)),
+      roundMonto2(parseMonto(recibo?.subtotal_limpieza, 0)),
+      roundMonto2(parseMonto(recibo?.subtotal_admin, 0)),
+      roundMonto2(parseMonto(recibo?.total_pagar, 0))
+    ]);
+  }
+  if (reciboIds.length > 0) {
+    await syncRecibosStateByIds(client, reciboIds);
+  }
+  return {
+    id_contribuyente: idContribuyente,
+    id_predio: idPredio,
+    recibos_restaurados: reciboIds.length
+  };
 };
 
 const recalcularRecibosFuturosPorServicios = async (
@@ -2749,6 +3008,7 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/\d+\/exportar$/, minRole: "ADMIN" },
 
   { methods: ["GET"], pattern: /^\/auditoria$/, minRole: "ADMIN_SEC" },
+  { methods: ["POST"], pattern: /^\/auditoria\/\d+\/deshacer$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/exportar\/auditoria$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/exportar\/padron$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/exportar\/verificacion-campo$/, minRole: "ADMIN_SEC" },
@@ -6319,6 +6579,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       .join(" | ")
       .slice(0, 1200);
     const fechaVerificacion = toISODate();
+    const undoSnapshot = await buildCampoSolicitudUndoSnapshot(client, actual.id_contribuyente);
 
     await client.query(
       `UPDATE contribuyentes
@@ -6542,10 +6803,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     });
     let recibosRecalculados = 0;
     if (serviciosCambiaron || tarifasCambiaron || (requestedChanges.estado && estadoActual !== estadoAplicado)) {
-      const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente, {
-        incluirPendientesHistoricos: true,
-        desdePeriodoNum: 0
-      });
+      const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente);
       recibosRecalculados = Number(recalc?.actualizados || 0);
     }
 
@@ -6557,13 +6815,16 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
            revisado_en = NOW(),
            actualizado_en = NOW(),
            metadata = COALESCE(metadata, '{}'::jsonb)
-             || jsonb_build_object(
+            || jsonb_build_object(
                'aplicacion_automatica_sn', 'S',
-               'aplicacion_pendiente_sn', 'N'
+               'aplicacion_pendiente_sn', 'N',
+               'undo_disponible_sn', 'S',
+               'undo_aplicado_sn', 'N',
+               'undo_snapshot', $6::jsonb
              )
-             || CASE
-               WHEN $5::bigint IS NULL THEN '{}'::jsonb
-               ELSE jsonb_build_object('id_direccion_alterna', $5::bigint)
+            || CASE
+              WHEN $5::bigint IS NULL THEN '{}'::jsonb
+              ELSE jsonb_build_object('id_direccion_alterna', $5::bigint)
              END
        WHERE id_solicitud = $4`,
       [
@@ -6571,7 +6832,8 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
         motivoRevision,
         req.user?.id_usuario || null,
         idSolicitud,
-        idDireccionAlterna
+        idDireccionAlterna,
+        JSON.stringify(undoSnapshot || {})
       ]
     );
 
@@ -8139,10 +8401,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
         referenciaDireccionNueva
       ]
     );
-    const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-      incluirPendientesHistoricos: true,
-      desdePeriodoNum: 0
-    });
+    const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente);
     const recibosRecalculados = Number(recalcManual?.actualizados || 0);
     if (cambioRazonSocial) {
       const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
@@ -13802,6 +14061,115 @@ app.get("/auditoria", authenticateToken, async (req, res) => {
     `);
     res.json(logs.rows);
   } catch (err) { res.status(500).send("Error auditoria"); }
+});
+
+app.post("/auditoria/:id/deshacer", authenticateToken, requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const idAuditoria = parsePositiveInt(req.params?.id, 0);
+    if (!idAuditoria) {
+      return res.status(400).json({ error: "ID de auditoria invalido." });
+    }
+
+    await client.query("BEGIN");
+    const auditRs = await client.query(`
+      SELECT id_auditoria, accion, detalle
+      FROM auditoria
+      WHERE id_auditoria = $1
+      LIMIT 1
+      FOR UPDATE
+    `, [idAuditoria]);
+    if (auditRs.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Registro de auditoria no encontrado." });
+    }
+    const audit = auditRs.rows[0];
+    if (String(audit.accion || "").trim().toUpperCase() !== "CAMPO_SOLICITUD_APROBADA") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Solo se puede deshacer aprobaciones de solicitudes de campo." });
+    }
+
+    const detail = parseStructuredAuditDetail(audit.detalle);
+    const idSolicitud = parsePositiveInt(detail?.solicitud, 0);
+    if (!idSolicitud) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La auditoria no contiene una solicitud valida para deshacer." });
+    }
+
+    const solicitudRs = await client.query(`
+      SELECT *
+      FROM campo_solicitudes
+      WHERE id_solicitud = $1
+      LIMIT 1
+      FOR UPDATE
+    `, [idSolicitud]);
+    if (solicitudRs.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Solicitud de campo no encontrada." });
+    }
+    const solicitud = solicitudRs.rows[0];
+    const metadata = getCampoSolicitudMetadata(solicitud);
+    if (normalizeSN(metadata.undo_aplicado_sn, "N") === "S") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Esta solicitud ya fue deshecha anteriormente." });
+    }
+
+    const restoreResult = await restoreCampoSolicitudUndoSnapshot(client, metadata.undo_snapshot, {
+      idDireccionAlterna: parsePositiveInt(metadata.id_direccion_alterna, 0) || null
+    });
+
+    await client.query(`
+      UPDATE campo_solicitudes
+      SET metadata = COALESCE(metadata, '{}'::jsonb)
+        || jsonb_build_object(
+          'undo_aplicado_sn', 'S',
+          'undo_aplicado_por', COALESCE($2::text, ''),
+          'undo_aplicado_en', to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS')
+        ),
+          actualizado_en = NOW()
+      WHERE id_solicitud = $1
+    `, [
+      idSolicitud,
+      req.user?.username || req.user?.nombre || "SISTEMA"
+    ]);
+
+    await registrarAuditoria(
+      client,
+      "CAMPO_SOLICITUD_DESHECHA",
+      buildStructuredAuditDetail({
+        auditoria_origen: idAuditoria,
+        solicitud: idSolicitud,
+        id_contribuyente: restoreResult.id_contribuyente,
+        id_predio: restoreResult.id_predio,
+        recibos_restaurados: restoreResult.recibos_restaurados,
+        deshecho_por: req.user?.username || req.user?.nombre || "SISTEMA"
+      }),
+      req.user?.nombre || req.user?.username || "SISTEMA"
+    );
+
+    await client.query("COMMIT");
+    invalidateContribuyentesCache();
+    realtimeHub.broadcast("deuda", "saldo_actualizado", {
+      id_contribuyente: restoreResult.id_contribuyente,
+      origen: "auditoria_deshacer_campo"
+    });
+    return res.json({
+      mensaje: "Solicitud de campo deshecha correctamente.",
+      id_auditoria: idAuditoria,
+      id_solicitud: idSolicitud,
+      ...restoreResult
+    });
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    console.error("Error deshaciendo auditoria:", err);
+    const status = Number(err?.statusCode || 500);
+    if (status >= 400 && status < 500) {
+      return res.status(status).json({ error: err?.publicMessage || err?.message || "No se pudo deshacer la auditoria." });
+    }
+    return res.status(500).json({ error: "Error deshaciendo auditoria." });
+  } finally {
+    client.release();
+  }
 });
 
 app.get("/exportar/auditoria", authenticateToken, requireAdmin, async (req, res) => {
