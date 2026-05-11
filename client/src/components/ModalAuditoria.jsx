@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import api from "../api";
-import { FaShieldAlt, FaFileExcel, FaSearch, FaSyncAlt } from "react-icons/fa";
+import { FaShieldAlt, FaFileExcel, FaSearch, FaSyncAlt, FaUndo } from "react-icons/fa";
 
 const ACTION_LABELS = {
   ORDEN_COBRO_COBRADA: "Orden de cobro cobrada",
@@ -16,7 +16,8 @@ const ACTION_LABELS = {
   AUTH_LOGIN: "Inicio de sesion",
   ADMIN_LUZ_USUARIO_CREADO: "Usuario de luz creado",
   ADMIN_LUZ_USUARIO_ACTUALIZADO: "Usuario de luz actualizado",
-  ADMIN_LUZ_USUARIO_ELIMINADO: "Usuario de luz eliminado"
+  ADMIN_LUZ_USUARIO_ELIMINADO: "Usuario de luz eliminado",
+  CAMPO_SOLICITUD_DESHECHA: "Solicitud de campo deshecha"
 };
 const CAMPO_TIPO_SOLICITUD_LABELS = {
   ACTUALIZACION: "Actualizacion ficha",
@@ -95,7 +96,10 @@ const LABEL_TRANSLATIONS = {
   direccion_verificada: "Direccion verificada",
   referencia_direccion: "Referencia direccion",
   verificacion_estado: "Estado verificacion",
-  verificacion_motivo: "Motivo verificacion"
+  verificacion_motivo: "Motivo verificacion",
+  auditoria_origen: "Auditoria origen",
+  recibos_restaurados: "Recibos restaurados",
+  deshecho_por: "Deshecho por"
 };
 
 const formatArrayHint = (value) => {
@@ -291,11 +295,13 @@ const parseDetalle = (detalle) => {
 
   return rows;
 };
+const isUndoableAuditAction = (log = {}) => String(log?.accion || "").trim().toUpperCase() === "CAMPO_SOLICITUD_APROBADA";
 
 const ModalAuditoria = ({ cerrarModal, darkMode }) => {
   const [logs, setLogs] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [exportando, setExportando] = useState(false);
+  const [deshaciendoId, setDeshaciendoId] = useState(0);
   const [filtroTexto, setFiltroTexto] = useState("");
   const [filtroMetodo, setFiltroMetodo] = useState("TODOS");
   const [soloSensibles, setSoloSensibles] = useState(false);
@@ -363,6 +369,22 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
       alert("No se pudo exportar la auditoria.");
     } finally {
       setExportando(false);
+    }
+  };
+  const deshacerAuditoria = async (log) => {
+    const idAuditoria = Number(log?.id_auditoria || 0);
+    if (!idAuditoria) return;
+    const confirmado = window.confirm("Se intentara deshacer esta aprobacion de solicitud de campo. Continuar?");
+    if (!confirmado) return;
+    try {
+      setDeshaciendoId(idAuditoria);
+      const res = await api.post(`/auditoria/${idAuditoria}/deshacer`);
+      window.alert(res?.data?.mensaje || "Solicitud deshecha correctamente.");
+      await cargarLogs();
+    } catch (err) {
+      window.alert(String(err?.response?.data?.error || "No se pudo deshacer la auditoria."));
+    } finally {
+      setDeshaciendoId(0);
     }
   };
 
@@ -465,6 +487,19 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                           </td>
                           <td className="align-top">
                             <div className="rounded-3 p-2 w-100" style={detalleCardStyle}>
+                              {isUndoableAuditAction(log) && (
+                                <div className="d-flex justify-content-end mb-2">
+                                  <button
+                                    type="button"
+                                    className={`btn btn-sm ${darkMode ? "btn-outline-warning" : "btn-outline-danger"}`}
+                                    onClick={() => deshacerAuditoria(log)}
+                                    disabled={deshaciendoId === Number(log.id_auditoria || 0)}
+                                  >
+                                    <FaUndo className="me-1" />
+                                    {deshaciendoId === Number(log.id_auditoria || 0) ? "Deshaciendo..." : "Deshacer"}
+                                  </button>
+                                </div>
+                              )}
                               {detalleRows.length === 0 ? (
                                 <span className="small text-muted">Sin detalle</span>
                               ) : (
