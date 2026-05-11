@@ -55,6 +55,7 @@ const RECIBO_LUZ_PAGE_STYLE = `
     }
   }
 `;
+const MAX_RETROACTIVE_COBRO_DAYS_CAJA = 4;
 
 const normalizeRole = (role) => {
   const raw = String(role || "").trim().toUpperCase();
@@ -116,16 +117,35 @@ const isValidIsoDate = (isoDate) => {
     && (probe.getUTCMonth() + 1) === month
     && probe.getUTCDate() === day;
 };
-const shiftIsoDateByYears = (isoDate, deltaYears) => {
+const shiftIsoDateByDays = (isoDate, deltaDays) => {
   const text = String(isoDate || "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return toIsoDate();
-  const [year, month, day] = text.split("-").map((v) => Number(v));
-  const targetYear = year + Number(deltaYears || 0);
-  for (let currentDay = day; currentDay >= 1; currentDay -= 1) {
-    const candidate = `${String(targetYear).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(currentDay).padStart(2, "0")}`;
-    if (isValidIsoDate(candidate)) return candidate;
+  const probe = new Date(`${text}T12:00:00`);
+  if (Number.isNaN(probe.getTime())) return toIsoDate();
+  probe.setDate(probe.getDate() + Number(deltaDays || 0));
+  return toIsoDate(probe);
+};
+const resolveCobroDateWindow = (role, hoyIso = toIsoDate()) => {
+  const rol = normalizeRole(role);
+  if (rol === "ADMIN") {
+    return {
+      min: "",
+      max: hoyIso,
+      maxDiasRetroactivo: null
+    };
   }
-  return `${String(targetYear).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`;
+  if (rol === "CAJERO") {
+    return {
+      min: shiftIsoDateByDays(hoyIso, -MAX_RETROACTIVE_COBRO_DAYS_CAJA),
+      max: hoyIso,
+      maxDiasRetroactivo: MAX_RETROACTIVE_COBRO_DAYS_CAJA
+    };
+  }
+  return {
+    min: hoyIso,
+    max: hoyIso,
+    maxDiasRetroactivo: 0
+  };
 };
 
 const parseMonto = (value) => {
@@ -423,12 +443,17 @@ function CajaMunicipalApp({ onBackToSelector }) {
 
   const rolActual = normalizeRole(usuarioSistema?.rol);
   const accesoCajaPermitido = canEnterCajaModuleByRole(rolActual);
+  const ventanaFechaCobro = resolveCobroDateWindow(rolActual, toIsoDate());
   const permisos = useMemo(() => ({
     role: rolActual,
     roleLabel: ROLE_LABELS[rolActual] || ROLE_LABELS.CONSULTA,
     canCaja: accesoCajaPermitido,
-    canAdminPagos: rolActual === "ADMIN"
-  }), [accesoCajaPermitido, rolActual]);
+    canAdminPagos: rolActual === "ADMIN",
+    canSeleccionarFechaCobro: accesoCajaPermitido,
+    fechaCobroMinima: ventanaFechaCobro.min,
+    fechaCobroMaxima: ventanaFechaCobro.max,
+    maxDiasRetroactivoCobro: ventanaFechaCobro.maxDiasRetroactivo
+  }), [accesoCajaPermitido, rolActual, ventanaFechaCobro.max, ventanaFechaCobro.maxDiasRetroactivo, ventanaFechaCobro.min]);
 
   const showFlash = useCallback((type, text) => {
     setFlash({ type, text, ts: Date.now() });
@@ -1013,7 +1038,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
     if (!idContribuyente || !isValidIsoDate(fecha)) return;
     const hoy = toIsoDate();
+    const fechaMinima = permisos.fechaCobroMinima || "";
     if (fecha > hoy) return;
+    if (fechaMinima && fecha < fechaMinima) return;
     setLoadingPendientesCobroAgua(true);
     try {
       await cargarPeriodosCobroAgua(idContribuyente, fecha, {
@@ -1028,6 +1055,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     cargarPeriodosCobroAgua,
     handleApiError,
     mostrarModalCobroAgua,
+    permisos.fechaCobroMinima,
     permitirContingenciaAgua,
     selectedContribuyenteAgua
   ]);
@@ -1277,7 +1305,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
     const fechaPago = String(fechaCobroAgua || "").trim();
     const hoy = toIsoDate();
-    const fechaMinima = shiftIsoDateByYears(hoy, -1);
+    const fechaMinimaPermitida = permisos.fechaCobroMinima || "";
     if (!isValidIsoDate(fechaPago)) {
       showFlash("warning", "Seleccione una fecha valida para registrar el cobro.");
       return;
@@ -1286,12 +1314,14 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash("warning", "No se permite registrar cobros con fecha futura.");
       return;
     }
-    if (fechaPago !== hoy && !permisos.canAdminPagos) {
-      showFlash("warning", "Solo administrador puede registrar cobros con fecha distinta de hoy.");
-      return;
-    }
-    if (fechaPago < fechaMinima) {
-      showFlash("warning", `Solo se permite registrar cobros hasta un año atras. Fecha minima: ${fechaMinima}.`);
+    if (fechaMinimaPermitida && fechaPago < fechaMinimaPermitida) {
+      const limiteDias = Number(permisos.maxDiasRetroactivoCobro);
+      showFlash(
+        "warning",
+        Number.isFinite(limiteDias) && limiteDias >= 0
+          ? `Solo se permite registrar cobros con antiguedad maxima de ${limiteDias} dia(s). Fecha minima: ${fechaMinimaPermitida}.`
+          : `No se permite registrar cobros con fecha menor a ${fechaMinimaPermitida}.`
+      );
       return;
     }
     const pagos = [];
@@ -1359,8 +1389,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }, [
     buscarContribuyentesAgua,
     handleApiError,
-    permisos.canAdminPagos,
     permisos.canCaja,
+    permisos.fechaCobroMinima,
+    permisos.maxDiasRetroactivoCobro,
     recibosPendientesCobroAgua,
     recargarAgua,
     selectedContribuyenteAgua,
@@ -1994,7 +2025,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                 <div className="small text-muted mb-3">
                   Se muestran deudas pendientes y periodos adelantados ya emitidos por ventanilla (Agua).
                   Si el usuario no trae recibo, puede activarse contingencia para generar periodos faltantes desde Caja.
-                  Solo administrador puede registrar cobros retroactivos y corregir periodos pagados. Para cambiar monto use "Editar monto"; para cambiar fecha primero anule y luego registre de nuevo el cobro.
+                  Caja puede registrar cobros retroactivos hasta 4 dias atras; administrador no tiene limite retroactivo. Solo administrador puede corregir periodos pagados. Para cambiar monto use "Editar monto"; para cambiar fecha primero anule y luego registre de nuevo el cobro.
                 </div>
                 <div className="row g-2 align-items-end mb-3">
                   <div className="col-sm-4 col-md-3">
@@ -2003,17 +2034,17 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       type="date"
                       className="form-control form-control-sm"
                       value={fechaCobroAgua}
-                      min={permisos.canAdminPagos ? "" : toIsoDate()}
-                      max={toIsoDate()}
+                      min={permisos.fechaCobroMinima}
+                      max={permisos.fechaCobroMaxima}
                       onChange={(e) => onChangeFechaCobroAgua(e.target.value)}
-                      disabled={!permisos.canAdminPagos || cobrandoDirectoAgua || loadingPendientesCobroAgua}
+                      disabled={!permisos.canSeleccionarFechaCobro || cobrandoDirectoAgua || loadingPendientesCobroAgua}
                     />
                   </div>
                   <div className="col-sm-8 col-md-6">
                     <div className="small text-muted">
                       {permisos.canAdminPagos
                         ? "El cobro se registrara en el reporte de la fecha seleccionada. Administrador puede usar cualquier fecha pasada."
-                        : "Los cobros normales se registran con la fecha de hoy. Solo administrador puede usar una fecha retroactiva."}
+                        : `El cobro se registrara en el reporte de la fecha seleccionada. Caja puede usar hoy o hasta ${permisos.maxDiasRetroactivoCobro || 0} dia(s) atras.`}
                     </div>
                   </div>
                   <div className="col-sm-12 col-md-3">
