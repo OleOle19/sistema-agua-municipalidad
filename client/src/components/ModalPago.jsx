@@ -194,19 +194,27 @@ const ModalPago = ({
   }, [recibosPendientes, seleccion]);
 
   const buildDetalle = (r, monto) => {
-    const agua = toNum(r.subtotal_agua);
-    const desague = toNum(r.subtotal_desague);
-    const limpieza = toNum(r.subtotal_limpieza);
-    const admin = toNum(r.subtotal_admin);
-    const base = agua + desague + limpieza + admin;
-    if (base <= 0) return { agua: monto, desague: 0, limpieza: 0, admin: 0 };
-    const factor = monto / base;
-    let dAgua = round2(agua * factor);
-    let dDes = round2(desague * factor);
-    let dLimp = round2(limpieza * factor);
-    let dAdm = round2(admin * factor);
-    dAdm = round2(dAdm + (monto - (dAgua + dDes + dLimp + dAdm)));
-    return { agua: dAgua, desague: dDes, limpieza: dLimp, admin: dAdm };
+    const orderedKeys = ["agua", "desague", "limpieza", "admin"];
+    const base = {
+      agua: toNum(r.subtotal_agua),
+      desague: toNum(r.subtotal_desague),
+      limpieza: toNum(r.subtotal_limpieza),
+      admin: toNum(r.subtotal_admin)
+    };
+    const detalle = { agua: 0, desague: 0, limpieza: 0, admin: 0 };
+    let restante = round2(Math.max(monto, 0));
+    orderedKeys.forEach((key) => {
+      if (restante <= 0.0001) return;
+      const disponible = round2(Math.max(base[key] || 0, 0));
+      if (disponible <= 0.0001) return;
+      const aplicado = round2(Math.min(disponible, restante));
+      detalle[key] = aplicado;
+      restante = round2(restante - aplicado);
+    });
+    if (restante > 0.0001) {
+      detalle.agua = round2(detalle.agua + restante);
+    }
+    return detalle;
   };
 
   const itemsSeleccionadosParaOrden = useMemo(() => (

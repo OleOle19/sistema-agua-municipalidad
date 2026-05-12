@@ -589,7 +589,7 @@ const LOGIN_LOCK_DURATION_MS = Number(process.env.LOGIN_LOCK_DURATION_MS || (15 
 const CAJA_CIERRE_ALERTA_UMBRAL = parseMonto(process.env.CAJA_CIERRE_ALERTA_UMBRAL, 2);
 const CAJA_RIESGO_WINDOW_HOURS = Math.min(168, Math.max(1, Number(process.env.CAJA_RIESGO_WINDOW_HOURS || 24)));
 const CAJA_RIESGO_ANULACIONES_UMBRAL = Math.min(20, Math.max(1, Number(process.env.CAJA_RIESGO_ANULACIONES_UMBRAL || 3)));
-const MAX_RETROACTIVE_COBRO_DAYS_CAJA = Math.min(30, Math.max(0, Number(process.env.MAX_RETROACTIVE_COBRO_DAYS_CAJA || 4)));
+const MAX_RETROACTIVE_COBRO_DAYS_CAJA = Math.min(3, Math.max(0, Number(process.env.MAX_RETROACTIVE_COBRO_DAYS_CAJA || 3)));
 const MAX_DIAS_CORRECCION_PAGO = Math.min(30, Math.max(1, Number(process.env.MAX_DIAS_CORRECCION_PAGO || 7)));
 const PAGO_OPERATIVO_CAJA_SQL = `(
   (p.id_orden_cobro IS NOT NULL OR COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '')
@@ -1444,6 +1444,50 @@ const validateCobroDateWindow = (
   }
   return { ok: true, fecha: fechaSolicitada, hoy, minPermitida };
 };
+const validateCobroCorrectionWindow = (
+  sourceDateRaw,
+  {
+    role = null,
+    hoyIso = toISODate(),
+    actionLabel = "corregir este cobro"
+  } = {}
+) => {
+  const { hoy, minPermitida, maxDiasRetroactivo } = resolveCobroDateWindowForRole(role, hoyIso);
+  const fechaReferencia = normalizeDateOnly(sourceDateRaw);
+  if (hasMinRole(role, "ADMIN")) {
+    return { ok: true, fechaReferencia, hoy, minPermitida };
+  }
+  if (!fechaReferencia) {
+    return {
+      ok: false,
+      fechaReferencia: null,
+      hoy,
+      minPermitida,
+      error: `No se pudo validar la fecha original para ${actionLabel}.`
+    };
+  }
+  if (fechaReferencia > hoy) {
+    return {
+      ok: false,
+      fechaReferencia,
+      hoy,
+      minPermitida,
+      error: `La fecha original del movimiento es posterior a hoy y no permite ${actionLabel}.`
+    };
+  }
+  if (minPermitida && fechaReferencia < minPermitida) {
+    return {
+      ok: false,
+      fechaReferencia,
+      hoy,
+      minPermitida,
+      error: maxDiasRetroactivo === null
+        ? `No se permite ${actionLabel} con fecha anterior a ${minPermitida}.`
+        : `Solo se permite ${actionLabel} para movimientos registrados dentro de los ultimos ${maxDiasRetroactivo} dia(s). Fecha minima permitida: ${minPermitida}.`
+    };
+  }
+  return { ok: true, fechaReferencia, hoy, minPermitida };
+};
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const isoDateToUtcMs = (isoDateRaw) => {
   const iso = normalizeDateOnly(isoDateRaw);
@@ -1664,6 +1708,41 @@ const applyRoundedDeltaToComponents = (components = {}, delta = 0, targetOrder =
   next[target] = roundMonto2(parseMonto(next[target], 0) + ajuste);
   return next;
 };
+const allocateMontoByComponentPriority = (
+  baseComponents = {},
+  montoRaw = 0,
+  priorityOrder = []
+) => {
+  const montoObjetivo = roundMonto2(Math.max(parseMonto(montoRaw, 0), 0));
+  const priority = Array.isArray(priorityOrder) ? priorityOrder : [];
+  const keysBase = Object.keys(baseComponents || {});
+  const orderedKeys = [
+    ...priority.filter((key) => keysBase.includes(key)),
+    ...keysBase.filter((key) => !priority.includes(key))
+  ];
+  const allocated = {};
+  orderedKeys.forEach((key) => {
+    allocated[key] = 0;
+  });
+  if (orderedKeys.length === 0) return allocated;
+
+  let remaining = montoObjetivo;
+  for (const key of orderedKeys) {
+    if (remaining <= 0.0001) break;
+    const base = roundMonto2(Math.max(parseMonto(baseComponents?.[key], 0), 0));
+    if (base <= 0.0001) continue;
+    const applied = roundMonto2(Math.min(base, remaining));
+    allocated[key] = applied;
+    remaining = roundMonto2(remaining - applied);
+  }
+
+  if (remaining > 0.0001) {
+    const fallbackKey = orderedKeys[0];
+    allocated[fallbackKey] = roundMonto2(parseMonto(allocated[fallbackKey], 0) + remaining);
+  }
+
+  return allocated;
+};
 const resolveActivatedServiceTarifas = ({
   activoAntes = "S",
   activoDespues = "S",
@@ -1801,7 +1880,7 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
         SELECT COALESCE(rh.subtotal_agua, 0)
         FROM recibos rh
         WHERE rh.id_predio = p.id_predio
-          AND COALESCE(rh.subtotal_agua, 0) > 0
+          AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
         ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
         LIMIT 1
       ) AS agua_hist,
@@ -1809,7 +1888,7 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
         SELECT COALESCE(rh.subtotal_desague, 0)
         FROM recibos rh
         WHERE rh.id_predio = p.id_predio
-          AND COALESCE(rh.subtotal_desague, 0) > 0
+          AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
         ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
         LIMIT 1
       ) AS desague_hist,
@@ -1817,7 +1896,7 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
         SELECT COALESCE(rh.subtotal_limpieza, 0)
         FROM recibos rh
         WHERE rh.id_predio = p.id_predio
-          AND COALESCE(rh.subtotal_limpieza, 0) > 0
+          AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
         ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
         LIMIT 1
       ) AS limpieza_hist,
@@ -2263,8 +2342,8 @@ const recalcularRecibosFuturosPorServicios = async (
             )
             THEN COALESCE(
               p.tarifa_agua,
-              NULLIF(COALESCE(hist.agua_hist, 0), 0),
-              NULLIF(COALESCE(r.subtotal_agua, 0), 0),
+              hist.agua_hist,
+              COALESCE(r.subtotal_agua, 0),
               $2::numeric
             )
           ELSE 0::numeric
@@ -2277,8 +2356,8 @@ const recalcularRecibosFuturosPorServicios = async (
             )
             THEN COALESCE(
               p.tarifa_desague,
-              NULLIF(COALESCE(hist.desague_hist, 0), 0),
-              NULLIF(COALESCE(r.subtotal_desague, 0), 0),
+              hist.desague_hist,
+              COALESCE(r.subtotal_desague, 0),
               $3::numeric
             )
           ELSE 0::numeric
@@ -2291,8 +2370,8 @@ const recalcularRecibosFuturosPorServicios = async (
             )
             THEN COALESCE(
               p.tarifa_limpieza,
-              NULLIF(COALESCE(hist.limpieza_hist, 0), 0),
-              NULLIF(COALESCE(r.subtotal_limpieza, 0), 0),
+              hist.limpieza_hist,
+              COALESCE(r.subtotal_limpieza, 0),
               $4::numeric
             )
           ELSE 0::numeric
@@ -2312,7 +2391,7 @@ const recalcularRecibosFuturosPorServicios = async (
             FROM recibos rh
             WHERE rh.id_predio = r.id_predio
               AND rh.id_recibo <> r.id_recibo
-              AND COALESCE(rh.subtotal_agua, 0) > 0
+              AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
             ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
             LIMIT 1
           ) AS agua_hist,
@@ -2321,7 +2400,7 @@ const recalcularRecibosFuturosPorServicios = async (
             FROM recibos rh
             WHERE rh.id_predio = r.id_predio
               AND rh.id_recibo <> r.id_recibo
-              AND COALESCE(rh.subtotal_desague, 0) > 0
+              AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
             ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
             LIMIT 1
           ) AS desague_hist,
@@ -2330,7 +2409,7 @@ const recalcularRecibosFuturosPorServicios = async (
             FROM recibos rh
             WHERE rh.id_predio = r.id_predio
               AND rh.id_recibo <> r.id_recibo
-              AND COALESCE(rh.subtotal_limpieza, 0) > 0
+              AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
             ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
             LIMIT 1
           ) AS limpieza_hist
@@ -2413,12 +2492,12 @@ const repararRecibosPendientesSnLegacy = async () => {
               AND (
                 ${sqlSnEsSi("p.agua_sn", "S")}
                 OR COALESCE(r.subtotal_agua, 0) > 0
-                OR (COALESCE(hist.agua_hist, 0) > 0 AND COALESCE(p.tarifa_agua, 0) <= 0)
+                OR (hist.agua_hist IS NOT NULL AND COALESCE(p.tarifa_agua, 0) <= 0)
               )
               THEN COALESCE(
                 p.tarifa_agua,
-                NULLIF(COALESCE(r.subtotal_agua, 0), 0),
-                NULLIF(COALESCE(hist.agua_hist, 0), 0),
+                COALESCE(r.subtotal_agua, 0),
+                hist.agua_hist,
                 $1::numeric
               )
             ELSE 0::numeric
@@ -2428,12 +2507,12 @@ const repararRecibosPendientesSnLegacy = async () => {
               AND (
                 ${sqlSnEsSi("p.desague_sn", "S")}
                 OR COALESCE(r.subtotal_desague, 0) > 0
-                OR (COALESCE(hist.desague_hist, 0) > 0 AND COALESCE(p.tarifa_desague, 0) <= 0)
+                OR (hist.desague_hist IS NOT NULL AND COALESCE(p.tarifa_desague, 0) <= 0)
               )
               THEN COALESCE(
                 p.tarifa_desague,
-                NULLIF(COALESCE(r.subtotal_desague, 0), 0),
-                NULLIF(COALESCE(hist.desague_hist, 0), 0),
+                COALESCE(r.subtotal_desague, 0),
+                hist.desague_hist,
                 $2::numeric
               )
             ELSE 0::numeric
@@ -2443,12 +2522,12 @@ const repararRecibosPendientesSnLegacy = async () => {
               AND (
                 ${sqlSnEsSi("p.limpieza_sn", "S")}
                 OR COALESCE(r.subtotal_limpieza, 0) > 0
-                OR (COALESCE(hist.limpieza_hist, 0) > 0 AND COALESCE(p.tarifa_limpieza, 0) <= 0)
+                OR (hist.limpieza_hist IS NOT NULL AND COALESCE(p.tarifa_limpieza, 0) <= 0)
               )
               THEN COALESCE(
                 p.tarifa_limpieza,
-                NULLIF(COALESCE(r.subtotal_limpieza, 0), 0),
-                NULLIF(COALESCE(hist.limpieza_hist, 0), 0),
+                COALESCE(r.subtotal_limpieza, 0),
+                hist.limpieza_hist,
                 $3::numeric
               )
             ELSE 0::numeric
@@ -2467,7 +2546,7 @@ const repararRecibosPendientesSnLegacy = async () => {
               FROM recibos rh
               WHERE rh.id_predio = r.id_predio
                 AND rh.id_recibo <> r.id_recibo
-                AND COALESCE(rh.subtotal_agua, 0) > 0
+                AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
               ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
               LIMIT 1
             ) AS agua_hist,
@@ -2476,7 +2555,7 @@ const repararRecibosPendientesSnLegacy = async () => {
               FROM recibos rh
               WHERE rh.id_predio = r.id_predio
                 AND rh.id_recibo <> r.id_recibo
-                AND COALESCE(rh.subtotal_desague, 0) > 0
+                AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
               ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
               LIMIT 1
             ) AS desague_hist,
@@ -2485,7 +2564,7 @@ const repararRecibosPendientesSnLegacy = async () => {
               FROM recibos rh
               WHERE rh.id_predio = r.id_predio
                 AND rh.id_recibo <> r.id_recibo
-                AND COALESCE(rh.subtotal_limpieza, 0) > 0
+                AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
               ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
               LIMIT 1
             ) AS limpieza_hist
@@ -6803,7 +6882,10 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     });
     let recibosRecalculados = 0;
     if (serviciosCambiaron || tarifasCambiaron || (requestedChanges.estado && estadoActual !== estadoAplicado)) {
-      const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente);
+      const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente, {
+        incluirPendientesHistoricos: true,
+        desdePeriodoNum: 0
+      });
       recibosRecalculados = Number(recalc?.actualizados || 0);
     }
 
@@ -8416,7 +8498,10 @@ app.put("/contribuyentes/:id", async (req, res) => {
         referenciaDireccionNueva
       ]
     );
-    const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente);
+    const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
+      incluirPendientesHistoricos: true,
+      desdePeriodoNum: 0
+    });
     const recibosRecalculados = Number(recalcManual?.actualizados || 0);
     if (cambioRazonSocial) {
       const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
@@ -8521,7 +8606,10 @@ app.post("/contribuyentes/cortes/registrar", uploadCorteEvidenciaArray("evidenci
       "UPDATE predios SET activo_sn = $1, estado_servicio = $2 WHERE id_contribuyente = $3",
       [predioEstado.activo_sn, predioEstado.estado_servicio, idContribuyente]
     );
-    const recalc = await recalcularRecibosFuturosPorServicios(client, idContribuyente);
+    const recalc = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
+      incluirPendientesHistoricos: true,
+      desdePeriodoNum: 0
+    });
     const recibosRecalculados = Number(recalc?.actualizados || 0);
 
     const evento = await client.query(`
@@ -8668,7 +8756,10 @@ app.post("/contribuyentes/:id/estado-conexion", async (req, res) => {
       "UPDATE predios SET activo_sn = $1, estado_servicio = $2 WHERE id_contribuyente = $3",
       [predioEstado.activo_sn, predioEstado.estado_servicio, idContribuyente]
     );
-    const recalc = await recalcularRecibosFuturosPorServicios(client, idContribuyente);
+    const recalc = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
+      incluirPendientesHistoricos: true,
+      desdePeriodoNum: 0
+    });
     const recibosRecalculados = Number(recalc?.actualizados || 0);
 
     const evento = await client.query(`
@@ -9416,13 +9507,9 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       });
     };
 
-    // Solo sincroniza periodos futuros; no tocar deudas ya emitidas para respetar montos reales registrados.
-    const periodoSiguiente = mesActual === 12
-      ? ((anioActual + 1) * 100) + 1
-      : (anioActual * 100) + (mesActual + 1);
     await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-      incluirPendientesHistoricos: false,
-      desdePeriodoNum: periodoSiguiente
+      incluirPendientesHistoricos: true,
+      desdePeriodoNum: 0
     });
 
     const totalPagarReferenciaPendSql = buildTotalPagarReferenciaSql({
@@ -10080,21 +10167,15 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
       let desague = parseSubtotalOrden(item.subtotal_desague);
       let limpieza = parseSubtotalOrden(item.subtotal_limpieza);
       let admin = parseSubtotalOrden(item.subtotal_admin);
-      const baseDetalle = agua + desague + limpieza + admin;
-      if (baseDetalle > 0) {
-        const factor = item.monto_autorizado / baseDetalle;
-        agua = roundMonto2(agua * factor);
-        desague = roundMonto2(desague * factor);
-        limpieza = roundMonto2(limpieza * factor);
-        admin = roundMonto2(admin * factor);
-        const ajuste = roundMonto2(item.monto_autorizado - (agua + desague + limpieza + admin));
-        admin = roundMonto2(admin + ajuste);
-      } else {
-        agua = roundMonto2(item.monto_autorizado);
-        desague = 0;
-        limpieza = 0;
-        admin = 0;
-      }
+      const componentesAsignados = allocateMontoByComponentPriority(
+        { agua, desague, limpieza, admin },
+        item.monto_autorizado,
+        ["agua", "desague", "limpieza", "admin"]
+      );
+      agua = roundMonto2(componentesAsignados.agua);
+      desague = roundMonto2(componentesAsignados.desague);
+      limpieza = roundMonto2(componentesAsignados.limpieza);
+      admin = roundMonto2(componentesAsignados.admin);
 
       detalleOrden.push({
         id_recibo: item.id_recibo,
@@ -11253,6 +11334,7 @@ app.post("/pagos", async (req, res) => {
             pa.id_contribuyente,
             pa.monto_pagado,
             pa.fecha_pago_original,
+            pa.anulado_en,
             pa.id_pago_reintegrado
           FROM pagos_anulados pa
           WHERE pa.id_anulacion = $1
@@ -11271,6 +11353,23 @@ app.post("/pagos", async (req, res) => {
         if (parsePositiveInt(anulacion.id_pago_reintegrado, 0) > 0) {
           await client.query("ROLLBACK");
           return res.status(409).json({ error: `La anulacion ${idAnulacionReferencia} ya fue reintegrada previamente.` });
+        }
+        const validacionCorreccion = validateCobroCorrectionWindow(
+          anulacion.anulado_en || anulacion.fecha_pago_original,
+          {
+            role: req.user?.rol,
+            hoyIso: toISODate(),
+            actionLabel: "reingresar este pago"
+          }
+        );
+        if (!validacionCorreccion.ok) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: validacionCorreccion.error,
+            fecha_movimiento: validacionCorreccion.fechaReferencia || null,
+            fecha_minima_permitida: validacionCorreccion.minPermitida || null,
+            fecha_maxima_permitida: validacionCorreccion.hoy || null
+          });
         }
         await client.query(`
           UPDATE pagos_anulados
@@ -11443,6 +11542,20 @@ app.post("/pagos/:id/anular", async (req, res) => {
     const idOrdenCobro = parsePositiveInt(pago.id_orden_cobro, 0) || null;
     const idContribuyente = parsePositiveInt(pago.id_contribuyente, 0) || null;
     const montoPagado = roundMonto2(parseMonto(pago.monto_pagado, 0));
+    const validacionCorreccion = validateCobroCorrectionWindow(pago.fecha_pago, {
+      role: req.user?.rol,
+      hoyIso: toISODate(),
+      actionLabel: "anular este pago"
+    });
+    if (!validacionCorreccion.ok) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: validacionCorreccion.error,
+        fecha_movimiento: validacionCorreccion.fechaReferencia || null,
+        fecha_minima_permitida: validacionCorreccion.minPermitida || null,
+        fecha_maxima_permitida: validacionCorreccion.hoy || null
+      });
+    }
 
     const anulacionInsert = await client.query(`
       INSERT INTO pagos_anulados (
@@ -11625,6 +11738,23 @@ app.post("/pagos/recibo/:id_recibo/anular-ultimo", async (req, res) => {
     const ordenesARevisar = new Set();
     const pagosAnulados = [];
     let totalAnulado = 0;
+
+    for (const pago of pagosRs.rows) {
+      const validacionCorreccion = validateCobroCorrectionWindow(pago.fecha_pago, {
+        role: req.user?.rol,
+        hoyIso: toISODate(),
+        actionLabel: "anular este periodo"
+      });
+      if (!validacionCorreccion.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: validacionCorreccion.error,
+          fecha_movimiento: validacionCorreccion.fechaReferencia || null,
+          fecha_minima_permitida: validacionCorreccion.minPermitida || null,
+          fecha_maxima_permitida: validacionCorreccion.hoy || null
+        });
+      }
+    }
 
     for (const pago of pagosRs.rows) {
       const idOrdenCobro = parsePositiveInt(pago.id_orden_cobro, 0) || null;
@@ -11813,6 +11943,20 @@ app.post("/pagos/:id/editar", async (req, res) => {
     const idRecibo = Number(pago.id_recibo || 0);
     const idContribuyente = parsePositiveInt(pago.id_contribuyente, 0) || null;
     const montoAnterior = roundMonto2(parseMonto(pago.monto_pagado, 0));
+    const validacionCorreccion = validateCobroCorrectionWindow(pago.fecha_pago, {
+      role: req.user?.rol,
+      hoyIso: toISODate(),
+      actionLabel: "editar este pago"
+    });
+    if (!validacionCorreccion.ok) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: validacionCorreccion.error,
+        fecha_movimiento: validacionCorreccion.fechaReferencia || null,
+        fecha_minima_permitida: validacionCorreccion.minPermitida || null,
+        fecha_maxima_permitida: validacionCorreccion.hoy || null
+      });
+    }
     if (Math.abs(nuevoMonto - montoAnterior) < 0.001) {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "El monto nuevo es igual al monto actual del pago." });
@@ -13172,37 +13316,52 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     let baseGastos = roundMonto2(parseMonto(subtotalAdminSplit?.subtotal_admin, 0));
     let baseExtra = roundMonto2(parseMonto(subtotalAdminSplit?.subtotal_extra, 0));
     let totalBase = roundMonto2(parseMonto(row?.total_pagar, (baseAgua + baseDesague + baseLimpieza + baseGastos + baseExtra)));
+    const tarifaActualSplit = splitAdminExtraDisplay(
+      roundMonto2(parseMonto(row?.tarifa_actual_admin, 0) + parseMonto(row?.tarifa_actual_extra, 0)),
+      row?.tarifa_actual_extra
+    );
+    const baseTarifaActual = {
+      agua: roundMonto2(parseMonto(row?.tarifa_actual_agua, 0)),
+      desague: roundMonto2(parseMonto(row?.tarifa_actual_desague, 0)),
+      limpieza: roundMonto2(parseMonto(row?.tarifa_actual_limpieza, 0)),
+      gastos: roundMonto2(parseMonto(tarifaActualSplit?.subtotal_admin, 0)),
+      extra: roundMonto2(parseMonto(tarifaActualSplit?.subtotal_extra, 0))
+    };
+    const totalTarifaActual = roundMonto2(
+      baseTarifaActual.agua
+      + baseTarifaActual.desague
+      + baseTarifaActual.limpieza
+      + baseTarifaActual.gastos
+      + baseTarifaActual.extra
+    );
     if (montoPagado <= 0) {
       return { agua: 0, desague: 0, limpieza: 0, gastos: 0, extra: 0 };
+    }
+    const usaTarifaActualComoBase = totalTarifaActual > 0
+      && totalBase > totalTarifaActual + 0.001
+      && montoPagado <= totalTarifaActual + 0.001;
+    if (usaTarifaActualComoBase) {
+      baseAgua = baseTarifaActual.agua;
+      baseDesague = baseTarifaActual.desague;
+      baseLimpieza = baseTarifaActual.limpieza;
+      baseGastos = baseTarifaActual.gastos;
+      baseExtra = baseTarifaActual.extra;
+      totalBase = totalTarifaActual;
     }
     if (totalBase <= 0) {
       return { agua: montoPagado, desague: 0, limpieza: 0, gastos: 0, extra: 0 };
     }
-    const montoDistribuible = Math.min(montoPagado, totalBase);
-    const factor = montoDistribuible / totalBase;
-    let componentes = {
-      agua: roundMonto2(baseAgua * factor),
-      desague: roundMonto2(baseDesague * factor),
-      limpieza: roundMonto2(baseLimpieza * factor),
-      gastos: roundMonto2(baseGastos * factor),
-      extra: roundMonto2(baseExtra * factor)
-    };
-    const targetOrder = baseExtra > 0
-      ? ["extra", "gastos", "limpieza", "desague", "agua"]
-      : ["gastos", "limpieza", "desague", "agua", "extra"];
-    const ajuste = roundMonto2(
-      montoDistribuible
-      - (componentes.agua + componentes.desague + componentes.limpieza + componentes.gastos + componentes.extra)
+    return allocateMontoByComponentPriority(
+      {
+        agua: baseAgua,
+        desague: baseDesague,
+        limpieza: baseLimpieza,
+        gastos: baseGastos,
+        extra: baseExtra
+      },
+      montoPagado,
+      ["agua", "desague", "limpieza", "gastos", "extra"]
     );
-    componentes = applyRoundedDeltaToComponents(componentes, ajuste, targetOrder);
-    if (montoPagado > montoDistribuible) {
-      componentes = applyRoundedDeltaToComponents(
-        componentes,
-        roundMonto2(montoPagado - montoDistribuible),
-        targetOrder
-      );
-    }
-    return componentes;
   };
   const movimientosSanitizados = movimientos.rows.map((row) => {
     const montos = prorratearPagoComponentes(row);
@@ -16733,7 +16892,7 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
         SELECT COALESCE(rh.subtotal_agua, 0)
         FROM recibos rh
         WHERE rh.id_predio = p.id_predio
-          AND COALESCE(rh.subtotal_agua, 0) > 0
+          AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
         ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
         LIMIT 1
       ) AS agua_hist,
@@ -16741,7 +16900,7 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
         SELECT COALESCE(rh.subtotal_desague, 0)
         FROM recibos rh
         WHERE rh.id_predio = p.id_predio
-          AND COALESCE(rh.subtotal_desague, 0) > 0
+          AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
         ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
         LIMIT 1
       ) AS desague_hist,
@@ -16749,7 +16908,7 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
         SELECT COALESCE(rh.subtotal_limpieza, 0)
         FROM recibos rh
         WHERE rh.id_predio = p.id_predio
-          AND COALESCE(rh.subtotal_limpieza, 0) > 0
+          AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
         ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
         LIMIT 1
       ) AS limpieza_hist
