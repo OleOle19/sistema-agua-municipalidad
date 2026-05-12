@@ -3038,9 +3038,9 @@ const ACCESS_RULES = [
   { methods: ["GET"], pattern: /^\/caja\/reporte\/excel$/, minRole: "CAJERO" },
 
   { methods: ["POST"], pattern: /^\/pagos$/, minRole: "CAJERO" },
-  { methods: ["POST"], pattern: /^\/pagos\/\d+\/editar$/, minRole: "ADMIN" },
-  { methods: ["POST"], pattern: /^\/pagos\/\d+\/anular$/, minRole: "ADMIN" },
-  { methods: ["POST"], pattern: /^\/pagos\/recibo\/\d+\/anular-ultimo$/, minRole: "ADMIN" },
+  { methods: ["POST"], pattern: /^\/pagos\/\d+\/editar$/, minRole: "CAJERO" },
+  { methods: ["POST"], pattern: /^\/pagos\/\d+\/anular$/, minRole: "CAJERO" },
+  { methods: ["POST"], pattern: /^\/pagos\/recibo\/\d+\/anular-ultimo$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/impresiones\/generar-codigo$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/recibos\/masivos$/, minRole: "CAJERO" },
   { methods: ["GET"], pattern: /^\/caja\/reporte$/, minRole: "CAJERO" },
@@ -7532,6 +7532,21 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
     where.push(`COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = $${params.length}`);
   }
   where.push("((r.anio < $1) OR (r.anio = $1 AND r.mes <= $2))");
+  const totalPagarReferenciaDetalleSql = buildTotalPagarReferenciaSql({
+    reciboAlias: "r",
+    predioAlias: "p",
+    pagosAlias: "pp",
+    requireCoveredPayment: false,
+    onlyWhenUnpaid: true
+  });
+  const usaTarifaActualDetalleSql = buildUsaTarifaActualSql({
+    reciboAlias: "r",
+    predioAlias: "p",
+    pagosAlias: "pp",
+    requireCoveredPayment: false,
+    onlyWhenUnpaid: true
+  });
+  const tarifaActualComponentesDetalleSql = buildTarifaActualComponentesSql("p");
 
   const query = `
     WITH pagos_por_recibo AS (
@@ -7560,17 +7575,17 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
       COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
       r.anio,
       r.mes,
-      SUM(COALESCE(r.subtotal_agua, 0)) AS subtotal_agua,
-      SUM(COALESCE(r.subtotal_desague, 0)) AS subtotal_desague,
-      SUM(COALESCE(r.subtotal_limpieza, 0)) AS subtotal_limpieza,
-      SUM(COALESCE(r.subtotal_admin, 0)) AS subtotal_admin,
+      SUM(CASE WHEN ${usaTarifaActualDetalleSql} THEN ${tarifaActualComponentesDetalleSql.agua} ELSE COALESCE(r.subtotal_agua, 0) END) AS subtotal_agua,
+      SUM(CASE WHEN ${usaTarifaActualDetalleSql} THEN ${tarifaActualComponentesDetalleSql.desague} ELSE COALESCE(r.subtotal_desague, 0) END) AS subtotal_desague,
+      SUM(CASE WHEN ${usaTarifaActualDetalleSql} THEN ${tarifaActualComponentesDetalleSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END) AS subtotal_limpieza,
+      SUM(CASE WHEN ${usaTarifaActualDetalleSql} THEN ${tarifaActualComponentesDetalleSql.admin} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
       SUM(COALESCE(p.tarifa_extra, 0)) AS tarifa_extra_actual,
-      SUM(COALESCE(r.total_pagar, 0)) AS total_mes,
+      SUM(${totalPagarReferenciaDetalleSql}) AS total_mes,
       SUM(COALESCE(pp.total_pagado, 0)) AS abono_mes,
       SUM(
         CASE
           WHEN (r.anio > $1) OR (r.anio = $1 AND r.mes > $2) THEN 0
-          ELSE GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)
+          ELSE GREATEST(${totalPagarReferenciaDetalleSql} - COALESCE(pp.total_pagado, 0), 0)
         END
       ) AS deuda_mes
     FROM contribuyentes c
@@ -12967,9 +12982,29 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   const desde = resumen.rango.desde;
   const hasta = resumen.rango.hasta_exclusivo;
   const cantidadMovimientos = Number(resumen.cantidad_movimientos || 0);
+  const totalPagarReferenciaMovimientoSql = buildTotalPagarReferenciaSql({
+    reciboAlias: "r",
+    predioAlias: "pr",
+    pagosAlias: "ptr",
+    requireCoveredPayment: true,
+    onlyWhenUnpaid: false
+  });
+  const usaTarifaActualMovimientoSql = buildUsaTarifaActualSql({
+    reciboAlias: "r",
+    predioAlias: "pr",
+    pagosAlias: "ptr",
+    requireCoveredPayment: true,
+    onlyWhenUnpaid: false
+  });
+  const tarifaActualComponentesMovimientoSql = buildTarifaActualComponentesSql("pr");
 
   const movimientosSql = `
-    WITH movimientos_detalle AS (
+    WITH pagos_totales_recibo AS (
+      SELECT id_recibo, SUM(monto_pagado) AS total_pagado
+      FROM pagos
+      GROUP BY id_recibo
+    ),
+    movimientos_detalle AS (
       SELECT
         p.id_pago,
         p.id_orden_cobro,
@@ -12990,11 +13025,11 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
         ${buildDireccionSql("ca", "pr")} AS direccion_completa,
         r.mes,
         r.anio,
-        r.subtotal_agua,
-        r.subtotal_desague,
-        r.subtotal_limpieza,
-        r.subtotal_admin,
-        r.total_pagar,
+        CASE WHEN ${usaTarifaActualMovimientoSql} THEN ${tarifaActualComponentesMovimientoSql.agua} ELSE COALESCE(r.subtotal_agua, 0) END AS subtotal_agua,
+        CASE WHEN ${usaTarifaActualMovimientoSql} THEN ${tarifaActualComponentesMovimientoSql.desague} ELSE COALESCE(r.subtotal_desague, 0) END AS subtotal_desague,
+        CASE WHEN ${usaTarifaActualMovimientoSql} THEN ${tarifaActualComponentesMovimientoSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END AS subtotal_limpieza,
+        CASE WHEN ${usaTarifaActualMovimientoSql} THEN ${tarifaActualComponentesMovimientoSql.admin} ELSE COALESCE(r.subtotal_admin, 0) END AS subtotal_admin,
+        ${totalPagarReferenciaMovimientoSql} AS total_pagar,
         CASE
           WHEN ${sqlSnEsSi("pr.activo_sn", "S")} AND ${sqlSnEsSi("pr.agua_sn", "S")}
             THEN COALESCE(pr.tarifa_agua, ${AUTO_DEUDA_BASE.agua})
@@ -13030,6 +13065,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       JOIN contribuyentes c ON pr.id_contribuyente = c.id_contribuyente
       LEFT JOIN calles ca ON ca.id_calle = pr.id_calle
       LEFT JOIN ordenes_cobro oc ON oc.id_orden = p.id_orden_cobro
+      LEFT JOIN pagos_totales_recibo ptr ON ptr.id_recibo = r.id_recibo
       LEFT JOIN LATERAL (
         SELECT id_codigo
         FROM codigos_impresion ci

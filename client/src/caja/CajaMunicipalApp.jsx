@@ -70,6 +70,10 @@ const canEnterCajaModuleByRole = (role) => {
   const normalized = normalizeRole(role);
   return normalized === "ADMIN" || normalized === "CAJERO";
 };
+const canCorregirPagosByRole = (role) => {
+  const normalized = normalizeRole(role);
+  return normalized === "ADMIN" || normalized === "CAJERO";
+};
 
 const parseJwtPayload = (token) => {
   const parts = String(token || "").split(".");
@@ -449,6 +453,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     roleLabel: ROLE_LABELS[rolActual] || ROLE_LABELS.CONSULTA,
     canCaja: accesoCajaPermitido,
     canAdminPagos: rolActual === "ADMIN",
+    canCorregirPagos: canCorregirPagosByRole(rolActual),
     canSeleccionarFechaCobro: accesoCajaPermitido,
     fechaCobroMinima: ventanaFechaCobro.min,
     fechaCobroMaxima: ventanaFechaCobro.max,
@@ -1087,7 +1092,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
   ]);
 
   const editarMontoPagoAgua = useCallback(async (row) => {
-    if (!permisos.canAdminPagos) return;
+    if (!permisos.canCorregirPagos) return;
     const idPago = Number(row?.id_ultimo_pago || 0);
     if (!idPago) {
       showFlash("warning", "No se encontro el pago activo para editar este periodo.");
@@ -1154,7 +1159,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     cargarPeriodosCobroAgua,
     fechaCobroAgua,
     handleApiError,
-    permisos.canAdminPagos,
+    permisos.canCorregirPagos,
     permitirContingenciaAgua,
     recargarAgua,
     selectedContribuyenteAgua,
@@ -1162,7 +1167,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
   ]);
 
   const anularPagoMesCobroAgua = useCallback(async (row) => {
-    if (!permisos.canAdminPagos) return;
+    if (!permisos.canCorregirPagos) return;
     const idRecibo = Number(row?.id_recibo || 0);
     if (!idRecibo) {
       showFlash("warning", "No se puede anular este periodo porque no tiene recibo asociado.");
@@ -1207,7 +1212,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     cargarPeriodosCobroAgua,
     fechaCobroAgua,
     handleApiError,
-    permisos.canAdminPagos,
+    permisos.canCorregirPagos,
     recargarAgua,
     selectedContribuyenteAgua,
     permitirContingenciaAgua,
@@ -1458,7 +1463,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }, [
     buscarContribuyentesLuz,
     handleApiError,
-    permisos.canAdminPagos,
+    permisos.canCorregirPagos,
     recibosPendientesCobroLuz,
     recargarLuz,
     seleccionCobroLuz,
@@ -2025,7 +2030,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                 <div className="small text-muted mb-3">
                   Se muestran deudas pendientes y periodos adelantados ya emitidos por ventanilla (Agua).
                   Si el usuario no trae recibo, puede activarse contingencia para generar periodos faltantes desde Caja.
-                  Caja puede registrar cobros retroactivos hasta 4 dias atras; administrador no tiene limite retroactivo. Solo administrador puede corregir periodos pagados. Para cambiar monto use "Editar monto"; para cambiar fecha primero anule y luego registre de nuevo el cobro.
+                  Caja puede registrar cobros retroactivos hasta 4 dias atras; administrador no tiene limite retroactivo. Los usuarios de caja autorizados pueden corregir periodos pagados. Para cambiar monto use "Editar monto"; para cambiar fecha primero anule y luego registre de nuevo el cobro.
                 </div>
                 <div className="row g-2 align-items-end mb-3">
                   <div className="col-sm-4 col-md-3">
@@ -2101,8 +2106,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         const tieneReintegroPendiente = idAnulacionPendiente > 0 && estadoUpper !== "PAGADO";
                         const fueEditado = tipoMovimientoAdmin === "EDICION_MONTO" || estadoMovimientoAdmin === "EDITADO";
                         const fueReintegrado = tipoMovimientoAdmin === "REINTEGRACION" || estadoMovimientoAdmin === "REINTEGRADO";
-                        const puedeEditarMontoPago = permisos.canAdminPagos && estadoUpper === "PAGADO" && idPagoUltimo > 0;
-                        const puedeAnularPagoPeriodo = permisos.canAdminPagos && estadoUpper === "PAGADO" && idRecibo > 0;
+                        const puedeEditarMontoPago = permisos.canCorregirPagos && estadoUpper === "PAGADO" && idPagoUltimo > 0;
+                        const puedeAnularPagoPeriodo = permisos.canCorregirPagos && estadoUpper === "PAGADO" && idRecibo > 0;
                         const estadoNoCobro = estadoUpper === "PAGADO" ? "PAGADO" : "BLOQUEADO";
                         const checkboxBloqueado = cobrandoDirectoAgua
                           || loadingPendientesCobroAgua
