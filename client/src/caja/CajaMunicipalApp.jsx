@@ -1176,7 +1176,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash("warning", "Debe indicar un motivo para anular el pago.");
       return;
     }
-    const confirmado = window.confirm(`Anular el ultimo pago del periodo ${periodo} para volver a registrarlo correctamente?`);
+    const confirmado = window.confirm(`Anular todos los pagos activos del periodo ${periodo} para volver a registrarlo correctamente?`);
     if (!confirmado) return;
     const idContribuyente = Number(
       selectedContribuyenteAgua?.id_contribuyente
@@ -2149,7 +2149,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                                   className="btn btn-link btn-sm p-0 ms-2 align-baseline text-danger"
                                   onClick={() => anularPagoMesCobroAgua(row)}
                                   disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || anulandoEstaFila || editandoEstaFila}
-                                  title="Anular el ultimo pago para volver a registrarlo con otra fecha o datos"
+                                  title="Anular todos los pagos activos del periodo para volver a registrarlo desde cero"
                                 >
                                   {anulandoEstaFila ? "Anulando..." : "Anular"}
                                 </button>

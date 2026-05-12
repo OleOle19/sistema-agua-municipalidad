@@ -36,7 +36,7 @@ const SIMPLE_ROUTE_RULES = [
   { method: "POST", pattern: /^\/pagos$/i, label: "Registrar pago" },
   { method: "POST", pattern: /^\/pagos\/\d+\/editar$/i, label: "Editar monto de pago" },
   { method: "POST", pattern: /^\/pagos\/\d+\/anular$/i, label: "Anular pago" },
-  { method: "POST", pattern: /^\/pagos\/recibo\/\d+\/anular-ultimo$/i, label: "Anular ultimo pago por periodo" },
+  { method: "POST", pattern: /^\/pagos\/recibo\/\d+\/anular-ultimo$/i, label: "Anular pagos por periodo" },
   { method: "POST", pattern: /^\/caja\/cierre$/i, label: "Registrar cierre de caja" },
   { method: "GET", pattern: /^\/contribuyentes\/reporte-estado-conexion$/i, label: "Consultar reporte de conexiones" },
   { method: "GET", pattern: /^\/contribuyentes\/reporte-estado-conexion\.xlsx$/i, label: "Exportar reporte de conexiones" },
