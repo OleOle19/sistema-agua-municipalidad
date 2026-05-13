@@ -2001,6 +2001,28 @@ const buildTotalPagarReferenciaSql = ({
     ELSE COALESCE(${reciboAlias}.total_pagar, 0)
   END)`;
 };
+const buildTotalPagarDeudaVigenteSql = ({
+  reciboAlias = "r",
+  predioAlias = "p2",
+  pagosAlias = "p"
+} = {}) => buildTotalPagarReferenciaSql({
+  reciboAlias,
+  predioAlias,
+  pagosAlias,
+  requireCoveredPayment: false,
+  onlyWhenUnpaid: false
+});
+const buildUsaTarifaActualDeudaVigenteSql = ({
+  reciboAlias = "r",
+  predioAlias = "p2",
+  pagosAlias = "p"
+} = {}) => buildUsaTarifaActualSql({
+  reciboAlias,
+  predioAlias,
+  pagosAlias,
+  requireCoveredPayment: false,
+  onlyWhenUnpaid: false
+});
 const clampArray = (rows, max = 200) => {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, Math.max(1, Math.min(1000, max)));
@@ -5005,6 +5027,11 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
 
     params.push(limit);
     const idxLimit = params.length;
+    const totalPagarReferenciaListadoSql = buildTotalPagarDeudaVigenteSql({
+      reciboAlias: "ro",
+      predioAlias: "p",
+      pagosAlias: "pp"
+    });
 
     const rows = await pool.query(`
       WITH recibos_objetivo AS (
@@ -5021,9 +5048,10 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
       resumen_predio AS (
         SELECT
           ro.id_predio,
-          SUM(GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
-          COUNT(*) FILTER (WHERE (ro.total_pagar - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
+          SUM(GREATEST(${totalPagarReferenciaListadoSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
+          COUNT(*) FILTER (WHERE (${totalPagarReferenciaListadoSql} - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
         FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
         GROUP BY ro.id_predio
       ),
@@ -5070,7 +5098,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
         FROM recibos_objetivo ro
         JOIN predios p ON p.id_predio = ro.id_predio
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
-        WHERE COALESCE(pp.total_pagado, 0) >= COALESCE(ro.total_pagar, 0)
+        WHERE COALESCE(pp.total_pagado, 0) >= ${totalPagarReferenciaListadoSql}
         GROUP BY p.id_contribuyente
       ),
       base AS (
@@ -5188,6 +5216,11 @@ app.get("/campo/offline-snapshot", async (req, res) => {
     const anioActual = periodoCerrado.anio;
     const mesActual = periodoCerrado.mes;
     const limit = Math.min(10000, Math.max(200, parsePositiveInt(req.query?.limit, 5000)));
+    const totalPagarReferenciaBusquedaSql = buildTotalPagarDeudaVigenteSql({
+      reciboAlias: "ro",
+      predioAlias: "p",
+      pagosAlias: "pp"
+    });
 
     const contribuyentes = await pool.query(`
       WITH recibos_objetivo AS (
@@ -5204,9 +5237,10 @@ app.get("/campo/offline-snapshot", async (req, res) => {
       resumen_predio AS (
         SELECT
           ro.id_predio,
-          SUM(GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
-          COUNT(*) FILTER (WHERE (ro.total_pagar - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
+          SUM(GREATEST(${totalPagarReferenciaBusquedaSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
+          COUNT(*) FILTER (WHERE (${totalPagarReferenciaBusquedaSql} - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
         FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
         GROUP BY ro.id_predio
       ),
@@ -5253,7 +5287,7 @@ app.get("/campo/offline-snapshot", async (req, res) => {
         FROM recibos_objetivo ro
         JOIN predios p ON p.id_predio = ro.id_predio
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
-        WHERE COALESCE(pp.total_pagado, 0) >= COALESCE(ro.total_pagar, 0)
+        WHERE COALESCE(pp.total_pagado, 0) >= ${totalPagarReferenciaBusquedaSql}
         GROUP BY p.id_contribuyente
       ),
       base AS (
@@ -5536,6 +5570,11 @@ app.post("/campo/solicitudes", async (req, res) => {
     });
     const anioActual = periodoCerradoActual.anio;
     const mesActual = periodoCerradoActual.mes;
+    const totalPagarReferenciaDashboardSql = buildTotalPagarDeudaVigenteSql({
+      reciboAlias: "ro",
+      predioAlias: "p",
+      pagosAlias: "pp"
+    });
 
     const actual = await pool.query(`
       WITH recibos_objetivo AS (
@@ -5552,9 +5591,10 @@ app.post("/campo/solicitudes", async (req, res) => {
       resumen_predio AS (
         SELECT
           ro.id_predio,
-          SUM(GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
-          COUNT(*) FILTER (WHERE (ro.total_pagar - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
+          SUM(GREATEST(${totalPagarReferenciaDashboardSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
+          COUNT(*) FILTER (WHERE (${totalPagarReferenciaDashboardSql} - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
         FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
         GROUP BY ro.id_predio
       ),
@@ -5601,7 +5641,7 @@ app.post("/campo/solicitudes", async (req, res) => {
         FROM recibos_objetivo ro
         JOIN predios p ON p.id_predio = ro.id_predio
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
-        WHERE COALESCE(pp.total_pagado, 0) >= COALESCE(ro.total_pagar, 0)
+        WHERE COALESCE(pp.total_pagado, 0) >= ${totalPagarReferenciaDashboardSql}
         GROUP BY p.id_contribuyente
       )
       SELECT
@@ -7032,7 +7072,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
     if (serviciosCambiaron || tarifasCambiaron || (requestedChanges.estado && estadoActual !== estadoAplicado)) {
       const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente, {
         incluirPendientesHistoricos: true,
-        desdePeriodoNum: 0
+        desdePeriodoNum: getCurrentPeriodoNum()
       });
       recibosRecalculados = Number(recalc?.actualizados || 0);
     }
@@ -7518,6 +7558,11 @@ const obtenerReporteEstadoConexionRows = async ({
     params.push(estadoFiltro);
     where.push(`COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = $${params.length}`);
   }
+  const totalPagarReferenciaResumenSql = buildTotalPagarDeudaVigenteSql({
+    reciboAlias: "ro",
+    predioAlias: "p",
+    pagosAlias: "pp"
+  });
 
   const query = `
     WITH recibos_objetivo AS (
@@ -7534,10 +7579,11 @@ const obtenerReporteEstadoConexionRows = async ({
     resumen_predio AS (
       SELECT
         ro.id_predio,
-        SUM(GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
+        SUM(GREATEST(${totalPagarReferenciaResumenSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
         SUM(COALESCE(pp.total_pagado, 0)) AS abono_total,
-        COUNT(*) FILTER (WHERE (ro.total_pagar - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
+        COUNT(*) FILTER (WHERE (${totalPagarReferenciaResumenSql} - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
       FROM recibos_objetivo ro
+      JOIN predios p ON p.id_predio = ro.id_predio
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
       GROUP BY ro.id_predio
     ),
@@ -7762,19 +7808,15 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
     where.push(`COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = $${params.length}`);
   }
   where.push("((r.anio < $1) OR (r.anio = $1 AND r.mes <= $2))");
-  const totalPagarReferenciaDetalleSql = buildTotalPagarReferenciaSql({
+  const totalPagarReferenciaDetalleSql = buildTotalPagarDeudaVigenteSql({
     reciboAlias: "r",
     predioAlias: "p",
-    pagosAlias: "pp",
-    requireCoveredPayment: false,
-    onlyWhenUnpaid: true
+    pagosAlias: "pp"
   });
-  const usaTarifaActualDetalleSql = buildUsaTarifaActualSql({
+  const usaTarifaActualDetalleSql = buildUsaTarifaActualDeudaVigenteSql({
     reciboAlias: "r",
     predioAlias: "p",
-    pagosAlias: "pp",
-    requireCoveredPayment: false,
-    onlyWhenUnpaid: true
+    pagosAlias: "pp"
   });
   const tarifaActualComponentesDetalleSql = buildTarifaActualComponentesSql("p");
 
@@ -8205,7 +8247,7 @@ app.get("/contribuyentes", async (req, res) => {
     const periodoCerrado = getUltimoPeriodoCerrado(periodoVisible);
     const anioExigible = periodoCerrado.anio;
     const mesExigible = periodoCerrado.mes;
-    const totalPagarReferenciaContribSql = buildTotalPagarReferenciaSql({
+    const totalPagarReferenciaContribSql = buildTotalPagarDeudaVigenteSql({
       reciboAlias: "ro",
       predioAlias: "p3",
       pagosAlias: "pp"
@@ -8648,7 +8690,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
     );
     const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
       incluirPendientesHistoricos: true,
-      desdePeriodoNum: 0
+      desdePeriodoNum: getCurrentPeriodoNum()
     });
     const recibosRecalculados = Number(recalcManual?.actualizados || 0);
     if (cambioRazonSocial) {
@@ -8756,7 +8798,7 @@ app.post("/contribuyentes/cortes/registrar", uploadCorteEvidenciaArray("evidenci
     );
     const recalc = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
       incluirPendientesHistoricos: true,
-      desdePeriodoNum: 0
+      desdePeriodoNum: getCurrentPeriodoNum()
     });
     const recibosRecalculados = Number(recalc?.actualizados || 0);
 
@@ -8906,7 +8948,7 @@ app.post("/contribuyentes/:id/estado-conexion", async (req, res) => {
     );
     const recalc = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
       incluirPendientesHistoricos: true,
-      desdePeriodoNum: 0
+      desdePeriodoNum: getCurrentPeriodoNum()
     });
     const recibosRecalculados = Number(recalc?.actualizados || 0);
 
@@ -9657,22 +9699,18 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
 
     await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
       incluirPendientesHistoricos: true,
-      desdePeriodoNum: 0
+      desdePeriodoNum: getCurrentPeriodoNum()
     });
 
-    const totalPagarReferenciaPendSql = buildTotalPagarReferenciaSql({
+    const totalPagarReferenciaPendSql = buildTotalPagarDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p",
-      requireCoveredPayment: false,
-      onlyWhenUnpaid: true
+      pagosAlias: "p"
     });
-    const usaTarifaActualPendSql = buildUsaTarifaActualSql({
+    const usaTarifaActualPendSql = buildUsaTarifaActualDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p",
-      requireCoveredPayment: false,
-      onlyWhenUnpaid: true
+      pagosAlias: "p"
     });
     const tarifaActualComponentesPendSql = buildTarifaActualComponentesSql("p2");
     const whereParts = [
@@ -12388,6 +12426,11 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
 
     await client.query("BEGIN");
     await ensureActasCorteTable(client);
+    const totalPagarReferenciaActaSql = buildTotalPagarDeudaVigenteSql({
+      reciboAlias: "r",
+      predioAlias: "pr",
+      pagosAlias: "pp"
+    });
 
     const resumen = await client.query(`
       WITH pagos_por_recibo AS (
@@ -12399,9 +12442,9 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
         c.codigo_municipal,
         COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
         COUNT(*) FILTER (
-          WHERE GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+          WHERE GREATEST(${totalPagarReferenciaActaSql} - COALESCE(pp.total_pagado, 0), 0) > 0
         ) AS meses_deuda,
-        COALESCE(SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)), 0) AS deuda_total
+        COALESCE(SUM(GREATEST(${totalPagarReferenciaActaSql} - COALESCE(pp.total_pagado, 0), 0)), 0) AS deuda_total
       FROM contribuyentes c
       LEFT JOIN predios pr ON pr.id_contribuyente = c.id_contribuyente
       LEFT JOIN recibos r
@@ -12491,6 +12534,11 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
     const mesActual = getCurrentMonth();
     await client.query("BEGIN");
     await ensureActasCorteTable(client);
+    const totalPagarReferenciaActaLoteSql = buildTotalPagarDeudaVigenteSql({
+      reciboAlias: "r",
+      predioAlias: "pr",
+      pagosAlias: "pp"
+    });
 
     const resumen = await client.query(`
       WITH pagos_por_recibo AS (
@@ -12503,9 +12551,9 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
         c.codigo_municipal,
         COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
         COUNT(*) FILTER (
-          WHERE GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+          WHERE GREATEST(${totalPagarReferenciaActaLoteSql} - COALESCE(pp.total_pagado, 0), 0) > 0
         ) AS meses_deuda,
-        COALESCE(SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)), 0) AS deuda_total
+        COALESCE(SUM(GREATEST(${totalPagarReferenciaActaLoteSql} - COALESCE(pp.total_pagado, 0), 0)), 0) AS deuda_total
       FROM contribuyentes c
       LEFT JOIN predios pr ON pr.id_contribuyente = c.id_contribuyente
       LEFT JOIN recibos r
@@ -12635,19 +12683,15 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     const filtrarAnio = anioParam !== 'all';
     const anio = filtrarAnio ? (Number(anioParam) || getCurrentYear()) : null;
     const incluirFuturos = normalizeSN(req.query?.incluir_futuros, "N") === "S";
-    const totalPagarReferenciaHistorialSql = buildTotalPagarReferenciaSql({
+    const totalPagarReferenciaHistorialSql = buildTotalPagarDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p",
-      requireCoveredPayment: false,
-      onlyWhenUnpaid: true
+      pagosAlias: "p"
     });
-    const usaTarifaActualHistorialSql = buildUsaTarifaActualSql({
+    const usaTarifaActualHistorialSql = buildUsaTarifaActualDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p",
-      requireCoveredPayment: false,
-      onlyWhenUnpaid: true
+      pagosAlias: "p"
     });
     const tarifaActualComponentesHistorialSql = buildTarifaActualComponentesSql("p2");
 
@@ -12792,19 +12836,15 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     const filtrarAnio = anioParam !== "all";
     const anio = filtrarAnio ? Number(anioParam) : null;
     const incluirFuturos = normalizeSN(req.query?.incluir_futuros, "N") === "S";
-    const totalPagarReferenciaExportSql = buildTotalPagarReferenciaSql({
+    const totalPagarReferenciaExportSql = buildTotalPagarDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p",
-      requireCoveredPayment: false,
-      onlyWhenUnpaid: true
+      pagosAlias: "p"
     });
-    const usaTarifaActualExportSql = buildUsaTarifaActualSql({
+    const usaTarifaActualExportSql = buildUsaTarifaActualDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p",
-      requireCoveredPayment: false,
-      onlyWhenUnpaid: true
+      pagosAlias: "p"
     });
     const tarifaActualComponentesExportSql = buildTarifaActualComponentesSql("p2");
     if (filtrarAnio && (!Number.isInteger(anio) || anio <= 1900 || anio >= 9999)) {
@@ -14405,6 +14445,11 @@ app.get("/dashboard/resumen", async (req, res) => {
     }
     const anioActual = getCurrentYear();
     const mesActual = getCurrentMonth();
+    const totalPagarReferenciaDashboardResumenSql = buildTotalPagarDeudaVigenteSql({
+      reciboAlias: "r",
+      predioAlias: "pr",
+      pagosAlias: "pg"
+    });
     const recaudacion = await pool.query(`
       SELECT COALESCE(SUM(p.monto_pagado), 0) AS total
       FROM pagos p
@@ -14415,12 +14460,13 @@ app.get("/dashboard/resumen", async (req, res) => {
     const morosos = await pool.query(`
       SELECT COUNT(DISTINCT r.id_predio) as total
       FROM recibos r
+      JOIN predios pr ON pr.id_predio = r.id_predio
       LEFT JOIN (
         SELECT id_recibo, SUM(monto_pagado) as total_pagado
         FROM pagos
         GROUP BY id_recibo
-      ) p ON p.id_recibo = r.id_recibo
-      WHERE (r.total_pagar - COALESCE(p.total_pagado, 0)) > 0
+      ) pg ON pg.id_recibo = r.id_recibo
+      WHERE (${totalPagarReferenciaDashboardResumenSql} - COALESCE(pg.total_pagado, 0)) > 0
         AND ((r.anio < $1) OR (r.anio = $1 AND r.mes <= $2))
     `, [anioActual, mesActual]);
     const payload = {
@@ -14669,6 +14715,11 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
     } else if (modo === "con_conexion") {
       where.push("COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'");
     }
+    const totalPagarReferenciaVerificacionSql = buildTotalPagarDeudaVigenteSql({
+      reciboAlias: "ro",
+      predioAlias: "p",
+      pagosAlias: "pp"
+    });
 
     const sql = `
       WITH recibos_objetivo AS (
@@ -14685,9 +14736,10 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
       resumen_predio AS (
         SELECT
           ro.id_predio,
-          SUM(GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
-          COUNT(*) FILTER (WHERE (ro.total_pagar - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
+          SUM(GREATEST(${totalPagarReferenciaVerificacionSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
+          COUNT(*) FILTER (WHERE (${totalPagarReferenciaVerificacionSql} - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
         FROM recibos_objetivo ro
+        JOIN predios p ON p.id_predio = ro.id_predio
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
         GROUP BY ro.id_predio
       )
@@ -16021,6 +16073,11 @@ const buildCurrentPadronSnapshot = async (db = pool) => {
 const buildCurrentDeudaSnapshot = async (db = pool) => {
   const anioActual = getCurrentYear();
   const mesActual = getCurrentMonth();
+  const totalPagarReferenciaSnapshotSql = buildTotalPagarDeudaVigenteSql({
+    reciboAlias: "ro",
+    predioAlias: "p",
+    pagosAlias: "pp"
+  });
   const result = await db.query(`
     WITH recibos_objetivo AS (
       SELECT r.id_recibo, r.id_predio, r.total_pagar
@@ -16036,8 +16093,9 @@ const buildCurrentDeudaSnapshot = async (db = pool) => {
     deuda_predio AS (
       SELECT
         ro.id_predio,
-        SUM(GREATEST(ro.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
+        SUM(GREATEST(${totalPagarReferenciaSnapshotSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
       FROM recibos_objetivo ro
+      JOIN predios p ON p.id_predio = ro.id_predio
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
       GROUP BY ro.id_predio
     )
@@ -17296,6 +17354,11 @@ const queryRecibosMasivosRows = async (client, {
 } = {}) => {
   const params = [anioSeleccionado, mesesSeleccionados, minMesSeleccionado, ...filtroParams];
   const filtroClause = filtroSql ? `AND ${filtroSql}` : "";
+  const totalPagarReferenciaMasivosSql = buildTotalPagarDeudaVigenteSql({
+    reciboAlias: "r",
+    predioAlias: "p",
+    pagosAlias: "pp"
+  });
   const query = `
     WITH pagos_por_recibo AS (
       SELECT id_recibo, SUM(monto_pagado) AS total_pagado
@@ -17305,11 +17368,12 @@ const queryRecibosMasivosRows = async (client, {
     resumen_predio AS (
       SELECT
         r.id_predio,
-        SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
+        SUM(GREATEST(${totalPagarReferenciaMasivosSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
       FROM recibos r
+      JOIN predios p ON p.id_predio = r.id_predio
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
       WHERE ((r.anio < $1) OR (r.anio = $1 AND r.mes < $3))
-        AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+        AND GREATEST(${totalPagarReferenciaMasivosSql} - COALESCE(pp.total_pagado, 0), 0) > 0
       GROUP BY r.id_predio
     ),
     detalle_deuda_predio AS (
@@ -17328,11 +17392,12 @@ const queryRecibosMasivosRows = async (client, {
           r.id_predio,
           r.anio,
           STRING_AGG(${buildSqlMesCorto("r.mes")}, '/' ORDER BY r.mes) AS meses_label,
-          SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS monto
+          SUM(GREATEST(${totalPagarReferenciaMasivosSql} - COALESCE(pp.total_pagado, 0), 0)) AS monto
         FROM recibos r
+        JOIN predios p ON p.id_predio = r.id_predio
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
         WHERE ((r.anio < $1) OR (r.anio = $1 AND r.mes < $3))
-          AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+          AND GREATEST(${totalPagarReferenciaMasivosSql} - COALESCE(pp.total_pagado, 0), 0) > 0
         GROUP BY r.id_predio, r.anio
       ) t
       GROUP BY t.id_predio
@@ -17358,7 +17423,7 @@ const queryRecibosMasivosRows = async (client, {
     LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
     WHERE r.anio = $1
       AND r.mes = ANY($2::int[])
-      ${soloConDeuda ? "AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0" : ""}
+      ${soloConDeuda ? `AND GREATEST(${totalPagarReferenciaMasivosSql} - COALESCE(pp.total_pagado, 0), 0) > 0` : ""}
       ${filtroClause}
     ORDER BY r.mes ASC, ca.nombre ASC, p.numero_casa ASC, c.nombre_completo ASC
   `;
@@ -17371,6 +17436,11 @@ const queryRecibosSyntheticBaseRows = async (client, {
   anioSeleccionado,
   minMesSeleccionado
 } = {}) => {
+  const totalPagarReferenciaSyntheticSql = buildTotalPagarDeudaVigenteSql({
+    reciboAlias: "r",
+    predioAlias: "p",
+    pagosAlias: "pp"
+  });
   const rs = await client.query(`
     WITH pagos_por_recibo AS (
       SELECT id_recibo, SUM(monto_pagado) AS total_pagado
@@ -17380,11 +17450,12 @@ const queryRecibosSyntheticBaseRows = async (client, {
     resumen_predio AS (
       SELECT
         r.id_predio,
-        SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
+        SUM(GREATEST(${totalPagarReferenciaSyntheticSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total
       FROM recibos r
+      JOIN predios p ON p.id_predio = r.id_predio
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
       WHERE ((r.anio < $2) OR (r.anio = $2 AND r.mes < $3))
-        AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+        AND GREATEST(${totalPagarReferenciaSyntheticSql} - COALESCE(pp.total_pagado, 0), 0) > 0
       GROUP BY r.id_predio
     ),
     detalle_deuda_predio AS (
@@ -17403,11 +17474,12 @@ const queryRecibosSyntheticBaseRows = async (client, {
           r.id_predio,
           r.anio,
           STRING_AGG(${buildSqlMesCorto("r.mes")}, '/' ORDER BY r.mes) AS meses_label,
-          SUM(GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0)) AS monto
+          SUM(GREATEST(${totalPagarReferenciaSyntheticSql} - COALESCE(pp.total_pagado, 0), 0)) AS monto
         FROM recibos r
+        JOIN predios p ON p.id_predio = r.id_predio
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
         WHERE ((r.anio < $2) OR (r.anio = $2 AND r.mes < $3))
-          AND GREATEST(r.total_pagar - COALESCE(pp.total_pagado, 0), 0) > 0
+          AND GREATEST(${totalPagarReferenciaSyntheticSql} - COALESCE(pp.total_pagado, 0), 0) > 0
         GROUP BY r.id_predio, r.anio
       ) t
       GROUP BY t.id_predio
