@@ -2600,11 +2600,12 @@ const recalcularRecibosFuturosPorServicios = async (
           OR ((r.anio::int * 100) + r.mes::int) <= $7::int
         )
         AND (
-          (
+          ((r.anio::int * 100) + r.mes::int) >= $6::int
+          OR (
             $8::boolean = true
             AND ((r.anio::int * 100) + r.mes::int) < $6::int
+            AND COALESCE(pagos.total_pagado, 0)::numeric < COALESCE(r.total_pagar, 0)::numeric - 0.001
           )
-          OR ((r.anio::int * 100) + r.mes::int) >= $6::int
         )
     ),
     actualizables AS (
@@ -8723,8 +8724,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
     if (serviciosCambiaron || tarifasCambiaron) {
       const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
         incluirPendientesHistoricos: true,
-        desdePeriodoNum: getCurrentPeriodoNum(),
-        hastaPeriodoNum: getCurrentPeriodoNum()
+        desdePeriodoNum: getCurrentPeriodoNum()
       });
       recibosRecalculados = Number(recalcManual?.actualizados || 0);
     }
