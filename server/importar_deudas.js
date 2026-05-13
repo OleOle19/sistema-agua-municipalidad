@@ -12,6 +12,24 @@ const DEFAULT_COMMIT_PER_BATCH = process.env.IMPORT_COMMIT_PER_BATCH !== '0';
 const IMPORT_TIMEZONE = process.env.IMPORT_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || 'America/Lima';
 const IMPORT_ALLOW_FUTURE_PAYMENTS = process.env.IMPORT_ALLOW_FUTURE_PAYMENTS === '1';
 
+const parsePeriodoNum = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d{6}$/.test(raw)) {
+    const anio = Number(raw.slice(0, 4));
+    const mes = Number(raw.slice(4, 6));
+    if (anio >= 1900 && mes >= 1 && mes <= 12) return (anio * 100) + mes;
+    return null;
+  }
+  const match = raw.match(/^(\d{4})[-\/](\d{1,2})$/);
+  if (!match) return null;
+  const anio = Number(match[1]);
+  const mes = Number(match[2]);
+  if (anio >= 1900 && mes >= 1 && mes <= 12) return (anio * 100) + mes;
+  return null;
+};
+
 const getFechaPartesZona = (date = new Date(), timeZone = IMPORT_TIMEZONE) => {
   const dtf = new Intl.DateTimeFormat('en-CA', {
     timeZone,
@@ -126,6 +144,9 @@ async function importarDeudas(options = {}) {
   const commitPerBatch = typeof options.commitPerBatch === 'boolean'
     ? options.commitPerBatch
     : DEFAULT_COMMIT_PER_BATCH;
+  const overwriteExisting = options.overwriteExisting === true;
+  const periodoMin = parsePeriodoNum(options.periodoMin);
+  const periodoMax = parsePeriodoNum(options.periodoMax);
   const ioLogger = getLogger(options.logger);
   const fechaActual = getFechaPartesZona(new Date(), IMPORT_TIMEZONE);
 
@@ -138,6 +159,9 @@ async function importarDeudas(options = {}) {
 
   ioLogger.log('INICIANDO MIGRACION DE HISTORIAL (2007-2026)...');
   ioLogger.log(`Modo transaccional: ${commitPerBatch ? 'por lote (recomendado para menor bloqueo)' : 'transaccion unica (todo-o-nada)'}`);
+  ioLogger.log(`Sobrescribir existentes: ${overwriteExisting ? 'SI' : 'NO'}`);
+  ioLogger.log(`Filtro periodo min: ${periodoMin || 'sin limite'}`);
+  ioLogger.log(`Filtro periodo max: ${periodoMax || 'sin limite'}`);
 
   let reciboChunks = [];
   let reciboParams = [];
@@ -161,7 +185,8 @@ async function importarDeudas(options = {}) {
   const resumenAjustes = {
     total_desde_abono: 0,
     abono_recortado_a_total: 0,
-    abono_futuro_omitido: 0
+    abono_futuro_omitido: 0,
+    periodo_fuera_rango_omitido: 0
   };
   const rechazos = [];
 
@@ -194,12 +219,12 @@ async function importarDeudas(options = {}) {
     ioLogger.log(`OK: ${mapaPredios.size} usuarios encontrados.`);
 
     ioLogger.log('... Cargando periodos ya existentes para detectar duplicados...');
-    const recibosDb = new Set();
+    const recibosDb = new Map();
     const resRecibos = await client.query(`
-      SELECT id_predio, anio, mes
+      SELECT id_recibo, id_predio, anio, mes
       FROM recibos
     `);
-    resRecibos.rows.forEach((r) => recibosDb.add(keyPeriodo(r.id_predio, r.anio, r.mes)));
+    resRecibos.rows.forEach((r) => recibosDb.set(keyPeriodo(r.id_predio, r.anio, r.mes), Number(r.id_recibo)));
     ioLogger.log(`OK: ${recibosDb.size} recibos existentes indexados.`);
 
     const recibosArchivo = new Set();
@@ -219,18 +244,39 @@ async function importarDeudas(options = {}) {
             AS v (id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, total_pagar, estado)
           `;
 
-          const insertRecibos = `
-            INSERT INTO recibos (
-              id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza,
-              subtotal_admin, total_pagar, estado, fecha_emision, fecha_vencimiento
-            )
-            SELECT v.id_predio::int, v.anio::int, v.mes::int, v.subtotal_agua::numeric, v.subtotal_desague::numeric, v.subtotal_limpieza::numeric,
-                  v.subtotal_admin::numeric, v.total_pagar::numeric, v.estado,
-                  make_date(v.anio::int, v.mes::int, 1),
-                  (make_date(v.anio::int, v.mes::int, 1) + INTERVAL '1 month')::date
-            FROM ${valuesSql}
-            ON CONFLICT DO NOTHING
-          `;
+          const insertRecibos = overwriteExisting
+            ? `
+              INSERT INTO recibos (
+                id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza,
+                subtotal_admin, total_pagar, estado, fecha_emision, fecha_vencimiento
+              )
+              SELECT v.id_predio::int, v.anio::int, v.mes::int, v.subtotal_agua::numeric, v.subtotal_desague::numeric, v.subtotal_limpieza::numeric,
+                    v.subtotal_admin::numeric, v.total_pagar::numeric, v.estado,
+                    make_date(v.anio::int, v.mes::int, 1),
+                    (make_date(v.anio::int, v.mes::int, 1) + INTERVAL '1 month')::date
+              FROM ${valuesSql}
+              ON CONFLICT (id_predio, anio, mes) DO UPDATE
+              SET subtotal_agua = EXCLUDED.subtotal_agua,
+                  subtotal_desague = EXCLUDED.subtotal_desague,
+                  subtotal_limpieza = EXCLUDED.subtotal_limpieza,
+                  subtotal_admin = EXCLUDED.subtotal_admin,
+                  total_pagar = EXCLUDED.total_pagar,
+                  estado = EXCLUDED.estado,
+                  fecha_emision = EXCLUDED.fecha_emision,
+                  fecha_vencimiento = EXCLUDED.fecha_vencimiento
+            `
+            : `
+              INSERT INTO recibos (
+                id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza,
+                subtotal_admin, total_pagar, estado, fecha_emision, fecha_vencimiento
+              )
+              SELECT v.id_predio::int, v.anio::int, v.mes::int, v.subtotal_agua::numeric, v.subtotal_desague::numeric, v.subtotal_limpieza::numeric,
+                    v.subtotal_admin::numeric, v.total_pagar::numeric, v.estado,
+                    make_date(v.anio::int, v.mes::int, 1),
+                    (make_date(v.anio::int, v.mes::int, 1) + INTERVAL '1 month')::date
+              FROM ${valuesSql}
+              ON CONFLICT DO NOTHING
+            `;
 
           const recibosInsertados = await client.query(insertRecibos, reciboParams);
           totalProcesados += recibosInsertados.rowCount;
@@ -238,24 +284,51 @@ async function importarDeudas(options = {}) {
 
         if (pagoCount > 0) {
           const valuesPagos = pagoChunks.join(', ');
-          const insertPagos = `
-            WITH pagos_batch AS (
-              SELECT
-                v.id_predio::int AS id_predio,
-                v.anio::int AS anio,
-                v.mes::int AS mes,
-                MAX(v.monto_pagado::numeric) AS monto_pagado
-              FROM (VALUES ${valuesPagos}) AS v (id_predio, anio, mes, monto_pagado)
-              GROUP BY v.id_predio::int, v.anio::int, v.mes::int
-            )
-            INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero)
-            SELECT r.id_recibo, b.monto_pagado, make_date(b.anio, b.mes, 1), 'IMPORTACION_HISTORIAL'
-            FROM pagos_batch b
-            JOIN recibos r ON r.id_predio = b.id_predio AND r.anio = b.anio AND r.mes = b.mes
-            LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
-            WHERE b.monto_pagado > 0
-              AND p.id_recibo IS NULL
-          `;
+          const insertPagos = overwriteExisting
+            ? `
+              WITH pagos_batch AS (
+                SELECT
+                  v.id_predio::int AS id_predio,
+                  v.anio::int AS anio,
+                  v.mes::int AS mes,
+                  MAX(v.monto_pagado::numeric) AS monto_pagado
+                FROM (VALUES ${valuesPagos}) AS v (id_predio, anio, mes, monto_pagado)
+                GROUP BY v.id_predio::int, v.anio::int, v.mes::int
+              ),
+              recibos_objetivo AS (
+                SELECT r.id_recibo, b.monto_pagado, b.anio, b.mes
+                FROM pagos_batch b
+                JOIN recibos r ON r.id_predio = b.id_predio AND r.anio = b.anio AND r.mes = b.mes
+              ),
+              pagos_eliminados AS (
+                DELETE FROM pagos p
+                USING recibos_objetivo ro
+                WHERE p.id_recibo = ro.id_recibo
+                RETURNING p.id_pago
+              )
+              INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero)
+              SELECT ro.id_recibo, ro.monto_pagado, make_date(ro.anio, ro.mes, 1), 'IMPORTACION_HISTORIAL'
+              FROM recibos_objetivo ro
+              WHERE ro.monto_pagado > 0
+            `
+            : `
+              WITH pagos_batch AS (
+                SELECT
+                  v.id_predio::int AS id_predio,
+                  v.anio::int AS anio,
+                  v.mes::int AS mes,
+                  MAX(v.monto_pagado::numeric) AS monto_pagado
+                FROM (VALUES ${valuesPagos}) AS v (id_predio, anio, mes, monto_pagado)
+                GROUP BY v.id_predio::int, v.anio::int, v.mes::int
+              )
+              INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero)
+              SELECT r.id_recibo, b.monto_pagado, make_date(b.anio, b.mes, 1), 'IMPORTACION_HISTORIAL'
+              FROM pagos_batch b
+              JOIN recibos r ON r.id_predio = b.id_predio AND r.anio = b.anio AND r.mes = b.mes
+              LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
+              WHERE b.monto_pagado > 0
+                AND p.id_recibo IS NULL
+            `;
           const pagosInsertados = await client.query(insertPagos, pagoParams);
           totalPagos += pagosInsertados.rowCount;
         }
@@ -321,6 +394,12 @@ async function importarDeudas(options = {}) {
         });
         continue;
       }
+      const periodoNum = (anio * 100) + mes;
+      if ((periodoMin && periodoNum < periodoMin) || (periodoMax && periodoNum > periodoMax)) {
+        lineasOmitidas += 1;
+        resumenAjustes.periodo_fuera_rango_omitido += 1;
+        continue;
+      }
 
       const subtotalAgua = parseDecimal(parts[3]);
       const subtotalDesague = parseDecimal(parts[4]);
@@ -373,7 +452,7 @@ async function importarDeudas(options = {}) {
         continue;
       }
 
-      if (recibosDb.has(clave)) {
+      if (recibosDb.has(clave) && !overwriteExisting) {
         registrarRechazo('duplicado_bd', {
           linea: lineaActual,
           codigo_municipal: codigoUser,
@@ -398,7 +477,7 @@ async function importarDeudas(options = {}) {
       reciboChunks.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9})`);
       reciboCount += 1;
 
-      if (abono > 0) {
+      if (abono > 0 || overwriteExisting) {
         const pagoOffset = pagoCount * 4;
         pagoChunks.push(`($${pagoOffset + 1}, $${pagoOffset + 2}, $${pagoOffset + 3}, $${pagoOffset + 4})`);
         pagoParams.push(idPredio, anio, mes, abono);
@@ -406,7 +485,9 @@ async function importarDeudas(options = {}) {
       }
 
       recibosArchivo.add(clave);
-      recibosDb.add(clave);
+      if (!recibosDb.has(clave)) {
+        recibosDb.set(clave, 0);
+      }
 
       if (reciboCount >= batchSize) {
         await flushBatch();
@@ -443,6 +524,7 @@ async function importarDeudas(options = {}) {
     ioLogger.log(`Ajustes total_desde_abono: ${resultado.resumen_ajustes.total_desde_abono}`);
     ioLogger.log(`Ajustes abono_recortado_a_total: ${resultado.resumen_ajustes.abono_recortado_a_total}`);
     ioLogger.log(`Ajustes abono_futuro_omitido: ${resultado.resumen_ajustes.abono_futuro_omitido}`);
+    ioLogger.log(`Ajustes periodo_fuera_rango_omitido: ${resultado.resumen_ajustes.periodo_fuera_rango_omitido}`);
     ioLogger.log('==========================================');
 
     return resultado;
@@ -459,11 +541,73 @@ async function importarDeudas(options = {}) {
 
 module.exports = {
   importarDeudas,
-  DEFAULT_INPUT_FILE
+  DEFAULT_INPUT_FILE,
+  parsePeriodoNum
 };
 
 if (require.main === module) {
-  importarDeudas({ inputFile: DEFAULT_INPUT_FILE })
+  const args = process.argv.slice(2);
+  const cliOptions = {
+    inputFile: DEFAULT_INPUT_FILE
+  };
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = String(args[i] || '').trim();
+    const next = args[i + 1];
+    if (arg === '--file' || arg === '--input-file') {
+      cliOptions.inputFile = next || DEFAULT_INPUT_FILE;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--file=')) {
+      cliOptions.inputFile = arg.slice('--file='.length) || DEFAULT_INPUT_FILE;
+      continue;
+    }
+    if (arg === '--overwrite-existing') {
+      cliOptions.overwriteExisting = true;
+      continue;
+    }
+    if (arg === '--periodo-min') {
+      cliOptions.periodoMin = next || null;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--periodo-min=')) {
+      cliOptions.periodoMin = arg.slice('--periodo-min='.length) || null;
+      continue;
+    }
+    if (arg === '--periodo-max') {
+      cliOptions.periodoMax = next || null;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--periodo-max=')) {
+      cliOptions.periodoMax = arg.slice('--periodo-max='.length) || null;
+      continue;
+    }
+    if (arg === '--batch-size') {
+      cliOptions.batchSize = Number(next);
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--batch-size=')) {
+      cliOptions.batchSize = Number(arg.slice('--batch-size='.length));
+      continue;
+    }
+    if (arg === '--max-rechazos') {
+      cliOptions.maxRechazos = Number(next);
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--max-rechazos=')) {
+      cliOptions.maxRechazos = Number(arg.slice('--max-rechazos='.length));
+      continue;
+    }
+    if (arg === '--single-transaction') {
+      cliOptions.commitPerBatch = false;
+    }
+  }
+
+  importarDeudas(cliOptions)
     .then(() => process.exit(0))
     .catch(() => process.exit(1));
 }

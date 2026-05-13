@@ -2456,6 +2456,7 @@ const recalcularRecibosFuturosPorServicios = async (
   idContribuyente,
   {
     desdePeriodoNum = getNextPeriod().periodoNum,
+    hastaPeriodoNum = null,
     montosBase = AUTO_DEUDA_BASE,
     incluirPendientesHistoricos = false
   } = {}
@@ -2470,6 +2471,9 @@ const recalcularRecibosFuturosPorServicios = async (
   const periodoSolicitado = Number.isFinite(Number(desdePeriodoNum))
     ? Number(desdePeriodoNum)
     : getNextPeriod().periodoNum;
+  const periodoHasta = Number.isFinite(Number(hastaPeriodoNum))
+    ? Number(hastaPeriodoNum)
+    : null;
   const periodoMinimoFuturo = getNextPeriod().periodoNum;
   const periodo = incluirPendientesHistoricos
     ? Math.max(0, periodoSolicitado)
@@ -2592,7 +2596,14 @@ const recalcularRecibosFuturosPorServicios = async (
       WHERE p.id_contribuyente = $1
         AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
         AND (
-          $7::boolean = true
+          $7::int IS NULL
+          OR ((r.anio::int * 100) + r.mes::int) <= $7::int
+        )
+        AND (
+          (
+            $8::boolean = true
+            AND ((r.anio::int * 100) + r.mes::int) < $6::int
+          )
           OR ((r.anio::int * 100) + r.mes::int) >= $6::int
         )
     ),
@@ -2644,7 +2655,7 @@ const recalcularRecibosFuturosPorServicios = async (
       AND COALESCE(r.subtotal_admin, 0) = a.subtotal_admin_actual
       AND COALESCE(r.total_pagar, 0) = a.total_pagar_actual
     RETURNING r.id_recibo
-  `, [id, montoAgua, montoDesague, montoLimpieza, montoAdmin, periodo, incluirPendientesHistoricos]);
+  `, [id, montoAgua, montoDesague, montoLimpieza, montoAdmin, periodo, periodoHasta, incluirPendientesHistoricos]);
 
   return { actualizados: Number(resultado.rowCount || 0) };
 };
@@ -8642,6 +8653,23 @@ app.put("/contribuyentes/:id", async (req, res) => {
       tarifaLimpieza: tarifaLimpieza ?? predioActual?.tarifa_limpieza ?? null,
       tarifaAdmin: tarifaAdmin ?? predioActual?.tarifa_admin ?? null
     });
+    const serviciosDespues = {
+      activo_sn: predioEstado.activo_sn,
+      agua_sn: aguaSN ?? serviciosActuales.agua_sn,
+      desague_sn: desagueSN ?? serviciosActuales.desague_sn,
+      limpieza_sn: limpiezaSN ?? serviciosActuales.limpieza_sn
+    };
+    const serviciosCambiaron =
+      serviciosActuales.activo_sn !== serviciosDespues.activo_sn ||
+      serviciosActuales.agua_sn !== serviciosDespues.agua_sn ||
+      serviciosActuales.desague_sn !== serviciosDespues.desague_sn ||
+      serviciosActuales.limpieza_sn !== serviciosDespues.limpieza_sn;
+    const tarifasCambiaron =
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_agua) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_agua) ||
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_desague) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_desague) ||
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_limpieza) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_limpieza) ||
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_admin) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_admin) ||
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_extra) !== parseCampoSolicitudTarifaValue(tarifaExtra);
 
     await client.query(
       `UPDATE contribuyentes
@@ -8691,11 +8719,15 @@ app.put("/contribuyentes/:id", async (req, res) => {
         referenciaDireccionNueva
       ]
     );
-    const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-      incluirPendientesHistoricos: true,
-      desdePeriodoNum: getCurrentPeriodoNum()
-    });
-    const recibosRecalculados = Number(recalcManual?.actualizados || 0);
+    let recibosRecalculados = 0;
+    if (serviciosCambiaron || tarifasCambiaron) {
+      const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
+        incluirPendientesHistoricos: true,
+        desdePeriodoNum: getCurrentPeriodoNum(),
+        hastaPeriodoNum: getCurrentPeriodoNum()
+      });
+      recibosRecalculados = Number(recalcManual?.actualizados || 0);
+    }
     if (cambioRazonSocial) {
       const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
       const motivoLabel = motivoCambioRazonSocialLabel(motivoCambioRazonSocial);
