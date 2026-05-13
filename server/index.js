@@ -1324,6 +1324,154 @@ const parseStructuredAuditDetail = (detailRaw = "") => {
     });
   return entries;
 };
+const AUDITORIA_PAGE_SIZE_DEFAULT = 200;
+const AUDITORIA_PAGE_SIZE_MAX = 500;
+const AUDITORIA_EXPORT_MAX_ROWS = 200000;
+const buildContribuyenteAuditLabel = (row = {}) => {
+  const id = parsePositiveInt(row?.id_contribuyente, 0);
+  const codigo = String(row?.codigo_municipal || "").replace(/\s+/g, " ").trim();
+  const nombre = String(row?.nombre_completo || "").replace(/\s+/g, " ").trim();
+  const codigoBase = codigo || (id > 0 ? `ID ${id}` : "");
+  if (codigoBase && nombre) return `${codigoBase} - ${nombre}`;
+  if (codigoBase) return codigoBase;
+  if (nombre) return nombre;
+  return id > 0 ? `ID ${id}` : "";
+};
+const formatAuditPeriodo = (anio, mes) => {
+  const anioNum = parsePositiveInt(anio, 0);
+  const mesNum = parsePositiveInt(mes, 0);
+  if (!anioNum || mesNum < 1 || mesNum > 12) return "";
+  return `${String(mesNum).padStart(2, "0")}/${String(anioNum).padStart(4, "0")}`;
+};
+const normalizeAuditMethodFilter = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (["GET", "POST", "PUT", "PATCH", "DELETE", "SISTEMA"].includes(raw)) return raw;
+  return "TODOS";
+};
+const readAuditoriaFilters = (query = {}, { forExport = false } = {}) => {
+  const q = String(query?.q || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  const method = normalizeAuditMethodFilter(query?.method ?? query?.tipo ?? query?.metodo);
+  const soloSensibles = normalizeSN(
+    query?.sensitive ?? query?.solo_sensibles ?? query?.delicados,
+    "N"
+  ) === "S";
+  const fechaDesdeRaw = query?.fecha_desde ?? query?.desde;
+  const fechaHastaRaw = query?.fecha_hasta ?? query?.hasta;
+  const fechaDesde = fechaDesdeRaw ? normalizeDateOnly(fechaDesdeRaw) : null;
+  const fechaHasta = fechaHastaRaw ? normalizeDateOnly(fechaHastaRaw) : null;
+  if (fechaDesdeRaw && !fechaDesde) {
+    return { error: "fecha_desde invalida. Use YYYY-MM-DD." };
+  }
+  if (fechaHastaRaw && !fechaHasta) {
+    return { error: "fecha_hasta invalida. Use YYYY-MM-DD." };
+  }
+  if (fechaDesde && fechaHasta && fechaDesde > fechaHasta) {
+    return { error: "fecha_desde no puede ser mayor que fecha_hasta." };
+  }
+  const page = Math.max(1, parsePositiveInt(query?.page, 1));
+  const pageSizeLimit = forExport ? AUDITORIA_EXPORT_MAX_ROWS : AUDITORIA_PAGE_SIZE_MAX;
+  const pageSizeDefault = forExport ? AUDITORIA_PAGE_SIZE_MAX : AUDITORIA_PAGE_SIZE_DEFAULT;
+  const pageSize = Math.max(
+    10,
+    Math.min(
+      pageSizeLimit,
+      parsePositiveInt(query?.page_size ?? query?.limit, pageSizeDefault)
+    )
+  );
+  return {
+    q,
+    method,
+    soloSensibles,
+    fechaDesde,
+    fechaHasta,
+    page,
+    pageSize,
+    offset: (page - 1) * pageSize
+  };
+};
+const buildAuditoriaWhereClause = (filters = {}) => {
+  const params = [];
+  const where = [];
+
+  if (filters.q) {
+    params.push(`%${filters.q}%`);
+    const idx = params.length;
+    where.push(`(
+      COALESCE(usuario, '') ILIKE $${idx}
+      OR COALESCE(accion, '') ILIKE $${idx}
+      OR COALESCE(detalle, '') ILIKE $${idx}
+    )`);
+  }
+
+  if (filters.method && filters.method !== "TODOS") {
+    if (filters.method === "SISTEMA") {
+      where.push(`COALESCE(accion, '') !~* '^(GET|POST|PUT|PATCH|DELETE)\\b'`);
+    } else {
+      params.push(`^${filters.method}\\b`);
+      where.push(`COALESCE(accion, '') ~* $${params.length}`);
+    }
+  }
+
+  if (filters.soloSensibles) {
+    where.push(`(
+      UPPER(COALESCE(accion, '')) LIKE '%DELETE%'
+      OR UPPER(COALESCE(accion, '')) LIKE '%ANULAR%'
+      OR UPPER(COALESCE(accion, '')) LIKE '%PASSWORD%'
+      OR UPPER(COALESCE(accion, '')) LIKE '%BACKUP%'
+      OR UPPER(COALESCE(accion, '')) LIKE '%CERR%'
+      OR UPPER(COALESCE(accion, '')) LIKE '%CORTE%'
+      OR UPPER(COALESCE(accion, '')) LIKE '%ELIMIN%'
+    )`);
+  }
+
+  if (filters.fechaDesde) {
+    params.push(filters.fechaDesde);
+    where.push(`fecha >= $${params.length}::date`);
+  }
+  if (filters.fechaHasta) {
+    params.push(filters.fechaHasta);
+    where.push(`fecha < ($${params.length}::date + INTERVAL '1 day')`);
+  }
+
+  return {
+    whereSql: where.length > 0 ? `WHERE ${where.join(" AND ")}` : "",
+    params
+  };
+};
+const consultarAuditoria = async (db, filters = {}, { includeTotal = false, limit = null, offset = 0 } = {}) => {
+  const { whereSql, params } = buildAuditoriaWhereClause(filters);
+  let total = null;
+
+  if (includeTotal) {
+    const totalRs = await db.query(
+      `SELECT COUNT(*)::bigint AS total FROM auditoria ${whereSql}`,
+      params
+    );
+    total = Number(totalRs.rows?.[0]?.total || 0);
+  }
+
+  const rowParams = [...params];
+  let sql = `
+    SELECT id_auditoria, fecha, usuario, accion, detalle
+    FROM auditoria
+    ${whereSql}
+    ORDER BY fecha DESC, id_auditoria DESC
+  `;
+  if (Number.isInteger(limit) && limit > 0) {
+    rowParams.push(limit);
+    sql += ` LIMIT $${rowParams.length}`;
+  }
+  if (Number.isInteger(offset) && offset > 0) {
+    rowParams.push(offset);
+    sql += ` OFFSET $${rowParams.length}`;
+  }
+
+  const rowsRs = await db.query(sql, rowParams);
+  return {
+    total,
+    rows: rowsRs.rows
+  };
+};
 const SQL_SN_POSITIVOS = "('S', '1', 'SI', 'TRUE', 'Y', 'YES')";
 const SQL_SN_NEGATIVOS = "('N', '0', 'NO', 'FALSE')";
 const sqlSnEsSi = (sqlExpr, fallback = "S") => {
@@ -11461,10 +11609,62 @@ app.post("/pagos", async (req, res) => {
     });
     const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
     const ip = getRequestIp(req);
+    const contribuyentesAuditMap = new Map();
+    if (contribuyentesUnicos.length > 0) {
+      const contribuyentesAuditRs = await pool.query(`
+        SELECT id_contribuyente, codigo_municipal, nombre_completo
+        FROM contribuyentes
+        WHERE id_contribuyente = ANY($1::int[])
+      `, [contribuyentesUnicos]);
+      contribuyentesAuditRs.rows.forEach((row) => {
+        contribuyentesAuditMap.set(Number(row.id_contribuyente || 0), {
+          id_contribuyente: parsePositiveInt(row.id_contribuyente, 0) || null,
+          codigo_municipal: String(row.codigo_municipal || "").trim(),
+          nombre_completo: String(row.nombre_completo || "").trim()
+        });
+      });
+    }
+    const contribuyentesAudit = contribuyentesUnicos.map((idContribuyente) => {
+      const row = contribuyentesAuditMap.get(idContribuyente);
+      return row || {
+        id_contribuyente: idContribuyente,
+        codigo_municipal: "",
+        nombre_completo: ""
+      };
+    });
+    const contribuyenteAuditPrincipal = contribuyenteEvento
+      ? (contribuyentesAuditMap.get(contribuyenteEvento) || {
+        id_contribuyente: contribuyenteEvento,
+        codigo_municipal: "",
+        nombre_completo: ""
+      })
+      : (contribuyentesAudit.length === 1 ? contribuyentesAudit[0] : null);
+    const detalleRecibosAudit = pagosAplicados.map((pago) => ({
+      id_pago: parsePositiveInt(pago.id_pago, 0) || null,
+      id_recibo: parsePositiveInt(pago.id_recibo, 0) || null,
+      periodo: formatAuditPeriodo(pago.anio, pago.mes),
+      monto_cobrado: roundMonto2(parseMonto(pago.monto_pagado, 0)),
+      saldo_pendiente: roundMonto2(parseMonto(pago.saldo, 0)),
+      estado: String(pago.estado || "").trim(),
+      id_anulacion_referencia: parsePositiveInt(pago.id_anulacion_referencia, 0) || null
+    }));
+    req.skipAutoAudit = true;
     await registrarAuditoria(
       null,
-      "PAGO_DIRECTO_MANUAL",
-      `contribuyente=${idContribuyenteSolicitado || "N/A"}; fecha_pago=${fechaPagoSolicitada}; recibos=${pagosAplicados.length}; total=${totalAplicado.toFixed(2)}; ip=${ip}`,
+      "POST /pagos",
+      buildStructuredAuditDetail({
+        evento: "Registrar pago",
+        id_contribuyente: contribuyenteAuditPrincipal?.id_contribuyente || contribuyenteEvento || null,
+        codigo_municipal: contribuyenteAuditPrincipal?.codigo_municipal || "",
+        contribuyente: buildContribuyenteAuditLabel(contribuyenteAuditPrincipal),
+        contribuyentes: contribuyentesAudit.length > 1 ? contribuyentesAudit : undefined,
+        fecha_pago: fechaPagoSolicitada,
+        cantidad_recibos: pagosAplicados.length,
+        total_aplicado: totalAplicado.toFixed(2),
+        detalle_recibos: detalleRecibosAudit,
+        anulaciones_reintegradas: anulacionesReintegradas.length > 0 ? anulacionesReintegradas : undefined,
+        ip
+      }),
       usuarioAuditoria
     );
     if (anulacionesReintegradas.length > 0) {
@@ -14240,14 +14440,25 @@ app.get("/dashboard/resumen", async (req, res) => {
 
 app.get("/auditoria", authenticateToken, async (req, res) => {
   try {
-    const logs = await pool.query(`
-      SELECT *
-      FROM auditoria
-      ORDER BY fecha DESC, id_auditoria DESC
-      LIMIT 5000
-    `);
-    res.json(logs.rows);
-  } catch (err) { res.status(500).send("Error auditoria"); }
+    const filters = readAuditoriaFilters(req.query);
+    if (filters.error) {
+      return res.status(400).json({ error: filters.error });
+    }
+    const resultado = await consultarAuditoria(pool, filters, {
+      includeTotal: true,
+      limit: filters.pageSize,
+      offset: filters.offset
+    });
+    return res.json({
+      page: filters.page,
+      page_size: filters.pageSize,
+      total: Number(resultado.total || 0),
+      rows: resultado.rows
+    });
+  } catch (err) {
+    console.error("Error listando auditoria:", err.message);
+    return res.status(500).json({ error: "Error auditoria" });
+  }
 });
 
 app.post("/auditoria/:id/deshacer", authenticateToken, requireAdmin, async (req, res) => {
@@ -14361,6 +14572,10 @@ app.post("/auditoria/:id/deshacer", authenticateToken, requireAdmin, async (req,
 
 app.get("/exportar/auditoria", authenticateToken, requireAdmin, async (req, res) => {
   try {
+    const filters = readAuditoriaFilters(req.query, { forExport: true });
+    if (filters.error) {
+      return res.status(400).json({ error: filters.error });
+    }
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Auditoria");
     worksheet.columns = [
@@ -14372,12 +14587,11 @@ app.get("/exportar/auditoria", authenticateToken, requireAdmin, async (req, res)
     ];
     worksheet.getRow(1).font = { bold: true };
 
-    const logs = await pool.query(`
-      SELECT id_auditoria, fecha, usuario, accion, detalle
-      FROM auditoria
-      ORDER BY fecha DESC
-      LIMIT 5000
-    `);
+    const logs = await consultarAuditoria(pool, filters, {
+      includeTotal: false,
+      limit: AUDITORIA_EXPORT_MAX_ROWS,
+      offset: 0
+    });
 
     logs.rows.forEach((l) => {
       worksheet.addRow({

@@ -1,6 +1,14 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import api from "../api";
-import { FaShieldAlt, FaFileExcel, FaSearch, FaSyncAlt, FaUndo } from "react-icons/fa";
+import {
+  FaChevronLeft,
+  FaChevronRight,
+  FaFileExcel,
+  FaSearch,
+  FaShieldAlt,
+  FaSyncAlt,
+  FaUndo
+} from "react-icons/fa";
 
 const ACTION_LABELS = {
   ORDEN_COBRO_COBRADA: "Orden de cobro cobrada",
@@ -81,7 +89,6 @@ const LABEL_TRANSLATIONS = {
   autorizacion: "Autorizacion",
   minutos: "Minutos",
   acceso: "Tipo acceso",
-  detalle_recibos: "Detalle recibos",
   solicitud: "Solicitud",
   tipo_solicitud: "Tipo solicitud",
   aplicacion: "Aplicacion",
@@ -99,8 +106,23 @@ const LABEL_TRANSLATIONS = {
   verificacion_motivo: "Motivo verificacion",
   auditoria_origen: "Auditoria origen",
   recibos_restaurados: "Recibos restaurados",
-  deshecho_por: "Deshecho por"
+  deshecho_por: "Deshecho por",
+  cantidad_recibos: "Cantidad de recibos",
+  total_aplicado: "Total cobrado",
+  contribuyentes: "Contribuyentes",
+  detalle_recibos: "Detalle de cobros",
+  monto_cobrado: "Monto cobrado",
+  saldo_pendiente: "Saldo pendiente",
+  periodo: "Periodo",
+  anulaciones_reintegradas: "Anulaciones reintegradas"
 };
+const AUDITORIA_PAGE_SIZE = 200;
+const MONEY_FORMATTER = new Intl.NumberFormat("es-PE", {
+  style: "currency",
+  currency: "PEN",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
+});
 
 const formatArrayHint = (value) => {
   const match = String(value || "").trim().match(/^\[array:(\d+)\]$/i);
@@ -200,6 +222,73 @@ const formatScalar = (value) => {
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 };
+const formatMoney = (value) => {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return String(value ?? "-");
+  return MONEY_FORMATTER.format(amount);
+};
+const formatAuditDateOnly = (value) => {
+  const raw = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw || "-";
+  const date = new Date(`${raw}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleDateString();
+};
+const formatContribuyenteLine = (row = {}) => {
+  const id = Number(row?.id_contribuyente || 0);
+  const codigo = String(row?.codigo_municipal || "").trim();
+  const nombre = String(row?.nombre_completo || "").trim();
+  const parts = [];
+  if (id > 0) parts.push(`ID ${id}`);
+  if (codigo) parts.push(`Cod. ${codigo}`);
+  if (nombre) parts.push(nombre);
+  return parts.join(" | ") || "-";
+};
+const formatDetalleRecibosValue = (valueText) => {
+  try {
+    const parsed = JSON.parse(valueText);
+    if (!Array.isArray(parsed)) return valueText;
+    const lines = parsed.map((row) => {
+      const parts = [];
+      if (row?.periodo) parts.push(String(row.periodo));
+      if (Number(row?.id_recibo) > 0) parts.push(`Recibo ${row.id_recibo}`);
+      if (row?.monto_cobrado !== undefined) parts.push(`Cobro ${formatMoney(row.monto_cobrado)}`);
+      if (row?.saldo_pendiente !== undefined) parts.push(`Saldo ${formatMoney(row.saldo_pendiente)}`);
+      if (row?.estado) parts.push(`Estado ${row.estado}`);
+      if (Number(row?.id_anulacion_referencia) > 0) parts.push(`Reintegro de anulacion ${row.id_anulacion_referencia}`);
+      return parts.join(" | ");
+    }).filter(Boolean);
+    return lines.length > 0 ? lines.join("\n") : "Sin detalle";
+  } catch {
+    return valueText;
+  }
+};
+const formatContribuyentesValue = (valueText) => {
+  try {
+    const parsed = JSON.parse(valueText);
+    if (!Array.isArray(parsed)) return valueText;
+    const lines = parsed.map((row) => formatContribuyenteLine(row)).filter(Boolean);
+    return lines.length > 0 ? lines.join("\n") : "Sin contribuyentes";
+  } catch {
+    return valueText;
+  }
+};
+const formatAnulacionesReintegradasValue = (valueText) => {
+  try {
+    const parsed = JSON.parse(valueText);
+    if (!Array.isArray(parsed)) return valueText;
+    const lines = parsed.map((row) => {
+      const parts = [];
+      if (Number(row?.id_anulacion) > 0) parts.push(`Anulacion ${row.id_anulacion}`);
+      if (Number(row?.id_pago_reintegrado) > 0) parts.push(`Pago ${row.id_pago_reintegrado}`);
+      if (Number(row?.id_recibo) > 0) parts.push(`Recibo ${row.id_recibo}`);
+      return parts.join(" | ");
+    }).filter(Boolean);
+    return lines.length > 0 ? lines.join("\n") : "Sin anulaciones";
+  } catch {
+    return valueText;
+  }
+};
 
 const formatValueForDisplay = (label, valueText, isJson) => {
   const key = String(label || "").trim().toLowerCase();
@@ -226,6 +315,26 @@ const formatValueForDisplay = (label, valueText, isJson) => {
   if (key === "tipo_solicitud") {
     const normalized = String(valueText || "").trim().toUpperCase();
     return CAMPO_TIPO_SOLICITUD_LABELS[normalized] || valueText;
+  }
+
+  if (key === "fecha_pago") {
+    return formatAuditDateOnly(valueText);
+  }
+
+  if (["total", "total_aplicado", "monto_cobrado", "saldo_pendiente"].includes(key)) {
+    return formatMoney(valueText);
+  }
+
+  if (key === "contribuyentes" && isJson) {
+    return formatContribuyentesValue(valueText);
+  }
+
+  if (key === "detalle_recibos" && isJson) {
+    return formatDetalleRecibosValue(valueText);
+  }
+
+  if (key === "anulaciones_reintegradas" && isJson) {
+    return formatAnulacionesReintegradasValue(valueText);
   }
 
   if (isJson && (key === "params" || key === "body")) {
@@ -299,58 +408,77 @@ const isUndoableAuditAction = (log = {}) => String(log?.accion || "").trim().toU
 
 const ModalAuditoria = ({ cerrarModal, darkMode }) => {
   const [logs, setLogs] = useState([]);
+  const [totalLogs, setTotalLogs] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [exportando, setExportando] = useState(false);
   const [deshaciendoId, setDeshaciendoId] = useState(0);
   const [filtroTexto, setFiltroTexto] = useState("");
   const [filtroMetodo, setFiltroMetodo] = useState("TODOS");
   const [soloSensibles, setSoloSensibles] = useState(false);
+  const [fechaDesde, setFechaDesde] = useState("");
+  const [fechaHasta, setFechaHasta] = useState("");
+  const [pagina, setPagina] = useState(1);
 
   const formatFecha = (isoString) => {
     const date = new Date(isoString);
+    if (Number.isNaN(date.getTime())) return "-";
     return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
   };
 
-  const cargarLogs = useCallback(async () => {
+  const construirParamsConsulta = useCallback((pageValue = pagina) => {
+    const params = {
+      page: pageValue,
+      page_size: AUDITORIA_PAGE_SIZE
+    };
+    const texto = String(filtroTexto || "").trim();
+    if (texto) params.q = texto;
+    if (filtroMetodo !== "TODOS") params.method = filtroMetodo;
+    if (soloSensibles) params.sensitive = "S";
+    if (fechaDesde) params.fecha_desde = fechaDesde;
+    if (fechaHasta) params.fecha_hasta = fechaHasta;
+    return params;
+  }, [fechaDesde, fechaHasta, filtroMetodo, filtroTexto, pagina, soloSensibles]);
+
+  const cargarLogs = useCallback(async (pageValue = pagina) => {
     try {
       setCargando(true);
-      const res = await api.get("/auditoria");
-      setLogs(Array.isArray(res.data) ? res.data : []);
+      const res = await api.get("/auditoria", {
+        params: construirParamsConsulta(pageValue)
+      });
+      const rows = Array.isArray(res?.data?.rows)
+        ? res.data.rows
+        : (Array.isArray(res?.data) ? res.data : []);
+      setLogs(rows);
+      setTotalLogs(Number(res?.data?.total || 0));
+      setPagina(Math.max(1, Number(res?.data?.page || pageValue || 1)));
     } catch {
       console.error("Error cargando auditoria");
       setLogs([]);
+      setTotalLogs(0);
     } finally {
       setCargando(false);
     }
-  }, []);
+  }, [construirParamsConsulta, pagina]);
 
   useEffect(() => {
-    cargarLogs();
+    const timer = window.setTimeout(() => {
+      cargarLogs();
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [cargarLogs]);
 
-  const logsFiltrados = useMemo(() => {
-    const needle = normalizeAuditSearch(filtroTexto);
-    return logs.filter((log) => {
-      const method = getActionMethod(log.accion);
-      if (filtroMetodo !== "TODOS" && method !== filtroMetodo) return false;
-      if (soloSensibles && !isSensitiveAction(log.accion)) return false;
-      if (!needle) return true;
-      const friendlyAction = toFriendlyAction(log.accion);
-      const haystack = normalizeAuditSearch([
-        log.usuario || "SISTEMA",
-        log.accion || "",
-        friendlyAction,
-        log.detalle || "",
-        formatFecha(log.fecha)
-      ].join(" "));
-      return haystack.includes(needle);
-    });
-  }, [logs, filtroTexto, filtroMetodo, soloSensibles]);
+  const totalPaginas = useMemo(
+    () => Math.max(1, Math.ceil(Number(totalLogs || 0) / AUDITORIA_PAGE_SIZE)),
+    [totalLogs]
+  );
+  const rangoInicio = totalLogs > 0 ? ((pagina - 1) * AUDITORIA_PAGE_SIZE) + 1 : 0;
+  const rangoFin = totalLogs > 0 ? Math.min(((pagina - 1) * AUDITORIA_PAGE_SIZE) + logs.length, totalLogs) : 0;
 
   const descargarExcel = async () => {
     try {
       setExportando(true);
       const res = await api.get("/exportar/auditoria", {
+        params: construirParamsConsulta(1),
         responseType: "blob",
         timeout: 0
       });
@@ -395,6 +523,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
   const tableClass = `table mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
   const filtroInputClass = `form-control form-control-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
   const filtroSelectClass = `form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
+  const filtroGroupTextClass = `input-group-text ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
   const detalleCardStyle = darkMode
     ? { backgroundColor: "#20262c", border: "1px solid #495057" }
     : { backgroundColor: "#f8f9fa", border: "1px solid #dee2e6" };
@@ -410,45 +539,93 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
           <div className="modal-body p-0">
             <div className={`p-3 border-bottom ${darkMode ? "border-secondary" : ""}`}>
               <div className="row g-2 align-items-center">
-                <div className="col-lg-6">
+                <div className="col-xl-4 col-lg-6">
                   <div className="input-group input-group-sm">
-                    <span className={`input-group-text ${darkMode ? "bg-dark text-white border-secondary" : ""}`}><FaSearch /></span>
+                    <span className={filtroGroupTextClass}><FaSearch /></span>
                     <input
                       type="text"
                       className={filtroInputClass}
                       placeholder="Buscar por usuario, movimiento o detalle..."
                       value={filtroTexto}
-                      onChange={(e) => setFiltroTexto(e.target.value)}
+                      onChange={(e) => {
+                        setPagina(1);
+                        setFiltroTexto(e.target.value);
+                      }}
                     />
                   </div>
                 </div>
-                <div className="col-lg-2 col-md-4">
-                  <select className={filtroSelectClass} value={filtroMetodo} onChange={(e) => setFiltroMetodo(e.target.value)}>
+                <div className="col-xl-2 col-md-3">
+                  <select
+                    className={filtroSelectClass}
+                    value={filtroMetodo}
+                    onChange={(e) => {
+                      setPagina(1);
+                      setFiltroMetodo(e.target.value);
+                    }}
+                  >
                     {METHOD_FILTER_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
                   </select>
                 </div>
-                <div className="col-lg-2 col-md-4">
-                  <div className="form-check form-switch mt-1">
+                <div className="col-xl-2 col-md-3">
+                  <div className="input-group input-group-sm">
+                    <span className={filtroGroupTextClass}>Desde</span>
                     <input
-                      className="form-check-input"
-                      type="checkbox"
-                      id="auditoria-sensibles"
-                      checked={soloSensibles}
-                      onChange={(e) => setSoloSensibles(e.target.checked)}
+                      type="date"
+                      className={filtroInputClass}
+                      value={fechaDesde}
+                      onChange={(e) => {
+                        setPagina(1);
+                        setFechaDesde(e.target.value);
+                      }}
                     />
-                    <label className="form-check-label small" htmlFor="auditoria-sensibles">Solo delicados</label>
                   </div>
                 </div>
-                <div className="col-lg-2 col-md-4 text-md-end">
-                  <button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={cargarLogs} disabled={cargando}>
-                    <FaSyncAlt className="me-1" /> Recargar
-                  </button>
+                <div className="col-xl-2 col-md-3">
+                  <div className="input-group input-group-sm">
+                    <span className={filtroGroupTextClass}>Hasta</span>
+                    <input
+                      type="date"
+                      className={filtroInputClass}
+                      value={fechaHasta}
+                      onChange={(e) => {
+                        setPagina(1);
+                        setFechaHasta(e.target.value);
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="col-xl-2 col-md-3">
+                  <div className="d-flex flex-column flex-md-row gap-2 justify-content-md-end align-items-md-center">
+                    <div className="form-check form-switch mt-1 mb-0">
+                      <input
+                        className="form-check-input"
+                        type="checkbox"
+                        id="auditoria-sensibles"
+                        checked={soloSensibles}
+                        onChange={(e) => {
+                          setPagina(1);
+                          setSoloSensibles(e.target.checked);
+                        }}
+                      />
+                      <label className="form-check-label small" htmlFor="auditoria-sensibles">Solo delicados</label>
+                    </div>
+                    <button
+                      type="button"
+                      className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`}
+                      onClick={() => cargarLogs()}
+                      disabled={cargando}
+                    >
+                      <FaSyncAlt className="me-1" /> Recargar
+                    </button>
+                  </div>
                 </div>
               </div>
-              <div className="small mt-2 opacity-75">
-                Mostrando {logsFiltrados.length} de {logs.length} registro(s)
+              <div className="small mt-2 opacity-75 d-flex flex-wrap gap-3">
+                <span>Mostrando {rangoInicio}-{rangoFin} de {totalLogs} registro(s)</span>
+                <span>Pagina {pagina} de {totalPaginas}</span>
+                <span>Lote de {AUDITORIA_PAGE_SIZE}</span>
               </div>
             </div>
             <div className="table-responsive" style={{ maxHeight: "60vh" }}>
@@ -470,10 +647,10 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                 <tbody>
                   {cargando ? (
                     <tr><td colSpan="4" className="text-center p-3">Cargando bitacora...</td></tr>
-                  ) : logsFiltrados.length === 0 ? (
-                    <tr><td colSpan="4" className="text-center p-3">{logs.length === 0 ? "No hay registros." : "No hay registros para este filtro."}</td></tr>
+                  ) : logs.length === 0 ? (
+                    <tr><td colSpan="4" className="text-center p-3">{totalLogs === 0 ? "No hay registros." : "No hay registros para este filtro."}</td></tr>
                   ) : (
-                    logsFiltrados.map((log) => {
+                    logs.map((log) => {
                       const accionSimple = toFriendlyAction(log.accion);
                       const detalleRows = parseDetalle(log.detalle);
                       return (
@@ -510,24 +687,28 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                                     && labelKey !== "params"
                                     && labelKey !== "body"
                                     && labelKey !== "cambios_aplicados"
-                                    && labelKey !== "cambios_solicitados";
+                                    && labelKey !== "cambios_solicitados"
+                                    && labelKey !== "detalle_recibos"
+                                    && labelKey !== "contribuyentes"
+                                    && labelKey !== "anulaciones_reintegradas";
                                   return (
-                                  <div key={`${log.id_auditoria}-${idx}`} className={idx < detalleRows.length - 1 ? "mb-2" : ""}>
-                                    <div className="small text-uppercase fw-semibold opacity-75">{prettyLabel(item.label)}</div>
-                                    {showAsCodeBlock ? (
-                                      <pre
-                                        className="mb-0 small"
-                                        style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "Consolas, monospace" }}
-                                      >
-                                        {valueToRender}
-                                      </pre>
-                                    ) : (
-                                      <div className="small" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                                        {valueToRender}
-                                      </div>
-                                    )}
-                                  </div>
-                                )})
+                                    <div key={`${log.id_auditoria}-${idx}`} className={idx < detalleRows.length - 1 ? "mb-2" : ""}>
+                                      <div className="small text-uppercase fw-semibold opacity-75">{prettyLabel(item.label)}</div>
+                                      {showAsCodeBlock ? (
+                                        <pre
+                                          className="mb-0 small"
+                                          style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "Consolas, monospace" }}
+                                        >
+                                          {valueToRender}
+                                        </pre>
+                                      ) : (
+                                        <div className="small" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                          {valueToRender}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })
                               )}
                             </div>
                           </td>
@@ -539,12 +720,33 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
               </table>
             </div>
           </div>
-          <div className={`modal-footer ${darkMode ? "border-secondary" : ""}`}>
-            <button type="button" className="btn btn-success" onClick={descargarExcel} disabled={exportando}>
-              <FaFileExcel className="me-2" />
-              {exportando ? "Exportando..." : "Exportar Excel"}
-            </button>
-            <button type="button" className={`btn ${darkMode ? "btn-secondary" : "btn-dark"}`} onClick={cerrarModal}>Cerrar</button>
+          <div className={`modal-footer ${darkMode ? "border-secondary" : ""} d-flex justify-content-between gap-2 flex-wrap`}>
+            <div className="d-flex align-items-center gap-2">
+              <button
+                type="button"
+                className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`}
+                onClick={() => setPagina((current) => Math.max(1, current - 1))}
+                disabled={cargando || pagina <= 1}
+              >
+                <FaChevronLeft />
+              </button>
+              <span className="small opacity-75">Pagina {pagina} de {totalPaginas}</span>
+              <button
+                type="button"
+                className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`}
+                onClick={() => setPagina((current) => Math.min(totalPaginas, current + 1))}
+                disabled={cargando || pagina >= totalPaginas}
+              >
+                <FaChevronRight />
+              </button>
+            </div>
+            <div className="d-flex gap-2">
+              <button type="button" className="btn btn-success" onClick={descargarExcel} disabled={exportando}>
+                <FaFileExcel className="me-2" />
+                {exportando ? "Exportando..." : "Exportar Excel"}
+              </button>
+              <button type="button" className={`btn ${darkMode ? "btn-secondary" : "btn-dark"}`} onClick={cerrarModal}>Cerrar</button>
+            </div>
           </div>
         </div>
       </div>
