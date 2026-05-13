@@ -8660,6 +8660,17 @@ app.put("/contribuyentes/:id", async (req, res) => {
       desague_sn: desagueSN ?? serviciosActuales.desague_sn,
       limpieza_sn: limpiezaSN ?? serviciosActuales.limpieza_sn
     };
+    const requestIncluyeCamposTarifaOServicio = [
+      "tarifa_agua",
+      "tarifa_desague",
+      "tarifa_limpieza",
+      "tarifa_admin",
+      "tarifa_extra",
+      "agua_sn",
+      "desague_sn",
+      "limpieza_sn",
+      "estado_conexion"
+    ].some((key) => Object.prototype.hasOwnProperty.call(req.body || {}, key));
     const serviciosCambiaron =
       serviciosActuales.activo_sn !== serviciosDespues.activo_sn ||
       serviciosActuales.agua_sn !== serviciosDespues.agua_sn ||
@@ -8721,7 +8732,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
       ]
     );
     let recibosRecalculados = 0;
-    if (serviciosCambiaron || tarifasCambiaron) {
+    if (serviciosCambiaron || tarifasCambiaron || requestIncluyeCamposTarifaOServicio) {
       const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
         incluirPendientesHistoricos: true,
         desdePeriodoNum: getCurrentPeriodoNum()

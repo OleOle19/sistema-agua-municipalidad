@@ -11,6 +11,7 @@ const EPS = 0.001;
 const DEFAULT_COMMIT_PER_BATCH = process.env.IMPORT_COMMIT_PER_BATCH !== '0';
 const IMPORT_TIMEZONE = process.env.IMPORT_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || 'America/Lima';
 const IMPORT_ALLOW_FUTURE_PAYMENTS = process.env.IMPORT_ALLOW_FUTURE_PAYMENTS === '1';
+const IMPORT_USUARIO_HISTORIAL = 'IMPORTACION_HISTORIAL';
 
 const parsePeriodoNum = (value) => {
   if (value === null || value === undefined || value === '') return null;
@@ -186,7 +187,8 @@ async function importarDeudas(options = {}) {
     total_desde_abono: 0,
     abono_recortado_a_total: 0,
     abono_futuro_omitido: 0,
-    periodo_fuera_rango_omitido: 0
+    periodo_fuera_rango_omitido: 0,
+    pagos_operativos_protegidos: 0
   };
   const rechazos = [];
 
@@ -296,20 +298,31 @@ async function importarDeudas(options = {}) {
                 GROUP BY v.id_predio::int, v.anio::int, v.mes::int
               ),
               recibos_objetivo AS (
-                SELECT r.id_recibo, b.monto_pagado, b.anio, b.mes
+                SELECT r.id_recibo, b.monto_pagado, b.anio, b.mes, make_date(b.anio, b.mes, 1) AS fecha_historica
                 FROM pagos_batch b
                 JOIN recibos r ON r.id_predio = b.id_predio AND r.anio = b.anio AND r.mes = b.mes
+              ),
+              recibos_protegidos AS (
+                SELECT DISTINCT ro.id_recibo
+                FROM recibos_objetivo ro
+                JOIN pagos p ON p.id_recibo = ro.id_recibo
+                WHERE DATE(p.fecha_pago) <> ro.fecha_historica
+                  AND COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '${IMPORT_USUARIO_HISTORIAL}'
               ),
               pagos_eliminados AS (
                 DELETE FROM pagos p
                 USING recibos_objetivo ro
+                LEFT JOIN recibos_protegidos rp ON rp.id_recibo = ro.id_recibo
                 WHERE p.id_recibo = ro.id_recibo
+                  AND rp.id_recibo IS NULL
                 RETURNING p.id_pago
               )
               INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero)
-              SELECT ro.id_recibo, ro.monto_pagado, make_date(ro.anio, ro.mes, 1), 'IMPORTACION_HISTORIAL'
+              SELECT ro.id_recibo, ro.monto_pagado, ro.fecha_historica, '${IMPORT_USUARIO_HISTORIAL}'
               FROM recibos_objetivo ro
+              LEFT JOIN recibos_protegidos rp ON rp.id_recibo = ro.id_recibo
               WHERE ro.monto_pagado > 0
+                AND rp.id_recibo IS NULL
             `
             : `
               WITH pagos_batch AS (
@@ -322,7 +335,7 @@ async function importarDeudas(options = {}) {
                 GROUP BY v.id_predio::int, v.anio::int, v.mes::int
               )
               INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero)
-              SELECT r.id_recibo, b.monto_pagado, make_date(b.anio, b.mes, 1), 'IMPORTACION_HISTORIAL'
+              SELECT r.id_recibo, b.monto_pagado, make_date(b.anio, b.mes, 1), '${IMPORT_USUARIO_HISTORIAL}'
               FROM pagos_batch b
               JOIN recibos r ON r.id_predio = b.id_predio AND r.anio = b.anio AND r.mes = b.mes
               LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
@@ -331,6 +344,29 @@ async function importarDeudas(options = {}) {
             `;
           const pagosInsertados = await client.query(insertPagos, pagoParams);
           totalPagos += pagosInsertados.rowCount;
+          if (overwriteExisting) {
+            const protegidosRs = await client.query(`
+              WITH pagos_batch AS (
+                SELECT
+                  v.id_predio::int AS id_predio,
+                  v.anio::int AS anio,
+                  v.mes::int AS mes
+                FROM (VALUES ${valuesPagos}) AS v (id_predio, anio, mes, monto_pagado)
+                GROUP BY v.id_predio::int, v.anio::int, v.mes::int
+              ),
+              recibos_objetivo AS (
+                SELECT r.id_recibo, make_date(b.anio, b.mes, 1) AS fecha_historica
+                FROM pagos_batch b
+                JOIN recibos r ON r.id_predio = b.id_predio AND r.anio = b.anio AND r.mes = b.mes
+              )
+              SELECT COUNT(DISTINCT ro.id_recibo)::int AS total
+              FROM recibos_objetivo ro
+              JOIN pagos p ON p.id_recibo = ro.id_recibo
+              WHERE DATE(p.fecha_pago) <> ro.fecha_historica
+                AND COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '${IMPORT_USUARIO_HISTORIAL}'
+            `, pagoParams);
+            resumenAjustes.pagos_operativos_protegidos += Number(protegidosRs.rows[0]?.total || 0);
+          }
         }
 
         if (commitPerBatch) {
@@ -525,6 +561,7 @@ async function importarDeudas(options = {}) {
     ioLogger.log(`Ajustes abono_recortado_a_total: ${resultado.resumen_ajustes.abono_recortado_a_total}`);
     ioLogger.log(`Ajustes abono_futuro_omitido: ${resultado.resumen_ajustes.abono_futuro_omitido}`);
     ioLogger.log(`Ajustes periodo_fuera_rango_omitido: ${resultado.resumen_ajustes.periodo_fuera_rango_omitido}`);
+    ioLogger.log(`Ajustes pagos_operativos_protegidos: ${resultado.resumen_ajustes.pagos_operativos_protegidos}`);
     ioLogger.log('==========================================');
 
     return resultado;
