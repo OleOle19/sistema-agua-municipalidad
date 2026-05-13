@@ -2027,6 +2027,30 @@ const clampArray = (rows, max = 200) => {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, Math.max(1, Math.min(1000, max)));
 };
+const buildPeriodosRecalculadosResumen = (rows = []) => {
+  const periodos = (Array.isArray(rows) ? rows : [])
+    .map((row) => ({
+      anio: Number(row?.anio || 0),
+      mes: Number(row?.mes || 0)
+    }))
+    .filter((row) => row.anio >= 1900 && row.mes >= 1 && row.mes <= 12)
+    .sort((a, b) => (a.anio - b.anio) || (a.mes - b.mes));
+  if (periodos.length === 0) {
+    return {
+      total_periodos: 0,
+      desde: null,
+      hasta: null,
+      etiquetas: []
+    };
+  }
+  const formatPeriodo = (item) => `${String(item.mes).padStart(2, "0")}/${item.anio}`;
+  return {
+    total_periodos: periodos.length,
+    desde: formatPeriodo(periodos[0]),
+    hasta: formatPeriodo(periodos[periodos.length - 1]),
+    etiquetas: periodos.slice(0, 12).map(formatPeriodo)
+  };
+};
 
 const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
   const id = parsePositiveInt(idContribuyente, 0);
@@ -2655,10 +2679,13 @@ const recalcularRecibosFuturosPorServicios = async (
       AND COALESCE(r.subtotal_limpieza, 0) = a.subtotal_limpieza_actual
       AND COALESCE(r.subtotal_admin, 0) = a.subtotal_admin_actual
       AND COALESCE(r.total_pagar, 0) = a.total_pagar_actual
-    RETURNING r.id_recibo
+    RETURNING r.id_recibo, r.anio, r.mes
   `, [id, montoAgua, montoDesague, montoLimpieza, montoAdmin, periodo, periodoHasta, incluirPendientesHistoricos]);
 
-  return { actualizados: Number(resultado.rowCount || 0) };
+  return {
+    actualizados: Number(resultado.rowCount || 0),
+    periodos: buildPeriodosRecalculadosResumen(resultado.rows || [])
+  };
 };
 
 const repararRecibosPendientesSnLegacy = async () => {
@@ -8732,12 +8759,14 @@ app.put("/contribuyentes/:id", async (req, res) => {
       ]
     );
     let recibosRecalculados = 0;
+    let periodosRecalculados = buildPeriodosRecalculadosResumen([]);
     if (serviciosCambiaron || tarifasCambiaron || requestIncluyeCamposTarifaOServicio) {
       const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
         incluirPendientesHistoricos: true,
         desdePeriodoNum: getCurrentPeriodoNum()
       });
       recibosRecalculados = Number(recalcManual?.actualizados || 0);
+      periodosRecalculados = recalcManual?.periodos || buildPeriodosRecalculadosResumen([]);
     }
     if (cambioRazonSocial) {
       const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
@@ -8753,7 +8782,11 @@ app.put("/contribuyentes/:id", async (req, res) => {
     await client.query('COMMIT');
     txStarted = false;
     invalidateContribuyentesCache();
-    res.json({ mensaje: "Datos actualizados correctamente", recibos_recalculados: recibosRecalculados });
+    res.json({
+      mensaje: "Datos actualizados correctamente",
+      recibos_recalculados: recibosRecalculados,
+      periodos_recalculados: periodosRecalculados
+    });
   } catch (err) {
     if (txStarted) {
       try { await client.query('ROLLBACK'); } catch {}
