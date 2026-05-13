@@ -167,7 +167,17 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
           : null
       });
       const recalc = Number(res?.data?.recibos_recalculados || 0);
-      showFlash("success", `Usuario actualizado.\nRecibos pendientes/futuros recalculados: ${recalc}`);
+      const periodos = res?.data?.periodos_recalculados || {};
+      const resumenPeriodos = recalc > 0
+        ? (
+          periodos?.desde && periodos?.hasta
+            ? `\nPeríodos afectados: ${periodos.desde}${periodos.desde !== periodos.hasta ? ` a ${periodos.hasta}` : ""}`
+            : (Array.isArray(periodos?.etiquetas) && periodos.etiquetas.length > 0
+              ? `\nPeríodos afectados: ${periodos.etiquetas.join(", ")}`
+              : "")
+        )
+        : "";
+      showFlash("success", `Usuario actualizado.\nRecibos pendientes/futuros recalculados: ${recalc}${resumenPeriodos}`);
       setNombreOriginal(String(formData.nombre_completo || ""));
       alGuardar();
       cerrarModal();
