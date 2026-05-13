@@ -95,7 +95,8 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null 
     agua: servicios.agua ? toNumber(form.agua, 0) : 0,
     desague: servicios.desague ? toNumber(form.desague, 0) : 0,
     limpieza: servicios.limpieza ? toNumber(form.limpieza, 0) : 0,
-    admin: (servicios.admin ? toNumber(form.admin, 0) : 0) + (servicios.extra ? toNumber(form.extra, 0) : 0)
+    admin: servicios.admin ? toNumber(form.admin, 0) : 0,
+    extra: servicios.extra ? toNumber(form.extra, 0) : 0
   };
   const totalServicios = Object.values(montos).reduce((sum, v) => sum + v, 0);
 
