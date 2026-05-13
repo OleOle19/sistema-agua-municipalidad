@@ -2618,7 +2618,10 @@ const recalcularRecibosFuturosPorServicios = async (
         subtotal_admin_actual <> nuevo_admin OR
         total_pagar_actual <> (nuevo_agua + nuevo_desague + nuevo_limpieza + nuevo_admin)
       )
-      AND total_pagado <= (nuevo_agua + nuevo_desague + nuevo_limpieza + nuevo_admin) + 0.001
+      AND (
+        total_pagado <= 0.001
+        OR total_pagado < ((nuevo_agua + nuevo_desague + nuevo_limpieza + nuevo_admin) - 0.001)
+      )
     )
     UPDATE recibos r
     SET
