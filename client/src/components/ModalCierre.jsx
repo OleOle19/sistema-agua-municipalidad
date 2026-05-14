@@ -69,6 +69,73 @@ const formatMontoReporte = (value) => {
   const num = Number.parseFloat(value);
   return Number.isFinite(num) ? num.toFixed(2) : "0.00";
 };
+const normalizeTipoPagoReporte = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  return raw || "CAJA";
+};
+const buildTemporalLabelFromMovimiento = (row = {}, reporteTipo = "diario") => {
+  const fecha = String(row?.fecha || "").trim();
+  const hora = String(row?.hora || "").trim();
+  if (reporteTipo === "diario") {
+    return /^\d{2}:\d{2}/.test(hora) ? `${hora.slice(0, 2)}:00` : "Sin hora";
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+    if (reporteTipo === "anual") return `${fecha.slice(5, 7)}/${fecha.slice(0, 4)}`;
+    return `${fecha.slice(8, 10)}/${fecha.slice(5, 7)}`;
+  }
+  return reporteTipo === "anual" ? "Sin mes" : "Sin fecha";
+};
+const buildPeriodoCobroLabel = (row = {}) => {
+  const fecha = String(row?.fecha || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return "Sin periodo";
+  return `${fecha.slice(5, 7)}/${fecha.slice(0, 4)}`;
+};
+const buildResumenLocalDesdeMovimientos = (rows = [], reporteTipo = "diario") => {
+  const items = Array.isArray(rows) ? rows : [];
+  const temporalMap = new Map();
+  const topMap = new Map();
+  const periodoMap = new Map();
+  let totalGeneral = 0;
+
+  items.forEach((row) => {
+    const monto = Number(row?.monto_pagado || 0) || 0;
+    totalGeneral += monto;
+
+    const temporalKey = buildTemporalLabelFromMovimiento(row, reporteTipo);
+    temporalMap.set(temporalKey, (temporalMap.get(temporalKey) || 0) + monto);
+
+    const periodoKey = buildPeriodoCobroLabel(row);
+    periodoMap.set(periodoKey, (periodoMap.get(periodoKey) || 0) + monto);
+
+    const topKey = `${row?.id_contribuyente || 0}|${row?.codigo_municipal || ""}|${row?.nombre_completo || ""}`;
+    const currentTop = topMap.get(topKey) || {
+      codigo_municipal: row?.codigo_municipal || "",
+      nombre_completo: row?.nombre_completo || "",
+      total: 0
+    };
+    currentTop.total += monto;
+    topMap.set(topKey, currentTop);
+  });
+
+  return {
+    totalGeneral,
+    cantidadMovimientos: items.length,
+    recaudacionTemporal: Array.from(temporalMap.entries()).map(([etiqueta, total]) => ({
+      etiqueta,
+      total: Number(total || 0)
+    })),
+    topContribuyentes: Array.from(topMap.values())
+      .sort((a, b) => Number(b.total || 0) - Number(a.total || 0))
+      .slice(0, 10)
+      .map((row) => ({
+        ...row,
+        total: Number(row.total || 0)
+      })),
+    recaudacionPeriodo: Array.from(periodoMap.entries())
+      .map(([periodo, total]) => ({ periodo, total: Number(total || 0) }))
+      .sort((a, b) => String(a.periodo || "").localeCompare(String(b.periodo || "")))
+  };
+};
 
 const getMovimientoAdminMontoAnterior = (row = {}) => Number(row?.monto_anterior ?? row?.monto_pagado ?? 0);
 const getMovimientoAdminMontoNuevo = (row = {}) => Number(row?.monto_nuevo ?? 0);
@@ -327,12 +394,28 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     return () => controller.abort();
   }, [cargarMovimientosAdmin, esAdminPrincipal, reporte?.movimientos_admin, reporte?.rango?.desde, reporte?.rango?.hasta_exclusivo]);
 
-  const movimientos = Array.isArray(reporte.movimientos) ? reporte.movimientos : [];
+  const movimientosRaw = Array.isArray(reporte.movimientos) ? reporte.movimientos : [];
+  const movimientos = useMemo(() => {
+    if (isProyeccion) return movimientosRaw;
+    return movimientosRaw.filter((row) => normalizeTipoPagoReporte(row?.tipo_pago) === "CAJA");
+  }, [isProyeccion, movimientosRaw]);
   const totalPaginas = Math.max(1, Number(reporte?.paginacion?.total_paginas || 1));
   const paginaActual = Math.max(1, Number(reporte?.paginacion?.pagina || paginaMovimientos));
   const pageSizeActual = Math.max(1, Number(reporte?.paginacion?.page_size || MOVIMIENTOS_PAGE_SIZE));
   const inicioIndice = (paginaActual - 1) * pageSizeActual;
-  const totalGeneral = formatMoney(reporte.total_general || reporte.total || 0);
+  const resumenLocal = useMemo(() => {
+    if (isProyeccion) return null;
+    if (movimientos.length === movimientosRaw.length) return null;
+    return buildResumenLocalDesdeMovimientos(movimientos, reporteTipo);
+  }, [isProyeccion, movimientos, movimientosRaw.length, reporteTipo]);
+  const cantidadMovimientosDisplay = resumenLocal
+    ? Number(resumenLocal.cantidadMovimientos || 0)
+    : Number(reporte?.cantidad_movimientos || 0);
+  const totalGeneral = formatMoney(
+    resumenLocal
+      ? Number(resumenLocal.totalGeneral || 0)
+      : (reporte.total_general || reporte.total || 0)
+  );
   const totalComponentesReporteApi = Number(reporte?.total_componentes || 0);
   const diferenciaDesgloseApi = Number(reporte?.diferencia_desglose || 0);
   const alertasResumen = alertasRiesgo?.resumen || {};
@@ -356,9 +439,15 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
             ? "Proyeccion"
         : "Diario";
   const graficosCaja = reporte?.graficos || {};
-  const recaudacionTemporal = Array.isArray(graficosCaja.recaudacion_temporal) ? graficosCaja.recaudacion_temporal : [];
-  const topContribuyentes = Array.isArray(graficosCaja.top_contribuyentes) ? graficosCaja.top_contribuyentes : [];
-  const recaudacionPeriodoRaw = Array.isArray(graficosCaja.recaudacion_por_periodo) ? graficosCaja.recaudacion_por_periodo : [];
+  const recaudacionTemporal = resumenLocal
+    ? resumenLocal.recaudacionTemporal
+    : (Array.isArray(graficosCaja.recaudacion_temporal) ? graficosCaja.recaudacion_temporal : []);
+  const topContribuyentes = resumenLocal
+    ? resumenLocal.topContribuyentes
+    : (Array.isArray(graficosCaja.top_contribuyentes) ? graficosCaja.top_contribuyentes : []);
+  const recaudacionPeriodoRaw = resumenLocal
+    ? resumenLocal.recaudacionPeriodo
+    : (Array.isArray(graficosCaja.recaudacion_por_periodo) ? graficosCaja.recaudacion_por_periodo : []);
   const recaudacionPeriodo = useMemo(() => {
     if (reporteTipo !== "anual") return recaudacionPeriodoRaw;
     const year = toYearValue(fechaConsulta);
@@ -903,7 +992,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
               {!isProyeccion && totalPaginas > 1 && (
                 <div className="d-flex justify-content-between align-items-center mt-2 no-print">
                   <small className="text-muted">
-                    Mostrando {inicioIndice + 1} - {Math.min(inicioIndice + movimientos.length, Number(reporte?.cantidad_movimientos || 0))} de {Number(reporte?.cantidad_movimientos || 0)}
+                    Mostrando {movimientos.length === 0 ? 0 : (inicioIndice + 1)} - {Math.min(inicioIndice + movimientos.length, cantidadMovimientosDisplay)} de {cantidadMovimientosDisplay}
                   </small>
                   <div className="btn-group btn-group-sm">
                     <button
