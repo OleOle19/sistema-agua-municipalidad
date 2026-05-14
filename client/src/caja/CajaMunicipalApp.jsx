@@ -20,6 +20,10 @@ const ROLE_LABELS = {
   CONSULTA: "Nivel 4 - Consulta",
   BRIGADA: "Nivel 5 - Brigada"
 };
+const COBRO_AGUA_MODOS = {
+  CAJA: "CAJA",
+  COMPENSACION: "COMPENSACION"
+};
 
 const ANEXO_PAGE_STYLE = `
   @page {
@@ -455,6 +459,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const [recibosPendientesCobroAgua, setRecibosPendientesCobroAgua] = useState([]);
   const [seleccionCobroAgua, setSeleccionCobroAgua] = useState({});
   const [fechaCobroAgua, setFechaCobroAgua] = useState(toIsoDate());
+  const [modoCobroAgua, setModoCobroAgua] = useState(COBRO_AGUA_MODOS.CAJA);
+  const [motivoCobroAgua, setMotivoCobroAgua] = useState("");
   const [permitirContingenciaAgua, setPermitirContingenciaAgua] = useState(false);
   const [mostrarModalReimpresionAgua, setMostrarModalReimpresionAgua] = useState(false);
   const [loadingHistorialReimpresionAgua, setLoadingHistorialReimpresionAgua] = useState(false);
@@ -1060,12 +1066,14 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash("warning", "Seleccione un contribuyente para cobrar.");
       return;
     }
-    if (cajaCerradaAguaHoy) {
+    if (cajaCerradaAguaHoy && !permisos.canAdminPagos) {
       showFlash("warning", "Caja cerrada para hoy. No se permiten más cobros.");
       return;
     }
     const hoy = toIsoDate();
     setFechaCobroAgua(hoy);
+    setModoCobroAgua(COBRO_AGUA_MODOS.CAJA);
+    setMotivoCobroAgua("");
     setPermitirContingenciaAgua(false);
     setRecibosPendientesCobroAgua([]);
     setSeleccionCobroAgua({});
@@ -1365,6 +1373,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
       return;
     }
     const fechaPago = String(fechaCobroAgua || "").trim();
+    const esCompensacion = modoCobroAgua === COBRO_AGUA_MODOS.COMPENSACION;
+    const motivoCompensacion = String(motivoCobroAgua || "").trim();
     const hoy = toIsoDate();
     const fechaMinimaPermitida = permisos.fechaCobroMinima || "";
     if (!isValidIsoDate(fechaPago)) {
@@ -1383,6 +1393,14 @@ function CajaMunicipalApp({ onBackToSelector }) {
           ? `Solo se permite registrar cobros con antiguedad maxima de ${limiteDias} dia(s). Fecha minima: ${fechaMinimaPermitida}.`
           : `No se permite registrar cobros con fecha menor a ${fechaMinimaPermitida}.`
       );
+      return;
+    }
+    if (esCompensacion && !permisos.canAdminPagos) {
+      showFlash("warning", "Solo Administracion puede registrar compensaciones.");
+      return;
+    }
+    if (esCompensacion && !motivoCompensacion) {
+      showFlash("warning", "Indique el motivo de la compensacion.");
       return;
     }
     const pagos = [];
@@ -1427,14 +1445,20 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash("warning", "Seleccione al menos un mes con monto válido para cobrar.");
       return;
     }
-    const confirm = window.confirm(`Registrar cobro por ${formatMoney(totalCobroDirectoAgua)} con fecha ${fechaPago} y abrir impresion?`);
+    const confirm = window.confirm(
+      esCompensacion
+        ? `Registrar compensacion por ${formatMoney(totalCobroDirectoAgua)} con fecha ${fechaPago} y dejarla fuera del reporte de caja?`
+        : `Registrar cobro por ${formatMoney(totalCobroDirectoAgua)} con fecha ${fechaPago} y abrir impresion?`
+    );
     if (!confirm) return;
     setCobrandoDirectoAgua(true);
     try {
       const res = await api.post("/pagos", {
         id_contribuyente: idContribuyente,
         pagos,
-        fecha_pago: fechaPago
+        fecha_pago: fechaPago,
+        tipo_pago: esCompensacion ? COBRO_AGUA_MODOS.COMPENSACION : COBRO_AGUA_MODOS.CAJA,
+        motivo: esCompensacion ? motivoCompensacion : undefined
       });
       showFlash("success", res?.data?.mensaje || "Cobro registrado correctamente.");
       const anexoData = buildAnexoDataFromPagoDirecto(selectedContribuyenteAgua, anexoItems);
@@ -1451,6 +1475,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     buscarContribuyentesAgua,
     handleApiError,
     permisos.canCaja,
+    permisos.canAdminPagos,
     permisos.fechaCobroMinima,
     permisos.maxDiasRetroactivoCobro,
     recibosPendientesCobroAgua,
@@ -1459,6 +1484,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
     seleccionCobroAgua,
     showFlash,
     fechaCobroAgua,
+    modoCobroAgua,
+    motivoCobroAgua,
     totalCobroDirectoAgua
   ]);
 
@@ -2103,11 +2130,27 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   </div>
                   <div className="col-sm-8 col-md-6">
                     <div className="small text-muted">
-                      {permisos.canAdminPagos
+                      {modoCobroAgua === COBRO_AGUA_MODOS.COMPENSACION && permisos.canAdminPagos
+                        ? "La compensacion se registrara con la fecha seleccionada, afectara la deuda y quedara fuera del reporte de caja."
+                        : permisos.canAdminPagos
                         ? "El cobro se registrara en el reporte de la fecha seleccionada. Administrador puede usar cualquier fecha pasada."
                         : `El cobro se registrara en el reporte de la fecha seleccionada. Caja puede usar hoy o hasta ${permisos.maxDiasRetroactivoCobro || 0} dia(s) atras.`}
                     </div>
                   </div>
+                  {permisos.canAdminPagos && (
+                    <div className="col-sm-6 col-md-3">
+                      <label className="form-label form-label-sm mb-1">Modalidad</label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={modoCobroAgua}
+                        onChange={(e) => setModoCobroAgua(String(e.target.value || COBRO_AGUA_MODOS.CAJA))}
+                        disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
+                      >
+                        <option value={COBRO_AGUA_MODOS.CAJA}>Cobro de caja</option>
+                        <option value={COBRO_AGUA_MODOS.COMPENSACION}>Compensacion</option>
+                      </select>
+                    </div>
+                  )}
                   <div className="col-sm-12 col-md-3">
                     <div className="form-check form-switch mb-0">
                       <input
@@ -2124,6 +2167,22 @@ function CajaMunicipalApp({ onBackToSelector }) {
                     </div>
                   </div>
                 </div>
+                {modoCobroAgua === COBRO_AGUA_MODOS.COMPENSACION && permisos.canAdminPagos && (
+                  <div className="mb-3">
+                    <div className="alert alert-warning py-2 small mb-2">
+                      La compensacion cancelara la deuda y quedara en auditoria, pero no entrara al reporte de caja.
+                    </div>
+                    <label className="form-label form-label-sm mb-1">Motivo de la compensacion</label>
+                    <textarea
+                      className="form-control form-control-sm"
+                      rows={2}
+                      value={motivoCobroAgua}
+                      onChange={(e) => setMotivoCobroAgua(e.target.value)}
+                      placeholder="Ej. Compensacion en especie por materiales entregados a la municipalidad."
+                      disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
+                    />
+                  </div>
+                )}
                 <div className="table-responsive border rounded">
                   <table className="table table-sm align-middle mb-0">
                     <thead className="table-light">
@@ -2265,7 +2324,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   onClick={cobrarDirectoAgua}
                   disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
                 >
-                  {cobrandoDirectoAgua ? "Procesando..." : "Cobrar"}
+                  {cobrandoDirectoAgua ? "Procesando..." : (modoCobroAgua === COBRO_AGUA_MODOS.COMPENSACION ? "Registrar compensacion" : "Cobrar")}
                 </button>
               </div>
             </div>
