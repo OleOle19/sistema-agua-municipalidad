@@ -13722,6 +13722,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       SELECT
         p.id_pago,
         p.id_orden_cobro,
+        ${buildPagoTipoNormalizadoSql("p")} AS tipo_pago,
         r.id_recibo,
         oc.codigo_recibo,
         p.fecha_pago,
@@ -13795,6 +13796,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       SELECT
         MAX(id_pago) AS id_pago,
         MAX(id_orden_cobro) AS id_orden_cobro,
+        MAX(tipo_pago) AS tipo_pago,
         id_recibo,
         MAX(codigo_recibo) AS codigo_recibo,
         MAX(fecha_pago) AS fecha_pago,
@@ -13844,6 +13846,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     )
     SELECT
       id_pago,
+      tipo_pago,
       id_recibo,
       codigo_recibo,
       fecha_pago,
