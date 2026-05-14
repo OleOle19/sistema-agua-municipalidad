@@ -600,6 +600,17 @@ const PAGOS_HISTORICOS_VALIDOS = Object.freeze([
   "IMPORTACION_MARZO_2026"
 ]);
 const buildPagoUsuarioNormalizadoSql = (alias = "p") => `COALESCE(NULLIF(TRIM(${alias}.usuario_cajero), ''), '')`;
+const buildPagoTipoNormalizadoSql = (alias = "p") => `UPPER(COALESCE(NULLIF(TRIM(${alias}.tipo_pago), ''), 'CAJA'))`;
+const PAGO_TIPOS = Object.freeze({
+  CAJA: "CAJA",
+  COMPENSACION: "COMPENSACION"
+});
+const normalizePagoTipo = (value, fallback = PAGO_TIPOS.CAJA) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (raw === PAGO_TIPOS.COMPENSACION) return PAGO_TIPOS.COMPENSACION;
+  if (raw === PAGO_TIPOS.CAJA) return PAGO_TIPOS.CAJA;
+  return fallback;
+};
 const buildPagoContableValidoSql = (alias = "p") => {
   const usuarioSql = buildPagoUsuarioNormalizadoSql(alias);
   return `(${PAGOS_HISTORICOS_IGNORADOS.map((usuario) => `${usuarioSql} <> '${usuario}'`).join(" AND ")})`;
@@ -610,6 +621,7 @@ const buildPagoReporteCajaSql = (alias = "p", includeHistoricalValid = false) =>
     : PAGOS_HISTORICOS_VALIDOS.map((usuario) => `${buildPagoUsuarioNormalizadoSql(alias)} <> '${usuario}'`).join(" AND ");
   return `(
     (${alias}.id_orden_cobro IS NOT NULL OR ${buildPagoUsuarioNormalizadoSql(alias)} <> '')
+    AND ${buildPagoTipoNormalizadoSql(alias)} = '${PAGO_TIPOS.CAJA}'
     AND ${buildPagoContableValidoSql(alias)}
     AND ${historicosExcluirSql}
   )`;
@@ -4526,6 +4538,34 @@ const ensureDataIntegrityGuards = async (client) => {
   await client.query(`
     ALTER TABLE pagos
     ADD COLUMN IF NOT EXISTS id_orden_cobro BIGINT NULL
+  `);
+  await client.query(`
+    ALTER TABLE pagos
+    ADD COLUMN IF NOT EXISTS tipo_pago VARCHAR(24) NULL,
+    ADD COLUMN IF NOT EXISTS observacion VARCHAR(500) NULL
+  `);
+  await client.query(`
+    ALTER TABLE pagos
+    ALTER COLUMN tipo_pago SET DEFAULT 'CAJA'
+  `);
+  await client.query(`
+    UPDATE pagos
+    SET tipo_pago = 'CAJA'
+    WHERE COALESCE(NULLIF(TRIM(tipo_pago), ''), '') = ''
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_pagos_tipo_pago'
+      ) THEN
+        ALTER TABLE pagos
+        ADD CONSTRAINT chk_pagos_tipo_pago
+        CHECK (UPPER(COALESCE(NULLIF(TRIM(tipo_pago), ''), 'CAJA')) IN ('CAJA', 'COMPENSACION')) NOT VALID;
+      END IF;
+    END $$;
   `);
   await client.query(`
     UPDATE pagos
@@ -11450,6 +11490,15 @@ const normalizePagoInputs = (body = {}) => {
 app.post("/pagos", async (req, res) => {
   const client = await pool.connect();
   try {
+    const tipoPago = normalizePagoTipo(req.body?.tipo_pago, PAGO_TIPOS.CAJA);
+    const observacionPago = normalizeLimitedText(req.body?.observacion ?? req.body?.motivo, 500);
+    const esCompensacion = tipoPago === PAGO_TIPOS.COMPENSACION;
+    if (esCompensacion && !hasMinRole(req.user?.rol, "ADMIN")) {
+      return res.status(403).json({ error: "Solo Administracion puede registrar compensaciones." });
+    }
+    if (esCompensacion && !observacionPago) {
+      return res.status(400).json({ error: "Debe indicar un motivo para registrar la compensacion." });
+    }
     const validacionFecha = validateCobroDateWindow(
       req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha,
       { role: req.user?.rol, hoyIso: toISODate() }
@@ -11463,8 +11512,8 @@ app.post("/pagos", async (req, res) => {
     }
     const hoy = validacionFecha.hoy;
     const fechaPagoSolicitada = validacionFecha.fecha || hoy;
-    const cierreHoy = await consultarCierreCajaBloqueante(client, hoy);
-    if (cierreHoy.cerrada && fechaPagoSolicitada === hoy) {
+    const cierreHoy = esCompensacion ? { cerrada: false } : await consultarCierreCajaBloqueante(client, hoy);
+    if (!esCompensacion && cierreHoy.cerrada && fechaPagoSolicitada === hoy) {
       return res.status(409).json({
         error: "Caja cerrada para hoy. No se permiten más cobros en agua hasta el siguiente día."
       });
@@ -11756,13 +11805,17 @@ app.post("/pagos", async (req, res) => {
       }
 
       const pagoInsertado = await client.query(
-        "INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero) VALUES ($1, $2, ($3::date + LOCALTIME), $4) RETURNING id_pago, fecha_pago",
+        `INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero, tipo_pago, observacion)
+         VALUES ($1, $2, ($3::date + LOCALTIME), $4, $5, $6)
+         RETURNING id_pago, fecha_pago`,
         [
-        recibo.id_recibo,
-        monto,
-        fechaPagoSolicitada,
-        req.user?.username || req.user?.nombre || null
-      ]);
+          recibo.id_recibo,
+          monto,
+          fechaPagoSolicitada,
+          req.user?.username || req.user?.nombre || null,
+          tipoPago,
+          observacionPago || null
+        ]);
       const idPagoInsertado = parsePositiveInt(pagoInsertado.rows?.[0]?.id_pago, 0);
       const fechaPagoInsertado = pagoInsertado.rows?.[0]?.fecha_pago || null;
       const idAnulacionReferencia = parsePositiveInt(pagoReq?.id_anulacion_referencia, 0);
@@ -11869,6 +11922,7 @@ app.post("/pagos", async (req, res) => {
         mes: recibo.mes,
         anio: recibo.anio,
         id_contribuyente: recibo.id_contribuyente,
+        tipo_pago: tipoPago,
         monto_pagado: monto,
         id_anulacion_referencia: idAnulacionReferencia || null,
         estado: nuevoEstado,
@@ -11936,6 +11990,7 @@ app.post("/pagos", async (req, res) => {
       id_pago: parsePositiveInt(pago.id_pago, 0) || null,
       id_recibo: parsePositiveInt(pago.id_recibo, 0) || null,
       periodo: formatAuditPeriodo(pago.anio, pago.mes),
+      tipo_pago: normalizePagoTipo(pago.tipo_pago, PAGO_TIPOS.CAJA),
       monto_cobrado: roundMonto2(parseMonto(pago.monto_pagado, 0)),
       saldo_pendiente: roundMonto2(parseMonto(pago.saldo, 0)),
       estado: String(pago.estado || "").trim(),
@@ -11946,7 +12001,8 @@ app.post("/pagos", async (req, res) => {
       null,
       "POST /pagos",
       buildStructuredAuditDetail({
-        evento: "Registrar pago",
+        evento: esCompensacion ? "Registrar compensacion" : "Registrar pago",
+        tipo_pago: tipoPago,
         id_contribuyente: contribuyenteAuditPrincipal?.id_contribuyente || contribuyenteEvento || null,
         codigo_municipal: contribuyenteAuditPrincipal?.codigo_municipal || "",
         contribuyente: buildContribuyenteAuditLabel(contribuyenteAuditPrincipal),
@@ -11955,6 +12011,7 @@ app.post("/pagos", async (req, res) => {
         cantidad_recibos: pagosAplicados.length,
         total_aplicado: totalAplicado.toFixed(2),
         detalle_recibos: detalleRecibosAudit,
+        motivo: observacionPago || undefined,
         anulaciones_reintegradas: anulacionesReintegradas.length > 0 ? anulacionesReintegradas : undefined,
         ip
       }),
@@ -11972,7 +12029,7 @@ app.post("/pagos", async (req, res) => {
     if (pagosAplicados.length === 1) {
       const p = pagosAplicados[0];
       return res.json({
-        mensaje: "Pago OK",
+        mensaje: esCompensacion ? "Compensacion registrada correctamente." : "Pago OK",
         estado: p.estado,
         total_pagado: p.total_pagado,
         saldo: p.saldo
@@ -11980,7 +12037,7 @@ app.post("/pagos", async (req, res) => {
     }
 
     res.json({
-      mensaje: "Pagos registrados correctamente.",
+      mensaje: esCompensacion ? "Compensacion registrada correctamente." : "Pagos registrados correctamente.",
       total_aplicado: totalAplicado,
       pagos: pagosAplicados
     });

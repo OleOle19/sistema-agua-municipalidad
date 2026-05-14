@@ -114,7 +114,8 @@ const LABEL_TRANSLATIONS = {
   monto_cobrado: "Monto cobrado",
   saldo_pendiente: "Saldo pendiente",
   periodo: "Periodo",
-  anulaciones_reintegradas: "Anulaciones reintegradas"
+  anulaciones_reintegradas: "Anulaciones reintegradas",
+  tipo_pago: "Tipo pago"
 };
 const AUDITORIA_PAGE_SIZE = 200;
 const MONEY_FORMATTER = new Intl.NumberFormat("es-PE", {
@@ -252,6 +253,7 @@ const formatDetalleRecibosValue = (valueText) => {
       const parts = [];
       if (row?.periodo) parts.push(String(row.periodo));
       if (Number(row?.id_recibo) > 0) parts.push(`Recibo ${row.id_recibo}`);
+      if (String(row?.tipo_pago || "").trim().toUpperCase() === "COMPENSACION") parts.push("Compensacion");
       if (row?.monto_cobrado !== undefined) parts.push(`Cobro ${formatMoney(row.monto_cobrado)}`);
       if (row?.saldo_pendiente !== undefined) parts.push(`Saldo ${formatMoney(row.saldo_pendiente)}`);
       if (row?.estado) parts.push(`Estado ${row.estado}`);
@@ -319,6 +321,12 @@ const formatValueForDisplay = (label, valueText, isJson) => {
 
   if (key === "fecha_pago") {
     return formatAuditDateOnly(valueText);
+  }
+
+  if (key === "tipo_pago") {
+    const normalized = String(valueText || "").trim().toUpperCase();
+    if (normalized === "COMPENSACION") return "Compensacion";
+    if (normalized === "CAJA") return "Caja";
   }
 
   if (["total", "total_aplicado", "monto_cobrado", "saldo_pendiente"].includes(key)) {
