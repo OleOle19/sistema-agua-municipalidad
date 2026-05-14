@@ -1357,6 +1357,36 @@ const buildContribuyenteAuditLabel = (row = {}) => {
   if (nombre) return nombre;
   return id > 0 ? `ID ${id}` : "";
 };
+const buildRecibosMasivosAuditEntries = (tipoSeleccion, rows = []) => {
+  if (String(tipoSeleccion || "").trim().toLowerCase() !== "seleccion") return null;
+
+  const contribuyentes = [];
+  const seen = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const id = parsePositiveInt(row?.id_contribuyente, 0);
+    const codigo = String(row?.codigo_municipal || "").replace(/\s+/g, " ").trim();
+    const nombre = String(row?.nombre_completo || "").replace(/\s+/g, " ").trim();
+    const key = id > 0 ? `id:${id}` : `${codigo}|${nombre}`;
+    if ((!id && !codigo && !nombre) || seen.has(key)) continue;
+    seen.add(key);
+    contribuyentes.push({
+      id_contribuyente: id || null,
+      codigo_municipal: codigo,
+      nombre_completo: nombre
+    });
+  }
+
+  if (contribuyentes.length === 0) return null;
+  if (contribuyentes.length === 1) {
+    const principal = contribuyentes[0];
+    return {
+      id_contribuyente: principal.id_contribuyente || null,
+      codigo_municipal: principal.codigo_municipal || "",
+      contribuyente: buildContribuyenteAuditLabel(principal)
+    };
+  }
+  return { contribuyentes };
+};
 const formatAuditPeriodo = (anio, mes) => {
   const anioNum = parsePositiveInt(anio, 0);
   const mesNum = parsePositiveInt(mes, 0);
@@ -18014,6 +18044,7 @@ app.post("/recibos/masivos", async (req, res) => {
         minMesSeleccionado
       });
       if (rows.length === 0) return res.status(404).json({ error: "No se encontraron recibos." });
+      req.auditExtraEntries = buildRecibosMasivosAuditEntries(tipo_seleccion, rows) || undefined;
       return res.json(rows);
     }
     const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
@@ -18142,6 +18173,7 @@ app.post("/recibos/masivos", async (req, res) => {
     );
 
     if (rows.length === 0) return res.status(404).json({ error: "No se encontraron recibos." });
+    req.auditExtraEntries = buildRecibosMasivosAuditEntries(tipo_seleccion, rows) || undefined;
     res.json(rows);
   } catch (err) {
     console.error("Error POST /recibos/masivos:", err);
