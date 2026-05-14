@@ -12,6 +12,12 @@ const DEFAULT_COMMIT_PER_BATCH = process.env.IMPORT_COMMIT_PER_BATCH !== '0';
 const IMPORT_TIMEZONE = process.env.IMPORT_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || 'America/Lima';
 const IMPORT_ALLOW_FUTURE_PAYMENTS = process.env.IMPORT_ALLOW_FUTURE_PAYMENTS === '1';
 const IMPORT_USUARIO_HISTORIAL = 'IMPORTACION_HISTORIAL';
+const IMPORT_USUARIO_PAGOS_ACTA = 'IMPORTACION_PAGOS_ACTA_TXT';
+const IMPORT_USUARIOS_REEMPLAZABLES = Object.freeze([
+  IMPORT_USUARIO_HISTORIAL,
+  IMPORT_USUARIO_PAGOS_ACTA,
+  'IMPORTACION_EXCEL'
+]);
 
 const parsePeriodoNum = (value) => {
   if (value === null || value === undefined || value === '') return null;
@@ -82,6 +88,17 @@ const iterateLines = async function* ({ inputFile, inputStream, inputText }) {
 };
 
 const keyPeriodo = (idPredio, anio, mes) => `${idPredio}|${anio}|${mes}`;
+const normalizeImportUser = (value) => String(value || '').trim();
+const resolveImportUser = (inputFile, explicitImportUser = null) => {
+  const explicit = normalizeImportUser(explicitImportUser);
+  if (explicit) return explicit;
+  const baseName = path.basename(String(inputFile || ''));
+  if (/pagosacta/i.test(baseName)) return IMPORT_USUARIO_PAGOS_ACTA;
+  return IMPORT_USUARIO_HISTORIAL;
+};
+const buildImportUserNotInSql = (fieldSql, usuarios = []) => usuarios
+  .map((usuario) => `${fieldSql} <> '${String(usuario).replace(/'/g, "''")}'`)
+  .join(' AND ');
 const detectDelimiter = (line) => {
   const commas = (line.match(/,/g) || []).length;
   const semicolons = (line.match(/;/g) || []).length;
@@ -150,6 +167,11 @@ async function importarDeudas(options = {}) {
   const periodoMax = parsePeriodoNum(options.periodoMax);
   const ioLogger = getLogger(options.logger);
   const fechaActual = getFechaPartesZona(new Date(), IMPORT_TIMEZONE);
+  const importUsuario = resolveImportUser(inputFile, options.importUser);
+  const pagosProtegidosSql = buildImportUserNotInSql(
+    "COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '')",
+    IMPORT_USUARIOS_REEMPLAZABLES
+  );
 
   const client = await pool.connect();
   const lineIterator = iterateLines({
@@ -163,6 +185,7 @@ async function importarDeudas(options = {}) {
   ioLogger.log(`Sobrescribir existentes: ${overwriteExisting ? 'SI' : 'NO'}`);
   ioLogger.log(`Filtro periodo min: ${periodoMin || 'sin limite'}`);
   ioLogger.log(`Filtro periodo max: ${periodoMax || 'sin limite'}`);
+  ioLogger.log(`Usuario importacion: ${importUsuario}`);
 
   let reciboChunks = [];
   let reciboParams = [];
@@ -307,7 +330,7 @@ async function importarDeudas(options = {}) {
                 FROM recibos_objetivo ro
                 JOIN pagos p ON p.id_recibo = ro.id_recibo
                 WHERE DATE(p.fecha_pago) <> ro.fecha_historica
-                  AND COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '${IMPORT_USUARIO_HISTORIAL}'
+                  AND ${pagosProtegidosSql}
               ),
               pagos_eliminados AS (
                 DELETE FROM pagos p
@@ -318,7 +341,7 @@ async function importarDeudas(options = {}) {
                 RETURNING p.id_pago
               )
               INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero)
-              SELECT ro.id_recibo, ro.monto_pagado, ro.fecha_historica, '${IMPORT_USUARIO_HISTORIAL}'
+              SELECT ro.id_recibo, ro.monto_pagado, ro.fecha_historica, '${importUsuario}'
               FROM recibos_objetivo ro
               LEFT JOIN recibos_protegidos rp ON rp.id_recibo = ro.id_recibo
               WHERE ro.monto_pagado > 0
@@ -335,7 +358,7 @@ async function importarDeudas(options = {}) {
                 GROUP BY v.id_predio::int, v.anio::int, v.mes::int
               )
               INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero)
-              SELECT r.id_recibo, b.monto_pagado, make_date(b.anio, b.mes, 1), '${IMPORT_USUARIO_HISTORIAL}'
+              SELECT r.id_recibo, b.monto_pagado, make_date(b.anio, b.mes, 1), '${importUsuario}'
               FROM pagos_batch b
               JOIN recibos r ON r.id_predio = b.id_predio AND r.anio = b.anio AND r.mes = b.mes
               LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
@@ -363,7 +386,7 @@ async function importarDeudas(options = {}) {
               FROM recibos_objetivo ro
               JOIN pagos p ON p.id_recibo = ro.id_recibo
               WHERE DATE(p.fecha_pago) <> ro.fecha_historica
-                AND COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '${IMPORT_USUARIO_HISTORIAL}'
+                AND ${pagosProtegidosSql}
             `, pagoParams);
             resumenAjustes.pagos_operativos_protegidos += Number(protegidosRs.rows[0]?.total || 0);
           }
@@ -641,6 +664,16 @@ if (require.main === module) {
     }
     if (arg === '--single-transaction') {
       cliOptions.commitPerBatch = false;
+      continue;
+    }
+    if (arg === '--import-user') {
+      cliOptions.importUser = next || null;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--import-user=')) {
+      cliOptions.importUser = arg.slice('--import-user='.length) || null;
+      continue;
     }
   }
 

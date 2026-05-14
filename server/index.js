@@ -591,11 +591,30 @@ const CAJA_RIESGO_WINDOW_HOURS = Math.min(168, Math.max(1, Number(process.env.CA
 const CAJA_RIESGO_ANULACIONES_UMBRAL = Math.min(20, Math.max(1, Number(process.env.CAJA_RIESGO_ANULACIONES_UMBRAL || 3)));
 const MAX_RETROACTIVE_COBRO_DAYS_CAJA = Math.min(3, Math.max(0, Number(process.env.MAX_RETROACTIVE_COBRO_DAYS_CAJA || 3)));
 const MAX_DIAS_CORRECCION_PAGO = Math.min(30, Math.max(1, Number(process.env.MAX_DIAS_CORRECCION_PAGO || 7)));
-const PAGO_OPERATIVO_CAJA_SQL = `(
-  (p.id_orden_cobro IS NOT NULL OR COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> '')
-  AND COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> 'IMPORTACION_HISTORIAL'
-  AND COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), '') <> 'IMPORTACION_PAGOS_ACTA_TXT'
-)`;
+const PAGOS_HISTORICOS_IGNORADOS = Object.freeze([
+  "IMPORTACION_HISTORIAL",
+  "IMPORTACION_EXCEL"
+]);
+const PAGOS_HISTORICOS_VALIDOS = Object.freeze([
+  "IMPORTACION_PAGOS_ACTA_TXT",
+  "IMPORTACION_MARZO_2026"
+]);
+const buildPagoUsuarioNormalizadoSql = (alias = "p") => `COALESCE(NULLIF(TRIM(${alias}.usuario_cajero), ''), '')`;
+const buildPagoContableValidoSql = (alias = "p") => {
+  const usuarioSql = buildPagoUsuarioNormalizadoSql(alias);
+  return `(${PAGOS_HISTORICOS_IGNORADOS.map((usuario) => `${usuarioSql} <> '${usuario}'`).join(" AND ")})`;
+};
+const buildPagoReporteCajaSql = (alias = "p", includeHistoricalValid = false) => {
+  const historicosExcluirSql = includeHistoricalValid
+    ? "TRUE"
+    : PAGOS_HISTORICOS_VALIDOS.map((usuario) => `${buildPagoUsuarioNormalizadoSql(alias)} <> '${usuario}'`).join(" AND ");
+  return `(
+    (${alias}.id_orden_cobro IS NOT NULL OR ${buildPagoUsuarioNormalizadoSql(alias)} <> '')
+    AND ${buildPagoContableValidoSql(alias)}
+    AND ${historicosExcluirSql}
+  )`;
+};
+const PAGO_OPERATIVO_CAJA_SQL = buildPagoReporteCajaSql("p", false);
 const normalizeHoraHM = (value, fallback) => {
   const raw = String(value || "").trim();
   if (!/^\d{2}:\d{2}$/.test(raw)) return fallback;
@@ -2352,6 +2371,7 @@ const syncRecibosStateByIds = async (client, reciboIds = []) => {
         COALESCE(SUM(p.monto_pagado), 0)::numeric AS total_pagado
       FROM recibos r
       LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
+        AND ${buildPagoContableValidoSql("p")}
       WHERE r.id_recibo = ANY($1::int[])
       GROUP BY r.id_recibo
     )
@@ -2366,6 +2386,37 @@ const syncRecibosStateByIds = async (client, reciboIds = []) => {
     WHERE r.id_recibo = pt.id_recibo
     RETURNING r.id_recibo
   `, [ids]);
+  return Number(result.rowCount || 0);
+};
+const syncAllRecibosStatesByPagoRules = async (client) => {
+  const result = await client.query(`
+    WITH pagos_totales AS (
+      SELECT
+        r.id_recibo,
+        COALESCE(SUM(p.monto_pagado), 0)::numeric AS total_pagado
+      FROM recibos r
+      LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
+        AND ${buildPagoContableValidoSql("p")}
+      GROUP BY r.id_recibo
+    )
+    UPDATE recibos r
+    SET estado = CASE
+      WHEN COALESCE(r.total_pagar, 0) <= 0.001 THEN 'PAGADO'
+      WHEN COALESCE(pt.total_pagado, 0) >= COALESCE(r.total_pagar, 0) - 0.001 THEN 'PAGADO'
+      WHEN COALESCE(pt.total_pagado, 0) > 0.001 THEN 'PARCIAL'
+      ELSE 'PENDIENTE'
+    END
+    FROM pagos_totales pt
+    WHERE r.id_recibo = pt.id_recibo
+      AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+      AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> CASE
+        WHEN COALESCE(r.total_pagar, 0) <= 0.001 THEN 'PAGADO'
+        WHEN COALESCE(pt.total_pagado, 0) >= COALESCE(r.total_pagar, 0) - 0.001 THEN 'PAGADO'
+        WHEN COALESCE(pt.total_pagado, 0) > 0.001 THEN 'PARCIAL'
+        ELSE 'PENDIENTE'
+      END
+    RETURNING r.id_recibo
+  `);
   return Number(result.rowCount || 0);
 };
 const restoreCampoSolicitudUndoSnapshot = async (
@@ -2644,6 +2695,7 @@ const recalcularRecibosFuturosPorServicios = async (
         SELECT COALESCE(SUM(pg.monto_pagado), 0)::numeric AS total_pagado
         FROM pagos pg
         WHERE pg.id_recibo = r.id_recibo
+          AND ${buildPagoContableValidoSql("pg")}
       ) pagos ON TRUE
       WHERE p.id_contribuyente = $1
         AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
@@ -4736,6 +4788,7 @@ const ensurePerformanceIndexes = async (client) => {
   await ensureCampoSolicitudesTable(client);
   await ensureComparacionesLegacyTables(client);
   await ensureDataIntegrityGuards(client);
+  await syncAllRecibosStatesByPagoRules(client);
   await ensurePagosAnuladosTable(client);
   await ensurePagosCorreccionesTable(client);
   const statements = [
@@ -5147,6 +5200,7 @@ app.get("/campo/contribuyentes/buscar", async (req, res) => {
         SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
         FROM pagos p
         JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+        WHERE ${buildPagoContableValidoSql("p")}
         GROUP BY p.id_recibo
       ),
       resumen_predio AS (
@@ -5336,6 +5390,7 @@ app.get("/campo/offline-snapshot", async (req, res) => {
         SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
         FROM pagos p
         JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+        WHERE ${buildPagoContableValidoSql("p")}
         GROUP BY p.id_recibo
       ),
       resumen_predio AS (
@@ -5690,6 +5745,7 @@ app.post("/campo/solicitudes", async (req, res) => {
         SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
         FROM pagos p
         JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+        WHERE ${buildPagoContableValidoSql("p")}
         GROUP BY p.id_recibo
       ),
       resumen_predio AS (
@@ -7678,6 +7734,7 @@ const obtenerReporteEstadoConexionRows = async ({
       SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
       FROM pagos p
       JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+      WHERE ${buildPagoContableValidoSql("p")}
       GROUP BY p.id_recibo
     ),
     resumen_predio AS (
@@ -7928,7 +7985,8 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
     WITH pagos_por_recibo AS (
       SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
       FROM pagos p
-      WHERE DATE(p.fecha_pago) <= $3::date
+      WHERE ${buildPagoContableValidoSql("p")}
+        AND DATE(p.fecha_pago) <= $3::date
       GROUP BY p.id_recibo
     ),
     direccion_principal AS (
@@ -8370,6 +8428,7 @@ app.get("/contribuyentes", async (req, res) => {
         SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
         FROM pagos p
         JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+        WHERE ${buildPagoContableValidoSql("p")}
         GROUP BY p.id_recibo
       ),
       ordenes_pendientes_detalle AS (
@@ -9628,6 +9687,7 @@ app.post("/recibos", async (req, res) => {
          LEFT JOIN (
            SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
            FROM pagos
+           WHERE ${buildPagoContableValidoSql("pagos")}
            GROUP BY id_recibo
          ) p ON p.id_recibo = r.id_recibo
          WHERE r.id_predio = $1
@@ -9890,7 +9950,8 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       LEFT JOIN (
         SELECT id_recibo, SUM(monto_pagado) as total_pagado
         FROM pagos
-        WHERE DATE(fecha_pago) <= $2::date
+        WHERE ${buildPagoContableValidoSql("pagos")}
+          AND DATE(fecha_pago) <= $2::date
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       WHERE ${whereParts.join(" AND ")}
@@ -10320,6 +10381,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
         WITH pagos_agg AS (
           SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
           FROM pagos
+          WHERE ${buildPagoContableValidoSql("pagos")}
           GROUP BY id_recibo
         )
         SELECT
@@ -10374,6 +10436,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
             WITH pagos_agg AS (
               SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
               FROM pagos
+              WHERE ${buildPagoContableValidoSql("pagos")}
               GROUP BY id_recibo
             )
             SELECT
@@ -10454,7 +10517,8 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
       WITH pagos_agg AS (
         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
         FROM pagos
-        WHERE id_recibo = ANY($2::int[])
+        WHERE ${buildPagoContableValidoSql("pagos")}
+          AND id_recibo = ANY($2::int[])
         GROUP BY id_recibo
       )
       SELECT
@@ -11055,14 +11119,16 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       WITH pagos_hasta AS (
         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
         FROM pagos
-        WHERE id_recibo = ANY($1::int[])
+        WHERE ${buildPagoContableValidoSql("pagos")}
+          AND id_recibo = ANY($1::int[])
           AND DATE(fecha_pago) <= $2::date
         GROUP BY id_recibo
       ),
       pagos_total AS (
         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
         FROM pagos
-        WHERE id_recibo = ANY($1::int[])
+        WHERE ${buildPagoContableValidoSql("pagos")}
+          AND id_recibo = ANY($1::int[])
         GROUP BY id_recibo
       )
       SELECT
@@ -11577,14 +11643,16 @@ app.post("/pagos", async (req, res) => {
       WITH pagos_hasta AS (
         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
         FROM pagos
-        WHERE id_recibo = ANY($1::int[])
+        WHERE ${buildPagoContableValidoSql("pagos")}
+          AND id_recibo = ANY($1::int[])
           AND DATE(fecha_pago) <= $2::date
         GROUP BY id_recibo
       ),
       pagos_total AS (
         SELECT id_recibo, COALESCE(SUM(monto_pagado), 0) AS total_pagado
         FROM pagos
-        WHERE id_recibo = ANY($1::int[])
+        WHERE ${buildPagoContableValidoSql("pagos")}
+          AND id_recibo = ANY($1::int[])
         GROUP BY id_recibo
       )
       SELECT
@@ -12009,7 +12077,8 @@ app.post("/pagos/:id/anular", async (req, res) => {
     const totalPagadoRs = await client.query(`
       SELECT COALESCE(SUM(monto_pagado), 0) AS total_pagado
       FROM pagos
-      WHERE id_recibo = $1
+      WHERE ${buildPagoContableValidoSql("pagos")}
+        AND id_recibo = $1
     `, [idRecibo]);
     const totalPagadoActivo = roundMonto2(parseMonto(totalPagadoRs.rows[0]?.total_pagado, 0));
     const totalRecibo = roundMonto2(parseMonto(pago.total_pagar, 0));
@@ -12221,7 +12290,8 @@ app.post("/pagos/recibo/:id_recibo/anular-ultimo", async (req, res) => {
     const totalPagadoRs = await client.query(`
       SELECT COALESCE(SUM(monto_pagado), 0) AS total_pagado
       FROM pagos
-      WHERE id_recibo = $1
+      WHERE ${buildPagoContableValidoSql("pagos")}
+        AND id_recibo = $1
     `, [idReciboPago]);
     const totalPagadoActivo = roundMonto2(parseMonto(totalPagadoRs.rows[0]?.total_pagado, 0));
     const nuevoEstado = totalPagadoActivo >= totalRecibo - 0.001
@@ -12360,7 +12430,8 @@ app.post("/pagos/:id/editar", async (req, res) => {
     const otrosPagosRs = await client.query(`
       SELECT COALESCE(SUM(monto_pagado), 0) AS total_pagado
       FROM pagos
-      WHERE id_recibo = $1
+      WHERE ${buildPagoContableValidoSql("pagos")}
+        AND id_recibo = $1
         AND id_pago <> $2
     `, [idRecibo, idPago]);
     const totalOtrosPagos = roundMonto2(parseMonto(otrosPagosRs.rows[0]?.total_pagado, 0));
@@ -12514,6 +12585,7 @@ app.post("/impresiones/generar-codigo", async (req, res) => {
         COALESCE(SUM(p.monto_pagado), 0) AS total_pagado
       FROM recibos r
       LEFT JOIN pagos p ON p.id_recibo = r.id_recibo
+        AND ${buildPagoContableValidoSql("p")}
       WHERE r.id_recibo = ANY($1::int[])
       GROUP BY r.id_recibo, r.total_pagar
     `, [idsRecibos]);
@@ -12593,6 +12665,7 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
       WITH pagos_por_recibo AS (
         SELECT id_recibo, SUM(monto_pagado) AS total_pagado
         FROM pagos
+        WHERE ${buildPagoContableValidoSql("pagos")}
         GROUP BY id_recibo
       )
       SELECT
@@ -12701,6 +12774,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
       WITH pagos_por_recibo AS (
         SELECT id_recibo, SUM(monto_pagado) AS total_pagado
         FROM pagos
+        WHERE ${buildPagoContableValidoSql("pagos")}
         GROUP BY id_recibo
       )
       SELECT
@@ -13052,6 +13126,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       LEFT JOIN (
         SELECT id_recibo, SUM(monto_pagado) AS total_pagado
         FROM pagos
+        WHERE ${buildPagoContableValidoSql("pagos")}
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       LEFT JOIN LATERAL (
@@ -13252,7 +13327,8 @@ const obtenerRangoCaja = async (tipo, fechaReferencia, rangoManual = null) => {
   return rango.rows[0];
 };
 
-const construirSerieTemporalCaja = async (tipo, desde, hasta) => {
+const construirSerieTemporalCaja = async (tipo, desde, hasta, options = {}) => {
+  const pagosReporteSql = buildPagoReporteCajaSql("p", Boolean(options.includeHistoricalValid));
   let labelSql = "to_char(date_trunc('hour', p.fecha_pago), 'HH24:00')";
   let orderSql = "date_trunc('hour', p.fecha_pago)";
 
@@ -13270,7 +13346,7 @@ const construirSerieTemporalCaja = async (tipo, desde, hasta) => {
       ROUND(SUM(p.monto_pagado)::numeric, 2) AS total,
       ${orderSql} AS orden
     FROM pagos p
-    WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+    WHERE ${pagosReporteSql}
       AND p.fecha_pago >= $1::date
       AND p.fecha_pago < $2::date
     GROUP BY 1, 3
@@ -13409,10 +13485,11 @@ const construirProyeccionCaja = async (fechaReferencia, options = {}) => {
   return resumen;
 };
 
-const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) => {
+const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null, options = {}) => {
   const rango = await obtenerRangoCaja(tipo, fechaReferencia, rangoManual);
   const desde = rango.desde;
   const hasta = rango.hasta;
+  const pagosReporteSql = buildPagoReporteCajaSql("p", Boolean(options.includeHistoricalValid));
 
   const resumenPagos = await pool.query(`
     WITH movimientos_resumen AS (
@@ -13421,7 +13498,7 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) =
         p.id_recibo,
         SUM(p.monto_pagado)::numeric AS monto_pagado
       FROM pagos p
-      WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+      WHERE ${pagosReporteSql}
         AND p.fecha_pago >= $1::date
         AND p.fecha_pago < $2::date
       GROUP BY DATE(p.fecha_pago), p.id_recibo
@@ -13448,7 +13525,7 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) =
     JOIN recibos r ON p.id_recibo = r.id_recibo
     JOIN predios pr ON r.id_predio = pr.id_predio
     JOIN contribuyentes c ON pr.id_contribuyente = c.id_contribuyente
-    WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+    WHERE ${pagosReporteSql}
       AND p.fecha_pago >= $1::date
       AND p.fecha_pago < $2::date
     GROUP BY
@@ -13468,7 +13545,7 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) =
       ROUND(SUM(p.monto_pagado)::numeric, 2) AS total,
       date_trunc('month', p.fecha_pago) AS orden
     FROM pagos p
-    WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+    WHERE ${pagosReporteSql}
       AND p.fecha_pago >= $1::date
       AND p.fecha_pago < $2::date
     GROUP BY 1, 3
@@ -13477,7 +13554,7 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null) =
   const periodosParams = [desde, hasta];
   const periodos = await pool.query(periodosSql, periodosParams);
 
-  const serieTemporal = await construirSerieTemporalCaja(tipo, desde, hasta);
+  const serieTemporal = await construirSerieTemporalCaja(tipo, desde, hasta, options);
 
   const resumen = {
     tipo,
@@ -13514,6 +13591,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   const includeAllMovimientos = Boolean(options.includeAllMovimientos);
   const includeCodigoImpresion = Boolean(options.includeCodigoImpresion);
   const includeAdminMovimientos = Boolean(options.includeAdminMovimientos);
+  const includeHistoricalValid = Boolean(options.includeHistoricalValid);
   const adminAllowed = Boolean(options.adminAllowed);
   const pageRaw = Number(options.page ?? 1);
   const pageSizeRaw = Number(options.pageSize ?? 200);
@@ -13523,10 +13601,13 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     : (Number.isFinite(pageSizeRaw) ? Math.min(500, Math.max(25, pageSizeRaw)) : 200);
   const offset = includeAllMovimientos ? 0 : (safePage - 1) * safePageSize;
 
-  const resumen = await construirResumenCaja(tipo, fechaReferencia, options.rangoManual || null);
+  const resumen = await construirResumenCaja(tipo, fechaReferencia, options.rangoManual || null, {
+    includeHistoricalValid
+  });
   const desde = resumen.rango.desde;
   const hasta = resumen.rango.hasta_exclusivo;
   const cantidadMovimientos = Number(resumen.cantidad_movimientos || 0);
+  const pagosReporteSql = buildPagoReporteCajaSql("p", includeHistoricalValid);
   const totalPagarReferenciaMovimientoSql = buildTotalPagarReferenciaSql({
     reciboAlias: "r",
     predioAlias: "pr",
@@ -13547,6 +13628,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     WITH pagos_totales_recibo AS (
       SELECT id_recibo, SUM(monto_pagado) AS total_pagado
       FROM pagos
+      WHERE ${buildPagoContableValidoSql("pagos")}
       GROUP BY id_recibo
     ),
     movimientos_detalle AS (
@@ -13618,7 +13700,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
         ORDER BY ci.id_codigo DESC
         LIMIT 1
       ) ci ON TRUE
-      WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+      WHERE ${pagosReporteSql}
         AND p.fecha_pago >= $1::date
         AND p.fecha_pago < $2::date
     ),
@@ -14015,12 +14097,14 @@ app.get("/caja/reporte", async (req, res) => {
     const pageSize = Number(req.query.page_size || 200);
     const includeAllMovimientos = normalizeSN(req.query?.all_movimientos ?? req.query?.todos, "N") === "S";
     const includeAdminMovimientos = normalizeSN(req.query?.include_admin_movimientos ?? req.query?.admin_movimientos, "N") === "S";
+    const includeHistoricalValid = normalizeSN(req.query?.include_historical_valid ?? req.query?.historicos_validos, "N") === "S";
     const mostrarCodigoImpresion = true;
     const data = await construirReporteCaja(tipo, fecha, {
       page,
       pageSize,
       includeAllMovimientos,
       includeAdminMovimientos,
+      includeHistoricalValid,
       adminAllowed: hasMinRole(req.user?.rol, "ADMIN"),
       includeCodigoImpresion: mostrarCodigoImpresion,
       rangoManual,
@@ -14061,8 +14145,10 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "No se permite exportar caja con fecha futura." });
     }
     const mostrarCodigoImpresion = true;
+    const includeHistoricalValid = normalizeSN(req.query?.include_historical_valid ?? req.query?.historicos_validos, "N") === "S";
     const data = await construirReporteCaja(tipo, fecha, {
       includeAllMovimientos: true,
+      includeHistoricalValid,
       includeCodigoImpresion: mostrarCodigoImpresion,
       rangoManual,
       mesesProyeccion
@@ -14583,7 +14669,7 @@ app.delete("/recibos/:id", async (req, res) => {
     const { id } = req.params;
     const recibo = await pool.query("SELECT id_recibo, estado FROM recibos WHERE id_recibo = $1", [id]);
     if (recibo.rows.length === 0) return res.status(404).json({ error: "No encontrado" });
-    const pagos = await pool.query("SELECT COALESCE(SUM(monto_pagado), 0) as total_pagado FROM pagos WHERE id_recibo = $1", [id]);
+    const pagos = await pool.query(`SELECT COALESCE(SUM(monto_pagado), 0) as total_pagado FROM pagos WHERE ${buildPagoContableValidoSql("pagos")} AND id_recibo = $1`, [id]);
     const totalPagado = parseFloat(pagos.rows[0].total_pagado) || 0;
     if (recibo.rows[0].estado !== 'PENDIENTE' || totalPagado > 0) {
       return res.status(400).json({ error: "No se puede eliminar recibos con pagos." });
@@ -14625,6 +14711,7 @@ app.get("/dashboard/resumen", async (req, res) => {
       LEFT JOIN (
         SELECT id_recibo, SUM(monto_pagado) as total_pagado
         FROM pagos
+        WHERE ${buildPagoContableValidoSql("pagos")}
         GROUP BY id_recibo
       ) pg ON pg.id_recibo = r.id_recibo
       WHERE (${totalPagarReferenciaDashboardResumenSql} - COALESCE(pg.total_pagado, 0)) > 0
@@ -14892,6 +14979,7 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
         SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
         FROM pagos p
         JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+        WHERE ${buildPagoContableValidoSql("p")}
         GROUP BY p.id_recibo
       ),
       resumen_predio AS (
@@ -15283,7 +15371,8 @@ app.get("/exportar/finanzas-completo", authenticateToken, requireSuperAdmin, asy
       const pagosByRecibo = await pool.query(`
         SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
         FROM pagos p
-        WHERE p.id_recibo = ANY($1::int[])
+        WHERE ${buildPagoContableValidoSql("p")}
+          AND p.id_recibo = ANY($1::int[])
         GROUP BY p.id_recibo
       `, [ids]);
       const map = new Map();
@@ -15533,7 +15622,8 @@ app.get("/exportar/finanzas-completo.txt", authenticateToken, requireSuperAdmin,
         const pagos = await pool.query(`
           SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
           FROM pagos p
-          WHERE p.id_recibo = ANY($1::int[])
+          WHERE ${buildPagoContableValidoSql("p")}
+            AND p.id_recibo = ANY($1::int[])
           GROUP BY p.id_recibo
         `, [ids]);
         pagos.rows.forEach((p) => {
@@ -16249,6 +16339,7 @@ const buildCurrentDeudaSnapshot = async (db = pool) => {
       SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
       FROM pagos p
       JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+      WHERE ${buildPagoContableValidoSql("p")}
       GROUP BY p.id_recibo
     ),
     deuda_predio AS (
@@ -17524,6 +17615,7 @@ const queryRecibosMasivosRows = async (client, {
     WITH pagos_por_recibo AS (
       SELECT id_recibo, SUM(monto_pagado) AS total_pagado
       FROM pagos
+      WHERE ${buildPagoContableValidoSql("pagos")}
       GROUP BY id_recibo
     ),
     resumen_predio AS (
@@ -17606,6 +17698,7 @@ const queryRecibosSyntheticBaseRows = async (client, {
     WITH pagos_por_recibo AS (
       SELECT id_recibo, SUM(monto_pagado) AS total_pagado
       FROM pagos
+      WHERE ${buildPagoContableValidoSql("pagos")}
       GROUP BY id_recibo
     ),
     resumen_predio AS (
@@ -18596,9 +18689,12 @@ app.post("/importar/historial", authenticateToken, requireSuperAdmin, uploadImpo
       if (!excelBuffer.length) {
         return res.status(400).json({ error: "No se pudo leer el archivo Excel." });
       }
+      const importUserExcel = /marzo/i.test(nombre) ? "IMPORTACION_MARZO_2026" : undefined;
       
       resultado = await importarDestritoExcel({
         buffer: excelBuffer,
+        fileName: req.file.originalname || "",
+        importUser: importUserExcel,
         commitPerBatch: true,
         maxRechazos: MAX_RECHAZOS_IMPORTACION,
         logger: {

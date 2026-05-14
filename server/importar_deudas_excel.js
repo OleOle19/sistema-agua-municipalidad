@@ -10,6 +10,7 @@ const EPS = 0.001;
 const DEFAULT_COMMIT_PER_BATCH = process.env.IMPORT_COMMIT_PER_BATCH !== '0';
 const IMPORT_TIMEZONE = process.env.IMPORT_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || 'America/Lima';
 const IMPORT_ALLOW_FUTURE_PAYMENTS = process.env.IMPORT_ALLOW_FUTURE_PAYMENTS === '1';
+const DEFAULT_IMPORT_USER = 'IMPORTACION_EXCEL';
 const IDENTIFICADOR_AMBIGUO = Symbol('identificador_ambiguo');
 const ESTADO_CONEXION_ACTIVA = 'CON_CONEXION';
 const ESTADO_SERVICIO_ACTIVO = 'ACTIVO';
@@ -200,6 +201,18 @@ const parseExcelDateFull = (value) => {
   return { anio: null, mes: null, dia: null, iso: null };
 };
 
+const normalizeImportUser = (value) => String(value || '').trim();
+
+const resolveExcelImportUser = (options = {}) => {
+  const explicit = normalizeImportUser(options.importUser);
+  if (explicit) return explicit;
+
+  const fileName = String(options.fileName || '').trim();
+  if (/marzo/i.test(fileName)) return 'IMPORTACION_MARZO_2026';
+
+  return DEFAULT_IMPORT_USER;
+};
+
 async function importarDestritoExcel(options = {}) {
   const buffer = options.buffer;
   const batchSize = Number.isFinite(options.batchSize) && options.batchSize > 0
@@ -212,6 +225,7 @@ async function importarDestritoExcel(options = {}) {
     ? options.commitPerBatch
     : DEFAULT_COMMIT_PER_BATCH;
   const ioLogger = getLogger(options.logger);
+  const importUsuario = resolveExcelImportUser(options);
   const fechaActual = getFechaPartesZona(new Date(), IMPORT_TIMEZONE);
   const fechaActualIso = buildIsoDate(fechaActual.anio, fechaActual.mes, fechaActual.dia);
 
@@ -223,6 +237,7 @@ async function importarDestritoExcel(options = {}) {
 
   ioLogger.log('INICIANDO IMPORTACION DESDE EXCEL...');
   ioLogger.log(`Modo transaccional: ${commitPerBatch ? 'por lote (recomendado para menor bloqueo)' : 'transaccion unica (todo-o-nada)'}`);
+  ioLogger.log(`Usuario importacion: ${importUsuario}`);
 
   let reciboChunks = [];
   let reciboParams = [];
@@ -666,12 +681,12 @@ async function importarDestritoExcel(options = {}) {
               GROUP BY v.id_predio::int, v.anio::int, v.mes::int
             )
             INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero)
-            SELECT r.id_recibo, b.monto_pagado, b.fecha_pago, 'IMPORTACION_EXCEL'
+            SELECT r.id_recibo, b.monto_pagado, b.fecha_pago, $${pagoParams.length + 1}
             FROM pagos_batch b
             JOIN recibos r ON r.id_predio = b.id_predio AND r.anio = b.anio AND r.mes = b.mes
             WHERE b.monto_pagado > 0
           `;
-          const pagosInsertados = await client.query(insertPagos, pagoParams);
+          const pagosInsertados = await client.query(insertPagos, [...pagoParams, importUsuario]);
           totalPagos += pagosInsertados.rowCount;
         }
 
