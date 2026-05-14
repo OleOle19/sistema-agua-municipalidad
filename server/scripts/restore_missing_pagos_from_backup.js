@@ -69,6 +69,14 @@ const toIsoDate = (value) => {
   return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
 };
 
+const normalizeBackupDateValue = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "\\N") return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  if (/^\d{4}-\d{2}-\d{2}[ T]/.test(raw)) return raw.slice(0, 10);
+  return null;
+};
+
 const parseBackupPagos = (backupPath) => {
   const text = fs.readFileSync(backupPath, "utf8");
   const start = text.indexOf("COPY public.pagos ");
@@ -189,7 +197,7 @@ const parseBackupPredios = (backupPath) => {
       limpieza_sn: parts[12] === "\\N" ? null : parts[12],
       activo_sn: parts[13] === "\\N" ? null : parts[13],
       tipo_tarifa: parts[14] === "\\N" ? null : parts[14],
-      ultima_act: parts[15] === "\\N" ? null : parts[15],
+      ultima_act: normalizeBackupDateValue(parts[15]),
       direccion_alterna: parts[16] === "\\N" ? null : parts[16],
       tarifa_agua: parts[17] === "\\N" ? null : Number(parts[17] || 0),
       tarifa_desague: parts[18] === "\\N" ? null : Number(parts[18] || 0),

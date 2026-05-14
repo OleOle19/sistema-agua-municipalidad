@@ -157,6 +157,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
 
   const esCaja = origen === "caja";
   const esAdminPrincipal = esCaja && hasMinRole(usuarioSistema?.rol, "ADMIN");
+  const includeHistoricalValid = origen !== "caja";
   const isProyeccion = reporteTipo === "proyeccion";
 
   const cargarCaja = useCallback(async (signal) => {
@@ -168,6 +169,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
           fecha: fechaConsulta,
           all_movimientos: isProyeccion ? "N" : "S",
           include_admin_movimientos: esAdminPrincipal ? "S" : "N",
+          include_historical_valid: includeHistoricalValid ? "S" : "N",
           ...(reporteTipo === "rango" ? {
             fecha_desde: fechaDesdeRango,
             fecha_hasta: fechaHastaRango
@@ -188,7 +190,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     } finally {
       if (!signal?.aborted) setCargando(false);
     }
-  }, [esAdminPrincipal, fechaConsulta, fechaDesdeRango, fechaHastaRango, isProyeccion, mesesProyeccion, paginaMovimientos, reporteTipo]);
+  }, [esAdminPrincipal, fechaConsulta, fechaDesdeRango, fechaHastaRango, includeHistoricalValid, isProyeccion, mesesProyeccion, paginaMovimientos, reporteTipo]);
 
   const cargarAlertasRiesgo = useCallback(async (signal) => {
     try {
@@ -253,6 +255,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
         params: {
           tipo: reporteTipo,
           fecha: fechaConsulta,
+          include_historical_valid: includeHistoricalValid ? "S" : "N",
           ...(reporteTipo === "rango" ? {
             fecha_desde: fechaDesdeRango,
             fecha_hasta: fechaHastaRango
