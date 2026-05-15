@@ -2032,7 +2032,8 @@ const buildUsaTarifaActualSql = ({
   predioAlias = "p2",
   pagosAlias = "p",
   requireCoveredPayment = true,
-  onlyWhenUnpaid = false
+  onlyWhenUnpaid = false,
+  onlyWhenSaldoPendiente = false
 } = {}) => {
   const aplicaAjusteSql = buildAplicaAjusteTarifaSql({
     reciboAlias,
@@ -2040,6 +2041,12 @@ const buildUsaTarifaActualSql = ({
     pagosAlias,
     requireCoveredPayment
   });
+  if (onlyWhenSaldoPendiente) {
+    return `(
+      COALESCE(${pagosAlias}.total_pagado, 0) < COALESCE(${reciboAlias}.total_pagar, 0) - 0.001
+      AND ${aplicaAjusteSql}
+    )`;
+  }
   if (!onlyWhenUnpaid) return aplicaAjusteSql;
   return `(
     COALESCE(${pagosAlias}.total_pagado, 0) <= 0.001
@@ -2051,7 +2058,8 @@ const buildTotalPagarReferenciaSql = ({
   predioAlias = "p2",
   pagosAlias = "p",
   requireCoveredPayment = true,
-  onlyWhenUnpaid = false
+  onlyWhenUnpaid = false,
+  onlyWhenSaldoPendiente = false
 } = {}) => {
   const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
   const usaTarifaActualSql = buildUsaTarifaActualSql({
@@ -2059,7 +2067,8 @@ const buildTotalPagarReferenciaSql = ({
     predioAlias,
     pagosAlias,
     requireCoveredPayment,
-    onlyWhenUnpaid
+    onlyWhenUnpaid,
+    onlyWhenSaldoPendiente
   });
   return `(CASE
     WHEN ${usaTarifaActualSql}
@@ -2076,7 +2085,8 @@ const buildTotalPagarDeudaVigenteSql = ({
   predioAlias,
   pagosAlias,
   requireCoveredPayment: false,
-  onlyWhenUnpaid: false
+  onlyWhenUnpaid: false,
+  onlyWhenSaldoPendiente: true
 });
 const buildUsaTarifaActualDeudaVigenteSql = ({
   reciboAlias = "r",
@@ -2087,7 +2097,8 @@ const buildUsaTarifaActualDeudaVigenteSql = ({
   predioAlias,
   pagosAlias,
   requireCoveredPayment: false,
-  onlyWhenUnpaid: false
+  onlyWhenUnpaid: false,
+  onlyWhenSaldoPendiente: true
 });
 const clampArray = (rows, max = 200) => {
   if (!Array.isArray(rows)) return [];
