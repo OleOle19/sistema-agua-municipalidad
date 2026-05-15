@@ -514,6 +514,12 @@ function CajaMunicipalApp({ onBackToSelector }) {
     maxDiasRetroactivoCobro: ventanaFechaCobro.maxDiasRetroactivo
   }), [accesoCajaPermitido, rolActual, ventanaFechaCobro.max, ventanaFechaCobro.maxDiasRetroactivo, ventanaFechaCobro.min]);
 
+  useEffect(() => {
+    if (permisos.canAdminPagos) return;
+    setModoCobroAgua(COBRO_AGUA_MODOS.CAJA);
+    setMotivoCobroAgua("");
+  }, [permisos.canAdminPagos]);
+
   const showFlash = useCallback((type, text) => {
     setFlash({ type, text, ts: Date.now() });
   }, []);
