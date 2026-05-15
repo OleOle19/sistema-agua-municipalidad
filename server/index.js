@@ -2642,6 +2642,7 @@ const recalcularRecibosFuturosPorServicios = async (
     WITH objetivo AS (
       SELECT
         r.id_recibo,
+        COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') AS estado_actual,
         COALESCE(r.subtotal_agua, 0) AS subtotal_agua_actual,
         COALESCE(r.subtotal_desague, 0) AS subtotal_desague_actual,
         COALESCE(r.subtotal_limpieza, 0) AS subtotal_limpieza_actual,
@@ -2757,6 +2758,7 @@ const recalcularRecibosFuturosPorServicios = async (
     actualizables AS (
       SELECT
         id_recibo,
+        estado_actual,
         subtotal_agua_actual,
         subtotal_desague_actual,
         subtotal_limpieza_actual,
@@ -2780,8 +2782,11 @@ const recalcularRecibosFuturosPorServicios = async (
         total_pagar_actual <> (nuevo_agua + nuevo_desague + nuevo_limpieza + nuevo_admin + nuevo_extra)
       )
       AND (
-        total_pagado <= 0.001
-        OR total_pagado < ((nuevo_agua + nuevo_desague + nuevo_limpieza + nuevo_admin + nuevo_extra) - 0.001)
+        estado_actual <> 'PAGADO'
+        AND (
+          total_pagar_actual <= 0.001
+          OR total_pagado < (total_pagar_actual - 0.001)
+        )
       )
     )
     UPDATE recibos r
