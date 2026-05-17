@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useReactToPrint } from "react-to-print";
-import { FaBolt, FaCashRegister, FaSignOutAlt, FaSyncAlt, FaTint } from "react-icons/fa";
+import { FaBolt, FaCashRegister, FaChevronLeft, FaChevronRight, FaSignOutAlt, FaSyncAlt, FaTint } from "react-icons/fa";
 import api from "../api";
 import LoginPage from "../components/LoginPage";
 import ReciboAnexoCaja from "../components/ReciboAnexoCaja";
@@ -188,6 +188,55 @@ const formatFechaHora = (value) => {
   const dt = new Date(value);
   if (Number.isNaN(dt.getTime())) return String(value);
   return dt.toLocaleString("es-PE");
+};
+const buildCobroAguaCacheKey = (idContribuyente, fecha, permitirContingencia = false, permitirOverrideAdminFuturos = false) => (
+  `${Number(idContribuyente || 0)}|${String(fecha || "").trim()}|${permitirContingencia ? "1" : "0"}|${permitirOverrideAdminFuturos ? "1" : "0"}`
+);
+const buildCobroAguaVisibleYears = (rows = [], preferredYear = 0) => {
+  const detected = Array.from(new Set(
+    (Array.isArray(rows) ? rows : [])
+      .map((row) => Number(row?.anio || 0))
+      .filter((year) => year >= 1900 && year <= 9999)
+  ));
+  if (detected.length === 0) return [];
+  if (preferredYear >= 1900 && preferredYear <= 9999) {
+    detected.push(preferredYear);
+  }
+  const minYear = Math.min(...detected);
+  const maxYear = Math.max(...detected);
+  const years = [];
+  for (let year = maxYear; year >= minYear; year -= 1) {
+    years.push(year);
+  }
+  return years;
+};
+const buildCobroAguaYearRows = (rows = [], anio = 0) => {
+  const year = Number(anio || 0);
+  if (year < 1900 || year > 9999) return [];
+  const byMes = new Map();
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const rowYear = Number(row?.anio || 0);
+    const mes = Number(row?.mes || 0);
+    if (rowYear !== year || mes < 1 || mes > 12) return;
+    byMes.set(mes, row);
+  });
+  return Array.from({ length: 12 }, (_, index) => {
+    const mes = index + 1;
+    return byMes.get(mes) || {
+      anio: year,
+      mes,
+      placeholder_sin_recibo: true,
+      estado: "SIN_RECIBO",
+      subtotal_agua: 0,
+      subtotal_desague: 0,
+      subtotal_limpieza: 0,
+      subtotal_admin: 0,
+      total_pagar: 0,
+      abono_mes: 0,
+      deuda_mes: 0,
+      es_adelantado: false
+    };
+  });
 };
 
 const round2 = (value) => Math.round((parseMonto(value) + Number.EPSILON) * 100) / 100;
@@ -453,12 +502,14 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const [selectedContribuyenteAgua, setSelectedContribuyenteAgua] = useState(null);
   const [mostrarModalCobroAgua, setMostrarModalCobroAgua] = useState(false);
   const [loadingPendientesCobroAgua, setLoadingPendientesCobroAgua] = useState(false);
+  const [actualizandoPeriodosCobroAgua, setActualizandoPeriodosCobroAgua] = useState(false);
   const [cobrandoDirectoAgua, setCobrandoDirectoAgua] = useState(false);
   const [anulandoReciboCobroAguaId, setAnulandoReciboCobroAguaId] = useState(0);
   const [editandoPagoCobroAguaId, setEditandoPagoCobroAguaId] = useState(0);
   const [recibosPendientesCobroAgua, setRecibosPendientesCobroAgua] = useState([]);
   const [seleccionCobroAgua, setSeleccionCobroAgua] = useState({});
   const [fechaCobroAgua, setFechaCobroAgua] = useState(toIsoDate());
+  const [anioVistaCobroAgua, setAnioVistaCobroAgua] = useState(0);
   const [modoCobroAgua, setModoCobroAgua] = useState(COBRO_AGUA_MODOS.CAJA);
   const [motivoCobroAgua, setMotivoCobroAgua] = useState("");
   const [permitirContingenciaAgua, setPermitirContingenciaAgua] = useState(false);
@@ -498,6 +549,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const [imprimiendoAnexoCaja, setImprimiendoAnexoCaja] = useState(false);
   const anexoCajaRef = useRef(null);
   const isPrintingAnexoCajaRef = useRef(false);
+  const cobroAguaCacheRef = useRef(new Map());
+  const cobroAguaRequestSeqRef = useRef(0);
 
   const rolActual = normalizeRole(usuarioSistema?.rol);
   const accesoCajaPermitido = canEnterCajaModuleByRole(rolActual);
@@ -563,10 +616,12 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setSelectedContribuyenteAgua(null);
     setMostrarModalCobroAgua(false);
     setLoadingPendientesCobroAgua(false);
+    setActualizandoPeriodosCobroAgua(false);
     setCobrandoDirectoAgua(false);
     setRecibosPendientesCobroAgua([]);
     setSeleccionCobroAgua({});
     setFechaCobroAgua(toIsoDate());
+    setAnioVistaCobroAgua(0);
     setMostrarModalReimpresionAgua(false);
     setLoadingHistorialReimpresionAgua(false);
     setRecibosPagadosReimpresionAgua([]);
@@ -593,6 +648,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setFechaReporteLuz(toIsoDate());
     setUltimoAnexoCaja(null);
     setImprimiendoAnexoCaja(false);
+    cobroAguaCacheRef.current.clear();
+    cobroAguaRequestSeqRef.current = 0;
   }, []);
 
   const cargarReporteAgua = useCallback(async () => {
@@ -694,7 +751,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     };
   }, [usuarioSistema]);
 
-  const buscarContribuyentesAgua = useCallback(async () => {
+  const buscarContribuyentesAgua = useCallback(async ({ preserveSelectedId = 0 } = {}) => {
     const qRaw = String(busquedaContribuyenteAgua || "").trim();
     if (!qRaw) {
       setBusquedaContribuyenteRealizada(true);
@@ -708,6 +765,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const qDni = normalizeDigits(qRaw);
     const qCodigo = normalizeCodigo(qRaw);
     const usarBusquedaNombrePorTokens = qNombreTokens.length >= 2;
+    const idSeleccionado = Number(preserveSelectedId || selectedContribuyenteAgua?.id_contribuyente || 0);
 
     setBuscandoContribuyenteAgua(true);
     try {
@@ -730,14 +788,21 @@ function CajaMunicipalApp({ onBackToSelector }) {
           || (qCodigo && codigo === qCodigo);
       }).slice(0, 200);
       setContribuyentesFiltradosAgua(filtrados);
-      setSelectedContribuyenteAgua(null);
+      setSelectedContribuyenteAgua(() => {
+        if (!idSeleccionado) return null;
+        return filtrados.find((row) => Number(row?.id_contribuyente || 0) === idSeleccionado) || null;
+      });
       setBusquedaContribuyenteRealizada(true);
     } catch (err) {
       handleApiError(err, "No se pudo buscar contribuyentes.");
     } finally {
       setBuscandoContribuyenteAgua(false);
     }
-  }, [busquedaContribuyenteAgua, handleApiError, padronContribuyentesAgua, showFlash]);
+  }, [busquedaContribuyenteAgua, handleApiError, padronContribuyentesAgua, selectedContribuyenteAgua?.id_contribuyente, showFlash]);
+
+  const invalidarCobroAguaCache = useCallback(() => {
+    cobroAguaCacheRef.current.clear();
+  }, []);
 
   const buscarContribuyentesLuz = useCallback(async () => {
     const qRaw = String(busquedaContribuyenteLuz || "").trim();
@@ -942,11 +1007,40 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const cargarPeriodosCobroAgua = useCallback(async (
     idContribuyente,
     fechaCorte,
-    { avisarVacio = false, permitirContingencia = false } = {}
+    { avisarVacio = false, permitirContingencia = false, force = false, preserveSelection = false } = {}
   ) => {
     const fecha = String(fechaCorte || "").trim();
-    if (!isValidIsoDate(fecha)) return;
+    if (!isValidIsoDate(fecha)) return [];
     const permitirOverrideAdminFuturos = permisos.canAdminPagos && fecha !== toIsoDate();
+    const cacheKey = buildCobroAguaCacheKey(idContribuyente, fecha, permitirContingencia, permitirOverrideAdminFuturos);
+    const applyRows = (rowsToApply) => {
+      const nextRows = Array.isArray(rowsToApply) ? rowsToApply : [];
+      setRecibosPendientesCobroAgua(nextRows);
+      setSeleccionCobroAgua((prev) => {
+        const next = {};
+        nextRows.forEach((row) => {
+          const rowKey = getCobroAguaRowKey(row);
+          const saldo = getCobroAguaRowSaldo(row);
+          next[rowKey] = {
+            checked: preserveSelection
+              ? Boolean(prev[rowKey]?.checked) && canSelectCobroAguaRow(row, permisos, toIsoDate())
+              : false,
+            monto: preserveSelection
+              ? finalizeMoneyInput(prev[rowKey]?.monto, { min: 0, max: round2(saldo), emptyValue: saldo.toFixed(2) })
+              : saldo.toFixed(2)
+          };
+        });
+        return next;
+      });
+      if (avisarVacio && nextRows.length === 0) {
+        showFlash("warning", "No hay periodos disponibles para mostrar en cobro.");
+      }
+      return nextRows;
+    };
+    if (!force && cobroAguaCacheRef.current.has(cacheKey)) {
+      return applyRows(cobroAguaCacheRef.current.get(cacheKey));
+    }
+    const requestId = ++cobroAguaRequestSeqRef.current;
     const [resPendientes, resHistorial] = await Promise.all([
       api.get(`/recibos/pendientes/${idContribuyente}`, {
         params: {
@@ -1038,33 +1132,12 @@ function CajaMunicipalApp({ onBackToSelector }) {
       if (ia !== ib) return ia - ib;
       return String(a?.estado || "").localeCompare(String(b?.estado || ""));
     });
-    const fechaBase = new Date(`${fecha}T00:00:00`);
-    const fechaMinima = new Date(fechaBase);
-    fechaMinima.setMonth(fechaMinima.getMonth() - 12);
-    const periodoMinimoNum = (fechaMinima.getFullYear() * 100) + (fechaMinima.getMonth() + 1);
-    const rowsFiltradas = rows.filter((row) => {
-      const anio = Number(row?.anio || 0);
-      const mes = Number(row?.mes || 0);
-      const periodoNum = (anio * 100) + mes;
-      const saldo = getCobroAguaRowSaldo(row);
-      if (saldo > 0.001) return true;
-      return periodoNum >= periodoMinimoNum;
-    });
-    const initial = {};
-    rowsFiltradas.forEach((row) => {
-      const rowKey = getCobroAguaRowKey(row);
-      const saldo = getCobroAguaRowSaldo(row);
-      initial[rowKey] = {
-        checked: false,
-        monto: saldo.toFixed(2)
-      };
-    });
-    setRecibosPendientesCobroAgua(rowsFiltradas);
-    setSeleccionCobroAgua(initial);
-    if (avisarVacio && rowsFiltradas.length === 0) {
-      showFlash("warning", "No hay periodos disponibles para mostrar en cobro.");
+    if (requestId !== cobroAguaRequestSeqRef.current) {
+      return rows;
     }
-  }, [permisos.canAdminPagos, showFlash]);
+    cobroAguaCacheRef.current.set(cacheKey, rows);
+    return applyRows(rows);
+  }, [permisos, permisos.canAdminPagos, showFlash]);
 
   const abrirCobroDirectoAgua = async () => {
     const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
@@ -1083,6 +1156,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setPermitirContingenciaAgua(false);
     setRecibosPendientesCobroAgua([]);
     setSeleccionCobroAgua({});
+    setAnioVistaCobroAgua(Number(hoy.slice(0, 4)) || 0);
+    setActualizandoPeriodosCobroAgua(false);
     setMostrarModalCobroAgua(true);
     setLoadingPendientesCobroAgua(true);
     try {
@@ -1101,6 +1176,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const onChangeFechaCobroAgua = useCallback(async (nextFecha) => {
     const fecha = String(nextFecha || "").trim();
     setFechaCobroAgua(fecha);
+    setAnioVistaCobroAgua(Number(fecha.slice(0, 4)) || 0);
     if (!mostrarModalCobroAgua) return;
     const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
     if (!idContribuyente || !isValidIsoDate(fecha)) return;
@@ -1108,7 +1184,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const fechaMinima = permisos.fechaCobroMinima || "";
     if (fecha > hoy) return;
     if (fechaMinima && fecha < fechaMinima) return;
-    setLoadingPendientesCobroAgua(true);
+    setActualizandoPeriodosCobroAgua(true);
     try {
       await cargarPeriodosCobroAgua(idContribuyente, fecha, {
         permitirContingencia: permitirContingenciaAgua
@@ -1116,7 +1192,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     } catch (err) {
       handleApiError(err, "No se pudo actualizar los periodos para la fecha seleccionada.");
     } finally {
-      setLoadingPendientesCobroAgua(false);
+      setActualizandoPeriodosCobroAgua(false);
     }
   }, [
     cargarPeriodosCobroAgua,
@@ -1134,7 +1210,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
     const fecha = String(fechaCobroAgua || "").trim();
     if (!idContribuyente || !isValidIsoDate(fecha)) return;
-    setLoadingPendientesCobroAgua(true);
+    setActualizandoPeriodosCobroAgua(true);
     try {
       await cargarPeriodosCobroAgua(idContribuyente, fecha, {
         permitirContingencia: next
@@ -1142,7 +1218,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     } catch (err) {
       handleApiError(err, "No se pudo actualizar los periodos al cambiar modo de contingencia.");
     } finally {
-      setLoadingPendientesCobroAgua(false);
+      setActualizandoPeriodosCobroAgua(false);
     }
   }, [
     cargarPeriodosCobroAgua,
@@ -1201,23 +1277,27 @@ function CajaMunicipalApp({ onBackToSelector }) {
         motivo
       });
       showFlash("success", res?.data?.mensaje || "Monto del pago actualizado.");
+      invalidarCobroAguaCache();
       const idContribuyenteRefresco = Number(
         res?.data?.pago?.id_contribuyente
         || idContribuyenteActual
         || 0
       );
       if (idContribuyenteRefresco > 0) {
+        setActualizandoPeriodosCobroAgua(true);
         await cargarPeriodosCobroAgua(idContribuyenteRefresco, fecha, {
-          permitirContingencia: permitirContingenciaAgua
+          permitirContingencia: permitirContingenciaAgua,
+          force: true
         });
       }
       await Promise.all([
         recargarAgua(),
-        buscarContribuyentesAgua()
+        buscarContribuyentesAgua({ preserveSelectedId: idContribuyenteRefresco })
       ]);
     } catch (err) {
       handleApiError(err, "No se pudo editar el monto del pago seleccionado.");
     } finally {
+      setActualizandoPeriodosCobroAgua(false);
       setEditandoPagoCobroAguaId(0);
     }
   }, [
@@ -1225,6 +1305,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     cargarPeriodosCobroAgua,
     fechaCobroAgua,
     handleApiError,
+    invalidarCobroAguaCache,
     permisos.canCorregirPagos,
     permitirContingenciaAgua,
     recargarAgua,
@@ -1263,18 +1344,22 @@ function CajaMunicipalApp({ onBackToSelector }) {
     try {
       const res = await api.post(`/pagos/recibo/${idRecibo}/anular-ultimo`, { motivo });
       showFlash("success", res?.data?.mensaje || "Pago anulado para correccion.");
+      invalidarCobroAguaCache();
       if (idContribuyente > 0) {
+        setActualizandoPeriodosCobroAgua(true);
         await cargarPeriodosCobroAgua(idContribuyente, fecha, {
-          permitirContingencia: permitirContingenciaAgua
+          permitirContingencia: permitirContingenciaAgua,
+          force: true
         });
       }
       await Promise.all([
         recargarAgua(),
-        buscarContribuyentesAgua()
+        buscarContribuyentesAgua({ preserveSelectedId: idContribuyente })
       ]);
     } catch (err) {
       handleApiError(err, "No se pudo anular el pago del periodo seleccionado.");
     } finally {
+      setActualizandoPeriodosCobroAgua(false);
       setAnulandoReciboCobroAguaId(0);
     }
   }, [
@@ -1282,6 +1367,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     cargarPeriodosCobroAgua,
     fechaCobroAgua,
     handleApiError,
+    invalidarCobroAguaCache,
     permisos.canCorregirPagos,
     recargarAgua,
     selectedContribuyenteAgua,
@@ -1470,8 +1556,12 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const anexoData = buildAnexoDataFromPagoDirecto(selectedContribuyenteAgua, anexoItems);
       setUltimoAnexoCaja(anexoData);
       setDatosAnexoCajaImprimir(anexoData);
+      invalidarCobroAguaCache();
       setMostrarModalCobroAgua(false);
-      await Promise.all([recargarAgua(), buscarContribuyentesAgua()]);
+      await Promise.all([
+        recargarAgua(),
+        buscarContribuyentesAgua({ preserveSelectedId: idContribuyente })
+      ]);
     } catch (err) {
       handleApiError(err, "No se pudo registrar el cobro directo.");
     } finally {
@@ -1480,6 +1570,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }, [
     buscarContribuyentesAgua,
     handleApiError,
+    invalidarCobroAguaCache,
     permisos.canCaja,
     permisos.canAdminPagos,
     permisos.fechaCobroMinima,
@@ -1680,6 +1771,33 @@ function CajaMunicipalApp({ onBackToSelector }) {
     () => contribuyentesFiltradosAgua.reduce((acc, item) => acc + parseMonto(item.deuda_anio), 0),
     [contribuyentesFiltradosAgua]
   );
+  const aniosCobroAgua = useMemo(
+    () => buildCobroAguaVisibleYears(
+      recibosPendientesCobroAgua,
+      Number(String(fechaCobroAgua || "").slice(0, 4)) || 0
+    ),
+    [fechaCobroAgua, recibosPendientesCobroAgua]
+  );
+  const indiceAnioVistaCobroAgua = useMemo(
+    () => aniosCobroAgua.findIndex((year) => year === anioVistaCobroAgua),
+    [anioVistaCobroAgua, aniosCobroAgua]
+  );
+  const recibosPendientesCobroAguaVista = useMemo(
+    () => buildCobroAguaYearRows(recibosPendientesCobroAgua, anioVistaCobroAgua),
+    [anioVistaCobroAgua, recibosPendientesCobroAgua]
+  );
+  useEffect(() => {
+    if (aniosCobroAgua.length === 0) {
+      setAnioVistaCobroAgua(0);
+      return;
+    }
+    const preferredYear = Number(String(fechaCobroAgua || "").slice(0, 4)) || 0;
+    setAnioVistaCobroAgua((current) => {
+      if (aniosCobroAgua.includes(current)) return current;
+      if (preferredYear && aniosCobroAgua.includes(preferredYear)) return preferredYear;
+      return aniosCobroAgua[0];
+    });
+  }, [aniosCobroAgua, fechaCobroAgua]);
   const totalPendienteLuz = useMemo(
     () => contribuyentesFiltradosLuz.reduce((acc, item) => acc + parseMonto(item.deuda_total), 0),
     [contribuyentesFiltradosLuz]
@@ -2131,7 +2249,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       min={permisos.fechaCobroMinima}
                       max={permisos.fechaCobroMaxima}
                       onChange={(e) => onChangeFechaCobroAgua(e.target.value)}
-                      disabled={!permisos.canSeleccionarFechaCobro || cobrandoDirectoAgua || loadingPendientesCobroAgua}
+                      disabled={!permisos.canSeleccionarFechaCobro || cobrandoDirectoAgua}
                     />
                   </div>
                   <div className="col-sm-8 col-md-6">
@@ -2142,6 +2260,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         ? "El cobro se registrara en el reporte de la fecha seleccionada. Administrador puede usar cualquier fecha pasada."
                         : `El cobro se registrara en el reporte de la fecha seleccionada. Caja puede usar hoy o hasta ${permisos.maxDiasRetroactivoCobro || 0} dia(s) atras.`}
                     </div>
+                    {actualizandoPeriodosCobroAgua && !loadingPendientesCobroAgua && (
+                      <div className="small text-muted mt-1">Actualizando periodos para la fecha seleccionada...</div>
+                    )}
                   </div>
                   {permisos.canAdminPagos && (
                     <div className="col-sm-6 col-md-3">
@@ -2150,7 +2271,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         className="form-select form-select-sm"
                         value={modoCobroAgua}
                         onChange={(e) => setModoCobroAgua(String(e.target.value || COBRO_AGUA_MODOS.CAJA))}
-                        disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
+                        disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
                       >
                         <option value={COBRO_AGUA_MODOS.CAJA}>Cobro de caja</option>
                         <option value={COBRO_AGUA_MODOS.COMPENSACION}>Compensacion</option>
@@ -2165,7 +2286,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         id="switch-contingencia-caja"
                         checked={permitirContingenciaAgua}
                         onChange={toggleContingenciaCobroAgua}
-                        disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
+                        disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
                       />
                       <label className="form-check-label small" htmlFor="switch-contingencia-caja">
                         Contingencia (emitir sin recibo)
@@ -2185,8 +2306,42 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       value={motivoCobroAgua}
                       onChange={(e) => setMotivoCobroAgua(e.target.value)}
                       placeholder="Ej. Compensacion en especie por materiales entregados a la municipalidad."
-                      disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
+                      disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
                     />
+                  </div>
+                )}
+                {aniosCobroAgua.length > 0 && (
+                  <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
+                    <div className="small text-muted">
+                      Vista anual de periodos. Use las flechas para revisar anos anteriores o volver a anos mas recientes.
+                    </div>
+                    <div className="d-flex align-items-center gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-secondary"
+                        onClick={() => {
+                          const nextYear = aniosCobroAgua[indiceAnioVistaCobroAgua + 1];
+                          if (nextYear) setAnioVistaCobroAgua(nextYear);
+                        }}
+                        disabled={indiceAnioVistaCobroAgua < 0 || indiceAnioVistaCobroAgua >= aniosCobroAgua.length - 1}
+                        title="Ver un año anterior"
+                      >
+                        <FaChevronLeft />
+                      </button>
+                      <span className="badge text-bg-light border">Ano {anioVistaCobroAgua || "-"}</span>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline-secondary"
+                        onClick={() => {
+                          const nextYear = aniosCobroAgua[indiceAnioVistaCobroAgua - 1];
+                          if (nextYear) setAnioVistaCobroAgua(nextYear);
+                        }}
+                        disabled={indiceAnioVistaCobroAgua <= 0}
+                        title="Ver un año mas reciente"
+                      >
+                        <FaChevronRight />
+                      </button>
+                    </div>
                   </div>
                 )}
                 <div className="table-responsive border rounded">
@@ -2201,7 +2356,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       </tr>
                     </thead>
                     <tbody>
-                      {loadingPendientesCobroAgua && (
+                      {loadingPendientesCobroAgua && recibosPendientesCobroAgua.length === 0 && (
                         <tr>
                           <td colSpan="5" className="text-center text-muted py-3">Actualizando periodos...</td>
                         </tr>
@@ -2211,15 +2366,16 @@ function CajaMunicipalApp({ onBackToSelector }) {
                           <td colSpan="5" className="text-center text-muted py-3">Sin meses disponibles para cobro.</td>
                         </tr>
                       )}
-                      {recibosPendientesCobroAgua.map((row) => {
+                      {recibosPendientesCobroAguaVista.map((row) => {
                         const idRecibo = Number(row?.id_recibo || 0);
                         const idPagoUltimo = Number(row?.id_ultimo_pago || 0);
                         const rowKey = getCobroAguaRowKey(row);
                         const saldo = getCobroAguaRowSaldo(row);
                         const montoPagado = round2(parseMonto(row?.abono_mes ?? 0));
                         const sel = seleccionCobroAgua[rowKey] || { checked: false, monto: saldo.toFixed(2) };
-                        const esAdelantado = Boolean(row?.es_adelantado) || idRecibo <= 0;
-                        const puedeCobrar = canSelectCobroAguaRow(row, permisos, toIsoDate());
+                        const esSinRecibo = Boolean(row?.placeholder_sin_recibo);
+                        const esAdelantado = !esSinRecibo && (Boolean(row?.es_adelantado) || idRecibo <= 0);
+                        const puedeCobrar = !esSinRecibo && canSelectCobroAguaRow(row, permisos, toIsoDate());
                         const estadoUpper = String(row?.estado || "").trim().toUpperCase();
                         const tipoMovimientoAdmin = String(row?.tipo_movimiento_admin || "").trim().toUpperCase();
                         const estadoMovimientoAdmin = String(row?.estado_movimiento_admin || "").trim().toUpperCase();
@@ -2230,9 +2386,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         const correccionDentroDeRango = canCorrectCobroAguaRowByDate(row, permisos, toIsoDate());
                         const puedeEditarMontoPago = permisos.canCorregirPagos && estadoUpper === "PAGADO" && idPagoUltimo > 0 && correccionDentroDeRango;
                         const puedeAnularPagoPeriodo = permisos.canCorregirPagos && estadoUpper === "PAGADO" && idRecibo > 0 && correccionDentroDeRango;
-                        const estadoNoCobro = estadoUpper === "PAGADO" ? "PAGADO" : "BLOQUEADO";
+                        const estadoNoCobro = esSinRecibo ? "SIN RECIBO" : (estadoUpper === "PAGADO" ? "PAGADO" : "BLOQUEADO");
                         const checkboxBloqueado = cobrandoDirectoAgua
                           || loadingPendientesCobroAgua
+                          || actualizandoPeriodosCobroAgua
                           || !puedeCobrar;
                         const checkboxChecked = puedeCobrar ? Boolean(sel?.checked) : false;
                         const anulandoEstaFila = idRecibo > 0 && anulandoReciboCobroAguaId === idRecibo;
@@ -2254,6 +2411,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                             </td>
                             <td>
                               {String(row?.mes || "").padStart(2, "0")}/{row?.anio || "-"}
+                              {esSinRecibo && <span className="badge text-bg-secondary ms-2">SIN RECIBO</span>}
                               {esAdelantado && <span className="badge text-bg-warning ms-2">ADELANTADO</span>}
                               {tieneReintegroPendiente && <span className="badge text-bg-danger ms-2">REINGRESO PENDIENTE</span>}
                               {!tieneReintegroPendiente && fueReintegrado && <span className="badge text-bg-success ms-2">REINTEGRADO</span>}
@@ -2267,7 +2425,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                                   type="button"
                                   className="btn btn-link btn-sm p-0 ms-2 align-baseline"
                                   onClick={() => editarMontoPagoAgua(row)}
-                                  disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || anulandoEstaFila || editandoEstaFila}
+                                  disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || anulandoEstaFila || editandoEstaFila}
                                   title="Editar directamente el monto del ultimo pago registrado"
                                 >
                                   {editandoEstaFila ? "Editando..." : "Editar monto"}
@@ -2278,7 +2436,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                                   type="button"
                                   className="btn btn-link btn-sm p-0 ms-2 align-baseline text-danger"
                                   onClick={() => anularPagoMesCobroAgua(row)}
-                                  disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || anulandoEstaFila || editandoEstaFila}
+                                  disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || anulandoEstaFila || editandoEstaFila}
                                   title="Anular todos los pagos activos del periodo para volver a registrarlo desde cero"
                                 >
                                   {anulandoEstaFila ? "Anulando..." : "Anular"}
@@ -2303,7 +2461,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                                   value={sel?.monto ?? ""}
                                   onChange={(e) => setMontoCobroAgua(rowKey, e.target.value, saldo)}
                                   onBlur={() => finalizarMontoCobroAgua(rowKey, saldo)}
-                                  disabled={!sel?.checked || cobrandoDirectoAgua || !puedeCobrar || anulandoEstaFila || editandoEstaFila}
+                                  disabled={!sel?.checked || cobrandoDirectoAgua || actualizandoPeriodosCobroAgua || !puedeCobrar || anulandoEstaFila || editandoEstaFila}
                                 />
                               </div>
                             </td>
@@ -2328,7 +2486,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                 <button
                   className="btn btn-success"
                   onClick={cobrarDirectoAgua}
-                  disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
+                  disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
                 >
                   {cobrandoDirectoAgua ? "Procesando..." : (modoCobroAgua === COBRO_AGUA_MODOS.COMPENSACION ? "Registrar compensacion" : "Cobrar")}
                 </button>
