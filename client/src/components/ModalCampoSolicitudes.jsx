@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../api";
-import { FaCheck, FaClipboardCheck, FaFileDownload, FaSyncAlt, FaTimes } from "react-icons/fa";
+import { FaCheck, FaChevronLeft, FaChevronRight, FaClipboardCheck, FaFileDownload, FaSyncAlt, FaTimes } from "react-icons/fa";
 
 const ESTADO_LABELS = {
   PENDIENTE: "Pendiente",
@@ -38,6 +38,7 @@ const TIPO_SOLICITUD_LABELS = {
   ALTA_PREDIO: "Alta predio nuevo",
   ALTA_PREDIO_TEMPORAL: "Alta predio temporal"
 };
+const SOLICITUDES_PAGE_SIZE = 100;
 
 const normalizeText = (value) => String(value || "").trim().toUpperCase();
 const normalizeSN = (value, fallback = "S") => {
@@ -172,9 +173,11 @@ const getSeguimientoTone = (tipo, darkMode) => {
 const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) => {
   const [filtroEstado, setFiltroEstado] = useState("PENDIENTE");
   const [busquedaContribuyente, setBusquedaContribuyente] = useState("");
+  const [filtroCalle, setFiltroCalle] = useState("TODAS");
   const [organizarPor, setOrganizarPor] = useState("FECHA");
   const [ordenGrupo, setOrdenGrupo] = useState("DESC");
   const [ordenItems, setOrdenItems] = useState("DESC");
+  const [pagina, setPagina] = useState(1);
   const [solicitudes, setSolicitudes] = useState([]);
   const [cargando, setCargando] = useState(false);
   const [procesandoId, setProcesandoId] = useState(null);
@@ -202,6 +205,10 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
   useEffect(() => {
     setOrdenGrupo(organizarPor === "CALLE" ? "ASC" : "DESC");
   }, [organizarPor]);
+
+  useEffect(() => {
+    setPagina(1);
+  }, [busquedaContribuyente, filtroCalle, organizarPor, ordenGrupo, ordenItems, filtroEstado]);
 
   const abrirFotoSolicitud = async (idSolicitud) => {
     const id = Number(idSolicitud || 0);
@@ -413,17 +420,46 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
 
   const rowsFiltrados = useMemo(() => {
     const needle = String(busquedaContribuyente || "").trim().toLowerCase();
-    if (!needle) return rows;
     return rows.filter((row) => {
       const contribuyente = String(row?.contribuyenteLabel || "").toLowerCase();
-      const calle = String(row?.calleLabel || "").toLowerCase();
-      return contribuyente.includes(needle) || calle.includes(needle);
+      const calle = String(row?.calleLabel || "").trim();
+      const coincideContribuyente = !needle || contribuyente.includes(needle);
+      const coincideCalle = filtroCalle === "TODAS" || calle === filtroCalle;
+      return coincideContribuyente && coincideCalle;
     });
-  }, [rows, busquedaContribuyente]);
+  }, [filtroCalle, rows, busquedaContribuyente]);
+
+  const callesDisponibles = useMemo(() => {
+    const unique = new Set();
+    rows.forEach((row) => {
+      const calle = String(row?.calleLabel || "").trim();
+      if (calle) unique.add(calle);
+    });
+    return ["TODAS", ...Array.from(unique).sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }))];
+  }, [rows]);
+
+  const totalVisibleSolicitudes = rowsFiltrados.length;
+  const totalPaginas = useMemo(
+    () => Math.max(1, Math.ceil(totalVisibleSolicitudes / SOLICITUDES_PAGE_SIZE)),
+    [totalVisibleSolicitudes]
+  );
+  const rangoInicio = totalVisibleSolicitudes > 0 ? ((pagina - 1) * SOLICITUDES_PAGE_SIZE) + 1 : 0;
+  const rangoFin = totalVisibleSolicitudes > 0
+    ? Math.min(((pagina - 1) * SOLICITUDES_PAGE_SIZE) + SOLICITUDES_PAGE_SIZE, totalVisibleSolicitudes)
+    : 0;
+
+  useEffect(() => {
+    setPagina((current) => Math.min(current, totalPaginas));
+  }, [totalPaginas]);
+
+  const rowsPaginados = useMemo(() => {
+    const inicio = (pagina - 1) * SOLICITUDES_PAGE_SIZE;
+    return rowsFiltrados.slice(inicio, inicio + SOLICITUDES_PAGE_SIZE);
+  }, [pagina, rowsFiltrados]);
 
   const groupedRows = useMemo(() => {
     const groups = new Map();
-    rowsFiltrados.forEach((row) => {
+    rowsPaginados.forEach((row) => {
       if (organizarPor === "CALLE") {
         const label = String(row?.calleLabel || "").trim() || "Sin calle";
         const key = normalizeText(label) || "SIN_CALLE";
@@ -451,12 +487,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
     }
     const factor = ordenGrupo === "ASC" ? 1 : -1;
     return list.sort((a, b) => factor * (Number(a.sortValue || 0) - Number(b.sortValue || 0)));
-  }, [rowsFiltrados, organizarPor, ordenGrupo, ordenItems]);
-
-  const totalVisibleSolicitudes = useMemo(
-    () => groupedRows.reduce((acc, g) => acc + g.items.length, 0),
-    [groupedRows]
-  );
+  }, [rowsPaginados, organizarPor, ordenGrupo, ordenItems]);
 
   const modalContentClass = `modal-content ${darkMode ? "text-white" : ""}`;
   const modalContentStyle = darkMode ? { backgroundColor: "#2b3035", border: "1px solid #495057" } : {};
@@ -543,6 +574,18 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
               </select>
               <select
                 className={inputClass}
+                style={{ maxWidth: "240px" }}
+                value={filtroCalle}
+                onChange={(e) => setFiltroCalle(e.target.value)}
+              >
+                {callesDisponibles.map((calle) => (
+                  <option key={calle} value={calle}>
+                    {calle === "TODAS" ? "Calles: todas" : calle}
+                  </option>
+                ))}
+              </select>
+              <select
+                className={inputClass}
                 style={{ maxWidth: "220px" }}
                 value={organizarPor}
                 onChange={(e) => setOrganizarPor(e.target.value)}
@@ -565,7 +608,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
                 type="text"
                 className={`form-control form-control-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
                 style={{ maxWidth: "240px" }}
-                placeholder="Buscar contribuyente o calle..."
+                placeholder="Buscar contribuyente..."
                 value={busquedaContribuyente}
                 onChange={(e) => setBusquedaContribuyente(e.target.value)}
               />
@@ -585,8 +628,11 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
               <button type="button" className="btn btn-sm btn-outline-success d-flex align-items-center gap-1" onClick={() => exportarSolicitudesExcel()} disabled={cargando}>
                 <FaFileDownload /> Excel Solicitudes
               </button>
-              <div className="ms-auto small opacity-75">
-                Mostrando: <strong>{totalVisibleSolicitudes}</strong> de <strong>{solicitudes.length}</strong> | Grupos: <strong>{groupedRows.length}</strong>
+              <div className="ms-auto small opacity-75 d-flex flex-wrap gap-3">
+                <span>Mostrando {rangoInicio}-{rangoFin} de {totalVisibleSolicitudes} solicitud(es)</span>
+                <span>Pagina {pagina} de {totalPaginas}</span>
+                <span>Lote de {SOLICITUDES_PAGE_SIZE}</span>
+                <span>Grupos en pagina: {groupedRows.length}</span>
               </div>
             </div>
 
@@ -782,7 +828,26 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
             </div>
           </div>
 
-          <div className={`modal-footer ${darkMode ? "border-secondary" : ""}`}>
+          <div className={`modal-footer ${darkMode ? "border-secondary" : ""} d-flex justify-content-between gap-2 flex-wrap`}>
+            <div className="d-flex align-items-center gap-2">
+              <button
+                type="button"
+                className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`}
+                onClick={() => setPagina((current) => Math.max(1, current - 1))}
+                disabled={cargando || pagina <= 1}
+              >
+                <FaChevronLeft />
+              </button>
+              <span className="small opacity-75">Pagina {pagina} de {totalPaginas}</span>
+              <button
+                type="button"
+                className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`}
+                onClick={() => setPagina((current) => Math.min(totalPaginas, current + 1))}
+                disabled={cargando || pagina >= totalPaginas}
+              >
+                <FaChevronRight />
+              </button>
+            </div>
             <button type="button" className={`btn ${darkMode ? "btn-secondary" : "btn-dark"}`} onClick={cerrarModal}>Cerrar</button>
           </div>
         </div>
