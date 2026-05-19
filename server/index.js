@@ -17717,6 +17717,12 @@ const queryRecibosMasivosRows = async (client, {
     predioAlias: "p",
     pagosAlias: "pp"
   });
+  const usaTarifaActualMasivosSql = buildUsaTarifaActualDeudaVigenteSql({
+    reciboAlias: "r",
+    predioAlias: "p",
+    pagosAlias: "pp"
+  });
+  const tarifaActualComponentesMasivosSql = buildTarifaActualComponentesSql("p");
   const query = `
     WITH pagos_por_recibo AS (
       SELECT id_recibo, SUM(monto_pagado) AS total_pagado
@@ -17762,7 +17768,17 @@ const queryRecibosMasivosRows = async (client, {
       GROUP BY t.id_predio
     )
     SELECT
-      r.*,
+      r.id_recibo,
+      r.id_predio,
+      r.anio,
+      r.mes,
+      (CASE WHEN ${usaTarifaActualMasivosSql} THEN ${tarifaActualComponentesMasivosSql.agua} ELSE COALESCE(r.subtotal_agua, 0) END) AS subtotal_agua,
+      (CASE WHEN ${usaTarifaActualMasivosSql} THEN ${tarifaActualComponentesMasivosSql.desague} ELSE COALESCE(r.subtotal_desague, 0) END) AS subtotal_desague,
+      (CASE WHEN ${usaTarifaActualMasivosSql} THEN ${tarifaActualComponentesMasivosSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END) AS subtotal_limpieza,
+      (CASE WHEN ${usaTarifaActualMasivosSql} THEN ${tarifaActualComponentesMasivosSql.admin_base} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
+      (CASE WHEN ${usaTarifaActualMasivosSql} THEN ${tarifaActualComponentesMasivosSql.extra} ELSE COALESCE(r.subtotal_extra, 0) END) AS subtotal_extra,
+      ${totalPagarReferenciaMasivosSql} AS total_pagar,
+      r.estado,
       c.id_contribuyente,
       c.nombre_completo,
       c.codigo_municipal,
@@ -17990,9 +18006,12 @@ const buildReimpresionSeleccionRows = async (client, {
       const subtotalDesague = desagueHabilitado ? parseMonto(baseRow?.tarifa_desague, AUTO_DEUDA_BASE.desague) : 0;
       const subtotalLimpieza = limpiezaHabilitado ? parseMonto(baseRow?.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0;
       const subtotalAdmin = activoSN === "S"
-        ? parseMonto(baseRow?.tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(baseRow?.tarifa_extra, 0)
+        ? parseMonto(baseRow?.tarifa_admin, AUTO_DEUDA_BASE.admin)
         : 0;
-      const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin);
+      const subtotalExtra = activoSN === "S"
+        ? parseMonto(baseRow?.tarifa_extra, 0)
+        : 0;
+      const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
       if (totalPagar <= 0) continue;
 
       for (const mesSel of mesesFuturos) {
@@ -18008,6 +18027,7 @@ const buildReimpresionSeleccionRows = async (client, {
           subtotal_desague: subtotalDesague,
           subtotal_limpieza: subtotalLimpieza,
           subtotal_admin: subtotalAdmin,
+          subtotal_extra: subtotalExtra,
           total_pagar: totalPagar,
           nombre_completo: baseRow?.nombre_completo || "",
           codigo_municipal: baseRow?.codigo_municipal || "",
@@ -18205,9 +18225,12 @@ app.post("/recibos/masivos", async (req, res) => {
           const subtotalDesague = desagueHabilitado ? parseMonto(baseRow?.tarifa_desague, AUTO_DEUDA_BASE.desague) : 0;
           const subtotalLimpieza = limpiezaHabilitado ? parseMonto(baseRow?.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0;
           const subtotalAdmin = activoSN === "S"
-            ? parseMonto(baseRow?.tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(baseRow?.tarifa_extra, 0)
+            ? parseMonto(baseRow?.tarifa_admin, AUTO_DEUDA_BASE.admin)
             : 0;
-          const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin);
+          const subtotalExtra = activoSN === "S"
+            ? parseMonto(baseRow?.tarifa_extra, 0)
+            : 0;
+          const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
           if (totalPagar <= 0) continue;
 
           for (const mesSel of mesesNoEmitidos) {
@@ -18223,6 +18246,7 @@ app.post("/recibos/masivos", async (req, res) => {
               subtotal_desague: subtotalDesague,
               subtotal_limpieza: subtotalLimpieza,
               subtotal_admin: subtotalAdmin,
+              subtotal_extra: subtotalExtra,
               total_pagar: totalPagar,
               nombre_completo: baseRow?.nombre_completo || "",
               codigo_municipal: baseRow?.codigo_municipal || "",
