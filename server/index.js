@@ -2102,34 +2102,35 @@ const buildTotalPagarDeudaVigenteSql = ({
   reciboAlias = "r",
   predioAlias = "p2",
   pagosAlias = "p"
-} = {}) => buildTotalPagarReferenciaSql({
-  reciboAlias,
-  predioAlias,
-  pagosAlias,
-  requireCoveredPayment: false,
-  onlyWhenUnpaid: false,
-  onlyWhenSaldoPendiente: true
-});
+} = {}) => {
+  const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
+  const usaTarifaActualSql = buildUsaTarifaActualDeudaVigenteSql({
+    reciboAlias,
+    predioAlias,
+    pagosAlias
+  });
+  return `(CASE
+    WHEN ${usaTarifaActualSql}
+    THEN ROUND((${tarifaActualSql})::numeric, 2)
+    ELSE COALESCE(${reciboAlias}.total_pagar, 0)
+  END)`;
+};
 const buildUsaTarifaActualDeudaVigenteSql = ({
   reciboAlias = "r",
   predioAlias = "p2",
   pagosAlias = "p"
-} = {}) => buildUsaTarifaActualSql({
-  reciboAlias,
-  predioAlias,
-  pagosAlias,
-  requireCoveredPayment: false,
-  onlyWhenUnpaid: false,
-  onlyWhenSaldoPendiente: true
-});
-const buildUsaTarifaActualVisualSql = ({
-  reciboAlias = "r",
-  predioAlias = "p2",
-  pagosAlias = "p"
-} = {}) => `(
-  ${buildUsaTarifaActualDeudaVigenteSql({ reciboAlias, predioAlias, pagosAlias })}
-  OR ${buildTarifaActualComponentesChangedSql({ reciboAlias, predioAlias })}
-)`;
+} = {}) => {
+  const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
+  const estadoActualSql = `COALESCE(NULLIF(UPPER(TRIM(CAST(${reciboAlias}.estado AS text))), ''), 'PENDIENTE')`;
+  return `(
+    (${tarifaActualSql}) >= 0
+    AND (
+      ${estadoActualSql} <> 'PAGADO'
+      OR COALESCE(${pagosAlias}.total_pagado, 0) < COALESCE(${reciboAlias}.total_pagar, 0) - 0.001
+    )
+    AND ${buildTarifaActualComponentesChangedSql({ reciboAlias, predioAlias })}
+  )`;
+};
 const clampArray = (rows, max = 200) => {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, Math.max(1, Math.min(1000, max)));
@@ -2857,7 +2858,167 @@ const recalcularRecibosFuturosPorServicios = async (
 
   return {
     actualizados: Number(resultado.rowCount || 0),
-    periodos: buildPeriodosRecalculadosResumen(resultado.rows || [])
+    periodos: buildPeriodosRecalculadosResumen(resultado.rows || []),
+    rows: resultado.rows || []
+  };
+};
+
+const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, idContribuyente) => {
+  const id = parsePositiveInt(idContribuyente, 0);
+  if (!id) return { actualizados: 0, periodos: buildPeriodosRecalculadosResumen([]), rows: [] };
+  const fix = await client.query(`
+    WITH objetivo AS (
+      SELECT
+        r.id_recibo,
+        r.anio,
+        r.mes,
+        COALESCE(r.subtotal_agua, 0) AS old_agua,
+        COALESCE(r.subtotal_desague, 0) AS old_desague,
+        COALESCE(r.subtotal_limpieza, 0) AS old_limpieza,
+        COALESCE(r.subtotal_admin, 0) AS old_admin,
+        COALESCE(r.subtotal_extra, 0) AS old_extra,
+        CASE
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+            AND (
+              ${sqlSnEsSi("p.agua_sn", "S")}
+              OR COALESCE(r.subtotal_agua, 0) > 0
+              OR (hist.agua_hist IS NOT NULL AND COALESCE(p.tarifa_agua, 0) <= 0)
+            )
+            THEN COALESCE(
+              p.tarifa_agua,
+              COALESCE(r.subtotal_agua, 0),
+              hist.agua_hist,
+              $1::numeric
+            )
+          ELSE 0::numeric
+        END AS new_agua,
+        CASE
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+            AND (
+              ${sqlSnEsSi("p.desague_sn", "S")}
+              OR COALESCE(r.subtotal_desague, 0) > 0
+              OR (hist.desague_hist IS NOT NULL AND COALESCE(p.tarifa_desague, 0) <= 0)
+            )
+            THEN COALESCE(
+              p.tarifa_desague,
+              COALESCE(r.subtotal_desague, 0),
+              hist.desague_hist,
+              $2::numeric
+            )
+          ELSE 0::numeric
+        END AS new_desague,
+        CASE
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+            AND (
+              ${sqlSnEsSi("p.limpieza_sn", "S")}
+              OR COALESCE(r.subtotal_limpieza, 0) > 0
+              OR (hist.limpieza_hist IS NOT NULL AND COALESCE(p.tarifa_limpieza, 0) <= 0)
+            )
+            THEN COALESCE(
+              p.tarifa_limpieza,
+              COALESCE(r.subtotal_limpieza, 0),
+              hist.limpieza_hist,
+              $3::numeric
+            )
+          ELSE 0::numeric
+        END AS new_limpieza,
+        CASE
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+            THEN COALESCE(p.tarifa_admin, $4::numeric)
+          ELSE 0::numeric
+        END AS new_admin,
+        CASE
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")}
+            THEN COALESCE(p.tarifa_extra, 0::numeric)
+          ELSE 0::numeric
+        END AS new_extra
+      FROM recibos r
+      INNER JOIN predios p ON p.id_predio = r.id_predio
+      LEFT JOIN LATERAL (
+        SELECT
+          (
+            SELECT COALESCE(rh.subtotal_agua, 0)
+            FROM recibos rh
+            WHERE rh.id_predio = r.id_predio
+              AND rh.id_recibo <> r.id_recibo
+              AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+            ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+            LIMIT 1
+          ) AS agua_hist,
+          (
+            SELECT COALESCE(rh.subtotal_desague, 0)
+            FROM recibos rh
+            WHERE rh.id_predio = r.id_predio
+              AND rh.id_recibo <> r.id_recibo
+              AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+            ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+            LIMIT 1
+          ) AS desague_hist,
+          (
+            SELECT COALESCE(rh.subtotal_limpieza, 0)
+            FROM recibos rh
+            WHERE rh.id_predio = r.id_predio
+              AND rh.id_recibo <> r.id_recibo
+              AND COALESCE(NULLIF(UPPER(TRIM(CAST(rh.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+            ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
+            LIMIT 1
+          ) AS limpieza_hist
+      ) hist ON TRUE
+      WHERE p.id_contribuyente = $5
+        AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') = 'PENDIENTE'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pagos pg
+          WHERE pg.id_recibo = r.id_recibo
+        )
+    ),
+    actualizables AS (
+      SELECT
+        id_recibo,
+        anio,
+        mes,
+        old_agua,
+        old_desague,
+        old_limpieza,
+        old_admin,
+        old_extra,
+        (old_agua + old_desague + old_limpieza + old_admin + old_extra) AS old_total,
+        new_agua,
+        new_desague,
+        new_limpieza,
+        new_admin,
+        new_extra,
+        (new_agua + new_desague + new_limpieza + new_admin + new_extra) AS new_total
+      FROM objetivo
+      WHERE
+        old_agua <> new_agua
+        OR old_desague <> new_desague
+        OR old_limpieza <> new_limpieza
+        OR old_admin <> new_admin
+        OR old_extra <> new_extra
+    )
+    UPDATE recibos r
+    SET
+      subtotal_agua = a.new_agua,
+      subtotal_desague = a.new_desague,
+      subtotal_limpieza = a.new_limpieza,
+      subtotal_admin = a.new_admin,
+      subtotal_extra = a.new_extra,
+      total_pagar = a.new_total
+    FROM actualizables a
+    WHERE r.id_recibo = a.id_recibo
+      AND COALESCE(r.subtotal_agua, 0) = a.old_agua
+      AND COALESCE(r.subtotal_desague, 0) = a.old_desague
+      AND COALESCE(r.subtotal_limpieza, 0) = a.old_limpieza
+      AND COALESCE(r.subtotal_admin, 0) = a.old_admin
+      AND COALESCE(r.subtotal_extra, 0) = a.old_extra
+      AND COALESCE(r.total_pagar, 0) = a.old_total
+    RETURNING r.id_recibo, r.anio, r.mes
+  `, [AUTO_DEUDA_BASE.agua, AUTO_DEUDA_BASE.desague, AUTO_DEUDA_BASE.limpieza, AUTO_DEUDA_BASE.admin, id]);
+  return {
+    actualizados: Number(fix.rowCount || 0),
+    periodos: buildPeriodosRecalculadosResumen(fix.rows || []),
+    rows: fix.rows || []
   };
 };
 
@@ -8090,7 +8251,7 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
     predioAlias: "p",
     pagosAlias: "pp"
   });
-  const usaTarifaActualDetalleSql = buildUsaTarifaActualVisualSql({
+  const usaTarifaActualDetalleSql = buildUsaTarifaActualDeudaVigenteSql({
     reciboAlias: "r",
     predioAlias: "p",
     pagosAlias: "pp"
@@ -9012,8 +9173,13 @@ app.put("/contribuyentes/:id", async (req, res) => {
         incluirPendientesHistoricos: true,
         desdePeriodoNum: getCurrentPeriodoNum()
       });
-      recibosRecalculados = Number(recalcManual?.actualizados || 0);
-      periodosRecalculados = recalcManual?.periodos || buildPeriodosRecalculadosResumen([]);
+      const syncPendientesSinPago = await sincronizarRecibosPendientesSinPagoPorServiciosActuales(client, idContribuyente);
+      const filasRecalculadas = [
+        ...(Array.isArray(recalcManual?.rows) ? recalcManual.rows : []),
+        ...(Array.isArray(syncPendientesSinPago?.rows) ? syncPendientesSinPago.rows : [])
+      ];
+      recibosRecalculados = Number(recalcManual?.actualizados || 0) + Number(syncPendientesSinPago?.actualizados || 0);
+      periodosRecalculados = buildPeriodosRecalculadosResumen(filasRecalculadas);
     }
     if (cambioRazonSocial) {
       const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
@@ -10037,7 +10203,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       predioAlias: "p2",
       pagosAlias: "p"
     });
-    const usaTarifaActualPendSql = buildUsaTarifaActualVisualSql({
+    const usaTarifaActualPendSql = buildUsaTarifaActualDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
       pagosAlias: "p"
@@ -13060,7 +13226,7 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
       predioAlias: "p2",
       pagosAlias: "p"
     });
-    const usaTarifaActualHistorialSql = buildUsaTarifaActualVisualSql({
+    const usaTarifaActualHistorialSql = buildUsaTarifaActualDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
       pagosAlias: "p"
@@ -13216,7 +13382,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       predioAlias: "p2",
       pagosAlias: "p"
     });
-    const usaTarifaActualExportSql = buildUsaTarifaActualVisualSql({
+    const usaTarifaActualExportSql = buildUsaTarifaActualDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
       pagosAlias: "p"
@@ -17756,7 +17922,7 @@ const queryRecibosMasivosRows = async (client, {
     predioAlias: "p",
     pagosAlias: "pp"
   });
-  const usaTarifaActualMasivosSql = buildUsaTarifaActualVisualSql({
+  const usaTarifaActualMasivosSql = buildUsaTarifaActualDeudaVigenteSql({
     reciboAlias: "r",
     predioAlias: "p",
     pagosAlias: "pp"
