@@ -37,6 +37,7 @@ const normalizeRow = (item = {}) => ({
   subtotal_desague: round2(parseAmount(item.subtotal_desague)),
   subtotal_limpieza: round2(parseAmount(item.subtotal_limpieza)),
   subtotal_admin: round2(parseAmount(item.subtotal_admin)),
+  subtotal_extra: round2(parseAmount(item.subtotal_extra)),
   total_pagar: round2(parseAmount(item.total_pagar)),
   cargo_reimpresion: round2(parseAmount(item.cargo_reimpresion))
 });
@@ -77,7 +78,7 @@ const RecibosMasivos = forwardRef(({ datos }, ref) => {
         agua: round2(acc.agua + parseAmount(r?.subtotal_agua)),
         desague: round2(acc.desague + parseAmount(r?.subtotal_desague)),
         limpieza: round2(acc.limpieza + parseAmount(r?.subtotal_limpieza)),
-        admin: round2(acc.admin + parseAmount(r?.subtotal_admin))
+        admin: round2(acc.admin + parseAmount(r?.subtotal_admin) + parseAmount(r?.subtotal_extra))
       }), { agua: 0, desague: 0, limpieza: 0, admin: 0 });
       const totalPeriodos = round2(periodos.reduce((acc, p) => acc + parseAmount(p?.monto), 0));
 
@@ -151,6 +152,7 @@ const ReciboRender = ({ item }) => {
       + parseAmount(item.subtotal_desague)
       + parseAmount(item.subtotal_limpieza)
       + parseAmount(item.subtotal_admin)
+      + parseAmount(item.subtotal_extra)
     );
   const totalConCargo = round2(totalBase + cargoReimpresion);
   const datosEstructurados = {
@@ -181,7 +183,7 @@ const ReciboRender = ({ item }) => {
       agua: item.subtotal_agua,
       desague: item.subtotal_desague,
       limpieza: item.subtotal_limpieza,
-      admin: item.subtotal_admin,
+      admin: round2(parseAmount(item.subtotal_admin) + parseAmount(item.subtotal_extra)),
       periodos
     }
   };
