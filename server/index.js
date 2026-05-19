@@ -2121,14 +2121,9 @@ const buildUsaTarifaActualDeudaVigenteSql = ({
   pagosAlias = "p"
 } = {}) => {
   const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
-  const estadoActualSql = `COALESCE(NULLIF(UPPER(TRIM(CAST(${reciboAlias}.estado AS text))), ''), 'PENDIENTE')`;
   return `(
-    (${tarifaActualSql}) >= 0
-    AND (
-      ${estadoActualSql} <> 'PAGADO'
-      OR COALESCE(${pagosAlias}.total_pagado, 0) < COALESCE(${reciboAlias}.total_pagar, 0) - 0.001
-    )
-    AND ${buildTarifaActualComponentesChangedSql({ reciboAlias, predioAlias })}
+    ABS(COALESCE(${reciboAlias}.total_pagar, 0) - (${tarifaActualSql})) > 0.001
+    AND COALESCE(${pagosAlias}.total_pagado, 0) < COALESCE(${reciboAlias}.total_pagar, 0) - 0.001
   )`;
 };
 const clampArray = (rows, max = 200) => {
