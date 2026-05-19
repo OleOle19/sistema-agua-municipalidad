@@ -2007,6 +2007,28 @@ const buildTarifaActualComponentesSql = (predioAlias = "p2") => ({
   admin_base: buildTarifaActualAdminBaseSql(predioAlias),
   extra: buildTarifaActualExtraSql(predioAlias)
 });
+const buildTarifaActualComponentesChangedSql = ({
+  reciboAlias = "r",
+  predioAlias = "p2"
+} = {}) => {
+  const componentesActuales = buildTarifaActualComponentesSql(predioAlias);
+  return `(
+    ABS(COALESCE(${reciboAlias}.subtotal_agua, 0) - (${componentesActuales.agua})) > 0.001
+    OR ABS(COALESCE(${reciboAlias}.subtotal_desague, 0) - (${componentesActuales.desague})) > 0.001
+    OR ABS(COALESCE(${reciboAlias}.subtotal_limpieza, 0) - (${componentesActuales.limpieza})) > 0.001
+    OR (
+      ${reciboAlias}.subtotal_extra IS NULL
+      AND ABS(COALESCE(${reciboAlias}.subtotal_admin, 0) - ((${componentesActuales.admin_base}) + (${componentesActuales.extra}))) > 0.001
+    )
+    OR (
+      ${reciboAlias}.subtotal_extra IS NOT NULL
+      AND (
+        ABS(COALESCE(${reciboAlias}.subtotal_admin, 0) - (${componentesActuales.admin_base})) > 0.001
+        OR ABS(COALESCE(${reciboAlias}.subtotal_extra, 0) - (${componentesActuales.extra})) > 0.001
+      )
+    )
+  )`;
+};
 const buildAplicaAjusteTarifaSql = ({
   reciboAlias = "r",
   predioAlias = "p2",
@@ -2100,6 +2122,14 @@ const buildUsaTarifaActualDeudaVigenteSql = ({
   onlyWhenUnpaid: false,
   onlyWhenSaldoPendiente: true
 });
+const buildUsaTarifaActualVisualSql = ({
+  reciboAlias = "r",
+  predioAlias = "p2",
+  pagosAlias = "p"
+} = {}) => `(
+  ${buildUsaTarifaActualDeudaVigenteSql({ reciboAlias, predioAlias, pagosAlias })}
+  OR ${buildTarifaActualComponentesChangedSql({ reciboAlias, predioAlias })}
+)`;
 const clampArray = (rows, max = 200) => {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, Math.max(1, Math.min(1000, max)));
@@ -8060,7 +8090,7 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
     predioAlias: "p",
     pagosAlias: "pp"
   });
-  const usaTarifaActualDetalleSql = buildUsaTarifaActualDeudaVigenteSql({
+  const usaTarifaActualDetalleSql = buildUsaTarifaActualVisualSql({
     reciboAlias: "r",
     predioAlias: "p",
     pagosAlias: "pp"
@@ -8486,7 +8516,7 @@ app.get("/contribuyentes", async (req, res) => {
   try {
     const now = Date.now();
     if (contribuyentesCache.data && now < contribuyentesCache.expiresAt) {
-      res.set("Cache-Control", "private, max-age=10");
+      res.set("Cache-Control", "no-store");
       return res.json(contribuyentesCache.data);
     }
 
@@ -8599,7 +8629,7 @@ app.get("/contribuyentes", async (req, res) => {
       expiresAt: Date.now() + CONTRIBUYENTES_CACHE_TTL_MS,
       data: todos.rows
     };
-    res.set("Cache-Control", "private, max-age=10");
+    res.set("Cache-Control", "no-store");
     res.json(todos.rows);
   } catch (err) { res.status(500).send("Error del servidor"); }
 });
@@ -8620,6 +8650,7 @@ app.get("/contribuyentes/detalle/:id", async (req, res) => {
     const detalle = data.rows[0] || null;
     if (!detalle) return res.status(404).json({ error: "Contribuyente no encontrado." });
     const tarifaReferencia = await getContribuyenteTarifaReferencia(pool, id);
+    res.set("Cache-Control", "no-store");
     res.json({
       ...detalle,
       ...(tarifaReferencia || {})
@@ -10006,7 +10037,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       predioAlias: "p2",
       pagosAlias: "p"
     });
-    const usaTarifaActualPendSql = buildUsaTarifaActualDeudaVigenteSql({
+    const usaTarifaActualPendSql = buildUsaTarifaActualVisualSql({
       reciboAlias: "r",
       predioAlias: "p2",
       pagosAlias: "p"
@@ -13029,7 +13060,7 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
       predioAlias: "p2",
       pagosAlias: "p"
     });
-    const usaTarifaActualHistorialSql = buildUsaTarifaActualDeudaVigenteSql({
+    const usaTarifaActualHistorialSql = buildUsaTarifaActualVisualSql({
       reciboAlias: "r",
       predioAlias: "p2",
       pagosAlias: "p"
@@ -13155,6 +13186,7 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
       anioFiltro: anio
     });
     const rows = normalizeHistorialArbitriosRows(rowsRaw);
+    res.set("Cache-Control", "no-store");
     res.json(rows);
   } catch (err) { res.status(500).send("Error historial"); }
   finally { client.release(); }
@@ -13184,7 +13216,7 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       predioAlias: "p2",
       pagosAlias: "p"
     });
-    const usaTarifaActualExportSql = buildUsaTarifaActualDeudaVigenteSql({
+    const usaTarifaActualExportSql = buildUsaTarifaActualVisualSql({
       reciboAlias: "r",
       predioAlias: "p2",
       pagosAlias: "p"
@@ -17724,7 +17756,7 @@ const queryRecibosMasivosRows = async (client, {
     predioAlias: "p",
     pagosAlias: "pp"
   });
-  const usaTarifaActualMasivosSql = buildUsaTarifaActualDeudaVigenteSql({
+  const usaTarifaActualMasivosSql = buildUsaTarifaActualVisualSql({
     reciboAlias: "r",
     predioAlias: "p",
     pagosAlias: "pp"

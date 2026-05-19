@@ -1243,8 +1243,15 @@ const anexoCajaPageStyle = `
       const res = await api.get(`/recibos/historial/${id_contribuyente}`, {
         params: {
           anio,
-          incluir_futuros: "S"
-        }
+          incluir_futuros: "S",
+          ...(force ? { _ts: Date.now() } : {})
+        },
+        headers: force
+          ? {
+            "Cache-Control": "no-cache",
+            Pragma: "no-cache"
+          }
+          : undefined
       });
       const rows = Array.isArray(res.data) ? res.data : [];
       setHistorial(rows);
