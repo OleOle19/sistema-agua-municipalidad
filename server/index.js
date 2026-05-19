@@ -8780,6 +8780,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
     const cambioCodigoSistema = (codigoSistema || null) !== codigoSistemaActual;
     const predioActualData = await client.query(
       `SELECT
+         p.id_predio,
          p.id_calle,
          p.numero_casa,
          p.manzana,
@@ -8804,6 +8805,12 @@ app.put("/contribuyentes/:id", async (req, res) => {
       [idContribuyente]
     );
     const predioActual = predioActualData.rows[0] || null;
+    const idPredioActual = parsePositiveInt(predioActual?.id_predio, 0);
+    if (!idPredioActual) {
+      await client.query("ROLLBACK");
+      txStarted = false;
+      return res.status(404).json({ error: "Predio no encontrado para actualizar." });
+    }
     const idCalleActual = parsePositiveInt(predioActual?.id_calle, 0) || null;
     const numeroCasaActual = normalizeLimitedText(predioActual?.numero_casa, 30);
     const manzanaActual = normalizeLimitedText(predioActual?.manzana, 30);
@@ -8945,7 +8952,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
            lote = $4,
            activo_sn = $5,
            estado_servicio = $6,
-           referencia_direccion = $16,
+           referencia_direccion = $7,
            tarifa_agua = $8,
            tarifa_desague = $9,
            tarifa_limpieza = $10,
@@ -8954,17 +8961,17 @@ app.put("/contribuyentes/:id", async (req, res) => {
            agua_sn = COALESCE($13, agua_sn),
            desague_sn = COALESCE($14, desague_sn),
            limpieza_sn = COALESCE($15, limpieza_sn)
-       WHERE id_contribuyente = $7`,
+       WHERE id_predio = $16`,
       [
         idCalleNuevo, numeroCasaNuevo || null, manzanaNueva || null, loteNuevo || null, predioEstado.activo_sn, predioEstado.estado_servicio,
-        idContribuyente,
+        referenciaDireccionNueva,
         tarifasActualizadas.tarifa_agua,
         tarifasActualizadas.tarifa_desague,
         tarifasActualizadas.tarifa_limpieza,
         tarifasActualizadas.tarifa_admin,
         tarifaExtra,
         aguaSN, desagueSN, limpiezaSN,
-        referenciaDireccionNueva
+        idPredioActual
       ]
     );
     let recibosRecalculados = 0;
