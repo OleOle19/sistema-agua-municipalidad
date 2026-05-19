@@ -20,6 +20,19 @@ const parseMontoNumber = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 const formatMontoPlaceholder = (value) => parseMontoNumber(value, 0).toFixed(2);
+const formatTarifaEditable = (rawValue, referenceValue) => {
+  if (rawValue !== undefined && rawValue !== null && String(rawValue).trim() !== "") {
+    return String(rawValue);
+  }
+  const parsed = parseMontoNumber(referenceValue, Number.NaN);
+  return Number.isFinite(parsed) ? parsed.toFixed(2) : "";
+};
+const normalizeTarifaPayload = (value) => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const parsed = parseMontoNumber(raw, Number.NaN);
+  return Number.isFinite(parsed) && parsed >= 0 ? Number(parsed.toFixed(2)) : null;
+};
 const normalizeCodigoMunicipalInput = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -120,11 +133,11 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
           agua_sn: normalizeServicioSN(u.agua_sn, normalizeServicioSN(u.servicio_agua_activo_real_sn, "N")),
           desague_sn: normalizeServicioSN(u.desague_sn, normalizeServicioSN(u.servicio_desague_activo_real_sn, "N")),
           limpieza_sn: normalizeServicioSN(u.limpieza_sn, normalizeServicioSN(u.servicio_limpieza_activo_real_sn, "N")),
-          tarifa_agua: u.tarifa_agua ?? "",
-          tarifa_desague: u.tarifa_desague ?? "",
-          tarifa_limpieza: u.tarifa_limpieza ?? "",
-          tarifa_admin: u.tarifa_admin ?? "",
-          tarifa_extra: u.tarifa_extra ?? "",
+          tarifa_agua: formatTarifaEditable(u.tarifa_agua, tarifaRefAgua),
+          tarifa_desague: formatTarifaEditable(u.tarifa_desague, tarifaRefDesague),
+          tarifa_limpieza: formatTarifaEditable(u.tarifa_limpieza, tarifaRefLimpieza),
+          tarifa_admin: formatTarifaEditable(u.tarifa_admin, tarifaRefAdmin),
+          tarifa_extra: formatTarifaEditable(u.tarifa_extra, tarifaRefExtra),
           motivo_cambio_razon_social: "",
           detalle_motivo_cambio_razon_social: ""
         });
@@ -159,12 +172,23 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
       return;
     }
     try {
-      const res = await api.put(`/contribuyentes/${idContribuyente}`, {
+      const payload = {
         ...formData,
+        agua_sn: normalizeServicioSN(formData.agua_sn, "N"),
+        desague_sn: normalizeServicioSN(formData.desague_sn, "N"),
+        limpieza_sn: normalizeServicioSN(formData.limpieza_sn, "N"),
+        tarifa_agua: normalizeTarifaPayload(formData.tarifa_agua),
+        tarifa_desague: normalizeTarifaPayload(formData.tarifa_desague),
+        tarifa_limpieza: normalizeTarifaPayload(formData.tarifa_limpieza),
+        tarifa_admin: normalizeTarifaPayload(formData.tarifa_admin),
+        tarifa_extra: normalizeTarifaPayload(formData.tarifa_extra),
         motivo_cambio_razon_social: cambioRazonSocial ? formData.motivo_cambio_razon_social : null,
         detalle_motivo_cambio_razon_social: cambioRazonSocial
           ? String(formData.detalle_motivo_cambio_razon_social || "").trim() || null
           : null
+      };
+      const res = await api.put(`/contribuyentes/${idContribuyente}`, {
+        ...payload
       });
       const recalc = Number(res?.data?.recibos_recalculados || 0);
       const periodos = res?.data?.periodos_recalculados || {};
@@ -179,7 +203,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
         : "";
       showFlash("success", `Usuario actualizado.\nRecibos pendientes/futuros recalculados: ${recalc}${resumenPeriodos}`);
       setNombreOriginal(String(formData.nombre_completo || ""));
-      alGuardar();
+      await Promise.resolve(typeof alGuardar === "function" ? alGuardar() : null);
       cerrarModal();
     } catch (error) {
       showFlash("danger", error.response?.data?.error || "Error al actualizar");
