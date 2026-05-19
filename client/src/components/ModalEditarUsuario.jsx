@@ -99,7 +99,13 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
         const [resCalles, resSectores, resDetalle] = await Promise.all([
           api.get("/calles"),
           api.get("/sectores"),
-          api.get(`/contribuyentes/detalle/${idContribuyente}`)
+          api.get(`/contribuyentes/detalle/${idContribuyente}`, {
+            params: { _ts: Date.now() },
+            headers: {
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache"
+            }
+          })
         ]);
         if (cancelled) return;
         setCalles(resCalles.data);
