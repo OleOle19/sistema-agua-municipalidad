@@ -22,6 +22,7 @@ const ACTION_LABELS = {
   AUTH_PASSWORD_CAMBIO: "Cambio de clave",
   AUTH_REGISTRO: "Registro de usuario",
   AUTH_LOGIN: "Inicio de sesion",
+  AUDITORIA_DESHECHA: "Cambio deshecho",
   ADMIN_LUZ_USUARIO_CREADO: "Usuario de luz creado",
   ADMIN_LUZ_USUARIO_ACTUALIZADO: "Usuario de luz actualizado",
   ADMIN_LUZ_USUARIO_ELIMINADO: "Usuario de luz eliminado",
@@ -412,7 +413,31 @@ const parseDetalle = (detalle) => {
 
   return rows;
 };
-const isUndoableAuditAction = (log = {}) => String(log?.accion || "").trim().toUpperCase() === "CAMPO_SOLICITUD_APROBADA";
+const INTERNAL_AUDIT_LABELS = new Set(["undo_type", "undo_snapshot_b64"]);
+const getUndoTypeFromRows = (rows = []) => {
+  const match = (Array.isArray(rows) ? rows : []).find(
+    (item) => String(item?.label || "").trim().toLowerCase() === "undo_type"
+  );
+  return String(match?.text || "").trim().toUpperCase();
+};
+const isInternalAuditLabel = (label) => INTERNAL_AUDIT_LABELS.has(String(label || "").trim().toLowerCase());
+const isUndoableAuditAction = (log = {}, detalleRows = []) => {
+  const undoType = getUndoTypeFromRows(detalleRows);
+  if (undoType) return true;
+  return String(log?.accion || "").trim().toUpperCase() === "CAMPO_SOLICITUD_APROBADA";
+};
+const getUndoPrompt = (undoType = "", accion = "") => {
+  const type = String(undoType || "").trim().toUpperCase();
+  if (type === "CONTRIBUYENTE_EDITADO") return "Se intentara deshacer esta edicion de contribuyente. Continuar?";
+  if (type === "CONTRIBUYENTE_ELIMINADO") return "Se intentara restaurar este contribuyente eliminado. Continuar?";
+  if (type === "RECIBO_ELIMINADO") return "Se intentara restaurar esta deuda eliminada. Continuar?";
+  if (type === "PAGO_ANULADO") return "Se intentara deshacer esta anulacion de pago. Continuar?";
+  if (type === "ORDEN_COBRO_ANULADA") return "Se intentara deshacer esta anulacion de orden. Continuar?";
+  if (String(accion || "").trim().toUpperCase() === "CAMPO_SOLICITUD_APROBADA") {
+    return "Se intentara deshacer esta aprobacion de solicitud de campo. Continuar?";
+  }
+  return "Se intentara deshacer este movimiento. Continuar?";
+};
 
 const ModalAuditoria = ({ cerrarModal, darkMode }) => {
   const [logs, setLogs] = useState([]);
@@ -507,10 +532,10 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
       setExportando(false);
     }
   };
-  const deshacerAuditoria = async (log) => {
+  const deshacerAuditoria = async (log, undoType) => {
     const idAuditoria = Number(log?.id_auditoria || 0);
     if (!idAuditoria) return;
-    const confirmado = window.confirm("Se intentara deshacer esta aprobacion de solicitud de campo. Continuar?");
+    const confirmado = window.confirm(getUndoPrompt(undoType, log?.accion));
     if (!confirmado) return;
     try {
       setDeshaciendoId(idAuditoria);
@@ -661,6 +686,8 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                     logs.map((log) => {
                       const accionSimple = toFriendlyAction(log.accion);
                       const detalleRows = parseDetalle(log.detalle);
+                      const undoType = getUndoTypeFromRows(detalleRows);
+                      const visibleDetalleRows = detalleRows.filter((item) => !isInternalAuditLabel(item.label));
                       return (
                         <tr key={log.id_auditoria}>
                           <td className="align-top text-nowrap">{formatFecha(log.fecha)}</td>
@@ -672,12 +699,12 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                           </td>
                           <td className="align-top">
                             <div className="rounded-3 p-2 w-100" style={detalleCardStyle}>
-                              {isUndoableAuditAction(log) && (
+                              {isUndoableAuditAction(log, detalleRows) && (
                                 <div className="d-flex justify-content-end mb-2">
                                   <button
                                     type="button"
                                     className={`btn btn-sm ${darkMode ? "btn-outline-warning" : "btn-outline-danger"}`}
-                                    onClick={() => deshacerAuditoria(log)}
+                                    onClick={() => deshacerAuditoria(log, undoType)}
                                     disabled={deshaciendoId === Number(log.id_auditoria || 0)}
                                   >
                                     <FaUndo className="me-1" />
@@ -685,10 +712,10 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                                   </button>
                                 </div>
                               )}
-                              {detalleRows.length === 0 ? (
+                              {visibleDetalleRows.length === 0 ? (
                                 <span className="small text-muted">Sin detalle</span>
                               ) : (
-                                detalleRows.map((item, idx) => {
+                                visibleDetalleRows.map((item, idx) => {
                                   const labelKey = String(item.label || "").trim().toLowerCase();
                                   const valueToRender = formatValueForDisplay(item.label, item.text, item.isJson);
                                   const showAsCodeBlock = item.isJson
@@ -700,7 +727,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
                                     && labelKey !== "contribuyentes"
                                     && labelKey !== "anulaciones_reintegradas";
                                   return (
-                                    <div key={`${log.id_auditoria}-${idx}`} className={idx < detalleRows.length - 1 ? "mb-2" : ""}>
+                                    <div key={`${log.id_auditoria}-${idx}`} className={idx < visibleDetalleRows.length - 1 ? "mb-2" : ""}>
                                       <div className="small text-uppercase fw-semibold opacity-75">{prettyLabel(item.label)}</div>
                                       {showAsCodeBlock ? (
                                         <pre
