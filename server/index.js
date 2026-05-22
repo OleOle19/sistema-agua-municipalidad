@@ -1414,6 +1414,7 @@ const AUDIT_SNAPSHOT_SEQUENCE_COLUMNS = {
   contribuyentes_adjuntos: "id_adjunto"
 };
 const auditSnapshotTableColumnsCache = new Map();
+const auditSnapshotTableColumnTypesCache = new Map();
 const quotePgIdentifier = (value) => {
   const raw = String(value || "").trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) {
@@ -1435,15 +1436,46 @@ const getAuditSnapshotTableColumns = async (client, tableName) => {
   auditSnapshotTableColumnsCache.set(tableName, cols);
   return cols;
 };
+const getAuditSnapshotTableColumnTypes = async (client, tableName) => {
+  const cached = auditSnapshotTableColumnTypesCache.get(tableName);
+  if (cached) return cached;
+  const rs = await client.query(`
+    SELECT column_name, data_type, udt_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = $1
+    ORDER BY ordinal_position
+  `, [tableName]);
+  const map = new Map(
+    (rs.rows || []).map((row) => [
+      String(row.column_name || "").trim(),
+      {
+        dataType: String(row.data_type || "").trim().toLowerCase(),
+        udtName: String(row.udt_name || "").trim().toLowerCase()
+      }
+    ]).filter(([key]) => key)
+  );
+  auditSnapshotTableColumnTypesCache.set(tableName, map);
+  return map;
+};
 const upsertSnapshotRow = async (client, tableName, row, pkColumn) => {
   if (!row || typeof row !== "object") return;
   const validColumns = await getAuditSnapshotTableColumns(client, tableName);
+  const columnTypes = await getAuditSnapshotTableColumnTypes(client, tableName);
   const cols = Object.keys(row).filter((key) => key && validColumns.has(key));
   if (cols.length === 0) return;
   const quotedTable = quotePgIdentifier(tableName);
   const quotedPk = quotePgIdentifier(pkColumn);
   const quotedCols = cols.map((col) => quotePgIdentifier(col));
-  const values = cols.map((col) => row[col]);
+  const values = cols.map((col) => {
+    const meta = columnTypes.get(col);
+    const value = row[col];
+    if (!meta || value === null || value === undefined) return value;
+    if (meta.dataType === "json" || meta.dataType === "jsonb" || meta.udtName === "json" || meta.udtName === "jsonb") {
+      return typeof value === "string" ? value : JSON.stringify(value);
+    }
+    return value;
+  });
   const updateCols = cols.filter((col) => col !== pkColumn);
   const setSql = updateCols.length > 0
     ? updateCols.map((col) => `${quotePgIdentifier(col)} = EXCLUDED.${quotePgIdentifier(col)}`).join(", ")
