@@ -2293,7 +2293,13 @@ const anexoCajaPageStyle = `
         />
       )}
       {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} darkMode={darkMode} onFlash={showFlash} />)}
-      {mostrarModalAuditoria && (<ModalAuditoria cerrarModal={() => setMostrarModalAuditoria(false)} darkMode={darkMode} />)}
+      {mostrarModalAuditoria && (
+        <ModalAuditoria
+          cerrarModal={() => setMostrarModalAuditoria(false)}
+          darkMode={darkMode}
+          onUndoApplied={() => cargarContribuyentes(0, { forceFresh: true })}
+        />
+      )}
       {mostrarModalUsuarios && (<ModalUsuarios cerrarModal={() => setMostrarModalUsuarios(false)} usuarioActivo={usuarioSistema} darkMode={darkMode} onFlash={showFlash} />)}
       {mostrarModalCampo && (
         <ModalCampoSolicitudes
