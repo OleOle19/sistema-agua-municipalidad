@@ -1397,6 +1397,7 @@ const AUDIT_SNAPSHOT_SEQUENCE_COLUMNS = {
   estado_conexion_eventos_evidencias: "id_evidencia",
   contribuyentes_adjuntos: "id_adjunto"
 };
+const auditSnapshotTableColumnsCache = new Map();
 const quotePgIdentifier = (value) => {
   const raw = String(value || "").trim();
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) {
@@ -1404,9 +1405,24 @@ const quotePgIdentifier = (value) => {
   }
   return `"${raw}"`;
 };
+const getAuditSnapshotTableColumns = async (client, tableName) => {
+  const cached = auditSnapshotTableColumnsCache.get(tableName);
+  if (cached) return cached;
+  const rs = await client.query(`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = $1
+    ORDER BY ordinal_position
+  `, [tableName]);
+  const cols = new Set((rs.rows || []).map((row) => String(row.column_name || "").trim()).filter(Boolean));
+  auditSnapshotTableColumnsCache.set(tableName, cols);
+  return cols;
+};
 const upsertSnapshotRow = async (client, tableName, row, pkColumn) => {
   if (!row || typeof row !== "object") return;
-  const cols = Object.keys(row).filter((key) => key);
+  const validColumns = await getAuditSnapshotTableColumns(client, tableName);
+  const cols = Object.keys(row).filter((key) => key && validColumns.has(key));
   if (cols.length === 0) return;
   const quotedTable = quotePgIdentifier(tableName);
   const quotedPk = quotePgIdentifier(pkColumn);
@@ -9608,6 +9624,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
         usuarioAuditoria
       );
     }
+    const undoSnapshot = await captureContribuyenteUndoSnapshot(client, idContribuyente);
     req.skipAutoAudit = true;
     await registrarAuditoria(
       client,
@@ -9625,10 +9642,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
         cambios_aplicados: auditChangeLines.length > 0 ? auditChangeLines : ["Sin cambios detectados."],
         recibos_recalculados: recibosRecalculados > 0 ? recibosRecalculados : undefined,
         undo_type: AUDIT_UNDO_TYPES.CONTRIBUYENTE_EDITADO,
-        undo_snapshot_b64: encodeCompressedAuditPayload({
-          contribuyente: actualData.rows[0],
-          predio: predioActual
-        })
+        undo_snapshot_b64: encodeCompressedAuditPayload(undoSnapshot)
       }),
       req.user?.username || req.user?.nombre || "SISTEMA"
     );
