@@ -7,6 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
+const zlib = require('zlib');
 const express = require("express");
 const app = express();
 const cors = require("cors");
@@ -1355,6 +1356,366 @@ const parseStructuredAuditDetail = (detailRaw = "") => {
       entries[key] = rawValue;
     });
   return entries;
+};
+const encodeCompressedAuditPayload = (payload) => {
+  if (payload === undefined) return "";
+  const json = JSON.stringify(payload);
+  return zlib.gzipSync(Buffer.from(json, "utf8")).toString("base64");
+};
+const decodeCompressedAuditPayload = (encoded) => {
+  const raw = String(encoded || "").trim();
+  if (!raw) return null;
+  try {
+    const buffer = Buffer.from(raw, "base64");
+    const json = zlib.gunzipSync(buffer).toString("utf8");
+    return JSON.parse(json);
+  } catch (err) {
+    const error = new Error("No se pudo leer el snapshot de auditoria.");
+    error.statusCode = 409;
+    throw error;
+  }
+};
+const AUDIT_UNDO_TYPES = {
+  CAMPO_SOLICITUD_APROBADA: "CAMPO_SOLICITUD_APROBADA",
+  CONTRIBUYENTE_EDITADO: "CONTRIBUYENTE_EDITADO",
+  CONTRIBUYENTE_ELIMINADO: "CONTRIBUYENTE_ELIMINADO",
+  RECIBO_ELIMINADO: "RECIBO_ELIMINADO",
+  PAGO_ANULADO: "PAGO_ANULADO",
+  ORDEN_COBRO_ANULADA: "ORDEN_COBRO_ANULADA"
+};
+const AUDIT_SNAPSHOT_SEQUENCE_COLUMNS = {
+  contribuyentes: "id_contribuyente",
+  predios: "id_predio",
+  predios_direcciones_alternas: "id_direccion_alterna",
+  recibos: "id_recibo",
+  pagos: "id_pago",
+  ordenes_cobro: "id_orden",
+  codigos_impresion: "id_codigo",
+  actas_corte: "id_acta",
+  campo_solicitudes: "id_solicitud",
+  estado_conexion_eventos: "id_evento",
+  estado_conexion_eventos_evidencias: "id_evidencia",
+  contribuyentes_adjuntos: "id_adjunto"
+};
+const quotePgIdentifier = (value) => {
+  const raw = String(value || "").trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw)) {
+    throw new Error(`Identificador SQL invalido: ${raw || "(vacio)"}`);
+  }
+  return `"${raw}"`;
+};
+const upsertSnapshotRow = async (client, tableName, row, pkColumn) => {
+  if (!row || typeof row !== "object") return;
+  const cols = Object.keys(row).filter((key) => key);
+  if (cols.length === 0) return;
+  const quotedTable = quotePgIdentifier(tableName);
+  const quotedPk = quotePgIdentifier(pkColumn);
+  const quotedCols = cols.map((col) => quotePgIdentifier(col));
+  const values = cols.map((col) => row[col]);
+  const updateCols = cols.filter((col) => col !== pkColumn);
+  const setSql = updateCols.length > 0
+    ? updateCols.map((col) => `${quotePgIdentifier(col)} = EXCLUDED.${quotePgIdentifier(col)}`).join(", ")
+    : `${quotedPk} = EXCLUDED.${quotedPk}`;
+  await client.query(
+    `INSERT INTO ${quotedTable} (${quotedCols.join(", ")})
+     VALUES (${cols.map((_, idx) => `$${idx + 1}`).join(", ")})
+     ON CONFLICT (${quotedPk}) DO UPDATE
+     SET ${setSql}`,
+    values
+  );
+};
+const syncSnapshotTableSequence = async (client, tableName, pkColumn) => {
+  const quotedTable = quotePgIdentifier(tableName);
+  const quotedPk = quotePgIdentifier(pkColumn);
+  const seqRs = await client.query(
+    "SELECT pg_get_serial_sequence($1, $2) AS seq",
+    [tableName, pkColumn]
+  );
+  const sequenceName = seqRs.rows?.[0]?.seq;
+  if (!sequenceName) return;
+  await client.query(
+    `SELECT setval($1, GREATEST(COALESCE((SELECT MAX(${quotedPk}) FROM ${quotedTable}), 0), 1), true)`,
+    [sequenceName]
+  );
+};
+const restoreSnapshotCollection = async (client, tableName, rows = []) => {
+  const list = Array.isArray(rows) ? rows.filter((row) => row && typeof row === "object") : [];
+  if (list.length === 0) return 0;
+  const pkColumn = AUDIT_SNAPSHOT_SEQUENCE_COLUMNS[tableName];
+  if (!pkColumn) throw new Error(`No hay PK configurada para ${tableName}.`);
+  for (const row of list) {
+    await upsertSnapshotRow(client, tableName, row, pkColumn);
+  }
+  await syncSnapshotTableSequence(client, tableName, pkColumn);
+  return list.length;
+};
+const fetchContribuyenteAuditIdentity = async (client, idContribuyente) => {
+  const id = parsePositiveInt(idContribuyente, 0);
+  if (!id) return null;
+  const rs = await client.query(`
+    SELECT id_contribuyente, codigo_municipal, nombre_completo
+    FROM contribuyentes
+    WHERE id_contribuyente = $1
+    LIMIT 1
+  `, [id]);
+  return rs.rows?.[0] || null;
+};
+const captureContribuyenteUndoSnapshot = async (client, idContribuyente) => {
+  const id = parsePositiveInt(idContribuyente, 0);
+  if (!id) return null;
+  const contribuyenteRs = await client.query(`
+    SELECT *
+    FROM contribuyentes
+    WHERE id_contribuyente = $1
+    LIMIT 1
+  `, [id]);
+  const predioRs = await client.query(`
+    SELECT *
+    FROM predios
+    WHERE id_contribuyente = $1
+    ORDER BY id_predio ASC
+    LIMIT 1
+  `, [id]);
+  return {
+    contribuyente: contribuyenteRs.rows?.[0] || null,
+    predio: predioRs.rows?.[0] || null
+  };
+};
+const restoreContribuyenteAuditSnapshot = async (client, snapshotRaw) => {
+  const snapshot = snapshotRaw && typeof snapshotRaw === "object" ? snapshotRaw : null;
+  const contribuyente = snapshot?.contribuyente && typeof snapshot.contribuyente === "object"
+    ? snapshot.contribuyente
+    : null;
+  const predio = snapshot?.predio && typeof snapshot.predio === "object"
+    ? snapshot.predio
+    : null;
+  const idContribuyente = parsePositiveInt(contribuyente?.id_contribuyente, 0);
+  const idPredio = parsePositiveInt(predio?.id_predio, 0);
+  if (!idContribuyente || !idPredio) {
+    const err = new Error("Snapshot invalido para restaurar contribuyente.");
+    err.statusCode = 409;
+    throw err;
+  }
+  await restoreSnapshotCollection(client, "contribuyentes", [contribuyente]);
+  await restoreSnapshotCollection(client, "predios", [predio]);
+  const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
+    incluirPendientesHistoricos: true,
+    desdePeriodoNum: getCurrentPeriodoNum()
+  });
+  const syncPendientesSinPago = await sincronizarRecibosPendientesSinPagoPorServiciosActuales(client, idContribuyente);
+  const recibosRecalculados = Number(recalcManual?.actualizados || 0) + Number(syncPendientesSinPago?.actualizados || 0);
+  return {
+    id_contribuyente: idContribuyente,
+    id_predio: idPredio,
+    recibos_recalculados: recibosRecalculados
+  };
+};
+const captureDeletedReciboSnapshot = async (client, idRecibo) => {
+  const id = parsePositiveInt(idRecibo, 0);
+  if (!id) return null;
+  const reciboRs = await client.query(`
+    SELECT *
+    FROM recibos
+    WHERE id_recibo = $1
+    LIMIT 1
+  `, [id]);
+  return {
+    recibos: reciboRs.rows
+  };
+};
+const captureDeletedContribuyenteSnapshot = async (client, idContribuyente) => {
+  const id = parsePositiveInt(idContribuyente, 0);
+  if (!id) return null;
+  const contribuyentesRs = await client.query("SELECT * FROM contribuyentes WHERE id_contribuyente = $1", [id]);
+  const prediosRs = await client.query("SELECT * FROM predios WHERE id_contribuyente = $1 ORDER BY id_predio ASC", [id]);
+  const predioIds = prediosRs.rows.map((row) => parsePositiveInt(row.id_predio, 0)).filter((value) => value > 0);
+  const ordenesRs = await client.query("SELECT * FROM ordenes_cobro WHERE id_contribuyente = $1 ORDER BY id_orden ASC", [id]);
+  const ordenIds = ordenesRs.rows.map((row) => parsePositiveInt(row.id_orden, 0)).filter((value) => value > 0);
+  const recibosRs = predioIds.length > 0
+    ? await client.query("SELECT * FROM recibos WHERE id_predio = ANY($1::int[]) ORDER BY id_recibo ASC", [predioIds])
+    : { rows: [] };
+  const reciboIds = recibosRs.rows.map((row) => parsePositiveInt(row.id_recibo, 0)).filter((value) => value > 0);
+  const pagosByReciboRs = reciboIds.length > 0
+    ? await client.query("SELECT * FROM pagos WHERE id_recibo = ANY($1::int[]) ORDER BY id_pago ASC", [reciboIds])
+    : { rows: [] };
+  const pagosByOrdenRs = ordenIds.length > 0
+    ? await client.query("SELECT * FROM pagos WHERE id_orden_cobro = ANY($1::bigint[]) ORDER BY id_pago ASC", [ordenIds])
+    : { rows: [] };
+  const pagosMap = new Map();
+  [...pagosByReciboRs.rows, ...pagosByOrdenRs.rows].forEach((row) => {
+    const idPago = parsePositiveInt(row.id_pago, 0);
+    if (idPago > 0) pagosMap.set(idPago, row);
+  });
+  const direccionesAlternasRs = predioIds.length > 0
+    ? await client.query(`
+      SELECT *
+      FROM predios_direcciones_alternas
+      WHERE id_contribuyente = $1
+         OR id_predio_base = ANY($2::int[])
+      ORDER BY id_direccion_alterna ASC
+    `, [id, predioIds])
+    : await client.query(`
+      SELECT *
+      FROM predios_direcciones_alternas
+      WHERE id_contribuyente = $1
+      ORDER BY id_direccion_alterna ASC
+    `, [id]);
+  const campoSolicitudesRs = await client.query("SELECT * FROM campo_solicitudes WHERE id_contribuyente = $1 ORDER BY id_solicitud ASC", [id]);
+  const estadoEventosRs = await client.query("SELECT * FROM estado_conexion_eventos WHERE id_contribuyente = $1 ORDER BY id_evento ASC", [id]);
+  const eventoIds = estadoEventosRs.rows.map((row) => parsePositiveInt(row.id_evento, 0)).filter((value) => value > 0);
+  const estadoEvidenciasRs = eventoIds.length > 0
+    ? await client.query("SELECT * FROM estado_conexion_eventos_evidencias WHERE id_evento = ANY($1::bigint[]) ORDER BY id_evidencia ASC", [eventoIds])
+    : { rows: [] };
+  const actasRs = await client.query("SELECT * FROM actas_corte WHERE id_contribuyente = $1 ORDER BY id_acta ASC", [id]);
+  const codigosRs = await client.query("SELECT * FROM codigos_impresion WHERE id_contribuyente = $1 ORDER BY id_codigo ASC", [id]);
+  const adjuntosRs = await client.query("SELECT * FROM contribuyentes_adjuntos WHERE id_contribuyente = $1 ORDER BY id_adjunto ASC", [id]);
+  return {
+    contribuyentes: contribuyentesRs.rows,
+    predios: prediosRs.rows,
+    predios_direcciones_alternas: direccionesAlternasRs.rows,
+    recibos: recibosRs.rows,
+    pagos: Array.from(pagosMap.values()).sort((a, b) => Number(a.id_pago || 0) - Number(b.id_pago || 0)),
+    ordenes_cobro: ordenesRs.rows,
+    codigos_impresion: codigosRs.rows,
+    actas_corte: actasRs.rows,
+    campo_solicitudes: campoSolicitudesRs.rows,
+    estado_conexion_eventos: estadoEventosRs.rows,
+    estado_conexion_eventos_evidencias: estadoEvidenciasRs.rows,
+    contribuyentes_adjuntos: adjuntosRs.rows
+  };
+};
+const restoreDeletedContribuyenteSnapshot = async (client, snapshotRaw) => {
+  const snapshot = snapshotRaw && typeof snapshotRaw === "object" ? snapshotRaw : null;
+  const contribuyentes = Array.isArray(snapshot?.contribuyentes) ? snapshot.contribuyentes : [];
+  if (contribuyentes.length === 0) {
+    const err = new Error("No hay snapshot del contribuyente eliminado.");
+    err.statusCode = 409;
+    throw err;
+  }
+  await restoreSnapshotCollection(client, "contribuyentes", contribuyentes);
+  await restoreSnapshotCollection(client, "predios", snapshot?.predios || []);
+  await restoreSnapshotCollection(client, "ordenes_cobro", snapshot?.ordenes_cobro || []);
+  await restoreSnapshotCollection(client, "recibos", snapshot?.recibos || []);
+  await restoreSnapshotCollection(client, "pagos", snapshot?.pagos || []);
+  await restoreSnapshotCollection(client, "predios_direcciones_alternas", snapshot?.predios_direcciones_alternas || []);
+  await restoreSnapshotCollection(client, "codigos_impresion", snapshot?.codigos_impresion || []);
+  await restoreSnapshotCollection(client, "actas_corte", snapshot?.actas_corte || []);
+  await restoreSnapshotCollection(client, "campo_solicitudes", snapshot?.campo_solicitudes || []);
+  await restoreSnapshotCollection(client, "estado_conexion_eventos", snapshot?.estado_conexion_eventos || []);
+  await restoreSnapshotCollection(client, "estado_conexion_eventos_evidencias", snapshot?.estado_conexion_eventos_evidencias || []);
+  await restoreSnapshotCollection(client, "contribuyentes_adjuntos", snapshot?.contribuyentes_adjuntos || []);
+  await syncAllRecibosStatesByPagoRules(client);
+  return {
+    id_contribuyente: parsePositiveInt(contribuyentes[0]?.id_contribuyente, 0),
+    predios_restaurados: Number((snapshot?.predios || []).length || 0),
+    recibos_restaurados: Number((snapshot?.recibos || []).length || 0),
+    pagos_restaurados: Number((snapshot?.pagos || []).length || 0)
+  };
+};
+const restoreDeletedReciboSnapshot = async (client, snapshotRaw) => {
+  const snapshot = snapshotRaw && typeof snapshotRaw === "object" ? snapshotRaw : null;
+  const recibos = Array.isArray(snapshot?.recibos) ? snapshot.recibos : [];
+  if (recibos.length === 0) {
+    const err = new Error("No hay snapshot del recibo eliminado.");
+    err.statusCode = 409;
+    throw err;
+  }
+  await restoreSnapshotCollection(client, "recibos", recibos);
+  const idRecibo = parsePositiveInt(recibos[0]?.id_recibo, 0);
+  return {
+    id_recibo: idRecibo
+  };
+};
+const capturePagoAnulacionUndoSnapshot = async (client, {
+  idPago = 0,
+  idRecibo = 0,
+  idOrdenCobro = 0
+} = {}) => {
+  const pagoId = parsePositiveInt(idPago, 0);
+  const reciboId = parsePositiveInt(idRecibo, 0);
+  const ordenId = parsePositiveInt(idOrdenCobro, 0);
+  const pagosRs = pagoId > 0
+    ? await client.query("SELECT * FROM pagos WHERE id_pago = $1", [pagoId])
+    : { rows: [] };
+  const recibosRs = reciboId > 0
+    ? await client.query("SELECT * FROM recibos WHERE id_recibo = $1", [reciboId])
+    : { rows: [] };
+  const ordenesRs = ordenId > 0
+    ? await client.query("SELECT * FROM ordenes_cobro WHERE id_orden = $1", [ordenId])
+    : { rows: [] };
+  return {
+    pagos: pagosRs.rows,
+    recibos: recibosRs.rows,
+    ordenes_cobro: ordenesRs.rows
+  };
+};
+const capturePagosReciboAnulacionUndoSnapshot = async (client, {
+  idRecibo = 0,
+  ordenIds = []
+} = {}) => {
+  const reciboId = parsePositiveInt(idRecibo, 0);
+  const ordenes = [...new Set((Array.isArray(ordenIds) ? ordenIds : [])
+    .map((value) => parsePositiveInt(value, 0))
+    .filter((value) => value > 0))];
+  const pagosRs = reciboId > 0
+    ? await client.query("SELECT * FROM pagos WHERE id_recibo = $1 ORDER BY id_pago ASC", [reciboId])
+    : { rows: [] };
+  const recibosRs = reciboId > 0
+    ? await client.query("SELECT * FROM recibos WHERE id_recibo = $1", [reciboId])
+    : { rows: [] };
+  const ordenesRs = ordenes.length > 0
+    ? await client.query("SELECT * FROM ordenes_cobro WHERE id_orden = ANY($1::bigint[]) ORDER BY id_orden ASC", [ordenes])
+    : { rows: [] };
+  return {
+    pagos: pagosRs.rows,
+    recibos: recibosRs.rows,
+    ordenes_cobro: ordenesRs.rows
+  };
+};
+const restorePagoAnulacionSnapshot = async (client, snapshotRaw, anulacionIdsRaw = []) => {
+  const snapshot = snapshotRaw && typeof snapshotRaw === "object" ? snapshotRaw : null;
+  const pagos = Array.isArray(snapshot?.pagos) ? snapshot.pagos : [];
+  const recibos = Array.isArray(snapshot?.recibos) ? snapshot.recibos : [];
+  const ordenes = Array.isArray(snapshot?.ordenes_cobro) ? snapshot.ordenes_cobro : [];
+  if (pagos.length === 0 || recibos.length === 0) {
+    const err = new Error("No hay snapshot suficiente para restaurar los pagos anulados.");
+    err.statusCode = 409;
+    throw err;
+  }
+  const anulacionIds = [...new Set((Array.isArray(anulacionIdsRaw) ? anulacionIdsRaw : [])
+    .map((value) => parsePositiveInt(value, 0))
+    .filter((value) => value > 0))];
+  if (anulacionIds.length > 0) {
+    const anulacionesRs = await client.query(`
+      SELECT id_anulacion, id_pago_reintegrado
+      FROM pagos_anulados
+      WHERE id_anulacion = ANY($1::bigint[])
+      FOR UPDATE
+    `, [anulacionIds]);
+    if (anulacionesRs.rows.length !== anulacionIds.length) {
+      const err = new Error("La anulacion ya no esta disponible para deshacer.");
+      err.statusCode = 409;
+      throw err;
+    }
+    if (anulacionesRs.rows.some((row) => parsePositiveInt(row.id_pago_reintegrado, 0) > 0)) {
+      const err = new Error("La anulacion ya fue reintegrada y no se puede deshacer desde auditoria.");
+      err.statusCode = 409;
+      throw err;
+    }
+  }
+  await restoreSnapshotCollection(client, "ordenes_cobro", ordenes);
+  await restoreSnapshotCollection(client, "recibos", recibos);
+  await restoreSnapshotCollection(client, "pagos", pagos);
+  await syncAllRecibosStatesByPagoRules(client);
+  if (anulacionIds.length > 0) {
+    await client.query("DELETE FROM pagos_correcciones WHERE id_anulacion = ANY($1::bigint[])", [anulacionIds]);
+    await client.query("DELETE FROM pagos_anulados WHERE id_anulacion = ANY($1::bigint[])", [anulacionIds]);
+  }
+  return {
+    id_recibo: parsePositiveInt(recibos[0]?.id_recibo, 0),
+    id_contribuyente: parsePositiveInt(pagos[0]?.id_contribuyente, 0) || parsePositiveInt(snapshot?.id_contribuyente, 0) || null,
+    pagos_restaurados: pagos.length
+  };
 };
 const AUDITORIA_PAGE_SIZE_DEFAULT = 200;
 const AUDITORIA_PAGE_SIZE_MAX = 500;
@@ -8949,7 +9310,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
     await client.query('BEGIN');
     txStarted = true;
     const actualData = await client.query(
-      `SELECT nombre_completo, codigo_municipal, sec_cod
+      `SELECT *
        FROM contribuyentes
        WHERE id_contribuyente = $1
        FOR UPDATE`,
@@ -8967,21 +9328,11 @@ app.put("/contribuyentes/:id", async (req, res) => {
     const cambioCodigoSistema = (codigoSistema || null) !== codigoSistemaActual;
     const predioActualData = await client.query(
       `SELECT
-         p.id_predio,
-         p.id_calle,
-         p.numero_casa,
-         p.manzana,
-         p.lote,
-         p.referencia_direccion,
-         COALESCE(NULLIF(UPPER(TRIM(activo_sn)), ''), 'S') AS activo_sn,
-         COALESCE(NULLIF(UPPER(TRIM(agua_sn)), ''), 'S') AS agua_sn,
-         COALESCE(NULLIF(UPPER(TRIM(desague_sn)), ''), 'S') AS desague_sn,
-         COALESCE(NULLIF(UPPER(TRIM(limpieza_sn)), ''), 'S') AS limpieza_sn,
-         p.tarifa_agua,
-         p.tarifa_desague,
-         p.tarifa_limpieza,
-         p.tarifa_admin,
-         p.tarifa_extra,
+         p.*,
+         COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+         COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+         COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+         COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
          COALESCE(NULLIF(TRIM(ca.nombre), ''), '') AS nombre_calle
       FROM predios p
       LEFT JOIN calles ca ON ca.id_calle = p.id_calle
@@ -9021,6 +9372,11 @@ app.put("/contribuyentes/:id", async (req, res) => {
         lote: loteNuevo
       })
       : (referenciaDireccionActual || null);
+    const calleNuevaRs = idCalleNuevo
+      ? await client.query("SELECT nombre FROM calles WHERE id_calle = $1 LIMIT 1", [idCalleNuevo])
+      : { rows: [] };
+    const nombreCalleActual = normalizeLimitedText(predioActual?.nombre_calle, 120) || "";
+    const nombreCalleNueva = normalizeLimitedText(calleNuevaRs.rows?.[0]?.nombre, 120) || "";
 
     if (cambioCodigoMunicipal) {
       const exMunicipal = await client.query(
@@ -9112,6 +9468,71 @@ app.put("/contribuyentes/:id", async (req, res) => {
       parseCampoSolicitudTarifaValue(predioActual?.tarifa_limpieza) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_limpieza) ||
       parseCampoSolicitudTarifaValue(predioActual?.tarifa_admin) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_admin) ||
       parseCampoSolicitudTarifaValue(predioActual?.tarifa_extra) !== parseCampoSolicitudTarifaValue(tarifaExtra);
+    const auditChangeLines = [];
+    const pushEditAuditChange = (label, nuevo, anterior) => {
+      const nuevoTxt = sanitizeAuditDetailValue(nuevo, "-");
+      const anteriorTxt = sanitizeAuditDetailValue(anterior, "-");
+      if (auditTextEquals(nuevoTxt, anteriorTxt)) return;
+      auditChangeLines.push(`${label}: ${nuevoTxt} (antes: ${anteriorTxt})`);
+    };
+    const formatStreetAuditValue = (idCalleValue, nombreCalleValue) => {
+      const idValue = parsePositiveInt(idCalleValue, 0);
+      const nombreValue = normalizeLimitedText(nombreCalleValue, 120);
+      if (nombreValue && idValue > 0) return `${nombreValue} (ID ${idValue})`;
+      if (nombreValue) return nombreValue;
+      if (idValue > 0) return `ID ${idValue}`;
+      return "-";
+    };
+    pushEditAuditChange("Nombre completo", nombreNuevo, actualData.rows[0]?.nombre_completo);
+    pushEditAuditChange("Codigo municipal", codigoMunicipal, actualData.rows[0]?.codigo_municipal);
+    pushEditAuditChange("Sec. Cod", codigoSistema || "-", actualData.rows[0]?.sec_cod || "-");
+    pushEditAuditChange("Sec. Nombre", sec_nombre || "-", actualData.rows[0]?.sec_nombre || "-");
+    pushEditAuditChange("DNI/RUC", dni_ruc || "-", actualData.rows[0]?.dni_ruc || "-");
+    pushEditAuditChange("Email", email || "-", actualData.rows[0]?.email || "-");
+    pushEditAuditChange("Telefono", telefono || "-", actualData.rows[0]?.telefono || "-");
+    pushEditAuditChange(
+      "Estado conexion",
+      toCampoEstadoConexionAuditLabel(estadoConexion),
+      toCampoEstadoConexionAuditLabel(actualData.rows[0]?.estado_conexion)
+    );
+    pushEditAuditChange(
+      "Calle",
+      formatStreetAuditValue(idCalleNuevo, nombreCalleNueva),
+      formatStreetAuditValue(idCalleActual, nombreCalleActual)
+    );
+    pushEditAuditChange("Numero casa", numeroCasaNuevo || "-", numeroCasaActual || "-");
+    pushEditAuditChange("Manzana", manzanaNueva || "-", manzanaActual || "-");
+    pushEditAuditChange("Lote", loteNuevo || "-", loteActual || "-");
+    pushEditAuditChange(
+      "Servicio agua",
+      toCampoServicioAuditLabel(serviciosDespues.agua_sn, "S"),
+      toCampoServicioAuditLabel(serviciosActuales.agua_sn, "S")
+    );
+    pushEditAuditChange(
+      "Servicio desague",
+      toCampoServicioAuditLabel(serviciosDespues.desague_sn, "S"),
+      toCampoServicioAuditLabel(serviciosActuales.desague_sn, "S")
+    );
+    pushEditAuditChange(
+      "Servicio limpieza",
+      toCampoServicioAuditLabel(serviciosDespues.limpieza_sn, "S"),
+      toCampoServicioAuditLabel(serviciosActuales.limpieza_sn, "S")
+    );
+    if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_agua) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_agua)) {
+      auditChangeLines.push(`Tarifa agua: ${formatCampoTarifaAuditLabel(tarifasActualizadas.tarifa_agua, AUTO_DEUDA_BASE.agua)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_agua, AUTO_DEUDA_BASE.agua)})`);
+    }
+    if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_desague) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_desague)) {
+      auditChangeLines.push(`Tarifa desague: ${formatCampoTarifaAuditLabel(tarifasActualizadas.tarifa_desague, AUTO_DEUDA_BASE.desague)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_desague, AUTO_DEUDA_BASE.desague)})`);
+    }
+    if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_limpieza) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_limpieza)) {
+      auditChangeLines.push(`Tarifa limpieza: ${formatCampoTarifaAuditLabel(tarifasActualizadas.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza)})`);
+    }
+    if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_admin) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_admin)) {
+      auditChangeLines.push(`Tarifa admin: ${formatCampoTarifaAuditLabel(tarifasActualizadas.tarifa_admin, AUTO_DEUDA_BASE.admin)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_admin, AUTO_DEUDA_BASE.admin)})`);
+    }
+    if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_extra) !== parseCampoSolicitudTarifaValue(tarifaExtra)) {
+      auditChangeLines.push(`Tarifa extra: ${formatCampoTarifaAuditLabel(tarifaExtra, 0)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_extra, 0)})`);
+    }
 
     await client.query(
       `UPDATE contribuyentes
@@ -9187,6 +9608,30 @@ app.put("/contribuyentes/:id", async (req, res) => {
         usuarioAuditoria
       );
     }
+    req.skipAutoAudit = true;
+    await registrarAuditoria(
+      client,
+      `PUT /contribuyentes/${idContribuyente}`,
+      buildStructuredAuditDetail({
+        evento: "Editar contribuyente",
+        id_contribuyente: idContribuyente,
+        codigo_municipal: codigoMunicipal,
+        nombre_completo: nombreNuevo,
+        contribuyente: buildContribuyenteAuditLabel({
+          id_contribuyente: idContribuyente,
+          codigo_municipal: codigoMunicipal,
+          nombre_completo: nombreNuevo
+        }),
+        cambios_aplicados: auditChangeLines.length > 0 ? auditChangeLines : ["Sin cambios detectados."],
+        recibos_recalculados: recibosRecalculados > 0 ? recibosRecalculados : undefined,
+        undo_type: AUDIT_UNDO_TYPES.CONTRIBUYENTE_EDITADO,
+        undo_snapshot_b64: encodeCompressedAuditPayload({
+          contribuyente: actualData.rows[0],
+          predio: predioActual
+        })
+      }),
+      req.user?.username || req.user?.nombre || "SISTEMA"
+    );
     await client.query('COMMIT');
     txStarted = false;
     invalidateContribuyentesCache();
@@ -9759,6 +10204,8 @@ app.delete("/contribuyentes/:id", async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Contribuyente no encontrado." });
     }
+    const undoSnapshot = await captureDeletedContribuyenteSnapshot(client, targetId);
+    const contribuyenteAuditRow = undoSnapshot?.contribuyentes?.[0] || null;
 
     await client.query(`
       DELETE FROM pagos
@@ -9803,6 +10250,23 @@ app.delete("/contribuyentes/:id", async (req, res) => {
     `, [targetId]);
     await client.query("DELETE FROM predios WHERE id_contribuyente = $1", [targetId]);
     await client.query("DELETE FROM contribuyentes WHERE id_contribuyente = $1", [targetId]);
+    req.skipAutoAudit = true;
+    await registrarAuditoria(
+      client,
+      `DELETE /contribuyentes/${targetId}`,
+      buildStructuredAuditDetail({
+        evento: "Eliminar contribuyente",
+        id_contribuyente: targetId,
+        codigo_municipal: contribuyenteAuditRow?.codigo_municipal || "",
+        nombre_completo: contribuyenteAuditRow?.nombre_completo || "",
+        contribuyente: buildContribuyenteAuditLabel(contribuyenteAuditRow || { id_contribuyente: targetId }),
+        recibos_restaurados: Array.isArray(undoSnapshot?.recibos) ? undoSnapshot.recibos.length : 0,
+        pagos_restaurados: Array.isArray(undoSnapshot?.pagos) ? undoSnapshot.pagos.length : 0,
+        undo_type: AUDIT_UNDO_TYPES.CONTRIBUYENTE_ELIMINADO,
+        undo_snapshot_b64: encodeCompressedAuditPayload(undoSnapshot)
+      }),
+      req.user?.username || req.user?.nombre || "SISTEMA"
+    );
     await client.query('COMMIT');
     invalidateContribuyentesCache();
     res.json({ mensaje: "Usuario eliminado permanentemente." });
@@ -11592,6 +12056,13 @@ app.post("/caja/ordenes-cobro/:id/anular", async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(409).json({ error: `Solo se pueden anular ordenes pendientes (estado actual: ${orden.rows[0].estado}).` });
     }
+    const ordenSnapshot = await client.query(`
+      SELECT *
+      FROM ordenes_cobro
+      WHERE id_orden = $1
+      LIMIT 1
+    `, [idOrden]);
+    const contribuyenteAudit = await fetchContribuyenteAuditIdentity(client, orden.rows[0]?.id_contribuyente);
 
     await client.query(`
       UPDATE ordenes_cobro
@@ -11606,10 +12077,28 @@ app.post("/caja/ordenes-cobro/:id/anular", async (req, res) => {
 
     const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
     const ip = getRequestIp(req);
+    req.skipAutoAudit = true;
     await registrarAuditoria(
       client,
-      "ORDEN_COBRO_ANULADA",
-      `orden=${idOrden}; tipo=${normalizeTipoOrdenCobro(orden.rows[0]?.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL)}; contribuyente=${orden.rows[0].id_contribuyente}; motivo=${motivo}; ip=${ip}`,
+      `POST /caja/ordenes-cobro/${idOrden}/anular`,
+      buildStructuredAuditDetail({
+        evento: "Anular orden de cobro",
+        id_orden: idOrden,
+        id_contribuyente: orden.rows[0].id_contribuyente,
+        codigo_municipal: contribuyenteAudit?.codigo_municipal || orden.rows[0]?.codigo_municipal || "",
+        nombre_completo: contribuyenteAudit?.nombre_completo || "",
+        contribuyente: buildContribuyenteAuditLabel(contribuyenteAudit || {
+          id_contribuyente: orden.rows[0].id_contribuyente,
+          codigo_municipal: orden.rows[0]?.codigo_municipal || ""
+        }),
+        tipo: normalizeTipoOrdenCobro(orden.rows[0]?.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL),
+        motivo,
+        ip,
+        undo_type: AUDIT_UNDO_TYPES.ORDEN_COBRO_ANULADA,
+        undo_snapshot_b64: encodeCompressedAuditPayload({
+          ordenes_cobro: ordenSnapshot.rows
+        })
+      }),
       usuarioAuditoria
     );
 
@@ -12307,6 +12796,12 @@ app.post("/pagos/:id/anular", async (req, res) => {
     const idOrdenCobro = parsePositiveInt(pago.id_orden_cobro, 0) || null;
     const idContribuyente = parsePositiveInt(pago.id_contribuyente, 0) || null;
     const montoPagado = roundMonto2(parseMonto(pago.monto_pagado, 0));
+    const undoSnapshot = await capturePagoAnulacionUndoSnapshot(client, {
+      idPago: Number(pago.id_pago),
+      idRecibo,
+      idOrdenCobro
+    });
+    const contribuyenteAudit = await fetchContribuyenteAuditIdentity(client, idContribuyente);
     const validacionCorreccion = validateCobroCorrectionWindow(pago.fecha_pago, {
       role: req.user?.rol,
       hoyIso: toISODate(),
@@ -12412,10 +12907,31 @@ app.post("/pagos/:id/anular", async (req, res) => {
 
     const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
     const ip = getRequestIp(req);
+    req.skipAutoAudit = true;
     await registrarAuditoria(
       client,
-      "PAGO_ANULADO_LOGICO",
-      `id_pago=${Number(pago.id_pago)}; recibo=${idRecibo}; contribuyente=${idContribuyente || "N/A"}; monto=${montoPagado.toFixed(2)}; fecha_pago=${normalizeDateOnly(pago.fecha_pago) || ""}; motivo=${motivo}; ip=${ip}`,
+      `POST /pagos/${idPago}/anular`,
+      buildStructuredAuditDetail({
+        evento: "Anular pago",
+        id_pago: Number(pago.id_pago),
+        id_recibo: idRecibo,
+        id_contribuyente: idContribuyente,
+        codigo_municipal: contribuyenteAudit?.codigo_municipal || "",
+        nombre_completo: contribuyenteAudit?.nombre_completo || "",
+        contribuyente: buildContribuyenteAuditLabel(contribuyenteAudit || {
+          id_contribuyente: idContribuyente
+        }),
+        monto_cobrado: montoPagado.toFixed(2),
+        fecha_pago: normalizeDateOnly(pago.fecha_pago) || "",
+        motivo,
+        ip,
+        undo_type: AUDIT_UNDO_TYPES.PAGO_ANULADO,
+        undo_snapshot_b64: encodeCompressedAuditPayload({
+          ...undoSnapshot,
+          id_contribuyente: idContribuyente,
+          anulacion_ids: idAnulacion ? [idAnulacion] : []
+        })
+      }),
       usuarioAuditoria
     );
 
@@ -12521,6 +13037,15 @@ app.post("/pagos/recibo/:id_recibo/anular-ultimo", async (req, res) => {
         });
       }
     }
+    pagosRs.rows.forEach((row) => {
+      const ordenId = parsePositiveInt(row?.id_orden_cobro, 0);
+      if (ordenId > 0) ordenesARevisar.add(ordenId);
+    });
+    const undoSnapshot = await capturePagosReciboAnulacionUndoSnapshot(client, {
+      idRecibo: idReciboPago,
+      ordenIds: Array.from(ordenesARevisar)
+    });
+    const contribuyenteAudit = await fetchContribuyenteAuditIdentity(client, idContribuyente);
 
     for (const pago of pagosRs.rows) {
       const idOrdenCobro = parsePositiveInt(pago.id_orden_cobro, 0) || null;
@@ -12623,10 +13148,36 @@ app.post("/pagos/recibo/:id_recibo/anular-ultimo", async (req, res) => {
     }
 
     const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
+    req.skipAutoAudit = true;
     await registrarAuditoria(
       client,
-      "PAGO_ANULADO_LOGICO",
-      `recibo=${idReciboPago}; contribuyente=${idContribuyente || "N/A"}; pagos=${pagosAnulados.map((item) => item.id_pago).join(",")}; total_anulado=${roundMonto2(totalAnulado).toFixed(2)}; motivo=${motivo}; via=anular_todos_por_recibo; ip=${ip}`,
+      `POST /pagos/recibo/${idReciboPago}/anular-ultimo`,
+      buildStructuredAuditDetail({
+        evento: "Anular pagos por periodo",
+        id_recibo: idReciboPago,
+        id_contribuyente: idContribuyente,
+        codigo_municipal: contribuyenteAudit?.codigo_municipal || "",
+        nombre_completo: contribuyenteAudit?.nombre_completo || "",
+        contribuyente: buildContribuyenteAuditLabel(contribuyenteAudit || {
+          id_contribuyente: idContribuyente
+        }),
+        cantidad_recibos: 1,
+        detalle_recibos: [{
+          id_recibo: idReciboPago,
+          periodo: formatAuditPeriodo(pagoBase.anio, pagoBase.mes),
+          monto_cobrado: roundMonto2(totalAnulado),
+          saldo_pendiente: roundMonto2(Math.max(totalRecibo - totalPagadoActivo, 0)),
+          estado: nuevoEstado
+        }],
+        motivo,
+        ip,
+        undo_type: AUDIT_UNDO_TYPES.PAGO_ANULADO,
+        undo_snapshot_b64: encodeCompressedAuditPayload({
+          ...undoSnapshot,
+          id_contribuyente: idContribuyente,
+          anulacion_ids: pagosAnulados.map((item) => item.id_anulacion).filter((value) => Number(value) > 0)
+        })
+      }),
       usuarioAuditoria
     );
 
@@ -14971,19 +15522,68 @@ app.get("/caja/alertas-riesgo", async (req, res) => {
 });
 
 app.delete("/recibos/:id", async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
-    const recibo = await pool.query("SELECT id_recibo, estado FROM recibos WHERE id_recibo = $1", [id]);
-    if (recibo.rows.length === 0) return res.status(404).json({ error: "No encontrado" });
-    const pagos = await pool.query(`SELECT COALESCE(SUM(monto_pagado), 0) as total_pagado FROM pagos WHERE ${buildPagoContableValidoSql("pagos")} AND id_recibo = $1`, [id]);
+    const idRecibo = parsePositiveInt(id, 0);
+    if (!idRecibo) return res.status(400).json({ error: "ID invalido." });
+    await client.query("BEGIN");
+    const recibo = await client.query(`
+      SELECT
+        r.*,
+        p.id_contribuyente,
+        c.codigo_municipal,
+        c.nombre_completo
+      FROM recibos r
+      LEFT JOIN predios p ON p.id_predio = r.id_predio
+      LEFT JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
+      WHERE r.id_recibo = $1
+      LIMIT 1
+      FOR UPDATE OF r
+    `, [idRecibo]);
+    if (recibo.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "No encontrado" });
+    }
+    const pagos = await client.query(`SELECT COALESCE(SUM(monto_pagado), 0) as total_pagado FROM pagos WHERE ${buildPagoContableValidoSql("pagos")} AND id_recibo = $1`, [idRecibo]);
     const totalPagado = parseFloat(pagos.rows[0].total_pagado) || 0;
     if (recibo.rows[0].estado !== 'PENDIENTE' || totalPagado > 0) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ error: "No se puede eliminar recibos con pagos." });
     }
-    await pool.query("DELETE FROM recibos WHERE id_recibo = $1", [id]);
+    const undoSnapshot = await captureDeletedReciboSnapshot(client, idRecibo);
+    await client.query("DELETE FROM recibos WHERE id_recibo = $1", [idRecibo]);
+    req.skipAutoAudit = true;
+    await registrarAuditoria(
+      client,
+      `DELETE /recibos/${idRecibo}`,
+      buildStructuredAuditDetail({
+        evento: "Eliminar deuda",
+        id_recibo: idRecibo,
+        id_contribuyente: parsePositiveInt(recibo.rows[0]?.id_contribuyente, 0) || null,
+        codigo_municipal: recibo.rows[0]?.codigo_municipal || "",
+        nombre_completo: recibo.rows[0]?.nombre_completo || "",
+        contribuyente: buildContribuyenteAuditLabel({
+          id_contribuyente: recibo.rows[0]?.id_contribuyente,
+          codigo_municipal: recibo.rows[0]?.codigo_municipal,
+          nombre_completo: recibo.rows[0]?.nombre_completo
+        }),
+        periodo: formatAuditPeriodo(recibo.rows[0]?.anio, recibo.rows[0]?.mes),
+        total: parseMonto(recibo.rows[0]?.total_pagar, 0).toFixed(2),
+        undo_type: AUDIT_UNDO_TYPES.RECIBO_ELIMINADO,
+        undo_snapshot_b64: encodeCompressedAuditPayload(undoSnapshot)
+      }),
+      req.user?.username || req.user?.nombre || "SISTEMA"
+    );
+    await client.query("COMMIT");
     invalidateContribuyentesCache();
     res.json({ mensaje: "Deuda eliminada" });
-  } catch (err) { res.status(500).send("Error"); }
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    res.status(500).send("Error");
+  } finally {
+    client.release();
+  }
 });
 
 // ==========================================
@@ -15082,79 +15682,176 @@ app.post("/auditoria/:id/deshacer", authenticateToken, requireAdmin, async (req,
       return res.status(404).json({ error: "Registro de auditoria no encontrado." });
     }
     const audit = auditRs.rows[0];
-    if (String(audit.accion || "").trim().toUpperCase() !== "CAMPO_SOLICITUD_APROBADA") {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Solo se puede deshacer aprobaciones de solicitudes de campo." });
-    }
-
     const detail = parseStructuredAuditDetail(audit.detalle);
-    const idSolicitud = parsePositiveInt(detail?.solicitud, 0);
-    if (!idSolicitud) {
+    const accionAudit = String(audit.accion || "").trim().toUpperCase();
+    const undoType = String(
+      detail?.undo_type
+      || (accionAudit === "CAMPO_SOLICITUD_APROBADA" ? AUDIT_UNDO_TYPES.CAMPO_SOLICITUD_APROBADA : "")
+    ).trim().toUpperCase();
+    let restoreResult = null;
+    let mensaje = "Movimiento deshecho correctamente.";
+
+    if (undoType === AUDIT_UNDO_TYPES.CAMPO_SOLICITUD_APROBADA) {
+      const idSolicitud = parsePositiveInt(detail?.solicitud, 0);
+      if (!idSolicitud) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "La auditoria no contiene una solicitud valida para deshacer." });
+      }
+      const solicitudRs = await client.query(`
+        SELECT *
+        FROM campo_solicitudes
+        WHERE id_solicitud = $1
+        LIMIT 1
+        FOR UPDATE
+      `, [idSolicitud]);
+      if (solicitudRs.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Solicitud de campo no encontrada." });
+      }
+      const solicitud = solicitudRs.rows[0];
+      const metadata = getCampoSolicitudMetadata(solicitud);
+      if (normalizeSN(metadata.undo_aplicado_sn, "N") === "S") {
+        await client.query("ROLLBACK");
+        return res.status(409).json({ error: "Esta solicitud ya fue deshecha anteriormente." });
+      }
+
+      restoreResult = await restoreCampoSolicitudUndoSnapshot(client, metadata.undo_snapshot, {
+        idDireccionAlterna: parsePositiveInt(metadata.id_direccion_alterna, 0) || null
+      });
+      await client.query(`
+        UPDATE campo_solicitudes
+        SET metadata = COALESCE(metadata, '{}'::jsonb)
+          || jsonb_build_object(
+            'undo_aplicado_sn', 'S',
+            'undo_aplicado_por', COALESCE($2::text, ''),
+            'undo_aplicado_en', to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS')
+          ),
+            actualizado_en = NOW()
+        WHERE id_solicitud = $1
+      `, [
+        idSolicitud,
+        req.user?.username || req.user?.nombre || "SISTEMA"
+      ]);
+      await registrarAuditoria(
+        client,
+        "CAMPO_SOLICITUD_DESHECHA",
+        buildStructuredAuditDetail({
+          auditoria_origen: idAuditoria,
+          solicitud: idSolicitud,
+          id_contribuyente: restoreResult.id_contribuyente,
+          id_predio: restoreResult.id_predio,
+          recibos_restaurados: restoreResult.recibos_restaurados,
+          deshecho_por: req.user?.username || req.user?.nombre || "SISTEMA"
+        }),
+        req.user?.nombre || req.user?.username || "SISTEMA"
+      );
+      mensaje = "Solicitud de campo deshecha correctamente.";
+    } else if (undoType === AUDIT_UNDO_TYPES.CONTRIBUYENTE_EDITADO) {
+      const undoSnapshot = decodeCompressedAuditPayload(detail?.undo_snapshot_b64);
+      restoreResult = await restoreContribuyenteAuditSnapshot(client, undoSnapshot);
+      await registrarAuditoria(
+        client,
+        "AUDITORIA_DESHECHA",
+        buildStructuredAuditDetail({
+          auditoria_origen: idAuditoria,
+          evento: "Deshacer edicion de contribuyente",
+          id_contribuyente: restoreResult.id_contribuyente,
+          id_predio: restoreResult.id_predio,
+          recibos_recalculados: restoreResult.recibos_recalculados,
+          deshecho_por: req.user?.username || req.user?.nombre || "SISTEMA"
+        }),
+        req.user?.nombre || req.user?.username || "SISTEMA"
+      );
+      mensaje = "Edicion de contribuyente deshecha correctamente.";
+    } else if (undoType === AUDIT_UNDO_TYPES.CONTRIBUYENTE_ELIMINADO) {
+      const undoSnapshot = decodeCompressedAuditPayload(detail?.undo_snapshot_b64);
+      restoreResult = await restoreDeletedContribuyenteSnapshot(client, undoSnapshot);
+      await registrarAuditoria(
+        client,
+        "AUDITORIA_DESHECHA",
+        buildStructuredAuditDetail({
+          auditoria_origen: idAuditoria,
+          evento: "Deshacer eliminacion de contribuyente",
+          id_contribuyente: restoreResult.id_contribuyente,
+          predios_restaurados: restoreResult.predios_restaurados,
+          recibos_restaurados: restoreResult.recibos_restaurados,
+          pagos_restaurados: restoreResult.pagos_restaurados,
+          deshecho_por: req.user?.username || req.user?.nombre || "SISTEMA"
+        }),
+        req.user?.nombre || req.user?.username || "SISTEMA"
+      );
+      mensaje = "Contribuyente restaurado correctamente.";
+    } else if (undoType === AUDIT_UNDO_TYPES.RECIBO_ELIMINADO) {
+      const undoSnapshot = decodeCompressedAuditPayload(detail?.undo_snapshot_b64);
+      restoreResult = await restoreDeletedReciboSnapshot(client, undoSnapshot);
+      restoreResult.id_contribuyente = parsePositiveInt(detail?.id_contribuyente, 0) || null;
+      await registrarAuditoria(
+        client,
+        "AUDITORIA_DESHECHA",
+        buildStructuredAuditDetail({
+          auditoria_origen: idAuditoria,
+          evento: "Deshacer eliminacion de deuda",
+          id_recibo: restoreResult.id_recibo,
+          id_contribuyente: restoreResult.id_contribuyente,
+          deshecho_por: req.user?.username || req.user?.nombre || "SISTEMA"
+        }),
+        req.user?.nombre || req.user?.username || "SISTEMA"
+      );
+      mensaje = "Deuda restaurada correctamente.";
+    } else if (undoType === AUDIT_UNDO_TYPES.ORDEN_COBRO_ANULADA) {
+      const undoSnapshot = decodeCompressedAuditPayload(detail?.undo_snapshot_b64);
+      await restoreSnapshotCollection(client, "ordenes_cobro", undoSnapshot?.ordenes_cobro || []);
+      restoreResult = {
+        id_orden: parsePositiveInt((undoSnapshot?.ordenes_cobro || [])[0]?.id_orden, 0) || null,
+        id_contribuyente: parsePositiveInt(detail?.id_contribuyente, 0) || null
+      };
+      await registrarAuditoria(
+        client,
+        "AUDITORIA_DESHECHA",
+        buildStructuredAuditDetail({
+          auditoria_origen: idAuditoria,
+          evento: "Deshacer anulacion de orden de cobro",
+          id_orden: restoreResult.id_orden,
+          id_contribuyente: restoreResult.id_contribuyente,
+          deshecho_por: req.user?.username || req.user?.nombre || "SISTEMA"
+        }),
+        req.user?.nombre || req.user?.username || "SISTEMA"
+      );
+      mensaje = "Anulacion de orden deshecha correctamente.";
+    } else if (undoType === AUDIT_UNDO_TYPES.PAGO_ANULADO) {
+      const undoSnapshot = decodeCompressedAuditPayload(detail?.undo_snapshot_b64);
+      restoreResult = await restorePagoAnulacionSnapshot(client, undoSnapshot, undoSnapshot?.anulacion_ids || []);
+      restoreResult.id_contribuyente = restoreResult.id_contribuyente || parsePositiveInt(detail?.id_contribuyente, 0) || null;
+      await registrarAuditoria(
+        client,
+        "AUDITORIA_DESHECHA",
+        buildStructuredAuditDetail({
+          auditoria_origen: idAuditoria,
+          evento: "Deshacer anulacion de pago",
+          id_recibo: restoreResult.id_recibo,
+          id_contribuyente: restoreResult.id_contribuyente,
+          pagos_restaurados: restoreResult.pagos_restaurados,
+          deshecho_por: req.user?.username || req.user?.nombre || "SISTEMA"
+        }),
+        req.user?.nombre || req.user?.username || "SISTEMA"
+      );
+      mensaje = "Anulacion de pago deshecha correctamente.";
+    } else {
       await client.query("ROLLBACK");
-      return res.status(409).json({ error: "La auditoria no contiene una solicitud valida para deshacer." });
+      return res.status(400).json({ error: "Este registro de auditoria no admite deshacer." });
     }
-
-    const solicitudRs = await client.query(`
-      SELECT *
-      FROM campo_solicitudes
-      WHERE id_solicitud = $1
-      LIMIT 1
-      FOR UPDATE
-    `, [idSolicitud]);
-    if (solicitudRs.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Solicitud de campo no encontrada." });
-    }
-    const solicitud = solicitudRs.rows[0];
-    const metadata = getCampoSolicitudMetadata(solicitud);
-    if (normalizeSN(metadata.undo_aplicado_sn, "N") === "S") {
-      await client.query("ROLLBACK");
-      return res.status(409).json({ error: "Esta solicitud ya fue deshecha anteriormente." });
-    }
-
-    const restoreResult = await restoreCampoSolicitudUndoSnapshot(client, metadata.undo_snapshot, {
-      idDireccionAlterna: parsePositiveInt(metadata.id_direccion_alterna, 0) || null
-    });
-
-    await client.query(`
-      UPDATE campo_solicitudes
-      SET metadata = COALESCE(metadata, '{}'::jsonb)
-        || jsonb_build_object(
-          'undo_aplicado_sn', 'S',
-          'undo_aplicado_por', COALESCE($2::text, ''),
-          'undo_aplicado_en', to_char(NOW(), 'YYYY-MM-DD"T"HH24:MI:SS')
-        ),
-          actualizado_en = NOW()
-      WHERE id_solicitud = $1
-    `, [
-      idSolicitud,
-      req.user?.username || req.user?.nombre || "SISTEMA"
-    ]);
-
-    await registrarAuditoria(
-      client,
-      "CAMPO_SOLICITUD_DESHECHA",
-      buildStructuredAuditDetail({
-        auditoria_origen: idAuditoria,
-        solicitud: idSolicitud,
-        id_contribuyente: restoreResult.id_contribuyente,
-        id_predio: restoreResult.id_predio,
-        recibos_restaurados: restoreResult.recibos_restaurados,
-        deshecho_por: req.user?.username || req.user?.nombre || "SISTEMA"
-      }),
-      req.user?.nombre || req.user?.username || "SISTEMA"
-    );
 
     await client.query("COMMIT");
     invalidateContribuyentesCache();
-    realtimeHub.broadcast("deuda", "saldo_actualizado", {
-      id_contribuyente: restoreResult.id_contribuyente,
-      origen: "auditoria_deshacer_campo"
-    });
+    if (parsePositiveInt(restoreResult?.id_contribuyente, 0) > 0) {
+      realtimeHub.broadcast("deuda", "saldo_actualizado", {
+        id_contribuyente: restoreResult.id_contribuyente,
+        origen: "auditoria_deshacer"
+      });
+    }
     return res.json({
-      mensaje: "Solicitud de campo deshecha correctamente.",
+      mensaje,
       id_auditoria: idAuditoria,
-      id_solicitud: idSolicitud,
       ...restoreResult
     });
   } catch (err) {
