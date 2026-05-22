@@ -165,6 +165,10 @@ const toISODate = (date = new Date()) => {
   const { anio, mes, dia } = getFechaPartesZona(date, APP_TIMEZONE);
   return `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(dia).padStart(2, "0")}`;
 };
+const toLocalAuditTimestamp = (date = new Date()) => {
+  const { anio, mes, dia, hora, minuto, segundo } = getFechaPartesZona(date, APP_TIMEZONE);
+  return `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(dia).padStart(2, "0")}T${String(hora).padStart(2, "0")}:${String(minuto).padStart(2, "0")}:${String(segundo).padStart(2, "0")}`;
+};
 const getCurrentYear = () => getFechaPartesZona(new Date(), APP_TIMEZONE).anio;
 const getCurrentMonth = () => getFechaPartesZona(new Date(), APP_TIMEZONE).mes;
 const getNextPeriod = (date = new Date()) => {
