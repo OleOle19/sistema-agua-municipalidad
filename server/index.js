@@ -1357,6 +1357,18 @@ const parseStructuredAuditDetail = (detailRaw = "") => {
     });
   return entries;
 };
+const markAuditUndoApplied = async (client, idAuditoria, detail = {}, username = "SISTEMA") => {
+  const id = parsePositiveInt(idAuditoria, 0);
+  if (!id) return;
+  const detailBase = detail && typeof detail === "object" ? { ...detail } : {};
+  detailBase.undo_aplicado_sn = "S";
+  detailBase.undo_aplicado_por = String(username || "SISTEMA").trim() || "SISTEMA";
+  detailBase.undo_aplicado_en = toLocalAuditTimestamp(new Date());
+  await client.query(
+    "UPDATE auditoria SET detalle = $2 WHERE id_auditoria = $1",
+    [id, buildStructuredAuditDetail(detailBase)]
+  );
+};
 const encodeCompressedAuditPayload = (payload) => {
   if (payload === undefined) return "";
   const json = JSON.stringify(payload);
@@ -9388,6 +9400,14 @@ app.put("/contribuyentes/:id", async (req, res) => {
         lote: loteNuevo
       })
       : (referenciaDireccionActual || null);
+    const undoSnapshotPrevio = {
+      contribuyente: actualData.rows[0] || null,
+      predio: predioActual
+        ? Object.fromEntries(
+          Object.entries(predioActual).filter(([key]) => key !== "nombre_calle")
+        )
+        : null
+    };
     const calleNuevaRs = idCalleNuevo
       ? await client.query("SELECT nombre FROM calles WHERE id_calle = $1 LIMIT 1", [idCalleNuevo])
       : { rows: [] };
@@ -9624,7 +9644,6 @@ app.put("/contribuyentes/:id", async (req, res) => {
         usuarioAuditoria
       );
     }
-    const undoSnapshot = await captureContribuyenteUndoSnapshot(client, idContribuyente);
     req.skipAutoAudit = true;
     await registrarAuditoria(
       client,
@@ -9642,7 +9661,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
         cambios_aplicados: auditChangeLines.length > 0 ? auditChangeLines : ["Sin cambios detectados."],
         recibos_recalculados: recibosRecalculados > 0 ? recibosRecalculados : undefined,
         undo_type: AUDIT_UNDO_TYPES.CONTRIBUYENTE_EDITADO,
-        undo_snapshot_b64: encodeCompressedAuditPayload(undoSnapshot)
+        undo_snapshot_b64: encodeCompressedAuditPayload(undoSnapshotPrevio)
       }),
       req.user?.username || req.user?.nombre || "SISTEMA"
     );
@@ -15855,6 +15874,12 @@ app.post("/auditoria/:id/deshacer", authenticateToken, requireAdmin, async (req,
       return res.status(400).json({ error: "Este registro de auditoria no admite deshacer." });
     }
 
+    await markAuditUndoApplied(
+      client,
+      idAuditoria,
+      detail,
+      req.user?.username || req.user?.nombre || "SISTEMA"
+    );
     await client.query("COMMIT");
     invalidateContribuyentesCache();
     if (parsePositiveInt(restoreResult?.id_contribuyente, 0) > 0) {

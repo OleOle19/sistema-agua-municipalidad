@@ -413,15 +413,28 @@ const parseDetalle = (detalle) => {
 
   return rows;
 };
-const INTERNAL_AUDIT_LABELS = new Set(["undo_type", "undo_snapshot_b64"]);
+const INTERNAL_AUDIT_LABELS = new Set([
+  "undo_type",
+  "undo_snapshot_b64",
+  "undo_aplicado_sn",
+  "undo_aplicado_por",
+  "undo_aplicado_en"
+]);
 const getUndoTypeFromRows = (rows = []) => {
   const match = (Array.isArray(rows) ? rows : []).find(
     (item) => String(item?.label || "").trim().toLowerCase() === "undo_type"
   );
   return String(match?.text || "").trim().toUpperCase();
 };
+const isUndoAlreadyApplied = (rows = []) => {
+  const match = (Array.isArray(rows) ? rows : []).find(
+    (item) => String(item?.label || "").trim().toLowerCase() === "undo_aplicado_sn"
+  );
+  return String(match?.text || "").trim().toUpperCase() === "S";
+};
 const isInternalAuditLabel = (label) => INTERNAL_AUDIT_LABELS.has(String(label || "").trim().toLowerCase());
 const isUndoableAuditAction = (log = {}, detalleRows = []) => {
+  if (isUndoAlreadyApplied(detalleRows)) return false;
   const undoType = getUndoTypeFromRows(detalleRows);
   if (undoType) return true;
   return String(log?.accion || "").trim().toUpperCase() === "CAMPO_SOLICITUD_APROBADA";
@@ -439,7 +452,7 @@ const getUndoPrompt = (undoType = "", accion = "") => {
   return "Se intentara deshacer este movimiento. Continuar?";
 };
 
-const ModalAuditoria = ({ cerrarModal, darkMode }) => {
+const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null }) => {
   const [logs, setLogs] = useState([]);
   const [totalLogs, setTotalLogs] = useState(0);
   const [cargando, setCargando] = useState(true);
@@ -541,6 +554,9 @@ const ModalAuditoria = ({ cerrarModal, darkMode }) => {
       setDeshaciendoId(idAuditoria);
       const res = await api.post(`/auditoria/${idAuditoria}/deshacer`);
       window.alert(res?.data?.mensaje || "Solicitud deshecha correctamente.");
+      if (typeof onUndoApplied === "function") {
+        await onUndoApplied(res?.data || null, log);
+      }
       await cargarLogs();
     } catch (err) {
       window.alert(String(err?.response?.data?.error || "No se pudo deshacer la auditoria."));
