@@ -20,12 +20,29 @@ const parseMontoNumber = (value, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 const formatMontoPlaceholder = (value) => parseMontoNumber(value, 0).toFixed(2);
+const formatPeriodoProgramadoInput = (value) => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length !== 6) return "";
+  const anio = digits.slice(0, 4);
+  const mes = digits.slice(4, 6);
+  const mesNum = Number.parseInt(mes, 10);
+  if (!Number.isInteger(mesNum) || mesNum < 1 || mesNum > 12) return "";
+  return `${anio}-${mes}`;
+};
 const formatTarifaEditable = (rawValue, referenceValue) => {
   if (rawValue !== undefined && rawValue !== null && String(rawValue).trim() !== "") {
     return String(rawValue);
   }
   const parsed = parseMontoNumber(referenceValue, Number.NaN);
   return Number.isFinite(parsed) ? parsed.toFixed(2) : "";
+};
+const formatTarifaProgramadaEditable = (rawValue) => {
+  if (rawValue === undefined || rawValue === null) return "";
+  const raw = String(rawValue).trim();
+  return raw ? raw : "";
 };
 const normalizeTarifaPayload = (value) => {
   const raw = String(value ?? "").trim();
@@ -71,6 +88,13 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
     tarifa_limpieza: "",
     tarifa_admin: "",
     tarifa_extra: "",
+    programar_tarifa: false,
+    tarifa_programada_desde_periodo: "",
+    tarifa_programada_agua: "",
+    tarifa_programada_desague: "",
+    tarifa_programada_limpieza: "",
+    tarifa_programada_admin: "",
+    tarifa_programada_extra: "",
     motivo_cambio_razon_social: "",
     detalle_motivo_cambio_razon_social: ""
   });
@@ -144,6 +168,13 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
           tarifa_limpieza: formatTarifaEditable(u.tarifa_limpieza, tarifaRefLimpieza),
           tarifa_admin: formatTarifaEditable(u.tarifa_admin, tarifaRefAdmin),
           tarifa_extra: formatTarifaEditable(u.tarifa_extra, tarifaRefExtra),
+          programar_tarifa: Boolean(u.tarifa_programada_desde_periodo),
+          tarifa_programada_desde_periodo: formatPeriodoProgramadoInput(u.tarifa_programada_desde || u.tarifa_programada_desde_periodo),
+          tarifa_programada_agua: formatTarifaProgramadaEditable(u.tarifa_programada_agua),
+          tarifa_programada_desague: formatTarifaProgramadaEditable(u.tarifa_programada_desague),
+          tarifa_programada_limpieza: formatTarifaProgramadaEditable(u.tarifa_programada_limpieza),
+          tarifa_programada_admin: formatTarifaProgramadaEditable(u.tarifa_programada_admin),
+          tarifa_programada_extra: formatTarifaProgramadaEditable(u.tarifa_programada_extra),
           motivo_cambio_razon_social: "",
           detalle_motivo_cambio_razon_social: ""
         });
@@ -188,6 +219,14 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
         tarifa_limpieza: normalizeTarifaPayload(formData.tarifa_limpieza),
         tarifa_admin: normalizeTarifaPayload(formData.tarifa_admin),
         tarifa_extra: normalizeTarifaPayload(formData.tarifa_extra),
+        tarifa_programada_desde_periodo: formData.programar_tarifa
+          ? formatPeriodoProgramadoInput(formData.tarifa_programada_desde_periodo)
+          : null,
+        tarifa_programada_agua: formData.programar_tarifa ? normalizeTarifaPayload(formData.tarifa_programada_agua) : null,
+        tarifa_programada_desague: formData.programar_tarifa ? normalizeTarifaPayload(formData.tarifa_programada_desague) : null,
+        tarifa_programada_limpieza: formData.programar_tarifa ? normalizeTarifaPayload(formData.tarifa_programada_limpieza) : null,
+        tarifa_programada_admin: formData.programar_tarifa ? normalizeTarifaPayload(formData.tarifa_programada_admin) : null,
+        tarifa_programada_extra: formData.programar_tarifa ? normalizeTarifaPayload(formData.tarifa_programada_extra) : null,
         motivo_cambio_razon_social: cambioRazonSocial ? formData.motivo_cambio_razon_social : null,
         detalle_motivo_cambio_razon_social: cambioRazonSocial
           ? String(formData.detalle_motivo_cambio_razon_social || "").trim() || null
@@ -365,6 +404,68 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
                           <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_extra" value={formData.tarifa_extra} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.extra)} />
                         </div>
                       </div>
+                      <div className="form-check form-switch mt-3">
+                        <input
+                          className="form-check-input"
+                          type="checkbox"
+                          id="programar-tarifa"
+                          checked={!!formData.programar_tarifa}
+                          onChange={(e) => setFormData((prev) => ({
+                            ...prev,
+                            programar_tarifa: e.target.checked,
+                            tarifa_programada_desde_periodo: e.target.checked ? prev.tarifa_programada_desde_periodo : "",
+                            tarifa_programada_agua: e.target.checked ? prev.tarifa_programada_agua : "",
+                            tarifa_programada_desague: e.target.checked ? prev.tarifa_programada_desague : "",
+                            tarifa_programada_limpieza: e.target.checked ? prev.tarifa_programada_limpieza : "",
+                            tarifa_programada_admin: e.target.checked ? prev.tarifa_programada_admin : "",
+                            tarifa_programada_extra: e.target.checked ? prev.tarifa_programada_extra : ""
+                          }))}
+                        />
+                        <label className="form-check-label fw-bold" htmlFor="programar-tarifa">
+                          Programar cambio de tarifa
+                        </label>
+                      </div>
+                      {formData.programar_tarifa && (
+                        <div className={`border rounded p-2 mt-3 ${darkMode ? "border-secondary" : "border-warning"}`}>
+                          <div className="small fw-bold mb-2">Nueva tarifa desde</div>
+                          <div className="row g-2">
+                            <div className="col-md-3">
+                              <label className="form-label small">Periodo inicio</label>
+                              <input
+                                type="month"
+                                className={inputClass}
+                                name="tarifa_programada_desde_periodo"
+                                value={formData.tarifa_programada_desde_periodo}
+                                onChange={handleChange}
+                                required={!!formData.programar_tarifa}
+                              />
+                            </div>
+                            <div className="col-md-3">
+                              <label className="form-label small">Agua</label>
+                              <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_programada_agua" value={formData.tarifa_programada_agua} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.agua)} />
+                            </div>
+                            <div className="col-md-3">
+                              <label className="form-label small">Desague</label>
+                              <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_programada_desague" value={formData.tarifa_programada_desague} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.desague)} />
+                            </div>
+                            <div className="col-md-3">
+                              <label className="form-label small">Limpieza</label>
+                              <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_programada_limpieza" value={formData.tarifa_programada_limpieza} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.limpieza)} />
+                            </div>
+                            <div className="col-md-3">
+                              <label className="form-label small">Admin</label>
+                              <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_programada_admin" value={formData.tarifa_programada_admin} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.admin)} />
+                            </div>
+                            <div className="col-md-3">
+                              <label className="form-label small">Extra</label>
+                              <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_programada_extra" value={formData.tarifa_programada_extra} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.extra)} />
+                            </div>
+                          </div>
+                          <div className={`small mt-2 ${placeholderHintClass}`}>
+                            Llena solo los servicios que cambiaran desde ese mes. Desactiva esta opcion para quitar la programacion.
+                          </div>
+                        </div>
+                      )}
                       <div className={`small mt-2 ${placeholderHintClass}`}>
                         Deja vacío para usar la tarifa base del sistema.
                       </div>

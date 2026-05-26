@@ -2232,6 +2232,44 @@ const parseDateYearMonth = (isoDateRaw, fallback = {}) => {
     periodoNum: (anio * 100) + mes
   };
 };
+const buildPeriodoNum = (anio, mes) => {
+  const anioNum = Number(anio || 0);
+  const mesNum = Number(mes || 0);
+  if (!Number.isInteger(anioNum) || anioNum < 1900 || !Number.isInteger(mesNum) || mesNum < 1 || mesNum > 12) {
+    return 0;
+  }
+  return (anioNum * 100) + mesNum;
+};
+const parseOptionalPeriodoTarifaProgramada = (value) => {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}$/.test(raw)) {
+    const [anioTxt, mesTxt] = raw.split("-");
+    const periodoNum = buildPeriodoNum(Number(anioTxt), Number(mesTxt));
+    return periodoNum > 0 ? periodoNum : "__INVALID__";
+  }
+  if (/^\d{6}$/.test(raw)) {
+    const anioNum = Number(raw.slice(0, 4));
+    const mesNum = Number(raw.slice(4, 6));
+    const periodoNum = buildPeriodoNum(anioNum, mesNum);
+    return periodoNum > 0 ? periodoNum : "__INVALID__";
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return "__INVALID__";
+  const anioNum = Math.trunc(parsed / 100);
+  const mesNum = parsed % 100;
+  const periodoNum = buildPeriodoNum(anioNum, mesNum);
+  return periodoNum > 0 ? periodoNum : "__INVALID__";
+};
+const formatPeriodoTarifaProgramada = (periodoNum) => {
+  const periodo = Number(periodoNum || 0);
+  if (!Number.isInteger(periodo) || periodo <= 0) return "";
+  const anio = Math.trunc(periodo / 100);
+  const mes = periodo % 100;
+  if (anio < 1900 || mes < 1 || mes > 12) return "";
+  return `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}`;
+};
 const getUltimoPeriodoCerrado = ({ anio, mes } = {}) => {
   const anioNum = Number(anio || 0);
   const mesNum = Number(mes || 0);
@@ -2312,6 +2350,43 @@ const parseOptionalTarifaMonto = (value) => {
   const parsed = roundMonto2(parseMonto(raw, Number.NaN));
   if (!Number.isFinite(parsed) || parsed < 0) return "__INVALID__";
   return parsed;
+};
+const resolvePredioTarifasByPeriodo = (predio = {}, periodoNumInput = 0) => {
+  const periodoNum = Number(periodoNumInput || 0);
+  const activoSN = normalizeSN(predio?.activo_sn, "S");
+  const aguaSN = normalizeSN(predio?.agua_sn, "S");
+  const desagueSN = normalizeSN(predio?.desague_sn, "S");
+  const limpiezaSN = normalizeSN(predio?.limpieza_sn, "S");
+  const programadoDesde = Number(predio?.tarifa_programada_desde_periodo || 0);
+  const usaProgramada = programadoDesde > 0 && periodoNum > 0 && periodoNum >= programadoDesde;
+  const resolveTarifa = (actualKey, programadaKey, fallback = 0) => {
+    if (usaProgramada) {
+      const programada = parseOptionalTarifaMonto(predio?.[programadaKey]);
+      if (programada !== "__INVALID__" && programada !== null) return programada;
+    }
+    const actual = parseOptionalTarifaMonto(predio?.[actualKey]);
+    if (actual !== "__INVALID__" && actual !== null) return actual;
+    return roundMonto2(fallback);
+  };
+  return {
+    agua: (activoSN === "S" && aguaSN === "S")
+      ? resolveTarifa("tarifa_agua", "tarifa_programada_agua", AUTO_DEUDA_BASE.agua)
+      : 0,
+    desague: (activoSN === "S" && desagueSN === "S")
+      ? resolveTarifa("tarifa_desague", "tarifa_programada_desague", AUTO_DEUDA_BASE.desague)
+      : 0,
+    limpieza: (activoSN === "S" && limpiezaSN === "S")
+      ? resolveTarifa("tarifa_limpieza", "tarifa_programada_limpieza", AUTO_DEUDA_BASE.limpieza)
+      : 0,
+    admin: activoSN === "S"
+      ? resolveTarifa("tarifa_admin", "tarifa_programada_admin", AUTO_DEUDA_BASE.admin)
+      : 0,
+    extra: activoSN === "S"
+      ? resolveTarifa("tarifa_extra", "tarifa_programada_extra", 0)
+      : 0,
+    usa_programada: usaProgramada,
+    tarifa_programada_desde_periodo: programadoDesde > 0 ? programadoDesde : null
+  };
 };
 const parseOptionalServicioSN = (value) => {
   if (value === undefined || value === null) return null;
@@ -2416,27 +2491,47 @@ const resolveActivatedServiceTarifas = ({
       : tarifaAdminNormalizada
   };
 };
-const buildTarifaActualReciboSql = (predioAlias = "p2") => `(
-  (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.agua_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_agua, ${AUTO_DEUDA_BASE.agua}) ELSE 0 END)
-  + (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.desague_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_desague, ${AUTO_DEUDA_BASE.desague}) ELSE 0 END)
-  + (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.limpieza_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza}) ELSE 0 END)
-  + (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) + COALESCE(${predioAlias}.tarifa_extra, 0) ELSE 0 END)
+const buildPeriodoNumSql = (anioExpr, mesExpr) => `((COALESCE(${anioExpr}, 0)::int * 100) + COALESCE(${mesExpr}, 0)::int)`;
+const buildTarifaPeriodoBaseSql = ({
+  predioAlias = "p2",
+  actualColumn,
+  programadaColumn,
+  fallback = 0,
+  periodoExpr = null
+} = {}) => {
+  const tarifaActualSql = `COALESCE(${predioAlias}.${actualColumn}, ${fallback})`;
+  if (!periodoExpr) return tarifaActualSql;
+  return `(CASE
+    WHEN ${predioAlias}.tarifa_programada_desde_periodo IS NOT NULL
+      AND ${periodoExpr} >= ${predioAlias}.tarifa_programada_desde_periodo
+    THEN COALESCE(${predioAlias}.${programadaColumn}, ${tarifaActualSql})
+    ELSE ${tarifaActualSql}
+  END)`;
+};
+const buildTarifaActualReciboSql = (predioAlias = "p2", periodoExpr = null) => `(
+  (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.agua_sn`, "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias, actualColumn: "tarifa_agua", programadaColumn: "tarifa_programada_agua", fallback: AUTO_DEUDA_BASE.agua, periodoExpr })} ELSE 0 END)
+  + (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.desague_sn`, "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias, actualColumn: "tarifa_desague", programadaColumn: "tarifa_programada_desague", fallback: AUTO_DEUDA_BASE.desague, periodoExpr })} ELSE 0 END)
+  + (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.limpieza_sn`, "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias, actualColumn: "tarifa_limpieza", programadaColumn: "tarifa_programada_limpieza", fallback: AUTO_DEUDA_BASE.limpieza, periodoExpr })} ELSE 0 END)
+  + (CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias, actualColumn: "tarifa_admin", programadaColumn: "tarifa_programada_admin", fallback: AUTO_DEUDA_BASE.admin, periodoExpr })} + ${buildTarifaPeriodoBaseSql({ predioAlias, actualColumn: "tarifa_extra", programadaColumn: "tarifa_programada_extra", fallback: 0, periodoExpr })} ELSE 0 END)
 )`;
-const buildTarifaActualAdminBaseSql = (predioAlias = "p2") => `(CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) ELSE 0 END)`;
-const buildTarifaActualExtraSql = (predioAlias = "p2") => `(CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_extra, 0) ELSE 0 END)`;
-const buildTarifaActualComponentesSql = (predioAlias = "p2") => ({
-  agua: `(CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.agua_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_agua, ${AUTO_DEUDA_BASE.agua}) ELSE 0 END)`,
-  desague: `(CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.desague_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_desague, ${AUTO_DEUDA_BASE.desague}) ELSE 0 END)`,
-  limpieza: `(CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.limpieza_sn`, "S")} THEN COALESCE(${predioAlias}.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza}) ELSE 0 END)`,
-  admin: `(${buildTarifaActualAdminBaseSql(predioAlias)} + ${buildTarifaActualExtraSql(predioAlias)})`,
-  admin_base: buildTarifaActualAdminBaseSql(predioAlias),
-  extra: buildTarifaActualExtraSql(predioAlias)
+const buildTarifaActualAdminBaseSql = (predioAlias = "p2", periodoExpr = null) => `(CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias, actualColumn: "tarifa_admin", programadaColumn: "tarifa_programada_admin", fallback: AUTO_DEUDA_BASE.admin, periodoExpr })} ELSE 0 END)`;
+const buildTarifaActualExtraSql = (predioAlias = "p2", periodoExpr = null) => `(CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias, actualColumn: "tarifa_extra", programadaColumn: "tarifa_programada_extra", fallback: 0, periodoExpr })} ELSE 0 END)`;
+const buildTarifaActualComponentesSql = (predioAlias = "p2", periodoExpr = null) => ({
+  agua: `(CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.agua_sn`, "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias, actualColumn: "tarifa_agua", programadaColumn: "tarifa_programada_agua", fallback: AUTO_DEUDA_BASE.agua, periodoExpr })} ELSE 0 END)`,
+  desague: `(CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.desague_sn`, "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias, actualColumn: "tarifa_desague", programadaColumn: "tarifa_programada_desague", fallback: AUTO_DEUDA_BASE.desague, periodoExpr })} ELSE 0 END)`,
+  limpieza: `(CASE WHEN ${sqlSnEsSi(`${predioAlias}.activo_sn`, "S")} AND ${sqlSnEsSi(`${predioAlias}.limpieza_sn`, "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias, actualColumn: "tarifa_limpieza", programadaColumn: "tarifa_programada_limpieza", fallback: AUTO_DEUDA_BASE.limpieza, periodoExpr })} ELSE 0 END)`,
+  admin: `(${buildTarifaActualAdminBaseSql(predioAlias, periodoExpr)} + ${buildTarifaActualExtraSql(predioAlias, periodoExpr)})`,
+  admin_base: buildTarifaActualAdminBaseSql(predioAlias, periodoExpr),
+  extra: buildTarifaActualExtraSql(predioAlias, periodoExpr)
 });
 const buildTarifaActualComponentesChangedSql = ({
   reciboAlias = "r",
   predioAlias = "p2"
 } = {}) => {
-  const componentesActuales = buildTarifaActualComponentesSql(predioAlias);
+  const componentesActuales = buildTarifaActualComponentesSql(
+    predioAlias,
+    buildPeriodoNumSql(`${reciboAlias}.anio`, `${reciboAlias}.mes`)
+  );
   return `(
     ABS(COALESCE(${reciboAlias}.subtotal_agua, 0) - (${componentesActuales.agua})) > 0.001
     OR ABS(COALESCE(${reciboAlias}.subtotal_desague, 0) - (${componentesActuales.desague})) > 0.001
@@ -2460,7 +2555,10 @@ const buildAplicaAjusteTarifaSql = ({
   pagosAlias = "p",
   requireCoveredPayment = true
 } = {}) => {
-  const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
+  const tarifaActualSql = buildTarifaActualReciboSql(
+    predioAlias,
+    buildPeriodoNumSql(`${reciboAlias}.anio`, `${reciboAlias}.mes`)
+  );
   const pagoCoverageSql = requireCoveredPayment
     ? `
     COALESCE(${pagosAlias}.total_pagado, 0) > 0
@@ -2508,7 +2606,10 @@ const buildTotalPagarReferenciaSql = ({
   onlyWhenUnpaid = false,
   onlyWhenSaldoPendiente = false
 } = {}) => {
-  const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
+  const tarifaActualSql = buildTarifaActualReciboSql(
+    predioAlias,
+    buildPeriodoNumSql(`${reciboAlias}.anio`, `${reciboAlias}.mes`)
+  );
   const usaTarifaActualSql = buildUsaTarifaActualSql({
     reciboAlias,
     predioAlias,
@@ -2528,7 +2629,10 @@ const buildTotalPagarDeudaVigenteSql = ({
   predioAlias = "p2",
   pagosAlias = "p"
 } = {}) => {
-  const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
+  const tarifaActualSql = buildTarifaActualReciboSql(
+    predioAlias,
+    buildPeriodoNumSql(`${reciboAlias}.anio`, `${reciboAlias}.mes`)
+  );
   const usaTarifaActualSql = buildUsaTarifaActualDeudaVigenteSql({
     reciboAlias,
     predioAlias,
@@ -2545,7 +2649,10 @@ const buildUsaTarifaActualDeudaVigenteSql = ({
   predioAlias = "p2",
   pagosAlias = "p"
 } = {}) => {
-  const tarifaActualSql = buildTarifaActualReciboSql(predioAlias);
+  const tarifaActualSql = buildTarifaActualReciboSql(
+    predioAlias,
+    buildPeriodoNumSql(`${reciboAlias}.anio`, `${reciboAlias}.mes`)
+  );
   return `(
     ABS(COALESCE(${reciboAlias}.total_pagar, 0) - (${tarifaActualSql})) > 0.001
     AND COALESCE(${pagosAlias}.total_pagado, 0) < COALESCE(${reciboAlias}.total_pagar, 0) - 0.001
@@ -2988,8 +3095,14 @@ const restoreCampoSolicitudUndoSnapshot = async (
         tarifa_limpieza = $13,
         tarifa_admin = $14,
         tarifa_extra = $15,
-        direccion_alterna = $16
-    WHERE id_predio = $17
+        direccion_alterna = $16,
+        tarifa_programada_desde_periodo = $17,
+        tarifa_programada_agua = $18,
+        tarifa_programada_desague = $19,
+        tarifa_programada_limpieza = $20,
+        tarifa_programada_admin = $21,
+        tarifa_programada_extra = $22
+    WHERE id_predio = $23
   `, [
     parsePositiveInt(predio.id_calle, 0) || null,
     normalizeLimitedText(predio.numero_casa, 30) || null,
@@ -3007,6 +3120,12 @@ const restoreCampoSolicitudUndoSnapshot = async (
     parseOptionalTarifaMonto(predio.tarifa_admin),
     parseOptionalTarifaMonto(predio.tarifa_extra),
     normalizeLimitedText(predio.direccion_alterna, 250) || null,
+    parseOptionalPeriodoTarifaProgramada(predio.tarifa_programada_desde_periodo),
+    parseOptionalTarifaMonto(predio.tarifa_programada_agua),
+    parseOptionalTarifaMonto(predio.tarifa_programada_desague),
+    parseOptionalTarifaMonto(predio.tarifa_programada_limpieza),
+    parseOptionalTarifaMonto(predio.tarifa_programada_admin),
+    parseOptionalTarifaMonto(predio.tarifa_programada_extra),
     idPredio
   ]);
   if (parsePositiveInt(idDireccionAlterna, 0) > 0) {
@@ -3079,6 +3198,42 @@ const recalcularRecibosFuturosPorServicios = async (
   const periodo = incluirPendientesHistoricos
     ? Math.max(0, periodoSolicitado)
     : Math.max(periodoSolicitado, periodoMinimoFuturo);
+  const periodoReciboSql = buildPeriodoNumSql("r.anio", "r.mes");
+  const tarifaAguaPeriodoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "p",
+    actualColumn: "tarifa_agua",
+    programadaColumn: "tarifa_programada_agua",
+    fallback: "$2::numeric",
+    periodoExpr: periodoReciboSql
+  });
+  const tarifaDesaguePeriodoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "p",
+    actualColumn: "tarifa_desague",
+    programadaColumn: "tarifa_programada_desague",
+    fallback: "$3::numeric",
+    periodoExpr: periodoReciboSql
+  });
+  const tarifaLimpiezaPeriodoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "p",
+    actualColumn: "tarifa_limpieza",
+    programadaColumn: "tarifa_programada_limpieza",
+    fallback: "$4::numeric",
+    periodoExpr: periodoReciboSql
+  });
+  const tarifaAdminPeriodoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "p",
+    actualColumn: "tarifa_admin",
+    programadaColumn: "tarifa_programada_admin",
+    fallback: "$5::numeric",
+    periodoExpr: periodoReciboSql
+  });
+  const tarifaExtraPeriodoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "p",
+    actualColumn: "tarifa_extra",
+    programadaColumn: "tarifa_programada_extra",
+    fallback: "0::numeric",
+    periodoExpr: periodoReciboSql
+  });
 
   await client.query(`
     UPDATE predios
@@ -3118,7 +3273,7 @@ const recalcularRecibosFuturosPorServicios = async (
               OR COALESCE(r.subtotal_agua, 0) > 0
             )
             THEN COALESCE(
-              p.tarifa_agua,
+              ${tarifaAguaPeriodoSql},
               hist.agua_hist,
               COALESCE(r.subtotal_agua, 0),
               $2::numeric
@@ -3132,7 +3287,7 @@ const recalcularRecibosFuturosPorServicios = async (
               OR COALESCE(r.subtotal_desague, 0) > 0
             )
             THEN COALESCE(
-              p.tarifa_desague,
+              ${tarifaDesaguePeriodoSql},
               hist.desague_hist,
               COALESCE(r.subtotal_desague, 0),
               $3::numeric
@@ -3146,7 +3301,7 @@ const recalcularRecibosFuturosPorServicios = async (
               OR COALESCE(r.subtotal_limpieza, 0) > 0
             )
             THEN COALESCE(
-              p.tarifa_limpieza,
+              ${tarifaLimpiezaPeriodoSql},
               hist.limpieza_hist,
               COALESCE(r.subtotal_limpieza, 0),
               $4::numeric
@@ -3155,12 +3310,12 @@ const recalcularRecibosFuturosPorServicios = async (
         END AS nuevo_limpieza,
         CASE
           WHEN ${sqlSnEsSi("p.activo_sn", "S")}
-            THEN COALESCE(p.tarifa_admin, $5::numeric)
+            THEN ${tarifaAdminPeriodoSql}
           ELSE 0::numeric
         END AS nuevo_admin,
         CASE
           WHEN ${sqlSnEsSi("p.activo_sn", "S")}
-            THEN COALESCE(p.tarifa_extra, 0::numeric)
+            THEN ${tarifaExtraPeriodoSql}
           ELSE 0::numeric
         END AS nuevo_extra,
         COALESCE(pagos.total_pagado, 0)::numeric AS total_pagado
@@ -3286,6 +3441,42 @@ const recalcularRecibosFuturosPorServicios = async (
 const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, idContribuyente) => {
   const id = parsePositiveInt(idContribuyente, 0);
   if (!id) return { actualizados: 0, periodos: buildPeriodosRecalculadosResumen([]), rows: [] };
+  const periodoReciboSql = buildPeriodoNumSql("r.anio", "r.mes");
+  const tarifaAguaPeriodoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "p",
+    actualColumn: "tarifa_agua",
+    programadaColumn: "tarifa_programada_agua",
+    fallback: "$1::numeric",
+    periodoExpr: periodoReciboSql
+  });
+  const tarifaDesaguePeriodoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "p",
+    actualColumn: "tarifa_desague",
+    programadaColumn: "tarifa_programada_desague",
+    fallback: "$2::numeric",
+    periodoExpr: periodoReciboSql
+  });
+  const tarifaLimpiezaPeriodoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "p",
+    actualColumn: "tarifa_limpieza",
+    programadaColumn: "tarifa_programada_limpieza",
+    fallback: "$3::numeric",
+    periodoExpr: periodoReciboSql
+  });
+  const tarifaAdminPeriodoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "p",
+    actualColumn: "tarifa_admin",
+    programadaColumn: "tarifa_programada_admin",
+    fallback: "$4::numeric",
+    periodoExpr: periodoReciboSql
+  });
+  const tarifaExtraPeriodoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "p",
+    actualColumn: "tarifa_extra",
+    programadaColumn: "tarifa_programada_extra",
+    fallback: "0::numeric",
+    periodoExpr: periodoReciboSql
+  });
   const fix = await client.query(`
     WITH objetivo AS (
       SELECT
@@ -3305,7 +3496,7 @@ const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, i
               OR (hist.agua_hist IS NOT NULL AND COALESCE(p.tarifa_agua, 0) <= 0)
             )
             THEN COALESCE(
-              p.tarifa_agua,
+              ${tarifaAguaPeriodoSql},
               COALESCE(r.subtotal_agua, 0),
               hist.agua_hist,
               $1::numeric
@@ -3320,7 +3511,7 @@ const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, i
               OR (hist.desague_hist IS NOT NULL AND COALESCE(p.tarifa_desague, 0) <= 0)
             )
             THEN COALESCE(
-              p.tarifa_desague,
+              ${tarifaDesaguePeriodoSql},
               COALESCE(r.subtotal_desague, 0),
               hist.desague_hist,
               $2::numeric
@@ -3335,7 +3526,7 @@ const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, i
               OR (hist.limpieza_hist IS NOT NULL AND COALESCE(p.tarifa_limpieza, 0) <= 0)
             )
             THEN COALESCE(
-              p.tarifa_limpieza,
+              ${tarifaLimpiezaPeriodoSql},
               COALESCE(r.subtotal_limpieza, 0),
               hist.limpieza_hist,
               $3::numeric
@@ -3344,12 +3535,12 @@ const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, i
         END AS new_limpieza,
         CASE
           WHEN ${sqlSnEsSi("p.activo_sn", "S")}
-            THEN COALESCE(p.tarifa_admin, $4::numeric)
+            THEN ${tarifaAdminPeriodoSql}
           ELSE 0::numeric
         END AS new_admin,
         CASE
           WHEN ${sqlSnEsSi("p.activo_sn", "S")}
-            THEN COALESCE(p.tarifa_extra, 0::numeric)
+            THEN ${tarifaExtraPeriodoSql}
           ELSE 0::numeric
         END AS new_extra
       FROM recibos r
@@ -3445,6 +3636,42 @@ const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, i
 const repararRecibosPendientesSnLegacy = async () => {
   const client = await pool.connect();
   try {
+    const periodoReciboSql = buildPeriodoNumSql("r.anio", "r.mes");
+    const tarifaAguaPeriodoSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_agua",
+      programadaColumn: "tarifa_programada_agua",
+      fallback: "$1::numeric",
+      periodoExpr: periodoReciboSql
+    });
+    const tarifaDesaguePeriodoSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_desague",
+      programadaColumn: "tarifa_programada_desague",
+      fallback: "$2::numeric",
+      periodoExpr: periodoReciboSql
+    });
+    const tarifaLimpiezaPeriodoSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_limpieza",
+      programadaColumn: "tarifa_programada_limpieza",
+      fallback: "$3::numeric",
+      periodoExpr: periodoReciboSql
+    });
+    const tarifaAdminPeriodoSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_admin",
+      programadaColumn: "tarifa_programada_admin",
+      fallback: "$4::numeric",
+      periodoExpr: periodoReciboSql
+    });
+    const tarifaExtraPeriodoSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_extra",
+      programadaColumn: "tarifa_programada_extra",
+      fallback: "0::numeric",
+      periodoExpr: periodoReciboSql
+    });
     const fix = await client.query(`
       WITH objetivo AS (
         SELECT
@@ -3462,7 +3689,7 @@ const repararRecibosPendientesSnLegacy = async () => {
                 OR (hist.agua_hist IS NOT NULL AND COALESCE(p.tarifa_agua, 0) <= 0)
               )
               THEN COALESCE(
-                p.tarifa_agua,
+                ${tarifaAguaPeriodoSql},
                 COALESCE(r.subtotal_agua, 0),
                 hist.agua_hist,
                 $1::numeric
@@ -3477,7 +3704,7 @@ const repararRecibosPendientesSnLegacy = async () => {
                 OR (hist.desague_hist IS NOT NULL AND COALESCE(p.tarifa_desague, 0) <= 0)
               )
               THEN COALESCE(
-                p.tarifa_desague,
+                ${tarifaDesaguePeriodoSql},
                 COALESCE(r.subtotal_desague, 0),
                 hist.desague_hist,
                 $2::numeric
@@ -3492,7 +3719,7 @@ const repararRecibosPendientesSnLegacy = async () => {
                 OR (hist.limpieza_hist IS NOT NULL AND COALESCE(p.tarifa_limpieza, 0) <= 0)
               )
               THEN COALESCE(
-                p.tarifa_limpieza,
+                ${tarifaLimpiezaPeriodoSql},
                 COALESCE(r.subtotal_limpieza, 0),
                 hist.limpieza_hist,
                 $3::numeric
@@ -3501,12 +3728,12 @@ const repararRecibosPendientesSnLegacy = async () => {
           END AS new_limpieza,
           CASE
             WHEN ${sqlSnEsSi("p.activo_sn", "S")}
-              THEN COALESCE(p.tarifa_admin, $4::numeric)
+              THEN ${tarifaAdminPeriodoSql}
             ELSE 0::numeric
           END AS new_admin,
           CASE
             WHEN ${sqlSnEsSi("p.activo_sn", "S")}
-              THEN COALESCE(p.tarifa_extra, 0::numeric)
+              THEN ${tarifaExtraPeriodoSql}
             ELSE 0::numeric
           END AS new_extra
         FROM recibos r
@@ -4758,6 +4985,30 @@ const ensurePrediosDireccionAlterna = async (client) => {
   `);
   await client.query(`
     ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS tarifa_programada_desde_periodo INTEGER NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS tarifa_programada_agua NUMERIC(12, 2) NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS tarifa_programada_desague NUMERIC(12, 2) NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS tarifa_programada_limpieza NUMERIC(12, 2) NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS tarifa_programada_admin NUMERIC(12, 2) NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD COLUMN IF NOT EXISTS tarifa_programada_extra NUMERIC(12, 2) NULL
+  `);
+  await client.query(`
+    ALTER TABLE predios
     DROP CONSTRAINT IF EXISTS chk_predios_tarifas_non_negative
   `);
   await client.query(`
@@ -4768,7 +5019,26 @@ const ensurePrediosDireccionAlterna = async (client) => {
       (tarifa_desague IS NULL OR tarifa_desague >= 0) AND
       (tarifa_limpieza IS NULL OR tarifa_limpieza >= 0) AND
       (tarifa_admin IS NULL OR tarifa_admin >= 0) AND
-      (tarifa_extra IS NULL OR tarifa_extra >= 0)
+      (tarifa_extra IS NULL OR tarifa_extra >= 0) AND
+      (tarifa_programada_agua IS NULL OR tarifa_programada_agua >= 0) AND
+      (tarifa_programada_desague IS NULL OR tarifa_programada_desague >= 0) AND
+      (tarifa_programada_limpieza IS NULL OR tarifa_programada_limpieza >= 0) AND
+      (tarifa_programada_admin IS NULL OR tarifa_programada_admin >= 0) AND
+      (tarifa_programada_extra IS NULL OR tarifa_programada_extra >= 0)
+    )
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    DROP CONSTRAINT IF EXISTS chk_predios_tarifa_programada_periodo
+  `);
+  await client.query(`
+    ALTER TABLE predios
+    ADD CONSTRAINT chk_predios_tarifa_programada_periodo
+    CHECK (
+      tarifa_programada_desde_periodo IS NULL OR (
+        tarifa_programada_desde_periodo BETWEEN 190001 AND 999912
+        AND MOD(tarifa_programada_desde_periodo, 100) BETWEEN 1 AND 12
+      )
     )
   `);
   await client.query(`
@@ -8423,7 +8693,7 @@ const obtenerReporteEstadoConexionRows = async ({
 
   const query = `
     WITH recibos_objetivo AS (
-      SELECT r.id_recibo, r.id_predio, r.total_pagar
+      SELECT r.id_recibo, r.id_predio, r.total_pagar, r.anio, r.mes
       FROM recibos r
       WHERE (r.anio, r.mes) <= ($1::int, $2::int)
     ),
@@ -8523,15 +8793,17 @@ const obtenerReporteProyeccionEstadoConexion = async ({
   const fechaReferenciaMes = /^\d{4}-\d{2}$/.test(String(periodo?.periodo || ""))
     ? String(periodo.periodo)
     : getCurrentIsoMonth();
+  const [anioProyeccionTxt, mesProyeccionTxt] = fechaReferenciaMes.split("-");
+  const periodoProyeccionNum = buildPeriodoNum(Number(anioProyeccionTxt), Number(mesProyeccionTxt));
   const mesesRaw = Number(periodo?.meses_proyeccion || 1);
   const mesesProyeccion = Number.isFinite(mesesRaw)
     ? Math.min(24, Math.max(1, Math.trunc(mesesRaw)))
     : 1;
-  const tarifaAguaSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, ${AUTO_DEUDA_BASE.agua}) ELSE 0 END)`;
-  const tarifaDesagueSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, ${AUTO_DEUDA_BASE.desague}) ELSE 0 END)`;
-  const tarifaLimpiezaSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza}) ELSE 0 END)`;
-  const tarifaAdminSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) ELSE 0 END)`;
-  const tarifaExtraSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_extra, 0) ELSE 0 END)`;
+  const tarifaAguaSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias: "p", actualColumn: "tarifa_agua", programadaColumn: "tarifa_programada_agua", fallback: AUTO_DEUDA_BASE.agua, periodoExpr: String(periodoProyeccionNum || getCurrentPeriodoNum()) })} ELSE 0 END)`;
+  const tarifaDesagueSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias: "p", actualColumn: "tarifa_desague", programadaColumn: "tarifa_programada_desague", fallback: AUTO_DEUDA_BASE.desague, periodoExpr: String(periodoProyeccionNum || getCurrentPeriodoNum()) })} ELSE 0 END)`;
+  const tarifaLimpiezaSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias: "p", actualColumn: "tarifa_limpieza", programadaColumn: "tarifa_programada_limpieza", fallback: AUTO_DEUDA_BASE.limpieza, periodoExpr: String(periodoProyeccionNum || getCurrentPeriodoNum()) })} ELSE 0 END)`;
+  const tarifaAdminSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias: "p", actualColumn: "tarifa_admin", programadaColumn: "tarifa_programada_admin", fallback: AUTO_DEUDA_BASE.admin, periodoExpr: String(periodoProyeccionNum || getCurrentPeriodoNum()) })} ELSE 0 END)`;
+  const tarifaExtraSql = `(CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN ${buildTarifaPeriodoBaseSql({ predioAlias: "p", actualColumn: "tarifa_extra", programadaColumn: "tarifa_programada_extra", fallback: 0, periodoExpr: String(periodoProyeccionNum || getCurrentPeriodoNum()) })} ELSE 0 END)`;
   const where = ["COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') = 'CON_CONEXION'"];
   const params = [];
   const ids = Array.from(new Set((Array.isArray(idsContribuyentes) ? idsContribuyentes : [])
@@ -8676,7 +8948,9 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
     predioAlias: "p",
     pagosAlias: "pp"
   });
-  const tarifaActualComponentesDetalleSql = buildTarifaActualComponentesSql("p");
+  const tarifaActualComponentesDetalleSql = buildTarifaActualComponentesSql("p", buildPeriodoNumSql("r.anio", "r.mes"));
+  const tarifaAdminActualDetalleSql = buildTarifaActualAdminBaseSql("p", buildPeriodoNumSql("r.anio", "r.mes"));
+  const tarifaExtraActualDetalleSql = buildTarifaActualExtraSql("p", buildPeriodoNumSql("r.anio", "r.mes"));
 
   const query = `
     WITH pagos_por_recibo AS (
@@ -8711,8 +8985,8 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
       SUM(CASE WHEN ${usaTarifaActualDetalleSql} THEN ${tarifaActualComponentesDetalleSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END) AS subtotal_limpieza,
       SUM(CASE WHEN ${usaTarifaActualDetalleSql} THEN ${tarifaActualComponentesDetalleSql.admin_base} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
       SUM(CASE WHEN ${usaTarifaActualDetalleSql} THEN ${tarifaActualComponentesDetalleSql.extra} ELSE COALESCE(r.subtotal_extra, 0) END) AS subtotal_extra,
-      SUM(COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin})) AS tarifa_admin_actual,
-      SUM(COALESCE(p.tarifa_extra, 0)) AS tarifa_extra_actual,
+      SUM(${tarifaAdminActualDetalleSql}) AS tarifa_admin_actual,
+      SUM(${tarifaExtraActualDetalleSql}) AS tarifa_extra_actual,
       SUM(${totalPagarReferenciaDetalleSql}) AS total_mes,
       SUM(COALESCE(pp.total_pagado, 0)) AS abono_mes,
       SUM(
@@ -9117,7 +9391,7 @@ app.get("/contribuyentes", async (req, res) => {
     // Consulta optimizada: agregamos deuda/abono/meses por predio una sola vez
     const query = `
       WITH recibos_objetivo AS (
-        SELECT r.id_recibo, r.id_predio, r.total_pagar
+        SELECT r.id_recibo, r.id_predio, r.total_pagar, r.anio, r.mes
         FROM recibos r
         WHERE (r.anio, r.mes) <= ($1::int, $2::int)
       ),
@@ -9221,6 +9495,8 @@ app.get("/contribuyentes/detalle/:id", async (req, res) => {
     const data = await pool.query(`
       SELECT c.*, p.id_calle, p.numero_casa, p.manzana, p.lote, p.referencia_direccion,
              p.tarifa_agua, p.tarifa_desague, p.tarifa_limpieza, p.tarifa_admin, p.tarifa_extra,
+             p.tarifa_programada_desde_periodo, p.tarifa_programada_agua, p.tarifa_programada_desague,
+             p.tarifa_programada_limpieza, p.tarifa_programada_admin, p.tarifa_programada_extra,
              COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
              COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
              COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn
@@ -9234,6 +9510,7 @@ app.get("/contribuyentes/detalle/:id", async (req, res) => {
     res.set("Cache-Control", "no-store");
     res.json({
       ...detalle,
+      tarifa_programada_desde: formatPeriodoTarifaProgramada(detalle?.tarifa_programada_desde_periodo),
       ...(tarifaReferencia || {})
     });
   } catch (err) { res.status(500).send("Error"); }
@@ -9346,6 +9623,9 @@ app.put("/contribuyentes/:id", async (req, res) => {
       dni_ruc, email, telefono, id_calle, numero_casa, manzana, lote, estado_conexion,
       motivo_cambio_razon_social, detalle_motivo_cambio_razon_social,
       tarifa_agua, tarifa_desague, tarifa_limpieza, tarifa_admin, tarifa_extra,
+      tarifa_programada_desde_periodo,
+      tarifa_programada_agua, tarifa_programada_desague, tarifa_programada_limpieza,
+      tarifa_programada_admin, tarifa_programada_extra,
       agua_sn, desague_sn, limpieza_sn
     } = req.body;
     const codigoMunicipal = normalizeCodigoMunicipal(codigo_municipal);
@@ -9361,15 +9641,52 @@ app.put("/contribuyentes/:id", async (req, res) => {
     const tarifaLimpieza = parseOptionalTarifaMonto(tarifa_limpieza);
     const tarifaAdmin = parseOptionalTarifaMonto(tarifa_admin);
     const tarifaExtra = parseOptionalTarifaMonto(tarifa_extra);
+    const tarifaProgramadaDesdePeriodo = parseOptionalPeriodoTarifaProgramada(tarifa_programada_desde_periodo);
+    const tarifaProgramadaAgua = parseOptionalTarifaMonto(tarifa_programada_agua);
+    const tarifaProgramadaDesague = parseOptionalTarifaMonto(tarifa_programada_desague);
+    const tarifaProgramadaLimpieza = parseOptionalTarifaMonto(tarifa_programada_limpieza);
+    const tarifaProgramadaAdmin = parseOptionalTarifaMonto(tarifa_programada_admin);
+    const tarifaProgramadaExtra = parseOptionalTarifaMonto(tarifa_programada_extra);
     const aguaSN = parseOptionalServicioSN(agua_sn);
     const desagueSN = parseOptionalServicioSN(desague_sn);
     const limpiezaSN = parseOptionalServicioSN(limpieza_sn);
     if ([tarifaAgua, tarifaDesague, tarifaLimpieza, tarifaAdmin, tarifaExtra].includes("__INVALID__")) {
       return res.status(400).json({ error: "Tarifas inválidas. Deben ser números mayores o iguales a 0." });
     }
+    if (
+      [
+        tarifaProgramadaDesdePeriodo,
+        tarifaProgramadaAgua,
+        tarifaProgramadaDesague,
+        tarifaProgramadaLimpieza,
+        tarifaProgramadaAdmin,
+        tarifaProgramadaExtra
+      ].includes("__INVALID__")
+    ) {
+      return res.status(400).json({ error: "Tarifa programada inválida. Revise el periodo y los montos." });
+    }
     if ([aguaSN, desagueSN, limpiezaSN].includes("__INVALID__")) {
       return res.status(400).json({ error: "Servicios inválidos. Use S/N o true/false." });
     }
+    const tarifaProgramadaTieneValores = [
+      tarifaProgramadaAgua,
+      tarifaProgramadaDesague,
+      tarifaProgramadaLimpieza,
+      tarifaProgramadaAdmin,
+      tarifaProgramadaExtra
+    ].some((value) => value !== null);
+    if (tarifaProgramadaDesdePeriodo === null && tarifaProgramadaTieneValores) {
+      return res.status(400).json({ error: "Indique desde qué periodo aplicará la tarifa programada." });
+    }
+    if (tarifaProgramadaDesdePeriodo !== null && !tarifaProgramadaTieneValores) {
+      return res.status(400).json({ error: "Configure al menos una tarifa programada o quite la programación." });
+    }
+    const tarifaProgramadaDesdeFinal = tarifaProgramadaTieneValores ? tarifaProgramadaDesdePeriodo : null;
+    const tarifaProgramadaAguaFinal = tarifaProgramadaTieneValores ? tarifaProgramadaAgua : null;
+    const tarifaProgramadaDesagueFinal = tarifaProgramadaTieneValores ? tarifaProgramadaDesague : null;
+    const tarifaProgramadaLimpiezaFinal = tarifaProgramadaTieneValores ? tarifaProgramadaLimpieza : null;
+    const tarifaProgramadaAdminFinal = tarifaProgramadaTieneValores ? tarifaProgramadaAdmin : null;
+    const tarifaProgramadaExtraFinal = tarifaProgramadaTieneValores ? tarifaProgramadaExtra : null;
 
     await client.query('BEGIN');
     txStarted = true;
@@ -9512,6 +9829,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
       tarifaLimpieza: tarifaLimpieza ?? predioActual?.tarifa_limpieza ?? null,
       tarifaAdmin: tarifaAdmin ?? predioActual?.tarifa_admin ?? null
     });
+    const tarifaProgramadaPeriodoActual = parseOptionalPeriodoTarifaProgramada(predioActual?.tarifa_programada_desde_periodo);
     const serviciosDespues = {
       activo_sn: predioEstado.activo_sn,
       agua_sn: aguaSN ?? serviciosActuales.agua_sn,
@@ -9524,6 +9842,12 @@ app.put("/contribuyentes/:id", async (req, res) => {
       "tarifa_limpieza",
       "tarifa_admin",
       "tarifa_extra",
+      "tarifa_programada_desde_periodo",
+      "tarifa_programada_agua",
+      "tarifa_programada_desague",
+      "tarifa_programada_limpieza",
+      "tarifa_programada_admin",
+      "tarifa_programada_extra",
       "agua_sn",
       "desague_sn",
       "limpieza_sn",
@@ -9539,7 +9863,13 @@ app.put("/contribuyentes/:id", async (req, res) => {
       parseCampoSolicitudTarifaValue(predioActual?.tarifa_desague) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_desague) ||
       parseCampoSolicitudTarifaValue(predioActual?.tarifa_limpieza) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_limpieza) ||
       parseCampoSolicitudTarifaValue(predioActual?.tarifa_admin) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_admin) ||
-      parseCampoSolicitudTarifaValue(predioActual?.tarifa_extra) !== parseCampoSolicitudTarifaValue(tarifaExtra);
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_extra) !== parseCampoSolicitudTarifaValue(tarifaExtra) ||
+      parseOptionalPeriodoTarifaProgramada(tarifaProgramadaPeriodoActual) !== parseOptionalPeriodoTarifaProgramada(tarifaProgramadaDesdeFinal) ||
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_programada_agua) !== parseCampoSolicitudTarifaValue(tarifaProgramadaAguaFinal) ||
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_programada_desague) !== parseCampoSolicitudTarifaValue(tarifaProgramadaDesagueFinal) ||
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_programada_limpieza) !== parseCampoSolicitudTarifaValue(tarifaProgramadaLimpiezaFinal) ||
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_programada_admin) !== parseCampoSolicitudTarifaValue(tarifaProgramadaAdminFinal) ||
+      parseCampoSolicitudTarifaValue(predioActual?.tarifa_programada_extra) !== parseCampoSolicitudTarifaValue(tarifaProgramadaExtraFinal);
     const auditChangeLines = [];
     const pushEditAuditChange = (label, nuevo, anterior) => {
       const nuevoTxt = sanitizeAuditDetailValue(nuevo, "-");
@@ -9605,6 +9935,24 @@ app.put("/contribuyentes/:id", async (req, res) => {
     if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_extra) !== parseCampoSolicitudTarifaValue(tarifaExtra)) {
       auditChangeLines.push(`Tarifa extra: ${formatCampoTarifaAuditLabel(tarifaExtra, 0)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_extra, 0)})`);
     }
+    if (parseOptionalPeriodoTarifaProgramada(tarifaProgramadaPeriodoActual) !== parseOptionalPeriodoTarifaProgramada(tarifaProgramadaDesdeFinal)) {
+      auditChangeLines.push(`Tarifa programada desde: ${formatPeriodoTarifaProgramada(tarifaProgramadaDesdeFinal) || "-"} (antes: ${formatPeriodoTarifaProgramada(tarifaProgramadaPeriodoActual) || "-"})`);
+    }
+    if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_programada_agua) !== parseCampoSolicitudTarifaValue(tarifaProgramadaAguaFinal)) {
+      auditChangeLines.push(`Tarifa programada agua: ${formatCampoTarifaAuditLabel(tarifaProgramadaAguaFinal, AUTO_DEUDA_BASE.agua)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_programada_agua, AUTO_DEUDA_BASE.agua)})`);
+    }
+    if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_programada_desague) !== parseCampoSolicitudTarifaValue(tarifaProgramadaDesagueFinal)) {
+      auditChangeLines.push(`Tarifa programada desague: ${formatCampoTarifaAuditLabel(tarifaProgramadaDesagueFinal, AUTO_DEUDA_BASE.desague)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_programada_desague, AUTO_DEUDA_BASE.desague)})`);
+    }
+    if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_programada_limpieza) !== parseCampoSolicitudTarifaValue(tarifaProgramadaLimpiezaFinal)) {
+      auditChangeLines.push(`Tarifa programada limpieza: ${formatCampoTarifaAuditLabel(tarifaProgramadaLimpiezaFinal, AUTO_DEUDA_BASE.limpieza)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_programada_limpieza, AUTO_DEUDA_BASE.limpieza)})`);
+    }
+    if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_programada_admin) !== parseCampoSolicitudTarifaValue(tarifaProgramadaAdminFinal)) {
+      auditChangeLines.push(`Tarifa programada admin: ${formatCampoTarifaAuditLabel(tarifaProgramadaAdminFinal, AUTO_DEUDA_BASE.admin)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_programada_admin, AUTO_DEUDA_BASE.admin)})`);
+    }
+    if (parseCampoSolicitudTarifaValue(predioActual?.tarifa_programada_extra) !== parseCampoSolicitudTarifaValue(tarifaProgramadaExtraFinal)) {
+      auditChangeLines.push(`Tarifa programada extra: ${formatCampoTarifaAuditLabel(tarifaProgramadaExtraFinal, 0)} (antes: ${formatCampoTarifaAuditLabel(predioActual?.tarifa_programada_extra, 0)})`);
+    }
 
     await client.query(
       `UPDATE contribuyentes
@@ -9640,8 +9988,14 @@ app.put("/contribuyentes/:id", async (req, res) => {
            tarifa_extra = $12,
            agua_sn = COALESCE($13, agua_sn),
            desague_sn = COALESCE($14, desague_sn),
-           limpieza_sn = COALESCE($15, limpieza_sn)
-       WHERE id_predio = $16`,
+           limpieza_sn = COALESCE($15, limpieza_sn),
+           tarifa_programada_desde_periodo = $16,
+           tarifa_programada_agua = $17,
+           tarifa_programada_desague = $18,
+           tarifa_programada_limpieza = $19,
+           tarifa_programada_admin = $20,
+           tarifa_programada_extra = $21
+       WHERE id_predio = $22`,
       [
         idCalleNuevo, numeroCasaNuevo || null, manzanaNueva || null, loteNuevo || null, predioEstado.activo_sn, predioEstado.estado_servicio,
         referenciaDireccionNueva,
@@ -9651,15 +10005,29 @@ app.put("/contribuyentes/:id", async (req, res) => {
         tarifasActualizadas.tarifa_admin,
         tarifaExtra,
         aguaSN, desagueSN, limpiezaSN,
+        tarifaProgramadaDesdeFinal,
+        tarifaProgramadaAguaFinal,
+        tarifaProgramadaDesagueFinal,
+        tarifaProgramadaLimpiezaFinal,
+        tarifaProgramadaAdminFinal,
+        tarifaProgramadaExtraFinal,
         idPredioActual
       ]
     );
     let recibosRecalculados = 0;
     let periodosRecalculados = buildPeriodosRecalculadosResumen([]);
     if (serviciosCambiaron || tarifasCambiaron || requestIncluyeCamposTarifaOServicio) {
+      const periodosRecalculo = [
+        getCurrentPeriodoNum(),
+        Number(tarifaProgramadaPeriodoActual || 0),
+        Number(tarifaProgramadaDesdeFinal || 0)
+      ].filter((value) => Number.isInteger(value) && value > 0);
+      const desdePeriodoRecalculo = periodosRecalculo.length > 0
+        ? Math.min(...periodosRecalculo)
+        : getCurrentPeriodoNum();
       const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
         incluirPendientesHistoricos: true,
-        desdePeriodoNum: getCurrentPeriodoNum()
+        desdePeriodoNum: desdePeriodoRecalculo
       });
       const syncPendientesSinPago = await sincronizarRecibosPendientesSinPagoPorServiciosActuales(client, idContribuyente);
       const filasRecalculadas = [
@@ -10446,6 +10814,12 @@ app.post("/recibos", async (req, res) => {
         p.tarifa_limpieza,
         p.tarifa_admin,
         p.tarifa_extra,
+        p.tarifa_programada_desde_periodo,
+        p.tarifa_programada_agua,
+        p.tarifa_programada_desague,
+        p.tarifa_programada_limpieza,
+        p.tarifa_programada_admin,
+        p.tarifa_programada_extra,
         COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
       FROM predios p
       JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
@@ -10457,11 +10831,12 @@ app.post("/recibos", async (req, res) => {
       return res.status(400).json({ error: "El contribuyente no tiene conexion activa para generar deuda." });
     }
     
+    const tarifasPeriodo = resolvePredioTarifasByPeriodo(predio.rows[0], buildPeriodoNum(periodo.anio, periodo.mes));
     const base = {
-      agua: parseMonto(predio.rows[0].tarifa_agua, AUTO_DEUDA_BASE.agua),
-      desague: parseMonto(predio.rows[0].tarifa_desague, AUTO_DEUDA_BASE.desague),
-      limpieza: parseMonto(predio.rows[0].tarifa_limpieza, AUTO_DEUDA_BASE.limpieza),
-      admin: parseMonto(predio.rows[0].tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(predio.rows[0].tarifa_extra, 0)
+      agua: tarifasPeriodo.agua,
+      desague: tarifasPeriodo.desague,
+      limpieza: tarifasPeriodo.limpieza,
+      admin: roundMonto2(tarifasPeriodo.admin + tarifasPeriodo.extra)
     };
     const activoSN = normalizeSN(predio.rows[0].activo_sn, "S");
     const aguaHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].agua_sn, "S") === "S";
@@ -10614,22 +10989,58 @@ app.post("/recibos/generar-masivo", async (req, res) => {
       return res.status(400).json({ error: "Debe seleccionar al menos un servicio." });
     }
 
+    const periodoSeleccionadoSql = buildPeriodoNumSql("$1::int", "$2::int");
+    const tarifaAguaPeriodoSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_agua",
+      programadaColumn: "tarifa_programada_agua",
+      fallback: "$3",
+      periodoExpr: periodoSeleccionadoSql
+    });
+    const tarifaDesaguePeriodoSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_desague",
+      programadaColumn: "tarifa_programada_desague",
+      fallback: "$4",
+      periodoExpr: periodoSeleccionadoSql
+    });
+    const tarifaLimpiezaPeriodoSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_limpieza",
+      programadaColumn: "tarifa_programada_limpieza",
+      fallback: "$5",
+      periodoExpr: periodoSeleccionadoSql
+    });
+    const tarifaAdminPeriodoSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_admin",
+      programadaColumn: "tarifa_programada_admin",
+      fallback: "$6",
+      periodoExpr: periodoSeleccionadoSql
+    });
+    const tarifaExtraPeriodoSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_extra",
+      programadaColumn: "tarifa_programada_extra",
+      fallback: "0",
+      periodoExpr: periodoSeleccionadoSql
+    });
     let query = `
       INSERT INTO recibos (id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, subtotal_extra, total_pagar, estado)
       SELECT
         p.id_predio,
         $1,
         $2,
-        CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, $3) ELSE 0 END,
-        CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, $4) ELSE 0 END,
-        CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, $5) ELSE 0 END,
-        CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, $6) ELSE 0 END,
-        CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_extra, 0) ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN ${tarifaAguaPeriodoSql} ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN ${tarifaDesaguePeriodoSql} ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN ${tarifaLimpiezaPeriodoSql} ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN ${tarifaAdminPeriodoSql} ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN ${tarifaExtraPeriodoSql} ELSE 0 END,
         (
-          CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, $3) ELSE 0 END +
-          CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, $4) ELSE 0 END +
-          CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, $5) ELSE 0 END +
-          CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, $6) + COALESCE(p.tarifa_extra, 0) ELSE 0 END
+          CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN ${tarifaAguaPeriodoSql} ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN ${tarifaDesaguePeriodoSql} ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN ${tarifaLimpiezaPeriodoSql} ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN ${tarifaAdminPeriodoSql} + ${tarifaExtraPeriodoSql} ELSE 0 END
         ),
         'PENDIENTE'
       FROM predios p
@@ -10736,7 +11147,9 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       predioAlias: "p2",
       pagosAlias: "p"
     });
-    const tarifaActualComponentesPendSql = buildTarifaActualComponentesSql("p2");
+    const tarifaActualComponentesPendSql = buildTarifaActualComponentesSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
+    const tarifaAdminActualPendSql = buildTarifaActualAdminBaseSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
+    const tarifaExtraActualPendSql = buildTarifaActualExtraSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
     const whereParts = [
       "r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)",
       `(${totalPagarReferenciaPendSql} - COALESCE(p.total_pagado, 0)) > 0`
@@ -10753,8 +11166,8 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
         (CASE WHEN ${usaTarifaActualPendSql} THEN ${tarifaActualComponentesPendSql.limpieza} ELSE COALESCE(r.subtotal_limpieza, 0) END) AS subtotal_limpieza,
         (CASE WHEN ${usaTarifaActualPendSql} THEN ${tarifaActualComponentesPendSql.admin_base} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
         (CASE WHEN ${usaTarifaActualPendSql} THEN ${tarifaActualComponentesPendSql.extra} ELSE r.subtotal_extra END) AS subtotal_extra,
-        COALESCE(p2.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) AS tarifa_admin_actual,
-        COALESCE(p2.tarifa_extra, 0) AS tarifa_extra_actual,
+        ${tarifaAdminActualPendSql} AS tarifa_admin_actual,
+        ${tarifaExtraActualPendSql} AS tarifa_extra_actual,
         ${totalPagarReferenciaPendSql} AS total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
         GREATEST(${totalPagarReferenciaPendSql} - COALESCE(p.total_pagado, 0), 0) as deuda_mes,
@@ -10793,6 +11206,12 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
         p.tarifa_limpieza,
         p.tarifa_admin,
         p.tarifa_extra,
+        p.tarifa_programada_desde_periodo,
+        p.tarifa_programada_agua,
+        p.tarifa_programada_desague,
+        p.tarifa_programada_limpieza,
+        p.tarifa_programada_admin,
+        p.tarifa_programada_extra,
         COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
       FROM predios p
       JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
@@ -10810,28 +11229,10 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
       return res.json(rows);
     }
 
-    const activoSN = normalizeSN(predio.rows[0].activo_sn, "S");
-    const aguaHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].agua_sn, "S") === "S";
-    const desagueHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].desague_sn, "S") === "S";
-    const limpiezaHabilitado = activoSN === "S" && normalizeSN(predio.rows[0].limpieza_sn, "S") === "S";
-    const subtotalBase = {
-      agua: aguaHabilitado ? parseMonto(predio.rows[0].tarifa_agua, AUTO_DEUDA_BASE.agua) : 0,
-      desague: desagueHabilitado ? parseMonto(predio.rows[0].tarifa_desague, AUTO_DEUDA_BASE.desague) : 0,
-      limpieza: limpiezaHabilitado ? parseMonto(predio.rows[0].tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0,
-      admin: activoSN === "S"
-        ? parseMonto(predio.rows[0].tarifa_admin, AUTO_DEUDA_BASE.admin) + parseMonto(predio.rows[0].tarifa_extra, 0)
-        : 0
-    };
-    const totalBase = roundMonto2(subtotalBase.agua + subtotalBase.desague + subtotalBase.limpieza + subtotalBase.admin);
     const rows = filtrarRowsPorPermisos(pendientes.rows.map((row) => ({
       ...row,
       es_adelantado: (Number(row?.anio || 0) * 100 + Number(row?.mes || 0)) > periodoActual
     })));
-    if (totalBase <= 0) {
-      await client.query("COMMIT");
-      txStarted = false;
-      return res.json(rows);
-    }
 
     const startPeriodoDate = new Date(Date.UTC(anioActual, mesActual - 1, 1));
     const startPeriodo = {
@@ -10888,17 +11289,28 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
           continue;
         }
       }
+      const tarifasPeriodo = resolvePredioTarifasByPeriodo(predio.rows[0], periodoNum);
+      const subtotalPeriodo = {
+        agua: tarifasPeriodo.agua,
+        desague: tarifasPeriodo.desague,
+        limpieza: tarifasPeriodo.limpieza,
+        admin: roundMonto2(tarifasPeriodo.admin + tarifasPeriodo.extra)
+      };
+      const totalPeriodo = roundMonto2(
+        subtotalPeriodo.agua + subtotalPeriodo.desague + subtotalPeriodo.limpieza + subtotalPeriodo.admin
+      );
+      if (totalPeriodo <= 0) continue;
       rows.push({
         id_recibo: null,
         mes,
         anio,
-        subtotal_agua: subtotalBase.agua,
-        subtotal_desague: subtotalBase.desague,
-        subtotal_limpieza: subtotalBase.limpieza,
-        subtotal_admin: subtotalBase.admin,
-        total_pagar: totalBase,
+        subtotal_agua: subtotalPeriodo.agua,
+        subtotal_desague: subtotalPeriodo.desague,
+        subtotal_limpieza: subtotalPeriodo.limpieza,
+        subtotal_admin: subtotalPeriodo.admin,
+        total_pagar: totalPeriodo,
         abono_mes: 0,
-        deuda_mes: totalBase,
+        deuda_mes: totalPeriodo,
         estado: "ADELANTADO",
         es_adelantado: true
       });
@@ -11156,6 +11568,12 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
           p.tarifa_limpieza,
           p.tarifa_admin,
           p.tarifa_extra,
+          p.tarifa_programada_desde_periodo,
+          p.tarifa_programada_agua,
+          p.tarifa_programada_desague,
+          p.tarifa_programada_limpieza,
+          p.tarifa_programada_admin,
+          p.tarifa_programada_extra,
           COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
         FROM predios p
         JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
@@ -11173,27 +11591,6 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
       }
 
       const idPredio = Number(predioInfo.rows[0].id_predio || 0);
-      const activoSN = normalizeSN(predioInfo.rows[0].activo_sn, "S");
-      const aguaHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].agua_sn, "S") === "S";
-      const desagueHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].desague_sn, "S") === "S";
-      const limpiezaHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].limpieza_sn, "S") === "S";
-      const subtotalBase = {
-        agua: aguaHabilitado ? parseMonto(predioInfo.rows[0].tarifa_agua, AUTO_DEUDA_BASE.agua) : 0,
-        desague: desagueHabilitado ? parseMonto(predioInfo.rows[0].tarifa_desague, AUTO_DEUDA_BASE.desague) : 0,
-        limpieza: limpiezaHabilitado ? parseMonto(predioInfo.rows[0].tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0,
-        admin: activoSN === "S"
-          ? parseMonto(predioInfo.rows[0].tarifa_admin, AUTO_DEUDA_BASE.admin)
-          : 0,
-        extra: activoSN === "S"
-          ? parseMonto(predioInfo.rows[0].tarifa_extra, 0)
-          : 0
-      };
-      const totalBase = roundMonto2(subtotalBase.agua + subtotalBase.desague + subtotalBase.limpieza + subtotalBase.admin + subtotalBase.extra);
-      if (totalBase <= 0) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({ error: "No se pudo determinar tarifa base para pago adelantado." });
-      }
-
       const periodosNum = periodosAdelantados.map((p) => Number(p.periodo_num || 0));
       const recibosExistentes = await client.query(`
         WITH pagos_agg AS (
@@ -11223,6 +11620,23 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
       for (const periodo of periodosAdelantados) {
         const key = Number(periodo.periodo_num || 0);
         if (reciboPorPeriodo.has(key)) continue;
+        const tarifasPeriodo = resolvePredioTarifasByPeriodo(predioInfo.rows[0], key);
+        const subtotalPeriodo = {
+          agua: tarifasPeriodo.agua,
+          desague: tarifasPeriodo.desague,
+          limpieza: tarifasPeriodo.limpieza,
+          admin: tarifasPeriodo.admin,
+          extra: tarifasPeriodo.extra
+        };
+        const totalPeriodo = roundMonto2(
+          subtotalPeriodo.agua + subtotalPeriodo.desague + subtotalPeriodo.limpieza + subtotalPeriodo.admin + subtotalPeriodo.extra
+        );
+        if (totalPeriodo <= 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `No se pudo determinar tarifa base para el periodo ${String(periodo.mes).padStart(2, "0")}/${periodo.anio}.`
+          });
+        }
         try {
           const insertedRecibo = await client.query(`
             INSERT INTO recibos (
@@ -11234,12 +11648,12 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
             idPredio,
             periodo.anio,
             periodo.mes,
-            subtotalBase.agua,
-            subtotalBase.desague,
-            subtotalBase.limpieza,
-            subtotalBase.admin,
-            subtotalBase.extra,
-            totalBase
+            subtotalPeriodo.agua,
+            subtotalPeriodo.desague,
+            subtotalPeriodo.limpieza,
+            subtotalPeriodo.admin,
+            subtotalPeriodo.extra,
+            totalPeriodo
           ]);
           const rec = insertedRecibo.rows[0];
           if (rec) {
@@ -12320,6 +12734,12 @@ app.post("/pagos", async (req, res) => {
           p.tarifa_limpieza,
           p.tarifa_admin,
           p.tarifa_extra,
+          p.tarifa_programada_desde_periodo,
+          p.tarifa_programada_agua,
+          p.tarifa_programada_desague,
+          p.tarifa_programada_limpieza,
+          p.tarifa_programada_admin,
+          p.tarifa_programada_extra,
           COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
         FROM predios p
         JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
@@ -12336,27 +12756,6 @@ app.post("/pagos", async (req, res) => {
         return res.status(400).json({ error: "El contribuyente no tiene conexion activa para cobrar periodos adelantados." });
       }
       const idPredio = Number(predioInfo.rows[0].id_predio || 0);
-      const activoSN = normalizeSN(predioInfo.rows[0].activo_sn, "S");
-      const aguaHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].agua_sn, "S") === "S";
-      const desagueHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].desague_sn, "S") === "S";
-      const limpiezaHabilitado = activoSN === "S" && normalizeSN(predioInfo.rows[0].limpieza_sn, "S") === "S";
-      const subtotalBase = {
-        agua: aguaHabilitado ? parseMonto(predioInfo.rows[0].tarifa_agua, AUTO_DEUDA_BASE.agua) : 0,
-        desague: desagueHabilitado ? parseMonto(predioInfo.rows[0].tarifa_desague, AUTO_DEUDA_BASE.desague) : 0,
-        limpieza: limpiezaHabilitado ? parseMonto(predioInfo.rows[0].tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0,
-        admin: activoSN === "S"
-          ? parseMonto(predioInfo.rows[0].tarifa_admin, AUTO_DEUDA_BASE.admin)
-          : 0,
-        extra: activoSN === "S"
-          ? parseMonto(predioInfo.rows[0].tarifa_extra, 0)
-          : 0
-      };
-      const totalBase = roundMonto2(subtotalBase.agua + subtotalBase.desague + subtotalBase.limpieza + subtotalBase.admin + subtotalBase.extra);
-      if (totalBase <= 0) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({ error: "No se pudo determinar la tarifa base del contribuyente." });
-      }
-
       const periodoReferenciaPago = parseDateYearMonth(
         fechaPagoSolicitada,
         parseDateYearMonth(hoy)
@@ -12376,6 +12775,23 @@ app.post("/pagos", async (req, res) => {
 
       for (const periodo of periodosMap.values()) {
         let idRecibo = 0;
+        const tarifasPeriodo = resolvePredioTarifasByPeriodo(predioInfo.rows[0], Number(periodo.periodo_num || 0));
+        const subtotalPeriodo = {
+          agua: tarifasPeriodo.agua,
+          desague: tarifasPeriodo.desague,
+          limpieza: tarifasPeriodo.limpieza,
+          admin: tarifasPeriodo.admin,
+          extra: tarifasPeriodo.extra
+        };
+        const totalPeriodo = roundMonto2(
+          subtotalPeriodo.agua + subtotalPeriodo.desague + subtotalPeriodo.limpieza + subtotalPeriodo.admin + subtotalPeriodo.extra
+        );
+        if (totalPeriodo <= 0) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `No se pudo determinar la tarifa base del periodo ${String(periodo.mes).padStart(2, "0")}/${periodo.anio}.`
+          });
+        }
         const existente = await client.query(`
           SELECT r.id_recibo
           FROM recibos r
@@ -12405,12 +12821,12 @@ app.post("/pagos", async (req, res) => {
               idPredio,
               periodo.anio,
               periodo.mes,
-              subtotalBase.agua,
-              subtotalBase.desague,
-              subtotalBase.limpieza,
-              subtotalBase.admin,
-              subtotalBase.extra,
-              totalBase
+              subtotalPeriodo.agua,
+              subtotalPeriodo.desague,
+              subtotalPeriodo.limpieza,
+              subtotalPeriodo.admin,
+              subtotalPeriodo.extra,
+              totalPeriodo
             ]);
             idRecibo = Number(inserted.rows?.[0]?.id_recibo || 0);
           } catch (insertErr) {
@@ -13592,6 +14008,7 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
       )
       SELECT
         c.codigo_municipal,
+        c.nombre_completo,
         COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
         COUNT(*) FILTER (
           WHERE GREATEST(${totalPagarReferenciaActaSql} - COALESCE(pp.total_pagado, 0), 0) > 0
@@ -13604,7 +14021,7 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
        AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
       WHERE c.id_contribuyente = $1
-      GROUP BY c.codigo_municipal, COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION')
+      GROUP BY c.codigo_municipal, c.nombre_completo, COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION')
     `, [idContribuyente, anioExigible, mesExigible]);
 
     if (resumen.rows.length === 0) {
@@ -13614,6 +14031,7 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
 
     const fila = resumen.rows[0];
     const codigoMunicipal = fila.codigo_municipal || null;
+    const nombreCompleto = String(fila.nombre_completo || "").trim();
     const estadoConexion = normalizeEstadoConexion(fila.estado_conexion);
     const mesesDeuda = Number(fila.meses_deuda || 0);
     const deudaTotal = parseMonto(fila.deuda_total, 0);
@@ -13650,6 +14068,27 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
     await client.query("COMMIT");
 
     const idActa = Number(insercion.rows[0].id_acta);
+    req.skipAutoAudit = true;
+    await registrarAuditoria(
+      null,
+      "POST /actas-corte/generar",
+      buildStructuredAuditDetail({
+        evento: "Generar acta de corte",
+        id_acta: idActa,
+        numero_acta: `AC-${String(idActa).padStart(6, "0")}`,
+        id_contribuyente: idContribuyente,
+        codigo_municipal: codigoMunicipal || "",
+        nombre_completo: nombreCompleto,
+        contribuyente: buildContribuyenteAuditLabel({
+          id_contribuyente: idContribuyente,
+          codigo_municipal: codigoMunicipal || "",
+          nombre_completo: nombreCompleto
+        }),
+        meses_deuda: mesesDeuda,
+        deuda_total: deudaTotal.toFixed(2)
+      }),
+      obtenerUsuarioAuditoria(req)
+    );
     return res.json({
       id_acta: idActa,
       numero_acta: `AC-${String(idActa).padStart(6, "0")}`,
@@ -13702,6 +14141,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
       SELECT
         c.id_contribuyente,
         c.codigo_municipal,
+        c.nombre_completo,
         COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
         COUNT(*) FILTER (
           WHERE GREATEST(${totalPagarReferenciaActaLoteSql} - COALESCE(pp.total_pagado, 0), 0) > 0
@@ -13714,7 +14154,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
        AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = r.id_recibo
       WHERE c.id_contribuyente = ANY($1::int[])
-      GROUP BY c.id_contribuyente, c.codigo_municipal, COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION')
+      GROUP BY c.id_contribuyente, c.codigo_municipal, c.nombre_completo, COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION')
     `, [ids, anioActual, mesActual]);
 
     const resumenById = new Map();
@@ -13734,6 +14174,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
         continue;
       }
       const codigoMunicipal = row.codigo_municipal || null;
+      const nombreCompleto = String(row.nombre_completo || "").trim();
       const estadoConexion = normalizeEstadoConexion(row.estado_conexion);
       const mesesDeuda = Number(row.meses_deuda || 0);
       const deudaTotal = parseMonto(row.deuda_total, 0);
@@ -13742,6 +14183,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
         omitidas.push({
           id_contribuyente: idContribuyente,
           codigo_municipal: codigoMunicipal,
+          nombre_completo: nombreCompleto,
           meses_deuda: mesesDeuda,
           deuda_total: deudaTotal,
           motivo: "Sin conexión activa."
@@ -13753,6 +14195,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
         omitidas.push({
           id_contribuyente: idContribuyente,
           codigo_municipal: codigoMunicipal,
+          nombre_completo: nombreCompleto,
           meses_deuda: mesesDeuda,
           deuda_total: deudaTotal,
           motivo: "Menos de 3 meses de deuda."
@@ -13763,6 +14206,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
         omitidas.push({
           id_contribuyente: idContribuyente,
           codigo_municipal: codigoMunicipal,
+          nombre_completo: nombreCompleto,
           meses_deuda: mesesDeuda,
           deuda_total: deudaTotal,
           motivo: "Sin deuda pendiente."
@@ -13791,12 +14235,39 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
         fecha_emision: insercion.rows[0].creado_en,
         id_contribuyente: idContribuyente,
         codigo_municipal: codigoMunicipal,
+        nombre_completo: nombreCompleto,
         meses_deuda: mesesDeuda,
         deuda_total: deudaTotal
       });
     }
 
     await client.query("COMMIT");
+    req.skipAutoAudit = true;
+    const contribuyentesAudit = generadas.map((item) => ({
+      id_contribuyente: item.id_contribuyente,
+      codigo_municipal: item.codigo_municipal || "",
+      nombre_completo: item.nombre_completo || "",
+      numero_acta: item.numero_acta
+    }));
+    const contribuyentePrincipal = contribuyentesAudit.length === 1 ? contribuyentesAudit[0] : null;
+    await registrarAuditoria(
+      null,
+      "POST /actas-corte/generar-lote",
+      buildStructuredAuditDetail({
+        evento: "Generar actas de corte por lote",
+        total_solicitadas: ids.length,
+        total_generadas: generadas.length,
+        total_omitidas: omitidas.length,
+        id_contribuyente: contribuyentePrincipal?.id_contribuyente || null,
+        codigo_municipal: contribuyentePrincipal?.codigo_municipal || "",
+        nombre_completo: contribuyentePrincipal?.nombre_completo || "",
+        contribuyente: contribuyentePrincipal
+          ? buildContribuyenteAuditLabel(contribuyentePrincipal)
+          : undefined,
+        contribuyentes: contribuyentesAudit.length > 1 ? contribuyentesAudit : undefined
+      }),
+      obtenerUsuarioAuditoria(req)
+    );
     return res.json({
       total_solicitadas: ids.length,
       total_generadas: generadas.length,
@@ -13846,7 +14317,9 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
       predioAlias: "p2",
       pagosAlias: "p"
     });
-    const tarifaActualComponentesHistorialSql = buildTarifaActualComponentesSql("p2");
+    const tarifaActualComponentesHistorialSql = buildTarifaActualComponentesSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
+    const tarifaAdminActualHistorialSql = buildTarifaActualAdminBaseSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
+    const tarifaExtraActualHistorialSql = buildTarifaActualExtraSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
 
     const historial = await client.query(`
       SELECT r.id_recibo, r.mes, r.anio,
@@ -13856,8 +14329,8 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
         (CASE WHEN ${usaTarifaActualHistorialSql} THEN ${tarifaActualComponentesHistorialSql.admin_base} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
         (CASE WHEN ${usaTarifaActualHistorialSql} THEN ${tarifaActualComponentesHistorialSql.extra} ELSE r.subtotal_extra END) AS subtotal_extra,
         CASE WHEN ${usaTarifaActualHistorialSql} THEN 'S' ELSE 'N' END AS usa_tarifa_actual,
-        COALESCE(p2.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) AS tarifa_admin_actual,
-        COALESCE(p2.tarifa_extra, 0) AS tarifa_extra_actual,
+        ${tarifaAdminActualHistorialSql} AS tarifa_admin_actual,
+        ${tarifaExtraActualHistorialSql} AS tarifa_extra_actual,
         ${totalPagarReferenciaHistorialSql} AS total_pagar,
         COALESCE(p.total_pagado, 0) as abono_mes,
         p.id_ultimo_pago,
@@ -14002,7 +14475,9 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
       predioAlias: "p2",
       pagosAlias: "p"
     });
-    const tarifaActualComponentesExportSql = buildTarifaActualComponentesSql("p2");
+    const tarifaActualComponentesExportSql = buildTarifaActualComponentesSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
+    const tarifaAdminActualExportSql = buildTarifaActualAdminBaseSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
+    const tarifaExtraActualExportSql = buildTarifaActualExtraSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
     if (filtrarAnio && (!Number.isInteger(anio) || anio <= 1900 || anio >= 9999)) {
       return res.status(400).json({ error: "Año inválido para exportación." });
     }
@@ -14030,8 +14505,8 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
         (CASE WHEN ${usaTarifaActualExportSql} THEN ${tarifaActualComponentesExportSql.admin_base} ELSE COALESCE(r.subtotal_admin, 0) END) AS subtotal_admin,
         (CASE WHEN ${usaTarifaActualExportSql} THEN ${tarifaActualComponentesExportSql.extra} ELSE r.subtotal_extra END) AS subtotal_extra,
         CASE WHEN ${usaTarifaActualExportSql} THEN 'S' ELSE 'N' END AS usa_tarifa_actual,
-        COALESCE(p2.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) AS tarifa_admin_actual,
-        COALESCE(p2.tarifa_extra, 0) AS tarifa_extra_actual,
+        ${tarifaAdminActualExportSql} AS tarifa_admin_actual,
+        ${tarifaExtraActualExportSql} AS tarifa_extra_actual,
         ${totalPagarReferenciaExportSql} AS total_pagar,
         COALESCE(p.total_pagado, 0) AS abono_mes,
         CASE
@@ -14297,13 +14772,14 @@ const construirProyeccionCaja = async (fechaReferencia, options = {}) => {
     : 1;
   const inicioBase = shiftIsoDateByMonths(`${fechaBase.slice(0, 7)}-01`, 1) || `${fechaBase.slice(0, 7)}-01`;
   const finExclusivo = shiftIsoDateByMonths(inicioBase, mesesProyeccion) || inicioBase;
+  const periodoInicioProyeccion = parseDateYearMonth(inicioBase);
   const cacheKey = `proyeccion|${inicioBase}|${mesesProyeccion}`;
   const cached = reportesCajaCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) {
     return cached.data;
   }
 
-  const tarifaPredioSql = buildTarifaActualReciboSql("pr");
+  const tarifaPredioSql = buildTarifaActualReciboSql("pr", String(periodoInicioProyeccion.periodoNum || getCurrentPeriodoNum()));
   const totalMensualRs = await pool.query(`
     SELECT ROUND(COALESCE(SUM(${tarifaPredioSql}), 0)::numeric, 2) AS total_mensual
     FROM predios pr
@@ -14545,7 +15021,30 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     requireCoveredPayment: true,
     onlyWhenUnpaid: false
   });
-  const tarifaActualComponentesMovimientoSql = buildTarifaActualComponentesSql("pr");
+  const tarifaActualComponentesMovimientoSql = buildTarifaActualComponentesSql("pr", buildPeriodoNumSql("r.anio", "r.mes"));
+  const tarifaActualAguaMovimientoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "pr",
+    actualColumn: "tarifa_agua",
+    programadaColumn: "tarifa_programada_agua",
+    fallback: AUTO_DEUDA_BASE.agua,
+    periodoExpr: buildPeriodoNumSql("r.anio", "r.mes")
+  });
+  const tarifaActualDesagueMovimientoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "pr",
+    actualColumn: "tarifa_desague",
+    programadaColumn: "tarifa_programada_desague",
+    fallback: AUTO_DEUDA_BASE.desague,
+    periodoExpr: buildPeriodoNumSql("r.anio", "r.mes")
+  });
+  const tarifaActualLimpiezaMovimientoSql = buildTarifaPeriodoBaseSql({
+    predioAlias: "pr",
+    actualColumn: "tarifa_limpieza",
+    programadaColumn: "tarifa_programada_limpieza",
+    fallback: AUTO_DEUDA_BASE.limpieza,
+    periodoExpr: buildPeriodoNumSql("r.anio", "r.mes")
+  });
+  const tarifaActualAdminMovimientoSql = buildTarifaActualAdminBaseSql("pr", buildPeriodoNumSql("r.anio", "r.mes"));
+  const tarifaActualExtraMovimientoSql = buildTarifaActualExtraSql("pr", buildPeriodoNumSql("r.anio", "r.mes"));
 
   const movimientosSql = `
     WITH pagos_totales_recibo AS (
@@ -14583,27 +15082,27 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
         ${totalPagarReferenciaMovimientoSql} AS total_pagar,
         CASE
           WHEN ${sqlSnEsSi("pr.activo_sn", "S")} AND ${sqlSnEsSi("pr.agua_sn", "S")}
-            THEN COALESCE(pr.tarifa_agua, ${AUTO_DEUDA_BASE.agua})
+            THEN ${tarifaActualAguaMovimientoSql}
           ELSE 0::numeric
         END AS tarifa_actual_agua,
         CASE
           WHEN ${sqlSnEsSi("pr.activo_sn", "S")} AND ${sqlSnEsSi("pr.desague_sn", "S")}
-            THEN COALESCE(pr.tarifa_desague, ${AUTO_DEUDA_BASE.desague})
+            THEN ${tarifaActualDesagueMovimientoSql}
           ELSE 0::numeric
         END AS tarifa_actual_desague,
         CASE
           WHEN ${sqlSnEsSi("pr.activo_sn", "S")} AND ${sqlSnEsSi("pr.limpieza_sn", "S")}
-            THEN COALESCE(pr.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza})
+            THEN ${tarifaActualLimpiezaMovimientoSql}
           ELSE 0::numeric
         END AS tarifa_actual_limpieza,
         CASE
           WHEN ${sqlSnEsSi("pr.activo_sn", "S")}
-            THEN COALESCE(pr.tarifa_admin, ${AUTO_DEUDA_BASE.admin})
+            THEN ${tarifaActualAdminMovimientoSql}
           ELSE 0::numeric
         END AS tarifa_actual_admin,
         CASE
           WHEN ${sqlSnEsSi("pr.activo_sn", "S")}
-            THEN COALESCE(pr.tarifa_extra, 0)
+            THEN ${tarifaActualExtraMovimientoSql}
           ELSE 0::numeric
         END AS tarifa_actual_extra,
         CASE
@@ -16049,7 +16548,7 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
 
     const sql = `
       WITH recibos_objetivo AS (
-        SELECT r.id_recibo, r.id_predio, r.total_pagar
+        SELECT r.id_recibo, r.id_predio, r.total_pagar, r.anio, r.mes
         FROM recibos r
         WHERE (r.anio, r.mes) <= ($1::int, $2::int)
       ),
@@ -17409,7 +17908,7 @@ const buildCurrentDeudaSnapshot = async (db = pool) => {
   });
   const result = await db.query(`
     WITH recibos_objetivo AS (
-      SELECT r.id_recibo, r.id_predio, r.total_pagar
+      SELECT r.id_recibo, r.id_predio, r.total_pagar, r.anio, r.mes
       FROM recibos r
       WHERE (r.anio, r.mes) <= ($1::int, $2::int)
     ),
@@ -18490,6 +18989,12 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
       p.tarifa_limpieza,
       p.tarifa_admin,
       p.tarifa_extra,
+      p.tarifa_programada_desde_periodo,
+      p.tarifa_programada_agua,
+      p.tarifa_programada_desague,
+      p.tarifa_programada_limpieza,
+      p.tarifa_programada_admin,
+      p.tarifa_programada_extra,
       (
         SELECT COALESCE(rh.subtotal_agua, 0)
         FROM recibos rh
@@ -18558,9 +19063,10 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
   const aguaSN = normalizeSN(predio.agua_sn, "S");
   const desagueSN = normalizeSN(predio.desague_sn, "S");
   const limpiezaSN = normalizeSN(predio.limpieza_sn, "S");
+  const tarifasPeriodoActual = resolvePredioTarifasByPeriodo(predio, getCurrentPeriodoNum());
   const tarifaAguaActual = (activoSN === "S" && aguaSN === "S")
     ? roundMonto2(parseMonto(
-      predio.tarifa_agua,
+      tarifasPeriodoActual.agua,
       parseMonto(
         historialContribuyente?.subtotal_agua,
         parseMonto(predio.agua_hist, AUTO_DEUDA_BASE.agua)
@@ -18569,7 +19075,7 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
     : 0;
   const tarifaDesagueActual = (activoSN === "S" && desagueSN === "S")
     ? roundMonto2(parseMonto(
-      predio.tarifa_desague,
+      tarifasPeriodoActual.desague,
       parseMonto(
         historialContribuyente?.subtotal_desague,
         parseMonto(predio.desague_hist, AUTO_DEUDA_BASE.desague)
@@ -18578,7 +19084,7 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
     : 0;
   const tarifaLimpiezaActual = (activoSN === "S" && limpiezaSN === "S")
     ? roundMonto2(parseMonto(
-      predio.tarifa_limpieza,
+      tarifasPeriodoActual.limpieza,
       parseMonto(
         historialContribuyente?.subtotal_limpieza,
         parseMonto(predio.limpieza_hist, AUTO_DEUDA_BASE.limpieza)
@@ -18587,12 +19093,12 @@ async function getContribuyenteTarifaReferencia(db, idContribuyente) {
     : 0;
   const tarifaAdminActual = activoSN === "S"
     ? roundMonto2(parseMonto(
-      predio.tarifa_admin,
+      tarifasPeriodoActual.admin,
       parseMonto(historialContribuyente?.subtotal_admin, AUTO_DEUDA_BASE.admin)
     ))
     : 0;
   const tarifaExtraActual = roundMonto2(parseMonto(
-    predio.tarifa_extra,
+    tarifasPeriodoActual.extra,
     parseMonto(historialContribuyente?.subtotal_extra, 0)
   ));
 
@@ -18694,7 +19200,7 @@ const queryRecibosMasivosRows = async (client, {
     predioAlias: "p",
     pagosAlias: "pp"
   });
-  const tarifaActualComponentesMasivosSql = buildTarifaActualComponentesSql("p");
+  const tarifaActualComponentesMasivosSql = buildTarifaActualComponentesSql("p", buildPeriodoNumSql("r.anio", "r.mes"));
   const query = `
     WITH pagos_por_recibo AS (
       SELECT id_recibo, SUM(monto_pagado) AS total_pagado
@@ -18851,7 +19357,13 @@ const queryRecibosSyntheticBaseRows = async (client, {
       p.tarifa_desague,
       p.tarifa_limpieza,
       p.tarifa_admin,
-      p.tarifa_extra
+      p.tarifa_extra,
+      p.tarifa_programada_desde_periodo,
+      p.tarifa_programada_agua,
+      p.tarifa_programada_desague,
+      p.tarifa_programada_limpieza,
+      p.tarifa_programada_admin,
+      p.tarifa_programada_extra
     FROM contribuyentes c
     JOIN predios p ON p.id_contribuyente = c.id_contribuyente
     LEFT JOIN calles ca ON ca.id_calle = p.id_calle
@@ -18880,6 +19392,42 @@ const buildReimpresionSeleccionRows = async (client, {
     .filter((m) => ((anioSeleccionado * 100) + m) <= periodoEmitidoMaximo)));
 
   if (mesesEmitibles.length > 0) {
+    const periodoReimpresionSql = buildPeriodoNumSql("$1::int", "m.mes");
+    const tarifaAguaReimpresionSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_agua",
+      programadaColumn: "tarifa_programada_agua",
+      fallback: String(AUTO_DEUDA_BASE.agua),
+      periodoExpr: periodoReimpresionSql
+    });
+    const tarifaDesagueReimpresionSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_desague",
+      programadaColumn: "tarifa_programada_desague",
+      fallback: String(AUTO_DEUDA_BASE.desague),
+      periodoExpr: periodoReimpresionSql
+    });
+    const tarifaLimpiezaReimpresionSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_limpieza",
+      programadaColumn: "tarifa_programada_limpieza",
+      fallback: String(AUTO_DEUDA_BASE.limpieza),
+      periodoExpr: periodoReimpresionSql
+    });
+    const tarifaAdminReimpresionSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_admin",
+      programadaColumn: "tarifa_programada_admin",
+      fallback: String(AUTO_DEUDA_BASE.admin),
+      periodoExpr: periodoReimpresionSql
+    });
+    const tarifaExtraReimpresionSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_extra",
+      programadaColumn: "tarifa_programada_extra",
+      fallback: "0",
+      periodoExpr: periodoReimpresionSql
+    });
     const autoEmitidos = await client.query(`
       INSERT INTO recibos (
         id_predio, anio, mes, subtotal_agua, subtotal_desague, subtotal_limpieza, subtotal_admin, subtotal_extra, total_pagar, estado
@@ -18889,40 +19437,40 @@ const buildReimpresionSeleccionRows = async (client, {
         $1::int AS anio,
         m.mes,
         CASE
-          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, ${AUTO_DEUDA_BASE.agua})
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN ${tarifaAguaReimpresionSql}
           ELSE 0
         END AS subtotal_agua,
         CASE
-          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, ${AUTO_DEUDA_BASE.desague})
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN ${tarifaDesagueReimpresionSql}
           ELSE 0
         END AS subtotal_desague,
         CASE
-          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza})
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN ${tarifaLimpiezaReimpresionSql}
           ELSE 0
         END AS subtotal_limpieza,
         CASE
-          WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin})
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN ${tarifaAdminReimpresionSql}
           ELSE 0
         END AS subtotal_admin,
         CASE
-          WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_extra, 0)
+          WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN ${tarifaExtraReimpresionSql}
           ELSE 0
         END AS subtotal_extra,
         (
           CASE
-            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, ${AUTO_DEUDA_BASE.agua})
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.agua_sn", "S")} THEN ${tarifaAguaReimpresionSql}
             ELSE 0
           END
           + CASE
-            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, ${AUTO_DEUDA_BASE.desague})
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.desague_sn", "S")} THEN ${tarifaDesagueReimpresionSql}
             ELSE 0
           END
           + CASE
-            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, ${AUTO_DEUDA_BASE.limpieza})
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} AND ${sqlSnEsSi("p.limpieza_sn", "S")} THEN ${tarifaLimpiezaReimpresionSql}
             ELSE 0
           END
           + CASE
-            WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, ${AUTO_DEUDA_BASE.admin}) + COALESCE(p.tarifa_extra, 0)
+            WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN ${tarifaAdminReimpresionSql} + ${tarifaExtraReimpresionSql}
             ELSE 0
           END
         ) AS total_pagar,
@@ -18970,25 +19518,17 @@ const buildReimpresionSeleccionRows = async (client, {
     });
     for (const baseRow of baseRows) {
       const idContribuyente = Number(baseRow?.id_contribuyente || 0);
-      const activoSN = normalizeSN(baseRow?.activo_sn, "S");
-      const aguaHabilitado = activoSN === "S" && normalizeSN(baseRow?.agua_sn, "S") === "S";
-      const desagueHabilitado = activoSN === "S" && normalizeSN(baseRow?.desague_sn, "S") === "S";
-      const limpiezaHabilitado = activoSN === "S" && normalizeSN(baseRow?.limpieza_sn, "S") === "S";
-      const subtotalAgua = aguaHabilitado ? parseMonto(baseRow?.tarifa_agua, AUTO_DEUDA_BASE.agua) : 0;
-      const subtotalDesague = desagueHabilitado ? parseMonto(baseRow?.tarifa_desague, AUTO_DEUDA_BASE.desague) : 0;
-      const subtotalLimpieza = limpiezaHabilitado ? parseMonto(baseRow?.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0;
-      const subtotalAdmin = activoSN === "S"
-        ? parseMonto(baseRow?.tarifa_admin, AUTO_DEUDA_BASE.admin)
-        : 0;
-      const subtotalExtra = activoSN === "S"
-        ? parseMonto(baseRow?.tarifa_extra, 0)
-        : 0;
-      const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
-      if (totalPagar <= 0) continue;
-
       for (const mesSel of mesesFuturos) {
         const key = `${idContribuyente}-${anioSeleccionado}-${mesSel}`;
         if (existingSet.has(key)) continue;
+        const tarifasPeriodo = resolvePredioTarifasByPeriodo(baseRow, buildPeriodoNum(anioSeleccionado, mesSel));
+        const subtotalAgua = tarifasPeriodo.agua;
+        const subtotalDesague = tarifasPeriodo.desague;
+        const subtotalLimpieza = tarifasPeriodo.limpieza;
+        const subtotalAdmin = tarifasPeriodo.admin;
+        const subtotalExtra = tarifasPeriodo.extra;
+        const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
+        if (totalPagar <= 0) continue;
         rows.push({
           id_recibo: null,
           id_contribuyente: idContribuyente,
@@ -19189,25 +19729,17 @@ app.post("/recibos/masivos", async (req, res) => {
         });
         for (const baseRow of syntheticBaseRows) {
           const idContribuyente = Number(baseRow?.id_contribuyente || 0);
-          const activoSN = normalizeSN(baseRow?.activo_sn, "S");
-          const aguaHabilitado = activoSN === "S" && normalizeSN(baseRow?.agua_sn, "S") === "S";
-          const desagueHabilitado = activoSN === "S" && normalizeSN(baseRow?.desague_sn, "S") === "S";
-          const limpiezaHabilitado = activoSN === "S" && normalizeSN(baseRow?.limpieza_sn, "S") === "S";
-          const subtotalAgua = aguaHabilitado ? parseMonto(baseRow?.tarifa_agua, AUTO_DEUDA_BASE.agua) : 0;
-          const subtotalDesague = desagueHabilitado ? parseMonto(baseRow?.tarifa_desague, AUTO_DEUDA_BASE.desague) : 0;
-          const subtotalLimpieza = limpiezaHabilitado ? parseMonto(baseRow?.tarifa_limpieza, AUTO_DEUDA_BASE.limpieza) : 0;
-          const subtotalAdmin = activoSN === "S"
-            ? parseMonto(baseRow?.tarifa_admin, AUTO_DEUDA_BASE.admin)
-            : 0;
-          const subtotalExtra = activoSN === "S"
-            ? parseMonto(baseRow?.tarifa_extra, 0)
-            : 0;
-          const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
-          if (totalPagar <= 0) continue;
-
           for (const mesSel of mesesNoEmitidos) {
             const key = `${idContribuyente}-${anioSeleccionado}-${mesSel}`;
             if (existentesSet.has(key)) continue;
+            const tarifasPeriodo = resolvePredioTarifasByPeriodo(baseRow, buildPeriodoNum(anioSeleccionado, mesSel));
+            const subtotalAgua = tarifasPeriodo.agua;
+            const subtotalDesague = tarifasPeriodo.desague;
+            const subtotalLimpieza = tarifasPeriodo.limpieza;
+            const subtotalAdmin = tarifasPeriodo.admin;
+            const subtotalExtra = tarifasPeriodo.extra;
+            const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
+            if (totalPagar <= 0) continue;
             rows.push({
               id_recibo: null,
               id_contribuyente: idContribuyente,
@@ -20112,6 +20644,42 @@ const generarDeudaMensualAutomatica = async () => {
       AUTO_DEUDA_BASE.limpieza,
       AUTO_DEUDA_BASE.admin
     ];
+    const periodoAutoDeudaSql = buildPeriodoNumSql("$1::int", "$2::int");
+    const tarifaAguaAutoDeudaSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_agua",
+      programadaColumn: "tarifa_programada_agua",
+      fallback: "$3::numeric",
+      periodoExpr: periodoAutoDeudaSql
+    });
+    const tarifaDesagueAutoDeudaSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_desague",
+      programadaColumn: "tarifa_programada_desague",
+      fallback: "$4::numeric",
+      periodoExpr: periodoAutoDeudaSql
+    });
+    const tarifaLimpiezaAutoDeudaSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_limpieza",
+      programadaColumn: "tarifa_programada_limpieza",
+      fallback: "$5::numeric",
+      periodoExpr: periodoAutoDeudaSql
+    });
+    const tarifaAdminAutoDeudaSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_admin",
+      programadaColumn: "tarifa_programada_admin",
+      fallback: "$6::numeric",
+      periodoExpr: periodoAutoDeudaSql
+    });
+    const tarifaExtraAutoDeudaSql = buildTarifaPeriodoBaseSql({
+      predioAlias: "p",
+      actualColumn: "tarifa_extra",
+      programadaColumn: "tarifa_programada_extra",
+      fallback: "0::numeric",
+      periodoExpr: periodoAutoDeudaSql
+    });
 
     const resultado = await client.query(`
       INSERT INTO recibos (
@@ -20122,16 +20690,16 @@ const generarDeudaMensualAutomatica = async () => {
         p.id_predio,
         $1::int,
         $2::int,
-        CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, $3::numeric) ELSE 0 END,
-        CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, $4::numeric) ELSE 0 END,
-        CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, $5::numeric) ELSE 0 END,
-        CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_admin, $6::numeric) ELSE 0 END,
-        CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN COALESCE(p.tarifa_extra, 0::numeric) ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN ${tarifaAguaAutoDeudaSql} ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN ${tarifaDesagueAutoDeudaSql} ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN ${tarifaLimpiezaAutoDeudaSql} ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN ${tarifaAdminAutoDeudaSql} ELSE 0 END,
+        CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN ${tarifaExtraAutoDeudaSql} ELSE 0 END,
         (
-          CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN COALESCE(p.tarifa_agua, $3::numeric) ELSE 0 END +
-          CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN COALESCE(p.tarifa_desague, $4::numeric) ELSE 0 END +
-          CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN COALESCE(p.tarifa_limpieza, $5::numeric) ELSE 0 END +
-          CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN (COALESCE(p.tarifa_admin, $6::numeric) + COALESCE(p.tarifa_extra, 0::numeric)) ELSE 0 END
+          CASE WHEN ${sqlSnEsSi("p.agua_sn", "S")} THEN ${tarifaAguaAutoDeudaSql} ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.desague_sn", "S")} THEN ${tarifaDesagueAutoDeudaSql} ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.limpieza_sn", "S")} THEN ${tarifaLimpiezaAutoDeudaSql} ELSE 0 END +
+          CASE WHEN ${sqlSnEsSi("p.activo_sn", "S")} THEN (${tarifaAdminAutoDeudaSql} + ${tarifaExtraAutoDeudaSql}) ELSE 0 END
         ) AS total_pagar,
         'PENDIENTE',
         make_date($1::int, $2::int, 1),
