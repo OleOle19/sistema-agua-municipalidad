@@ -169,6 +169,7 @@ const toLocalAuditTimestamp = (date = new Date()) => {
   const { anio, mes, dia, hora, minuto, segundo } = getFechaPartesZona(date, APP_TIMEZONE);
   return `${String(anio).padStart(4, "0")}-${String(mes).padStart(2, "0")}-${String(dia).padStart(2, "0")}T${String(hora).padStart(2, "0")}:${String(minuto).padStart(2, "0")}:${String(segundo).padStart(2, "0")}`;
 };
+const ULTIMOS_DIAS_IMPRESION_MENSUAL_ADELANTADA = 5;
 const getCurrentYear = () => getFechaPartesZona(new Date(), APP_TIMEZONE).anio;
 const getCurrentMonth = () => getFechaPartesZona(new Date(), APP_TIMEZONE).mes;
 const getNextPeriod = (date = new Date()) => {
@@ -2302,6 +2303,18 @@ const getUltimoPeriodoEmitidoNum = (date = new Date()) => {
   const { anio, mes } = getFechaPartesZona(date, APP_TIMEZONE);
   if (mes === 1) return ((anio - 1) * 100) + 12;
   return (anio * 100) + (mes - 1);
+};
+const canUnlockNextMonthForMensual = (date = new Date()) => {
+  const { anio, mes, dia } = getFechaPartesZona(date, APP_TIMEZONE);
+  const diasDelMesActual = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+  const diasRestantes = diasDelMesActual - dia;
+  return diasRestantes <= ULTIMOS_DIAS_IMPRESION_MENSUAL_ADELANTADA;
+};
+const getUltimoPeriodoImprimibleNum = (date = new Date()) => {
+  if (canUnlockNextMonthForMensual(date)) {
+    return getNextPeriod(date).periodoNum;
+  }
+  return getUltimoPeriodoEmitidoNum(date);
 };
 const validateReciboPeriodoNoFuturo = (anioInput, mesInput) => {
   const anio = parsePositiveInt(anioInput, 0);
@@ -19385,7 +19398,7 @@ const buildReimpresionSeleccionRows = async (client, {
     .filter((id) => Number.isInteger(id) && id > 0)));
   if (idsNormalizados.length === 0) return [];
 
-  const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
+  const periodoEmitidoMaximo = getUltimoPeriodoImprimibleNum();
   const mesesEmitibles = Array.from(new Set(mesesSeleccionados
     .map((m) => Number(m))
     .filter((m) => Number.isInteger(m) && m >= 1 && m <= 12)
@@ -19655,7 +19668,7 @@ app.post("/recibos/masivos", async (req, res) => {
       req.auditExtraEntries = buildRecibosMasivosAuditEntries(tipo_seleccion, rows) || undefined;
       return res.json(rows);
     }
-    const periodoEmitidoMaximo = getUltimoPeriodoEmitidoNum();
+    const periodoEmitidoMaximo = getUltimoPeriodoImprimibleNum();
     const bloquearMesesNoEmitidos = !incluirPagados || !permitirMesesFuturos;
     if (bloquearMesesNoEmitidos) {
       const mesesNoEmitidos = mesesSeleccionados.filter((mesSel) =>
