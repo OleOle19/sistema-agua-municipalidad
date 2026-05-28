@@ -73,6 +73,11 @@ const normalizeTipoPagoReporte = (value) => {
   const raw = String(value || "").trim().toUpperCase();
   return raw || "CAJA";
 };
+const normalizeSearchText = (value) => String(value || "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLowerCase()
+  .trim();
 const buildTemporalLabelFromMovimiento = (row = {}, reporteTipo = "diario") => {
   const fecha = String(row?.fecha || "").trim();
   const hora = String(row?.hora || "").trim();
@@ -187,6 +192,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   const [exportandoExcel, setExportandoExcel] = useState(false);
   const [paginaMovimientos, setPaginaMovimientos] = useState(1);
   const [reporte, setReporte] = useState(EMPTY_REPORTE);
+  const [busquedaMovimiento, setBusquedaMovimiento] = useState("");
   const [cargandoAlertas, setCargandoAlertas] = useState(false);
   const [cargandoAdmin, setCargandoAdmin] = useState(false);
   const [movimientosAdmin, setMovimientosAdmin] = useState([]);
@@ -399,15 +405,36 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     if (isProyeccion) return movimientosRaw;
     return movimientosRaw.filter((row) => normalizeTipoPagoReporte(row?.tipo_pago) === "CAJA");
   }, [isProyeccion, movimientosRaw]);
+  const busquedaMovimientoNormalizada = useMemo(
+    () => normalizeSearchText(busquedaMovimiento),
+    [busquedaMovimiento]
+  );
+  const movimientosFiltrados = useMemo(() => {
+    if (isProyeccion || !busquedaMovimientoNormalizada) return movimientos;
+    return movimientos.filter((row) => {
+      const searchable = normalizeSearchText([
+        row?.nombre_completo,
+        row?.codigo_municipal,
+        row?.direccion_completa,
+        row?.id_contribuyente,
+        row?.id_predio,
+        row?.codigo_recibo,
+        row?.numero_recibo,
+        row?.codigo_impresion
+      ].filter(Boolean).join(" "));
+      return searchable.includes(busquedaMovimientoNormalizada);
+    });
+  }, [busquedaMovimientoNormalizada, isProyeccion, movimientos]);
   const totalPaginas = Math.max(1, Number(reporte?.paginacion?.total_paginas || 1));
   const paginaActual = Math.max(1, Number(reporte?.paginacion?.pagina || paginaMovimientos));
   const pageSizeActual = Math.max(1, Number(reporte?.paginacion?.page_size || MOVIMIENTOS_PAGE_SIZE));
   const inicioIndice = (paginaActual - 1) * pageSizeActual;
   const resumenLocal = useMemo(() => {
     if (isProyeccion) return null;
+    if (busquedaMovimientoNormalizada) return buildResumenLocalDesdeMovimientos(movimientosFiltrados, reporteTipo);
     if (movimientos.length === movimientosRaw.length) return null;
     return buildResumenLocalDesdeMovimientos(movimientos, reporteTipo);
-  }, [isProyeccion, movimientos, movimientosRaw.length, reporteTipo]);
+  }, [busquedaMovimientoNormalizada, isProyeccion, movimientos, movimientosFiltrados, movimientosRaw.length, reporteTipo]);
   const cantidadMovimientosDisplay = resumenLocal
     ? Number(resumenLocal.cantidadMovimientos || 0)
     : Number(reporte?.cantidad_movimientos || 0);
@@ -461,18 +488,21 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   const maxTop = Math.max(1, ...topContribuyentes.map((r) => Number(r?.total || 0)));
   const maxPeriodo = Math.max(1, ...recaudacionPeriodo.map((r) => Number(r?.total || 0)));
   const movimientosReporte = useMemo(() => {
-    const rows = [...movimientos];
+    const rows = [...movimientosFiltrados];
     rows.sort((a, b) => {
       const fa = String(a?.fecha || "");
       const fb = String(b?.fecha || "");
       if (fa !== fb) return fa.localeCompare(fb);
+      const ha = String(a?.hora || "");
+      const hb = String(b?.hora || "");
+      if (ha !== hb) return ha.localeCompare(hb);
       const na = String(a?.nombre_completo || "");
       const nb = String(b?.nombre_completo || "");
       if (na !== nb) return na.localeCompare(nb, "es");
       return Number(a?.id_pago || 0) - Number(b?.id_pago || 0);
     });
     return rows;
-  }, [movimientos]);
+  }, [movimientosFiltrados]);
   const gruposReporte = useMemo(() => {
     const byFecha = new Map();
     movimientosReporte.forEach((row) => {
@@ -651,6 +681,18 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   />
                 )}
               </div>
+              {!isProyeccion && (
+                <div className="col-12 col-md-5 col-lg-3">
+                  <label className="form-label small mb-1">Buscar contribuyente o pago</label>
+                  <input
+                    type="text"
+                    className="form-control form-control-sm"
+                    placeholder="Nombre, codigo, direccion, recibo..."
+                    value={busquedaMovimiento}
+                    onChange={(e) => setBusquedaMovimiento(e.target.value)}
+                  />
+                </div>
+              )}
               {isProyeccion && (
                 <div className="col-12 col-md-3 col-lg-2">
                   <label className="form-label small mb-1">Meses a proyectar</label>
@@ -666,6 +708,11 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
               )}
               <div className="col-12 col-md d-flex flex-column align-items-md-end">
                 <div className={`fs-5 fw-bold ${colorTotal}`}>{isProyeccion ? "Total Proyectado" : "Total Caja"}: S/. {totalGeneral}</div>
+                {!isProyeccion && busquedaMovimientoNormalizada && (
+                  <div className="small text-muted">
+                    Coincidencias: {movimientosReporte.length} pago(s) filtrado(s) en este reporte.
+                  </div>
+                )}
                 {isProyeccion && (
                   <div className="small text-muted">Base mensual estimada: S/. {baseMensualProyeccion}</div>
                 )}
@@ -942,7 +989,9 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                                           </tr>
                                           {contrib.items.map((item) => (
                                             <tr key={`item-${item.id_pago}`}>
-                                              <td style={{ width: "34%" }}></td>
+                                              <td style={{ width: "34%" }}>
+                                                <span className="small text-muted">Cobro: {String(item?.hora || "").slice(0, 5) || "--:--"}</span>
+                                              </td>
                                               <td className="text-center" style={{ width: "14%" }}>{item.numero_recibo || item.codigo_impresion || "-"}</td>
                                               <td className="text-center" style={{ width: "7%" }}>{item.anio || "-"}</td>
                                               <td className="text-center" style={{ width: "6%" }}>{String(item.mes || "").padStart(2, "0")}</td>
