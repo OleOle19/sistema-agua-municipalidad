@@ -16,6 +16,7 @@ const MONTH_OPTIONS = [
   { value: 11, label: "Nov" },
   { value: 12, label: "Dic" }
 ];
+const ULTIMOS_DIAS_IMPRESION_MENSUAL_ADELANTADA = 5;
 
 const getPeriodoNum = (anio, mes) => (Number(anio || 0) * 100) + Number(mes || 0);
 const formatPeriodoLabel = (anio, mes) => {
@@ -38,7 +39,7 @@ const canUnlockNextMonthForMensual = () => {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const diffMs = endOfMonth.getTime() - today.getTime();
   const daysRemaining = Math.floor(diffMs / 86400000);
-  return daysRemaining <= 7;
+  return daysRemaining <= ULTIMOS_DIAS_IMPRESION_MENSUAL_ADELANTADA;
 };
 const getUltimoPeriodoDisponible = ({
   incluirMesActual = false,
