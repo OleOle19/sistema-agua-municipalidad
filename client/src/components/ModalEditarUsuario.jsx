@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import api from "../api";
+import { formatDireccionDisplay } from "../utils/direccionDisplay";
 
 const normalizeEstadoConexion = (value) => {
   const raw = String(value || "").trim().toUpperCase();
@@ -56,6 +57,32 @@ const normalizeCodigoMunicipalInput = (value) => {
   const onlyDigits = raw.replace(/\D/g, "");
   if (onlyDigits) return onlyDigits.slice(0, 8).padStart(6, "0");
   return raw.toUpperCase().slice(0, 32);
+};
+const normalizeStructuredAddressInput = (name, value) => {
+  const raw = String(value || "").replace(/\s+/g, " ").trim();
+  if (!raw) return "";
+  if (name === "numero_casa") {
+    return raw.replace(/^(?:N|N°|Nº|NO|NUM|NUMERO|#)\s*[:.]?\s*/i, "");
+  }
+  if (name === "manzana") {
+    return raw.replace(/^MZ\s*[:.]?\s*/i, "");
+  }
+  if (name === "lote") {
+    return raw.replace(/^LT\s*[:.]?\s*/i, "");
+  }
+  return raw;
+};
+const buildDireccionPreview = ({ calles = [], id_calle = "", numero_casa = "", manzana = "", lote = "" }) => {
+  const idCalleNum = Number(id_calle || 0);
+  const calle = Array.isArray(calles)
+    ? calles.find((item) => Number(item?.id_calle || 0) === idCalleNum)
+    : null;
+  const parts = [];
+  if (String(calle?.nombre || "").trim()) parts.push(String(calle.nombre).trim());
+  if (String(numero_casa || "").trim()) parts.push(String(numero_casa).trim());
+  if (String(manzana || "").trim()) parts.push(`MZ ${String(manzana).trim()}`);
+  if (String(lote || "").trim()) parts.push(`LT ${String(lote).trim()}`);
+  return formatDireccionDisplay(parts.join(" "));
 };
 const MOTIVOS_CAMBIO_RAZON_SOCIAL = [
   { value: "FALLECIMIENTO_TITULAR", label: "Fallecimiento del titular" },
@@ -157,9 +184,9 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
           email: u.email || "",
           telefono: u.telefono || "",
           id_calle: u.id_calle || "",
-          numero_casa: u.numero_casa || "",
-          manzana: u.manzana || "",
-          lote: u.lote || "",
+          numero_casa: normalizeStructuredAddressInput("numero_casa", u.numero_casa || ""),
+          manzana: normalizeStructuredAddressInput("manzana", u.manzana || ""),
+          lote: normalizeStructuredAddressInput("lote", u.lote || ""),
           agua_sn: normalizeServicioSN(u.agua_sn, normalizeServicioSN(u.servicio_agua_activo_real_sn, "N")),
           desague_sn: normalizeServicioSN(u.desague_sn, normalizeServicioSN(u.servicio_desague_activo_real_sn, "N")),
           limpieza_sn: normalizeServicioSN(u.limpieza_sn, normalizeServicioSN(u.servicio_limpieza_activo_real_sn, "N")),
@@ -192,6 +219,10 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
     const { name, value } = e.target;
     if (name === "codigo_municipal") {
       setFormData((prev) => ({ ...prev, codigo_municipal: normalizeCodigoMunicipalInput(value) }));
+      return;
+    }
+    if (["numero_casa", "manzana", "lote"].includes(name)) {
+      setFormData((prev) => ({ ...prev, [name]: normalizeStructuredAddressInput(name, value) }));
       return;
     }
     setFormData((prev) => ({ ...prev, [name]: value }));
@@ -246,9 +277,33 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
               : "")
         )
         : "";
+      const optimisticContribuyente = {
+        id_contribuyente: idContribuyente,
+        nombre_completo: formData.nombre_completo,
+        codigo_municipal: formData.codigo_municipal,
+        sec_cod: formData.sec_cod,
+        sec_nombre: formData.sec_nombre,
+        dni_ruc: formData.dni_ruc,
+        telefono: formData.telefono,
+        estado_conexion: normalizeEstadoConexion(formData.estado_conexion),
+        id_calle: formData.id_calle || "",
+        numero_casa: formData.numero_casa || "",
+        manzana: formData.manzana || "",
+        lote: formData.lote || "",
+        direccion_completa: buildDireccionPreview({
+          calles,
+          id_calle: formData.id_calle,
+          numero_casa: formData.numero_casa,
+          manzana: formData.manzana,
+          lote: formData.lote
+        })
+      };
       showFlash("success", `Usuario actualizado.\nRecibos pendientes/futuros recalculados: ${recalc}${resumenPeriodos}`);
       setNombreOriginal(String(formData.nombre_completo || ""));
-      await Promise.resolve(typeof alGuardar === "function" ? alGuardar() : null);
+      await Promise.resolve(typeof alGuardar === "function" ? alGuardar({
+        optimisticContribuyente,
+        deferFullRefresh: true
+      }) : null);
       cerrarModal();
     } catch (error) {
       showFlash("danger", error.response?.data?.error || "Error al actualizar");

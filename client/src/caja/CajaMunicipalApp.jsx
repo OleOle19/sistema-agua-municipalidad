@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useReactToPrint } from "react-to-print";
 import { FaBolt, FaCashRegister, FaChevronLeft, FaChevronRight, FaSignOutAlt, FaSyncAlt, FaTint } from "react-icons/fa";
 import api from "../api";
 import LoginPage from "../components/LoginPage";
 import ReciboAnexoCaja from "../components/ReciboAnexoCaja";
-import ModalCierre from "../components/ModalCierre";
 import cajaLuzApi from "./apiCajaLuz";
 import ReciboLuz from "../luz/ReciboLuz";
 import realtime from "../realtime";
 import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
 import { formatDireccionDisplay } from "../utils/direccionDisplay";
+
+const ModalCierre = lazy(() => import("../components/ModalCierre"));
 
 const AGUA_TOKEN_KEY = "token_agua";
 
@@ -60,6 +61,22 @@ const RECIBO_LUZ_PAGE_STYLE = `
   }
 `;
 const MAX_RETROACTIVE_COBRO_DAYS_CAJA = 3;
+const SEARCH_RESULTS_CACHE_TTL_MS = 30000;
+const SEARCH_RESULTS_LIMIT_AGUA = 120;
+const SEARCH_RESULTS_LIMIT_LUZ = 300;
+const SEARCH_WARN_THRESHOLD_MS = 800;
+const LazyModalFallback = ({ label = "Cargando..." }) => (
+  <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.45)" }}>
+    <div className="modal-dialog">
+      <div className="modal-content">
+        <div className="modal-body py-4 text-center">
+          <div className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
+          <span>{label}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+);
 
 const normalizeRole = (role) => {
   const raw = String(role || "").trim().toUpperCase();
@@ -180,6 +197,29 @@ const normalizeCodigo = (value) => String(value || "")
   .toUpperCase()
   .replace(/\s+/g, "")
   .trim();
+const buildSearchCacheKey = (value) => {
+  const raw = String(value || "").trim();
+  return [
+    normalizeSearchText(raw),
+    normalizeDigits(raw),
+    normalizeCodigo(raw)
+  ].join("|");
+};
+const readSearchCacheValue = (cacheRef, cacheKey) => {
+  const cached = cacheRef.current.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() >= Number(cached.expiresAt || 0)) {
+    cacheRef.current.delete(cacheKey);
+    return null;
+  }
+  return Array.isArray(cached.rows) ? cached.rows : null;
+};
+const writeSearchCacheValue = (cacheRef, cacheKey, rows) => {
+  cacheRef.current.set(cacheKey, {
+    expiresAt: Date.now() + SEARCH_RESULTS_CACHE_TTL_MS,
+    rows: Array.isArray(rows) ? rows : []
+  });
+};
 
 const formatMoney = (value) => `S/. ${parseMonto(value).toFixed(2)}`;
 const MESES_ES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
@@ -279,6 +319,49 @@ const getCobroAguaRowKey = (row = {}) => {
   return `p-${anio}-${mes}`;
 };
 const getCobroAguaRowSaldo = (row = {}) => round2(parseMonto(row?.deuda_mes ?? row?.total_pagar ?? 0));
+const getPeriodoNumFromIsoDate = (isoDate) => {
+  if (!isValidIsoDate(isoDate)) return 0;
+  const [year, month] = String(isoDate).split("-").map((value) => Number(value));
+  if (!Number.isInteger(year) || !Number.isInteger(month)) return 0;
+  return (year * 100) + month;
+};
+const hasCobroAguaPendingReingreso = (row = {}) => {
+  const idAnulacionPendiente = Number(row?.id_anulacion_pendiente || 0);
+  if (idAnulacionPendiente <= 0) return false;
+  const montoPagado = round2(parseMonto(row?.abono_mes ?? 0));
+  const idPagoUltimo = Number(row?.id_ultimo_pago || 0);
+  return montoPagado > 0.001 || idPagoUltimo > 0;
+};
+const normalizeCobroAguaRowConsistency = (row = {}, fechaCorte = toIsoDate()) => {
+  const next = { ...row };
+  const estadoUpper = String(next?.estado || "").trim().toUpperCase();
+  const abono = round2(parseMonto(next?.abono_mes ?? 0));
+  const saldo = round2(parseMonto(next?.deuda_mes ?? next?.total_pagar ?? 0));
+  const idPagoUltimo = Number(next?.id_ultimo_pago || 0);
+  const idAnulacionPendiente = Number(next?.id_anulacion_pendiente || 0);
+  const sinPagoActivo = abono <= 0.001 && idPagoUltimo <= 0;
+  const periodoFila = (Number(next?.anio || 0) * 100) + Number(next?.mes || 0);
+  const periodoFecha = getPeriodoNumFromIsoDate(fechaCorte);
+
+  if (idAnulacionPendiente > 0 && sinPagoActivo) {
+    next.id_anulacion_pendiente = 0;
+    next.anulado_en_pendiente = null;
+    next.monto_anulado_pendiente = 0;
+    next.motivo_anulacion_pendiente = null;
+  }
+
+  if (estadoUpper === "PAGADO" && sinPagoActivo) {
+    if (saldo > 0.001) {
+      next.estado = "PENDIENTE";
+    } else if (periodoFecha > 0 && periodoFila > periodoFecha) {
+      next.estado = "NO_EXIGIBLE";
+    } else {
+      next.estado = "PENDIENTE";
+    }
+  }
+
+  return next;
+};
 const getCobroLuzRowKey = (row = {}) => {
   const idRecibo = Number(row?.id_recibo || 0);
   if (idRecibo > 0) return `r-${idRecibo}`;
@@ -321,7 +404,7 @@ const canSelectCobroAguaRow = (row = {}, permisos = {}, hoyIso = toIsoDate()) =>
   const estado = String(row?.estado || "").trim().toUpperCase();
   if (saldo <= 0.001) return false;
   if (estado === "PAGADO") return false;
-  if (Number(row?.id_anulacion_pendiente || 0) > 0) {
+  if (hasCobroAguaPendingReingreso(row)) {
     const role = normalizeRole(permisos?.role);
     if (role === "ADMIN") return true;
     if (role !== "CAJERO") return false;
@@ -494,10 +577,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
   });
   const [loadingConteoAgua, setLoadingConteoAgua] = useState(false);
   const [enviandoConteoAgua, setEnviandoConteoAgua] = useState(false);
-  const [padronContribuyentesAgua, setPadronContribuyentesAgua] = useState([]);
   const [busquedaContribuyenteAgua, setBusquedaContribuyenteAgua] = useState("");
   const [buscandoContribuyenteAgua, setBuscandoContribuyenteAgua] = useState(false);
   const [busquedaContribuyenteRealizada, setBusquedaContribuyenteRealizada] = useState(false);
+  const [errorBusquedaContribuyenteAgua, setErrorBusquedaContribuyenteAgua] = useState("");
   const [contribuyentesFiltradosAgua, setContribuyentesFiltradosAgua] = useState([]);
   const [selectedContribuyenteAgua, setSelectedContribuyenteAgua] = useState(null);
   const [mostrarModalCobroAgua, setMostrarModalCobroAgua] = useState(false);
@@ -523,10 +606,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const [loadingLuz, setLoadingLuz] = useState(false);
   const [reporteLuz, setReporteLuz] = useState(null);
   const [loadingReporteLuz, setLoadingReporteLuz] = useState(false);
-  const [padronContribuyentesLuz, setPadronContribuyentesLuz] = useState([]);
   const [busquedaContribuyenteLuz, setBusquedaContribuyenteLuz] = useState("");
   const [buscandoContribuyenteLuz, setBuscandoContribuyenteLuz] = useState(false);
   const [busquedaContribuyenteLuzRealizada, setBusquedaContribuyenteLuzRealizada] = useState(false);
+  const [errorBusquedaContribuyenteLuz, setErrorBusquedaContribuyenteLuz] = useState("");
   const [contribuyentesFiltradosLuz, setContribuyentesFiltradosLuz] = useState([]);
   const [selectedContribuyenteLuz, setSelectedContribuyenteLuz] = useState(null);
   const [mostrarModalCobroLuz, setMostrarModalCobroLuz] = useState(false);
@@ -549,7 +632,12 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const [imprimiendoAnexoCaja, setImprimiendoAnexoCaja] = useState(false);
   const anexoCajaRef = useRef(null);
   const isPrintingAnexoCajaRef = useRef(false);
+  const previousTabRef = useRef("agua");
   const cobroAguaCacheRef = useRef(new Map());
+  const busquedaAguaCacheRef = useRef(new Map());
+  const busquedaAguaRequestSeqRef = useRef(0);
+  const busquedaLuzCacheRef = useRef(new Map());
+  const busquedaLuzRequestSeqRef = useRef(0);
   const cobroAguaRequestSeqRef = useRef(0);
 
   const rolActual = normalizeRole(usuarioSistema?.rol);
@@ -585,7 +673,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
 
   const handleApiError = useCallback((err, fallback) => {
     const status = Number(err?.response?.status || 0);
-    const msg = String(err?.response?.data?.error || fallback || "Error de conexion");
+    const msg = String(err?.response?.data?.error || fallback || "Error de conexión");
     if (status === 401) {
       localStorage.removeItem(AGUA_TOKEN_KEY);
       localStorage.removeItem("token");
@@ -608,11 +696,11 @@ function CajaMunicipalApp({ onBackToSelector }) {
       caja_cerrada_hoy: false,
       cierre_hoy: null
     });
-    setPadronContribuyentesAgua([]);
     setContribuyentesFiltradosAgua([]);
     setBusquedaContribuyenteAgua("");
     setBuscandoContribuyenteAgua(false);
     setBusquedaContribuyenteRealizada(false);
+    setErrorBusquedaContribuyenteAgua("");
     setSelectedContribuyenteAgua(null);
     setMostrarModalCobroAgua(false);
     setLoadingPendientesCobroAgua(false);
@@ -628,11 +716,11 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setIdReciboReimpresionAgua(0);
     setMostrarReporteCajaAgua(false);
     setReporteLuz(null);
-    setPadronContribuyentesLuz([]);
     setContribuyentesFiltradosLuz([]);
     setBusquedaContribuyenteLuz("");
     setBuscandoContribuyenteLuz(false);
     setBusquedaContribuyenteLuzRealizada(false);
+    setErrorBusquedaContribuyenteLuz("");
     setSelectedContribuyenteLuz(null);
     setMostrarModalCobroLuz(false);
     setLoadingPendientesCobroLuz(false);
@@ -648,8 +736,21 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setFechaReporteLuz(toIsoDate());
     setUltimoAnexoCaja(null);
     setImprimiendoAnexoCaja(false);
+    busquedaAguaCacheRef.current.clear();
+    busquedaAguaRequestSeqRef.current = 0;
+    busquedaLuzCacheRef.current.clear();
+    busquedaLuzRequestSeqRef.current = 0;
     cobroAguaCacheRef.current.clear();
     cobroAguaRequestSeqRef.current = 0;
+  }, []);
+
+  const invalidarCobroAguaCache = useCallback(() => {
+    cobroAguaCacheRef.current.clear();
+  }, []);
+
+  const invalidarBusquedaCajaCache = useCallback(() => {
+    busquedaAguaCacheRef.current.clear();
+    busquedaLuzCacheRef.current.clear();
   }, []);
 
   const cargarReporteAgua = useCallback(async () => {
@@ -740,6 +841,18 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }, [recargarAgua, recargarLuz, tab, usuarioSistema]);
 
   useEffect(() => {
+    if (previousTabRef.current === tab) return;
+    previousTabRef.current = tab;
+    invalidarBusquedaCajaCache();
+    busquedaAguaRequestSeqRef.current += 1;
+    busquedaLuzRequestSeqRef.current += 1;
+    setBuscandoContribuyenteAgua(false);
+    setBuscandoContribuyenteLuz(false);
+    setErrorBusquedaContribuyenteAgua("");
+    setErrorBusquedaContribuyenteLuz("");
+  }, [invalidarBusquedaCajaCache, tab]);
+
+  useEffect(() => {
     if (!usuarioSistema) {
       realtime.disconnect(true);
       return;
@@ -751,107 +864,157 @@ function CajaMunicipalApp({ onBackToSelector }) {
     };
   }, [usuarioSistema]);
 
-  const buscarContribuyentesAgua = useCallback(async ({ preserveSelectedId = 0 } = {}) => {
+  const buscarContribuyentesAgua = useCallback(async ({ preserveSelectedId = 0, force = false } = {}) => {
     const qRaw = String(busquedaContribuyenteAgua || "").trim();
     if (!qRaw) {
       setBusquedaContribuyenteRealizada(true);
       setContribuyentesFiltradosAgua([]);
+      setErrorBusquedaContribuyenteAgua("");
       setSelectedContribuyenteAgua(null);
       showFlash("warning", "Digite apellidos completos, nombre y apellido, DNI o código completo.");
       return;
     }
-    const qNombre = normalizeSearchText(qRaw);
-    const qNombreTokens = tokenizeSearchText(qRaw);
-    const qDni = normalizeDigits(qRaw);
-    const qCodigo = normalizeCodigo(qRaw);
-    const usarBusquedaNombrePorTokens = qNombreTokens.length >= 2;
     const idSeleccionado = Number(preserveSelectedId || selectedContribuyenteAgua?.id_contribuyente || 0);
-
-    setBuscandoContribuyenteAgua(true);
+    const cacheKey = buildSearchCacheKey(qRaw);
+    const requestId = busquedaAguaRequestSeqRef.current + 1;
+    busquedaAguaRequestSeqRef.current = requestId;
+    const startedAt = Date.now();
     try {
-      let base = padronContribuyentesAgua;
-      if (!Array.isArray(base) || base.length === 0) {
-        const res = await api.get("/contribuyentes");
-        base = Array.isArray(res.data) ? res.data : [];
-        setPadronContribuyentesAgua(base);
+      if (!force) {
+        const cachedRows = readSearchCacheValue(busquedaAguaCacheRef, cacheKey);
+        if (cachedRows) {
+          setContribuyentesFiltradosAgua(cachedRows);
+          setErrorBusquedaContribuyenteAgua("");
+          setSelectedContribuyenteAgua(() => {
+            if (!idSeleccionado) return null;
+            return cachedRows.find((row) => Number(row?.id_contribuyente || 0) === idSeleccionado) || null;
+          });
+          setBusquedaContribuyenteRealizada(true);
+          return;
+        }
       }
-      const filtrados = base.filter((row) => {
-        const nombre = normalizeSearchText(row?.nombre_completo || row?.sec_nombre);
-        const nombreTokens = tokenizeSearchText(nombre);
-        const dni = normalizeDigits(row?.dni_ruc);
-        const codigo = normalizeCodigo(row?.codigo_municipal || row?.sec_cod);
-        const coincideNombre = usarBusquedaNombrePorTokens
-          ? qNombreTokens.every((tok) => nombreTokens.includes(tok))
-          : (qNombre && nombre === qNombre);
-        return coincideNombre
-          || (qDni && dni === qDni)
-          || (qCodigo && codigo === qCodigo);
-      }).slice(0, 200);
+
+      setErrorBusquedaContribuyenteAgua("");
+      setBuscandoContribuyenteAgua(true);
+      const res = await api.get("/caja/contribuyentes/buscar", {
+        params: {
+          q: qRaw,
+          limit: SEARCH_RESULTS_LIMIT_AGUA
+        }
+      });
+      if (requestId !== busquedaAguaRequestSeqRef.current) return;
+      const filtrados = (Array.isArray(res.data) ? res.data : []).map((row) => ({
+        ...row,
+        id_contribuyente: Number(row?.id_contribuyente || 0),
+        id_predio: Number(row?.id_predio || 0),
+        meses_deuda: Number(row?.meses_deuda || 0),
+        deuda_anio: round2(parseMonto(row?.deuda_anio ?? 0)),
+        abono_anio: round2(parseMonto(row?.abono_anio ?? 0))
+      }));
+      if (import.meta.env.DEV) {
+        const durationMs = Date.now() - startedAt;
+        if (durationMs > SEARCH_WARN_THRESHOLD_MS) {
+          console.warn("[CAJA][BUSQUEDA_AGUA_LENTA]", {
+            q: qRaw,
+            durationMs,
+            results: filtrados.length
+          });
+        }
+      }
+      writeSearchCacheValue(busquedaAguaCacheRef, cacheKey, filtrados);
       setContribuyentesFiltradosAgua(filtrados);
+      setErrorBusquedaContribuyenteAgua("");
       setSelectedContribuyenteAgua(() => {
         if (!idSeleccionado) return null;
         return filtrados.find((row) => Number(row?.id_contribuyente || 0) === idSeleccionado) || null;
       });
       setBusquedaContribuyenteRealizada(true);
     } catch (err) {
-      handleApiError(err, "No se pudo buscar contribuyentes.");
+      if (requestId !== busquedaAguaRequestSeqRef.current) return;
+      const msg = handleApiError(err, "No se pudo buscar contribuyentes.");
+      setErrorBusquedaContribuyenteAgua(msg);
     } finally {
+      if (requestId !== busquedaAguaRequestSeqRef.current) return;
       setBuscandoContribuyenteAgua(false);
     }
-  }, [busquedaContribuyenteAgua, handleApiError, padronContribuyentesAgua, selectedContribuyenteAgua?.id_contribuyente, showFlash]);
+  }, [busquedaContribuyenteAgua, handleApiError, selectedContribuyenteAgua?.id_contribuyente, showFlash]);
 
-  const invalidarCobroAguaCache = useCallback(() => {
-    cobroAguaCacheRef.current.clear();
-  }, []);
-
-  const buscarContribuyentesLuz = useCallback(async () => {
+  const buscarContribuyentesLuz = useCallback(async ({ preserveSelectedId = 0, force = false } = {}) => {
     const qRaw = String(busquedaContribuyenteLuz || "").trim();
     if (!qRaw) {
       setBusquedaContribuyenteLuzRealizada(true);
       setContribuyentesFiltradosLuz([]);
+      setErrorBusquedaContribuyenteLuz("");
       setSelectedContribuyenteLuz(null);
-      showFlash("warning", "Digite zona, ID usuario, nombre o direccion para buscar en luz.");
+      showFlash("warning", "Digite zona, ID usuario, nombre o dirección para buscar en luz.");
       return;
     }
 
-    const qText = normalizeSearchText(qRaw);
-    const qTokens = tokenizeSearchText(qRaw);
-    const qDigits = normalizeDigits(qRaw);
-    const usarTokens = qTokens.length >= 1;
-
-    setBuscandoContribuyenteLuz(true);
+    const cacheKey = buildSearchCacheKey(qRaw);
+    const requestId = busquedaLuzRequestSeqRef.current + 1;
+    busquedaLuzRequestSeqRef.current = requestId;
+    const idSeleccionado = Number(preserveSelectedId || selectedContribuyenteLuz?.id_suministro || 0);
+    const startedAt = Date.now();
     try {
-      let base = padronContribuyentesLuz;
-      if (!Array.isArray(base) || base.length === 0) {
-        const res = await cajaLuzApi.get("/caja/suministros");
-        base = Array.isArray(res.data) ? res.data : [];
-        setPadronContribuyentesLuz(base);
+      if (!force) {
+        const cachedRows = readSearchCacheValue(busquedaLuzCacheRef, cacheKey);
+        if (cachedRows) {
+          setContribuyentesFiltradosLuz(cachedRows);
+          setErrorBusquedaContribuyenteLuz("");
+          setSelectedContribuyenteLuz(() => {
+            if (!idSeleccionado) return null;
+            return cachedRows.find((row) => Number(row?.id_suministro || 0) === idSeleccionado) || null;
+          });
+          setBusquedaContribuyenteLuzRealizada(true);
+          return;
+        }
       }
 
-      const filtrados = base.filter((row) => {
-        const nombre = normalizeSearchText(row?.nombre_usuario);
-        const direccion = normalizeSearchText(row?.direccion);
-        const zona = normalizeSearchText(row?.zona);
-        const medidor = normalizeDigits(row?.nro_medidor);
-        const medidorReal = normalizeDigits(row?.nro_medidor_real);
-        const searchable = `${nombre} ${direccion} ${zona}`.trim();
-        const searchableTokens = tokenizeSearchText(searchable);
-        const coincideTexto = usarTokens
-          ? qTokens.every((tok) => searchableTokens.includes(tok) || searchable.includes(tok))
-          : (qText && searchable === qText);
-        return coincideTexto
-          || (qDigits && (medidor === qDigits || medidorReal === qDigits));
-      }).slice(0, 300);
+      setErrorBusquedaContribuyenteLuz("");
+      setBuscandoContribuyenteLuz(true);
+      const res = await cajaLuzApi.get("/caja/suministros", {
+        params: {
+          q: qRaw,
+          limit: SEARCH_RESULTS_LIMIT_LUZ
+        }
+      });
+      if (requestId !== busquedaLuzRequestSeqRef.current) return;
+      const filtrados = (Array.isArray(res.data) ? res.data : []).map((row) => ({
+        ...row,
+        id_suministro: Number(row?.id_suministro || 0),
+        id_zona: Number(row?.id_zona || 0),
+        meses_deuda: Number(row?.meses_deuda || 0),
+        deuda_total: round2(parseMonto(row?.deuda_total ?? 0)),
+        abono_total: round2(parseMonto(row?.abono_total ?? 0))
+      }));
+      if (import.meta.env.DEV) {
+        const durationMs = Date.now() - startedAt;
+        if (durationMs > SEARCH_WARN_THRESHOLD_MS) {
+          console.warn("[CAJA][BUSQUEDA_LUZ_LENTA]", {
+            q: qRaw,
+            durationMs,
+            results: filtrados.length
+          });
+        }
+      }
+      writeSearchCacheValue(busquedaLuzCacheRef, cacheKey, filtrados);
 
       setContribuyentesFiltradosLuz(filtrados);
-      setSelectedContribuyenteLuz(null);
+      setErrorBusquedaContribuyenteLuz("");
+      setSelectedContribuyenteLuz(() => {
+        if (!idSeleccionado) return null;
+        return filtrados.find((row) => Number(row?.id_suministro || 0) === idSeleccionado) || null;
+      });
       setBusquedaContribuyenteLuzRealizada(true);
     } catch (err) {
-      handleApiError(err, "No se pudo buscar contribuyentes de luz.");
+      if (requestId !== busquedaLuzRequestSeqRef.current) return;
+      const msg = handleApiError(err, "No se pudo buscar contribuyentes de luz.");
+      setErrorBusquedaContribuyenteLuz(msg);
     } finally {
+      if (requestId !== busquedaLuzRequestSeqRef.current) return;
       setBuscandoContribuyenteLuz(false);
     }
-  }, [busquedaContribuyenteLuz, handleApiError, padronContribuyentesLuz, showFlash]);
+  }, [busquedaContribuyenteLuz, handleApiError, selectedContribuyenteLuz?.id_suministro, showFlash]);
 
   const abrirCobroDirectoLuz = useCallback(async () => {
     const idSuministro = Number(selectedContribuyenteLuz?.id_suministro || 0);
@@ -947,7 +1110,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
     const recibo = recibosPagadosReimpresionLuz.find((row) => Number(row?.id_recibo || 0) === idRecibo);
     if (!recibo) {
-      showFlash("warning", "No se encontro el periodo seleccionado para reimpresion.");
+      showFlash("warning", "No se encontró el periodo seleccionado para reimpresión.");
       return;
     }
 
@@ -980,7 +1143,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     if (montoRaw === null) return;
     const monto = Number.parseFloat(String(montoRaw).replace(",", "."));
     if (!Number.isFinite(monto) || monto < 0) {
-      showFlash("danger", "Monto invalido para conteo de efectivo.");
+      showFlash("danger", "Monto inválido para conteo de efectivo.");
       return;
     }
     const observacion = window.prompt("Observacion opcional:", "") || "";
@@ -1072,7 +1235,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const anio = Number(row?.anio || 0);
       if (mes < 1 || mes > 12 || anio < 1900) return;
       const key = buildCobroMapKey(row);
-      byPeriodo.set(key, {
+      byPeriodo.set(key, normalizeCobroAguaRowConsistency({
         ...row,
         id_recibo: Number(row?.id_recibo || 0) || null,
         mes,
@@ -1086,7 +1249,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
         deuda_mes: round2(parseMonto(row?.deuda_mes ?? 0)),
         estado: String(row?.estado || ""),
         es_adelantado: false
-      });
+      }, fecha));
     });
     pendientes.forEach((row) => {
       const mes = Number(row?.mes || 0);
@@ -1104,7 +1267,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const key = buildCobroMapKey(row);
       const prev = byPeriodo.get(key);
       const deudaMes = round2(parseMonto(row?.deuda_mes ?? row?.total_pagar ?? 0));
-      byPeriodo.set(key, {
+      byPeriodo.set(key, normalizeCobroAguaRowConsistency({
         ...(prev || {}),
         ...row,
         id_recibo: Number(row?.id_recibo || 0) > 0
@@ -1121,7 +1284,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
         deuda_mes: round2(parseMonto(deudaMes ?? prev?.deuda_mes ?? 0, 0)),
         estado: String(row?.estado || prev?.estado || ""),
         es_adelantado: Boolean(row?.es_adelantado) || (Number(row?.id_recibo ?? 0) <= 0 && deudaMes > 0)
-      });
+      }, fecha));
     });
     const rows = Array.from(byPeriodo.values()).sort((a, b) => {
       const pa = (Number(a?.anio || 0) * 100) + Number(a?.mes || 0);
@@ -1250,7 +1413,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     if (montoRaw === null) return;
     const nuevoMonto = round2(parseMonto(String(montoRaw || "").replace(",", ".")));
     if (nuevoMonto <= 0) {
-      showFlash("warning", "Ingrese un monto valido para editar el pago.");
+      showFlash("warning", "Ingrese un monto válido para editar el pago.");
       return;
     }
     if (nuevoMonto > montoMaximo + 0.001) {
@@ -1278,6 +1441,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       });
       showFlash("success", res?.data?.mensaje || "Monto del pago actualizado.");
       invalidarCobroAguaCache();
+      invalidarBusquedaCajaCache();
       const idContribuyenteRefresco = Number(
         res?.data?.pago?.id_contribuyente
         || idContribuyenteActual
@@ -1292,7 +1456,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       }
       await Promise.all([
         recargarAgua(),
-        buscarContribuyentesAgua({ preserveSelectedId: idContribuyenteRefresco })
+        buscarContribuyentesAgua({ preserveSelectedId: idContribuyenteRefresco, force: true })
       ]);
     } catch (err) {
       handleApiError(err, "No se pudo editar el monto del pago seleccionado.");
@@ -1306,6 +1470,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     fechaCobroAgua,
     handleApiError,
     invalidarCobroAguaCache,
+    invalidarBusquedaCajaCache,
     permisos.canCorregirPagos,
     permitirContingenciaAgua,
     recargarAgua,
@@ -1345,6 +1510,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const res = await api.post(`/pagos/recibo/${idRecibo}/anular-ultimo`, { motivo });
       showFlash("success", res?.data?.mensaje || "Pago anulado para correccion.");
       invalidarCobroAguaCache();
+      invalidarBusquedaCajaCache();
       if (idContribuyente > 0) {
         setActualizandoPeriodosCobroAgua(true);
         await cargarPeriodosCobroAgua(idContribuyente, fecha, {
@@ -1354,7 +1520,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       }
       await Promise.all([
         recargarAgua(),
-        buscarContribuyentesAgua({ preserveSelectedId: idContribuyente })
+        buscarContribuyentesAgua({ preserveSelectedId: idContribuyente, force: true })
       ]);
     } catch (err) {
       handleApiError(err, "No se pudo anular el pago del periodo seleccionado.");
@@ -1368,6 +1534,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     fechaCobroAgua,
     handleApiError,
     invalidarCobroAguaCache,
+    invalidarBusquedaCajaCache,
     permisos.canCorregirPagos,
     recargarAgua,
     selectedContribuyenteAgua,
@@ -1523,7 +1690,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       } else if (mes >= 1 && mes <= 12 && anio >= 1900) {
         pagos.push({ anio, mes, monto_pagado: monto });
       } else {
-        showFlash("warning", "Hay un periodo invalido seleccionado para cobro.");
+        showFlash("warning", "Hay un periodo inválido seleccionado para cobro.");
         return;
       }
       anexoItems.push({
@@ -1557,10 +1724,11 @@ function CajaMunicipalApp({ onBackToSelector }) {
       setUltimoAnexoCaja(anexoData);
       setDatosAnexoCajaImprimir(anexoData);
       invalidarCobroAguaCache();
+      invalidarBusquedaCajaCache();
       setMostrarModalCobroAgua(false);
       await Promise.all([
         recargarAgua(),
-        buscarContribuyentesAgua({ preserveSelectedId: idContribuyente })
+        buscarContribuyentesAgua({ preserveSelectedId: idContribuyente, force: true })
       ]);
     } catch (err) {
       handleApiError(err, "No se pudo registrar el cobro directo.");
@@ -1571,6 +1739,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     buscarContribuyentesAgua,
     handleApiError,
     invalidarCobroAguaCache,
+    invalidarBusquedaCajaCache,
     permisos.canCaja,
     permisos.canAdminPagos,
     permisos.fechaCobroMinima,
@@ -1613,7 +1782,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
 
     if (items.length === 0) {
-      showFlash("warning", "Seleccione al menos un mes con monto valido para cobrar en luz.");
+      showFlash("warning", "Seleccione al menos un mes con monto válido para cobrar en luz.");
       return;
     }
 
@@ -1634,7 +1803,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const cobro = await cajaLuzApi.post(`/caja/ordenes-cobro/${idOrden}/cobrar`);
       showFlash("success", cobro?.data?.mensaje || emision?.data?.mensaje || "Cobro de luz registrado.");
       setMostrarModalCobroLuz(false);
-      await Promise.all([recargarLuz(), buscarContribuyentesLuz()]);
+      invalidarBusquedaCajaCache();
+      await Promise.all([recargarLuz(), buscarContribuyentesLuz({ preserveSelectedId: idSuministro, force: true })]);
     } catch (err) {
       handleApiError(err, "No se pudo registrar cobro de luz.");
     } finally {
@@ -1643,6 +1813,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }, [
     buscarContribuyentesLuz,
     handleApiError,
+    invalidarBusquedaCajaCache,
     permisos.canCorregirPagos,
     recibosPendientesCobroLuz,
     recargarLuz,
@@ -1744,7 +1915,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       setIdReciboReimpresionAgua(Number(pagados[0]?.id_recibo || 0));
       setMostrarModalReimpresionAgua(true);
     } catch (err) {
-      handleApiError(err, "No se pudo cargar el historial pagado para reimpresion.");
+      handleApiError(err, "No se pudo cargar el historial pagado para reimpresión.");
     } finally {
       setLoadingHistorialReimpresionAgua(false);
     }
@@ -1758,7 +1929,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
     const recibo = recibosPagadosReimpresionAgua.find((row) => Number(row?.id_recibo || 0) === idRecibo);
     if (!recibo) {
-      showFlash("warning", "No se encontro el periodo seleccionado para reimpresion.");
+      showFlash("warning", "No se encontró el periodo seleccionado para reimpresión.");
       return;
     }
     const anexoData = buildAnexoDataFromReciboPagado(selectedContribuyenteAgua, recibo);
@@ -2047,9 +2218,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
                     <table className="table table-sm table-hover mb-0">
                       <thead className="table-light sticky-top">
                         <tr>
-                          <th>Codigo</th>
+                          <th>Código</th>
                           <th>Nombre</th>
-                          <th>Direccion</th>
+                          <th>Dirección</th>
                           <th className="text-center">Meses deuda</th>
                           <th className="text-end">Deuda total</th>
                           <th className="text-end">Abono total</th>
@@ -2066,8 +2237,11 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         {busquedaContribuyenteRealizada && buscandoContribuyenteAgua && (
                           <tr><td colSpan="6" className="text-center py-3">Buscando...</td></tr>
                         )}
-                        {busquedaContribuyenteRealizada && !buscandoContribuyenteAgua && contribuyentesFiltradosAgua.length === 0 && (
-                          <tr><td colSpan="6" className="text-center py-3 text-muted">Sin resultados para la busqueda.</td></tr>
+                        {busquedaContribuyenteRealizada && !buscandoContribuyenteAgua && errorBusquedaContribuyenteAgua && (
+                          <tr><td colSpan="6" className="text-center py-3 text-danger">{errorBusquedaContribuyenteAgua}</td></tr>
+                        )}
+                        {busquedaContribuyenteRealizada && !buscandoContribuyenteAgua && !errorBusquedaContribuyenteAgua && contribuyentesFiltradosAgua.length === 0 && (
+                          <tr><td colSpan="6" className="text-center py-3 text-muted">Sin resultados para la búsqueda.</td></tr>
                         )}
                         {busquedaContribuyenteRealizada && !buscandoContribuyenteAgua && contribuyentesFiltradosAgua.map((c) => (
                           <tr
@@ -2126,7 +2300,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       type="text"
                       className="form-control"
                       style={{ maxWidth: "460px" }}
-                      placeholder="Digite zona, ID usuario, nombre o direccion"
+                      placeholder="Digite zona, ID usuario, nombre o dirección"
                       value={busquedaContribuyenteLuz}
                       onChange={(e) => setBusquedaContribuyenteLuz(e.target.value)}
                       onKeyDown={(e) => {
@@ -2171,7 +2345,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                           <th>Zona</th>
                           <th>ID usuario</th>
                           <th>Nombre</th>
-                          <th>Direccion</th>
+                          <th>Dirección</th>
                           <th className="text-center">Meses deuda</th>
                           <th className="text-end">Deuda total</th>
                           <th className="text-end">Abono total</th>
@@ -2181,15 +2355,18 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         {!busquedaContribuyenteLuzRealizada && (
                           <tr>
                             <td colSpan="7" className="text-center py-3 text-muted">
-                              La lista inicia vacia. Digite zona, ID usuario, nombre o direccion y presione Buscar.
+                              La lista inicia vacía. Digite zona, ID usuario, nombre o dirección y presione Buscar.
                             </td>
                           </tr>
                         )}
                         {busquedaContribuyenteLuzRealizada && buscandoContribuyenteLuz && (
                           <tr><td colSpan="7" className="text-center py-3">Buscando...</td></tr>
                         )}
-                        {busquedaContribuyenteLuzRealizada && !buscandoContribuyenteLuz && contribuyentesFiltradosLuz.length === 0 && (
-                          <tr><td colSpan="7" className="text-center py-3 text-muted">Sin resultados para la busqueda.</td></tr>
+                        {busquedaContribuyenteLuzRealizada && !buscandoContribuyenteLuz && errorBusquedaContribuyenteLuz && (
+                          <tr><td colSpan="7" className="text-center py-3 text-danger">{errorBusquedaContribuyenteLuz}</td></tr>
+                        )}
+                        {busquedaContribuyenteLuzRealizada && !buscandoContribuyenteLuz && !errorBusquedaContribuyenteLuz && contribuyentesFiltradosLuz.length === 0 && (
+                          <tr><td colSpan="7" className="text-center py-3 text-muted">Sin resultados para la búsqueda.</td></tr>
                         )}
                         {busquedaContribuyenteLuzRealizada && !buscandoContribuyenteLuz && contribuyentesFiltradosLuz.map((c) => (
                           <tr
@@ -2380,7 +2557,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         const tipoMovimientoAdmin = String(row?.tipo_movimiento_admin || "").trim().toUpperCase();
                         const estadoMovimientoAdmin = String(row?.estado_movimiento_admin || "").trim().toUpperCase();
                         const idAnulacionPendiente = Number(row?.id_anulacion_pendiente || 0);
-                        const tieneReintegroPendiente = idAnulacionPendiente > 0 && estadoUpper !== "PAGADO";
+                        const tieneReintegroPendiente = hasCobroAguaPendingReingreso(row) && estadoUpper !== "PAGADO";
                         const fueEditado = tipoMovimientoAdmin === "EDICION_MONTO" || estadoMovimientoAdmin === "EDITADO";
                         const fueReintegrado = tipoMovimientoAdmin === "REINTEGRACION" || estadoMovimientoAdmin === "REINTEGRADO";
                         const correccionDentroDeRango = canCorrectCobroAguaRowByDate(row, permisos, toIsoDate());
@@ -2769,12 +2946,14 @@ function CajaMunicipalApp({ onBackToSelector }) {
       )}
 
       {mostrarReporteCajaAgua && (
-        <ModalCierre
-          cerrarModal={() => setMostrarReporteCajaAgua(false)}
-          darkMode={false}
-          origen="caja"
-          usuarioSistema={usuarioSistema}
-        />
+        <Suspense fallback={<LazyModalFallback label="Cargando reporte de caja..." />}>
+          <ModalCierre
+            cerrarModal={() => setMostrarReporteCajaAgua(false)}
+            darkMode={false}
+            origen="caja"
+            usuarioSistema={usuarioSistema}
+          />
+        </Suspense>
       )}
 
       {mostrarReporteCajaLuz && (
