@@ -1,32 +1,34 @@
 ﻿import { useEffect, useState, useRef, useMemo, useDeferredValue, useCallback, memo } from "react";
 import api from "./api";
+import { Suspense, lazy } from "react";
 import { useReactToPrint } from 'react-to-print'; 
-import RegistroForm from "./components/RegistroForm";
 import ModalDeuda from "./components/ModalDeuda";
 import ModalPago from "./components/ModalPago";
 import ModalEliminar from "./components/ModalEliminar";
-import ModalCierre from "./components/ModalCierre";
 import ModalEditarUsuario from "./components/ModalEditarUsuario";
 import DashboardStats from "./components/DashboardStats"; 
 import Recibo from "./components/Recibo"; 
 import ReciboAnexoCaja from "./components/ReciboAnexoCaja";
 import ReporteCortes from "./components/ReporteCortes"; 
 import ActasCorteLote from "./components/ActasCorteLote";
-import ModalAuditoria from "./components/ModalAuditoria";
 import LoginPage from "./components/LoginPage";
-import ModalUsuarios from "./components/ModalUsuarios";
 import RecibosMasivos from "./components/RecibosMasivos";
-import ModalImpresionMasiva from "./components/ModalImpresionMasiva";
-import ModalImportar from "./components/ModalImportar";
-import ModalDeudaMasiva from "./components/ModalDeudaMasiva";
-import ModalExportaciones from "./components/ModalExportaciones";
-import ModalReporteCortes from "./components/ModalReporteCortes";
-import ModalActaCorteSelector from "./components/ModalActaCorteSelector";
-import ModalCampoSolicitudes from "./components/ModalCampoSolicitudes";
-import ModalCorteConexion from "./components/ModalCorteConexion";
 import FlashNotice from "./components/FlashNotice";
 import { buildReporteEstadoConexionPdf } from "./utils/simplePdf";
 import { formatDireccionDisplay } from "./utils/direccionDisplay";
+
+const LazyRegistroForm = lazy(() => import("./components/RegistroForm"));
+const LazyModalCierre = lazy(() => import("./components/ModalCierre"));
+const LazyModalAuditoria = lazy(() => import("./components/ModalAuditoria"));
+const LazyModalUsuarios = lazy(() => import("./components/ModalUsuarios"));
+const LazyModalImpresionMasiva = lazy(() => import("./components/ModalImpresionMasiva"));
+const LazyModalImportar = lazy(() => import("./components/ModalImportar"));
+const LazyModalDeudaMasiva = lazy(() => import("./components/ModalDeudaMasiva"));
+const LazyModalExportaciones = lazy(() => import("./components/ModalExportaciones"));
+const LazyModalReporteCortes = lazy(() => import("./components/ModalReporteCortes"));
+const LazyModalActaCorteSelector = lazy(() => import("./components/ModalActaCorteSelector"));
+const LazyModalCampoSolicitudes = lazy(() => import("./components/ModalCampoSolicitudes"));
+const LazyModalCorteConexion = lazy(() => import("./components/ModalCorteConexion"));
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -67,8 +69,8 @@ const ESTADOS_CONEXION = {
 };
 
 const ESTADO_CONEXION_LABELS = {
-  CON_CONEXION: "Con conexion",
-  SIN_CONEXION: "Sin conexion",
+  CON_CONEXION: "Con conexión",
+  SIN_CONEXION: "Sin conexión",
   CORTADO: "Cortado"
 };
 
@@ -100,6 +102,26 @@ const normalizeEstadoConexion = (value) => {
   if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return ESTADOS_CONEXION.CORTADO;
   return ESTADOS_CONEXION.CON_CONEXION;
 };
+
+const LazyPanelFallback = ({ darkMode, label = "Cargando..." }) => (
+  <div className={`p-4 text-center ${darkMode ? "text-white" : "text-muted"}`}>
+    <div className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
+    <span>{label}</span>
+  </div>
+);
+
+const LazyModalFallback = ({ darkMode, label = "Cargando..." }) => (
+  <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
+    <div className="modal-dialog">
+      <div className={`modal-content ${darkMode ? "bg-dark text-white border-secondary" : ""}`}>
+        <div className="modal-body py-4 text-center">
+          <div className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
+          <span>{label}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+);
 
 const badgeEstadoConexionClass = (estado) => {
   const n = normalizeEstadoConexion(estado);
@@ -336,8 +358,8 @@ const Toolbar = memo(({
         onChange={(e) => setFiltroEstadoConexion(e.target.value)}
       >
         <option value="TODOS">Todos</option>
-        <option value="CON_CONEXION">Con conexion</option>
-        <option value="SIN_CONEXION">Sin conexion</option>
+        <option value="CON_CONEXION">Con conexión</option>
+        <option value="SIN_CONEXION">Sin conexión</option>
         <option value="CORTADO">Cortado</option>
       </select>
     </div>
@@ -932,7 +954,7 @@ const anexoCajaPageStyle = `
 
   const abrirModalImpresionMensual = () => {
     if (!permisos.canImpresionMensual) {
-      showFlash("warning", "Solo el administrador puede usar la impresion mensual.");
+      showFlash("warning", "Solo el administrador puede usar la impresión mensual.");
       return;
     }
     setModalImpresionModo("mensual");
@@ -941,7 +963,7 @@ const anexoCajaPageStyle = `
 
   const abrirModalReimpresion = () => {
     if (!permisos.canReimpresionRecibo) {
-      showFlash("warning", "Tu nivel no tiene permiso para reimpresion.");
+      showFlash("warning", "Tu nivel no tiene permiso para reimpresión.");
       return;
     }
     if (!usuarioSeleccionado?.id_contribuyente) {
@@ -1437,17 +1459,39 @@ const anexoCajaPageStyle = `
     });
   }, [usuarioSeleccionado, historialTabla, darkMode, formatMonto]);
 
-  const recargarTodo = async () => {
-    const selectedId = Number(usuarioSeleccionadoRef.current?.id_contribuyente || 0);
-    historialCacheRef.current.clear();
-    await cargarContribuyentes(0, { forceFresh: true });
-    if (SHOW_LEGACY_CAJA_MENU && permisos.canCaja) cargarResumenPendientesCaja();
-    if (permisos.canCaja) cargarResumenConteoEfectivo();
-    if (selectedId > 0) {
-      await cargarHistorial(selectedId, "all", true);
+  const recargarTodo = async (options = {}) => {
+    const optimisticContribuyente = options?.optimisticContribuyente || null;
+    const deferFullRefresh = options?.deferFullRefresh === true;
+    if (optimisticContribuyente && Number(optimisticContribuyente?.id_contribuyente || 0) > 0) {
+      const optimisticId = Number(optimisticContribuyente.id_contribuyente);
+      setContribuyentes((prev) => prev.map((row) => (
+        Number(row?.id_contribuyente || 0) === optimisticId
+          ? { ...row, ...optimisticContribuyente }
+          : row
+      )));
+      setUsuarioSeleccionado((prev) => (
+        Number(prev?.id_contribuyente || 0) === optimisticId
+          ? { ...prev, ...optimisticContribuyente }
+          : prev
+      ));
     }
-    setRefreshDashboard(prev => prev + 1);
-    setSelectedIds(new Set());
+    const ejecutarRecarga = async () => {
+      const selectedId = Number(usuarioSeleccionadoRef.current?.id_contribuyente || 0);
+      historialCacheRef.current.clear();
+      await cargarContribuyentes(0, { forceFresh: true });
+      if (SHOW_LEGACY_CAJA_MENU && permisos.canCaja) cargarResumenPendientesCaja();
+      if (permisos.canCaja) cargarResumenConteoEfectivo();
+      if (selectedId > 0) {
+        await cargarHistorial(selectedId, "all", true);
+      }
+      setRefreshDashboard(prev => prev + 1);
+      setSelectedIds(new Set());
+    };
+    if (deferFullRefresh) {
+      void ejecutarRecarga();
+      return;
+    }
+    await ejecutarRecarga();
   };
 
   const registrarConteoEfectivoCaja = async () => {
@@ -1458,7 +1502,7 @@ const anexoCajaPageStyle = `
     if (montoRaw === null) return;
     const monto = Number.parseFloat(String(montoRaw).replace(",", "."));
     if (!Number.isFinite(monto) || monto < 0) {
-      showFlash("warning", "Ingrese un monto valido de efectivo.");
+      showFlash("warning", "Ingrese un monto válido de efectivo.");
       return;
     }
     const observacionRaw = window.prompt("Observacion opcional del conteo:", "") || "";
@@ -1549,7 +1593,7 @@ const anexoCajaPageStyle = `
     if (!permisos.canCambiarEstadoConexion) return;
     const idContribuyente = Number(id_contribuyente);
     if (!Number.isInteger(idContribuyente) || idContribuyente <= 0) {
-      showFlash("warning", "Seleccione un contribuyente valido.");
+      showFlash("warning", "Seleccione un contribuyente válido.");
       return;
     }
     try {
@@ -2134,7 +2178,7 @@ const anexoCajaPageStyle = `
       
       <div className={`flex-grow-1 d-flex flex-column ${bgMain}`} style={{ overflow: "hidden" }}>
         <header className="bg-primary text-white p-3 shadow-sm flex-shrink-0 d-flex justify-content-between align-items-center">
-          <h5 className="m-0">Area de Administracion Tributaria - Agua</h5>
+          <h5 className="m-0">Área de Administración Tributaria - Agua</h5>
           <div className="d-flex align-items-center gap-2">
             <span className={`badge ${realtimeBadge.className}`}>{realtimeBadge.label}</span>
             <button
@@ -2146,7 +2190,7 @@ const anexoCajaPageStyle = `
             </button>
             {typeof onBackToSelector === "function" && (
               <button className="btn btn-sm btn-outline-light" onClick={onBackToSelector}>
-                Cambiar modulo
+                Cambiar módulo
               </button>
             )}
           </div>
@@ -2154,7 +2198,11 @@ const anexoCajaPageStyle = `
 
         {/* CAMBIO: Se pasa darkMode a RegistroForm */}
         {mostrarRegistro && permisos.canManageContribuyentes ? (
-          <div className="p-4 overflow-auto"><RegistroForm onGuardar={() => { recargarTodo(); setMostrarRegistro(false); }} darkMode={darkMode} canDeleteCalles={permisos.canDeleteCalles} onFlash={showFlash} /></div>
+          <div className="p-4 overflow-auto">
+            <Suspense fallback={<LazyPanelFallback darkMode={darkMode} label="Cargando formulario de registro..." />}>
+              <LazyRegistroForm onGuardar={() => { recargarTodo(); setMostrarRegistro(false); }} darkMode={darkMode} canDeleteCalles={permisos.canDeleteCalles} onFlash={showFlash} />
+            </Suspense>
+          </div>
         ) : (
           <div className="d-flex flex-column flex-grow-1" style={{ overflow: "hidden" }} onClick={handleBackgroundClick}>
             
@@ -2210,10 +2258,10 @@ const anexoCajaPageStyle = `
                 <table className={tableClass}>
                   <thead>
                     <tr> 
-                      <ThOrdenable label="Codigo" campo="codigo_municipal" />
+                      <ThOrdenable label="Código" campo="codigo_municipal" />
                       <ThOrdenable label="Nombre" campo="nombre_completo" />
-                      <ThOrdenable label="Direccion" campo="direccion_completa" />
-                      <ThOrdenable label="Estado Conexion" campo="estado_conexion" />
+                      <ThOrdenable label="Dirección" campo="direccion_completa" />
+                      <ThOrdenable label="Estado Conexión" campo="estado_conexion" />
                       <ThOrdenable label="Meses Deuda" campo="meses_deuda" />
                       <ThOrdenable label="Deuda Total" campo="deuda_anio" />
                       <ThOrdenable label="Abono Total" campo="abono_anio" />
@@ -2284,128 +2332,154 @@ const anexoCajaPageStyle = `
       )}
       {mostrarModalEliminar && usuarioSeleccionado && (<ModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} darkMode={darkMode} onFlash={showFlash} />)}
       {mostrarModalCierre && (
-        <ModalCierre
-          cerrarModal={() => setMostrarModalCierre(false)}
-          darkMode={darkMode}
-          origen="ventanilla"
-          usuarioSistema={usuarioSistema}
-          onFlash={showFlash}
-        />
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando reporte de cobranzas..." />}>
+          <LazyModalCierre
+            cerrarModal={() => setMostrarModalCierre(false)}
+            darkMode={darkMode}
+            origen="ventanilla"
+            usuarioSistema={usuarioSistema}
+            onFlash={showFlash}
+          />
+        </Suspense>
       )}
       {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} darkMode={darkMode} onFlash={showFlash} />)}
       {mostrarModalAuditoria && (
-        <ModalAuditoria
-          cerrarModal={() => setMostrarModalAuditoria(false)}
-          darkMode={darkMode}
-          onUndoApplied={() => cargarContribuyentes(0, { forceFresh: true })}
-        />
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando auditoria..." />}>
+          <LazyModalAuditoria
+            cerrarModal={() => setMostrarModalAuditoria(false)}
+            darkMode={darkMode}
+            onUndoApplied={() => cargarContribuyentes(0, { forceFresh: true })}
+          />
+        </Suspense>
       )}
-      {mostrarModalUsuarios && (<ModalUsuarios cerrarModal={() => setMostrarModalUsuarios(false)} usuarioActivo={usuarioSistema} darkMode={darkMode} onFlash={showFlash} />)}
+      {mostrarModalUsuarios && (
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando gestion de usuarios..." />}>
+          <LazyModalUsuarios cerrarModal={() => setMostrarModalUsuarios(false)} usuarioActivo={usuarioSistema} darkMode={darkMode} onFlash={showFlash} />
+        </Suspense>
+      )}
       {mostrarModalCampo && (
-        <ModalCampoSolicitudes
-          cerrarModal={() => setMostrarModalCampo(false)}
-          darkMode={darkMode}
-          onAplicado={recargarTodo}
-          onFlash={showFlash}
-        />
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando bandeja de campo..." />}>
+          <LazyModalCampoSolicitudes
+            cerrarModal={() => setMostrarModalCampo(false)}
+            darkMode={darkMode}
+            onAplicado={recargarTodo}
+            onFlash={showFlash}
+          />
+        </Suspense>
       )}
       {mostrarModalCorteConexion && (
-        <ModalCorteConexion
-          cerrarModal={() => setMostrarModalCorteConexion(false)}
-          contribuyentes={contribuyentes}
-          loading={registrandoCorteConexion}
-          onConfirmar={registrarCorteConEvidencia}
-          darkMode={darkMode}
-          onFlash={showFlash}
-        />
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando corte y reconexion..." />}>
+          <LazyModalCorteConexion
+            cerrarModal={() => setMostrarModalCorteConexion(false)}
+            contribuyentes={contribuyentes}
+            loading={registrandoCorteConexion}
+            onConfirmar={registrarCorteConEvidencia}
+            darkMode={darkMode}
+            onFlash={showFlash}
+          />
+        </Suspense>
       )}
       {mostrarModalReporteCortes && (
-        <ModalReporteCortes
-          cerrarModal={() => setMostrarModalReporteCortes(false)}
-          contribuyentes={contribuyentes}
-          selectedIds={Array.from(selectedIds)}
-          onImprimir={(payload) => {
-            const formato = String(payload?.formato || "print").toLowerCase();
-            if (formato === "pdf") {
-              try {
-                const estadoTxt = String(payload?.criterio?.estado_objetivo || "ESTADO").toUpperCase();
-                const fechaTag = new Date().toISOString().slice(0, 10);
-                const fileName = `REPORTE_${estadoTxt}_PDF_${fechaTag}.pdf`;
-                const blob = buildReporteEstadoConexionPdf(payload);
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement("a");
-                link.href = url;
-                link.setAttribute("download", fileName);
-                document.body.appendChild(link);
-                link.click();
-                link.remove();
-                URL.revokeObjectURL(url);
-              } catch (error) {
-                console.error("Error al exportar PDF:", error);
-                showFlash("danger", "No se pudo exportar el PDF.");
-              } finally {
-                setMostrarModalReporteCortes(false);
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando reporte de cortes..." />}>
+          <LazyModalReporteCortes
+            cerrarModal={() => setMostrarModalReporteCortes(false)}
+            contribuyentes={contribuyentes}
+            selectedIds={Array.from(selectedIds)}
+            onImprimir={(payload) => {
+              const formato = String(payload?.formato || "print").toLowerCase();
+              if (formato === "pdf") {
+                try {
+                  const estadoTxt = String(payload?.criterio?.estado_objetivo || "ESTADO").toUpperCase();
+                  const fechaTag = new Date().toISOString().slice(0, 10);
+                  const fileName = `REPORTE_${estadoTxt}_PDF_${fechaTag}.pdf`;
+                  const blob = buildReporteEstadoConexionPdf(payload);
+                  const url = URL.createObjectURL(blob);
+                  const link = document.createElement("a");
+                  link.href = url;
+                  link.setAttribute("download", fileName);
+                  document.body.appendChild(link);
+                  link.click();
+                  link.remove();
+                  URL.revokeObjectURL(url);
+                } catch (error) {
+                  console.error("Error al exportar PDF:", error);
+                  showFlash("danger", "No se pudo exportar el PDF.");
+                } finally {
+                  setMostrarModalReporteCortes(false);
+                }
+                return;
               }
-              return;
-            }
-            const sufijo = "IMPRESION";
-            const estadoTxt = String(payload?.criterio?.estado_objetivo || "ESTADO").toUpperCase();
-            setCortesDocumentTitle(`REPORTE_${estadoTxt}_${sufijo}`);
-            setDatosCortesImprimir(payload);
-            setMostrarModalReporteCortes(false);
-          }}
-          estadoObjetivo={reporteEstadoConexion}
-          darkMode={darkMode}
-          onFlash={showFlash}
-        />
+              const sufijo = "IMPRESION";
+              const estadoTxt = String(payload?.criterio?.estado_objetivo || "ESTADO").toUpperCase();
+              setCortesDocumentTitle(`REPORTE_${estadoTxt}_${sufijo}`);
+              setDatosCortesImprimir(payload);
+              setMostrarModalReporteCortes(false);
+            }}
+            estadoObjetivo={reporteEstadoConexion}
+            darkMode={darkMode}
+            onFlash={showFlash}
+          />
+        </Suspense>
       )}
       {mostrarModalActaCorte && (
-        <ModalActaCorteSelector
-          cerrarModal={() => setMostrarModalActaCorte(false)}
-          contribuyentes={contribuyentes}
-          selectedIds={Array.from(selectedIds)}
-          loading={generandoActaCorte}
-          onConfirmar={(ids) => {
-            setMostrarModalActaCorte(false);
-            imprimirActaCorte(ids);
-          }}
-          darkMode={darkMode}
-          onFlash={showFlash}
-        />
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando actas de corte..." />}>
+          <LazyModalActaCorteSelector
+            cerrarModal={() => setMostrarModalActaCorte(false)}
+            contribuyentes={contribuyentes}
+            selectedIds={Array.from(selectedIds)}
+            loading={generandoActaCorte}
+            onConfirmar={(ids) => {
+              setMostrarModalActaCorte(false);
+              imprimirActaCorte(ids);
+            }}
+            darkMode={darkMode}
+            onFlash={showFlash}
+          />
+        </Suspense>
       )}
       {mostrarModalExportaciones && (
-        <ModalExportaciones
-          cerrarModal={() => setMostrarModalExportaciones(false)}
-          darkMode={darkMode}
-          onBackup={descargarBackup}
-          onFlash={showFlash}
-        />
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando exportaciones..." />}>
+          <LazyModalExportaciones
+            cerrarModal={() => setMostrarModalExportaciones(false)}
+            darkMode={darkMode}
+            onBackup={descargarBackup}
+            onFlash={showFlash}
+          />
+        </Suspense>
       )}
       
       {/* Modales Masivos */}
       {mostrarModalMasivo && (
-        <ModalImpresionMasiva
-          cerrarModal={() => setMostrarModalMasivo(false)}
-          alConfirmar={(datos) => { setDatosMasivos(datos); }}
-          idsSeleccionados={
-            modalImpresionModo === "reimpresion"
-              ? (usuarioSeleccionado?.id_contribuyente ? [Number(usuarioSeleccionado.id_contribuyente)] : [])
-              : Array.from(selectedIds)
-          }
-          modoOperacion={modalImpresionModo}
-          darkMode={darkMode}
-          onFlash={showFlash}
-        />
-      )}
-      {mostrarImportar && (<ModalImportar cerrarModal={() => setMostrarImportar(false)} alTerminar={recargarTodo} darkMode={darkMode} />)}
-      {mostrarModalDeudaMasiva && (
-        <ModalDeudaMasiva 
-            cerrarModal={() => setMostrarModalDeudaMasiva(false)} 
-            alGuardar={recargarTodo} 
-            idsSeleccionados={Array.from(selectedIds)} 
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando impresion masiva..." />}>
+          <LazyModalImpresionMasiva
+            cerrarModal={() => setMostrarModalMasivo(false)}
+            alConfirmar={(datos) => { setDatosMasivos(datos); }}
+            idsSeleccionados={
+              modalImpresionModo === "reimpresion"
+                ? (usuarioSeleccionado?.id_contribuyente ? [Number(usuarioSeleccionado.id_contribuyente)] : [])
+                : Array.from(selectedIds)
+            }
+            modoOperacion={modalImpresionModo}
             darkMode={darkMode}
             onFlash={showFlash}
-        />
+          />
+        </Suspense>
+      )}
+      {mostrarImportar && (
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando importacion..." />}>
+          <LazyModalImportar cerrarModal={() => setMostrarImportar(false)} alTerminar={recargarTodo} darkMode={darkMode} />
+        </Suspense>
+      )}
+      {mostrarModalDeudaMasiva && (
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando deuda masiva..." />}>
+          <LazyModalDeudaMasiva 
+              cerrarModal={() => setMostrarModalDeudaMasiva(false)} 
+              alGuardar={recargarTodo} 
+              idsSeleccionados={Array.from(selectedIds)} 
+              darkMode={darkMode}
+              onFlash={showFlash}
+          />
+        </Suspense>
       )}
 
       {/* OCULTOS PARA IMPRESION */}

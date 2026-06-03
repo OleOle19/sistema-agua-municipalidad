@@ -112,6 +112,9 @@ const sanitizeStructuredPredioReference = ({
   currentReference = "",
   currentStreet = "",
   nextStreet = "",
+  currentNumeroCasa = "",
+  currentManzana = "",
+  currentLote = "",
   numeroCasa = "",
   manzana = "",
   lote = ""
@@ -136,7 +139,46 @@ const sanitizeStructuredPredioReference = ({
   const nextStreetComparable = stripComparableText(nextStreet);
   if (nextStreetComparable && referenceComparable === nextStreetComparable) return null;
 
+  const currentNumeroComparable = stripComparableText(parseLegacyNumeroMzLt(currentNumeroCasa).numero || currentNumeroCasa);
+  if (currentNumeroComparable && referenceComparable === currentNumeroComparable) return null;
+
+  const nextNumeroComparable = stripComparableText(parseLegacyNumeroMzLt(numeroCasa).numero || numeroCasa);
+  if (nextNumeroComparable && referenceComparable === nextNumeroComparable) return null;
+
+  const currentManzanaComparable = stripComparableText(parseLegacyNumeroMzLt(`MZ ${currentManzana}`).manzana || currentManzana);
+  if (currentManzanaComparable && referenceComparable === currentManzanaComparable) return null;
+
+  const nextManzanaComparable = stripComparableText(parseLegacyNumeroMzLt(`MZ ${manzana}`).manzana || manzana);
+  if (nextManzanaComparable && referenceComparable === nextManzanaComparable) return null;
+
+  const currentLoteComparable = stripComparableText(parseLegacyNumeroMzLt(`LT ${currentLote}`).lote || currentLote);
+  if (currentLoteComparable && referenceComparable === currentLoteComparable) return null;
+
+  const nextLoteComparable = stripComparableText(parseLegacyNumeroMzLt(`LT ${lote}`).lote || lote);
+  if (nextLoteComparable && referenceComparable === nextLoteComparable) return null;
+
   return reference;
+};
+
+const sanitizeStructuredNumeroCasa = (value) => {
+  const raw = normalizeLimitedText(value, 30);
+  if (!raw) return null;
+  const partes = parseLegacyNumeroMzLt(raw);
+  return normalizeLimitedText(partes?.numero || raw, 30) || null;
+};
+
+const sanitizeStructuredManzana = (value) => {
+  const raw = normalizeLimitedText(value, 30);
+  if (!raw) return null;
+  const partes = parseLegacyNumeroMzLt(`MZ ${raw}`);
+  return normalizeLimitedText(partes?.manzana || raw.replace(/^MZ\s*[:.]?\s*/i, ""), 30) || null;
+};
+
+const sanitizeStructuredLote = (value) => {
+  const raw = normalizeLimitedText(value, 30);
+  if (!raw) return null;
+  const partes = parseLegacyNumeroMzLt(`LT ${raw}`);
+  return normalizeLimitedText(partes?.lote || raw.replace(/^LT\s*[:.]?\s*/i, ""), 30) || null;
 };
 
 const getFechaPartesZona = (date = new Date(), timeZone = APP_TIMEZONE) => {
@@ -195,6 +237,24 @@ const ensureImportUploadDir = () => {
     fs.mkdirSync(IMPORT_UPLOAD_DIR, { recursive: true });
   } catch {}
 };
+const validateUploadedFilename = (file) => {
+  const originalName = String(file?.originalname || "").trim();
+  if (!originalName) return "Archivo invalido.";
+  if (originalName.length > 240) return "Nombre de archivo demasiado largo.";
+  if (/[\\/]/.test(originalName) || originalName.includes("..")) {
+    return "Nombre de archivo no permitido.";
+  }
+  return "";
+};
+const createUploadFileFilter = (extraValidator = null) => (req, file, cb) => {
+  const nameError = validateUploadedFilename(file);
+  if (nameError) return cb(new Error(nameError));
+  if (typeof extraValidator === "function") {
+    const validationError = extraValidator(file);
+    if (validationError) return cb(new Error(validationError));
+  }
+  return cb(null, true);
+};
 const uploadImport = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
@@ -211,6 +271,7 @@ const uploadImport = multer({
       return cb(null, `${Date.now()}_${crypto.randomBytes(6).toString("hex")}${ext || ".tmp"}`);
     }
   }),
+  fileFilter: createUploadFileFilter(),
   limits: { fileSize: IMPORT_MAX_FILE_BYTES }
 });
 const uploadImportSingle = (fieldName) => (req, res, next) => {
@@ -327,6 +388,11 @@ const uploadLegacyComparacion = multer({
       return cb(null, unique);
     }
   }),
+  fileFilter: createUploadFileFilter((file) => {
+    const ext = String(path.extname(file?.originalname || "") || "").toLowerCase();
+    if (ext !== ".xlsx") return "Formato no valido. Use archivo .xlsx.";
+    return "";
+  }),
   limits: { fileSize: LEGACY_COMPARACION_MAX_FILE_BYTES }
 });
 const CORTE_EVIDENCIA_MAX_FILE_BYTES = Math.max(
@@ -408,6 +474,9 @@ const uploadCorteEvidencia = multer({
       return cb(null, unique);
     }
   }),
+  fileFilter: createUploadFileFilter((file) =>
+    isCorteEvidenciaTipoPermitido(file) ? "" : "Tipo de archivo no permitido para evidencia."
+  ),
   limits: {
     fileSize: CORTE_EVIDENCIA_MAX_FILE_BYTES,
     files: CORTE_EVIDENCIA_MAX_FILES
@@ -500,6 +569,9 @@ const uploadContribuyenteAdjuntos = multer({
       return cb(null, unique);
     }
   }),
+  fileFilter: createUploadFileFilter((file) =>
+    isContribuyenteAdjuntoTipoPermitido(file) ? "" : "Tipo de archivo no permitido para adjuntos."
+  ),
   limits: {
     fileSize: CONTRIBUYENTE_ADJUNTO_MAX_FILE_BYTES,
     files: CONTRIBUYENTE_ADJUNTO_MAX_FILES
@@ -2289,6 +2361,21 @@ const normalizeLimitedText = (value, maxLen = 250) => {
   if (!text) return "";
   return text.length > maxLen ? text.slice(0, maxLen) : text;
 };
+const normalizeSearchText = (value, maxLen = 250) => normalizeLimitedText(value, maxLen)
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toUpperCase()
+  .replace(/\s+/g, " ")
+  .trim();
+const tokenizeSearchText = (value, maxLen = 250) => normalizeSearchText(value, maxLen)
+  .split(/[^A-Z0-9]+/)
+  .map((token) => token.trim())
+  .filter(Boolean);
+const normalizeSearchDigits = (value, maxLen = 250) => normalizeLimitedText(value, maxLen).replace(/\D/g, "");
+const normalizeSearchCodigo = (value, maxLen = 250) => normalizeLimitedText(value, maxLen)
+  .toUpperCase()
+  .replace(/\s+/g, "")
+  .trim();
 
 const parsePositiveInt = (value, fallback = 0) => {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -4070,6 +4157,13 @@ const buildDireccionSql = (calleAlias = "ca", predioAlias = "p") => {
   )
 `;
 };
+const buildAccentInsensitiveUpperSql = (expr) => `
+  TRANSLATE(
+    UPPER(COALESCE(${expr}, '')),
+    'ÁÉÍÓÚÜÑ',
+    'AEIOUUN'
+  )
+`;
 
 // --- CONFIGURACIÓN JWT (SEGURIDAD) ---
 const NODE_ENV = String(process.env.NODE_ENV || "development").trim().toLowerCase();
@@ -4382,6 +4476,42 @@ const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 1500
 let contribuyentesCache = { expiresAt: 0, data: null };
 let reportesCajaCache = new Map();
 let dashboardCache = { expiresAt: 0, data: null, day: null };
+
+const getShortLivedCacheValue = (cacheStore, cacheKey) => {
+  const cached = cacheStore.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() >= Number(cached.expiresAt || 0)) {
+    cacheStore.delete(cacheKey);
+    return null;
+  }
+  return cached.data ?? null;
+};
+const setShortLivedCacheValue = (cacheStore, cacheKey, data, ttlMs) => {
+  cacheStore.set(cacheKey, {
+    expiresAt: Date.now() + Math.max(0, Number(ttlMs || 0)),
+    data
+  });
+};
+const logPerfEvent = (label, payload = {}) => {
+  const duracionMs = Number(payload?.duracion_ms || payload?.duration_ms || 0);
+  const level = duracionMs > 1000 ? "warn" : "info";
+  console[level](`[PERF][${label}] ${JSON.stringify(payload)}`);
+};
+const buildReporteCajaCacheKey = (tipo, fechaReferencia, options = {}) => JSON.stringify({
+  tipo: String(tipo || ""),
+  fecha: normalizeDateOnly(fechaReferencia) || "",
+  rango: {
+    desde: normalizeDateOnly(options?.rangoManual?.desde) || "",
+    hasta: normalizeDateOnly(options?.rangoManual?.hasta) || ""
+  },
+  page: Number(options?.page ?? 1) || 1,
+  page_size: Number(options?.pageSize ?? 200) || 200,
+  includeAllMovimientos: Boolean(options?.includeAllMovimientos),
+  includeAdminMovimientos: Boolean(options?.includeAdminMovimientos),
+  includeHistoricalValid: Boolean(options?.includeHistoricalValid),
+  adminAllowed: Boolean(options?.adminAllowed),
+  includeCodigoImpresion: Boolean(options?.includeCodigoImpresion)
+});
 
 const invalidateReportesCajaCache = () => {
   reportesCajaCache.clear();
@@ -9380,6 +9510,190 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
   }
 });
 
+app.get("/caja/contribuyentes/buscar", async (req, res) => {
+  const startedAt = Date.now();
+  let resultCount = 0;
+  try {
+    const qRaw = normalizeLimitedText(req.query?.q, 120);
+    const qCodigo = normalizeSearchCodigo(qRaw, 120);
+    const qDigits = normalizeSearchDigits(qRaw, 120);
+    const qTokens = tokenizeSearchText(qRaw, 120);
+    const hasCodigoFilter = qCodigo.length >= 3;
+    const hasDigitsFilter = qDigits.length >= 4;
+    const hasTextFilter = qTokens.join("").length >= 2;
+    if (!hasCodigoFilter && !hasDigitsFilter && !hasTextFilter) {
+      res.set("Cache-Control", "no-store");
+      return res.json([]);
+    }
+
+    const limit = Math.min(200, Math.max(10, parsePositiveInt(req.query?.limit, 120)));
+    const periodoVisible = {
+      anio: getCurrentYear(),
+      mes: getCurrentMonth()
+    };
+    const periodoCerrado = getUltimoPeriodoCerrado(periodoVisible);
+    const anioExigible = periodoCerrado.anio;
+    const mesExigible = periodoCerrado.mes;
+    const totalPagarReferenciaContribSql = buildTotalPagarDeudaVigenteSql({
+      reciboAlias: "ro",
+      predioAlias: "p3",
+      pagosAlias: "pp"
+    });
+    const nombreBusquedaSql = buildAccentInsensitiveUpperSql(`
+      COALESCE(
+        NULLIF(TRIM(c.nombre_completo), ''),
+        NULLIF(TRIM(c.sec_nombre), ''),
+        ''
+      )
+    `);
+    const codigoBusquedaSql = `UPPER(REGEXP_REPLACE(COALESCE(c.codigo_municipal, ''), '\\s+', '', 'g'))`;
+    const dniBusquedaSql = `REGEXP_REPLACE(COALESCE(c.dni_ruc, ''), '[^0-9]', '', 'g')`;
+
+    const params = [anioExigible, mesExigible];
+    const matchParts = [];
+    const nameMatchParts = [];
+    let idxCodigoExact = 0;
+    let idxCodigoPrefix = 0;
+    let idxDniExact = 0;
+    let idxDniPrefix = 0;
+    let idxNombrePrefix = 0;
+
+    if (hasCodigoFilter) {
+      params.push(qCodigo);
+      idxCodigoExact = params.length;
+      params.push(`${qCodigo}%`);
+      idxCodigoPrefix = params.length;
+      matchParts.push(`${codigoBusquedaSql} = $${idxCodigoExact}`);
+      matchParts.push(`${codigoBusquedaSql} LIKE $${idxCodigoPrefix}`);
+    }
+    if (hasDigitsFilter) {
+      params.push(qDigits);
+      idxDniExact = params.length;
+      params.push(`${qDigits}%`);
+      idxDniPrefix = params.length;
+      matchParts.push(`${dniBusquedaSql} = $${idxDniExact}`);
+      matchParts.push(`${dniBusquedaSql} LIKE $${idxDniPrefix}`);
+    }
+    if (hasTextFilter) {
+      params.push(`${qTokens[0]}%`);
+      idxNombrePrefix = params.length;
+      qTokens.forEach((token) => {
+        params.push(`%${token}%`);
+        nameMatchParts.push(`${nombreBusquedaSql} LIKE $${params.length}`);
+      });
+      if (nameMatchParts.length > 0) {
+        matchParts.push(`(${nameMatchParts.join(" AND ")})`);
+      }
+    }
+    params.push(limit);
+    const idxLimit = params.length;
+
+    const rows = await pool.query(`
+      WITH candidate_contribuyentes AS (
+        SELECT
+          c.id_contribuyente,
+          CASE
+            ${idxCodigoExact ? `WHEN ${codigoBusquedaSql} = $${idxCodigoExact} THEN 0` : ""}
+            ${idxDniExact ? `WHEN ${dniBusquedaSql} = $${idxDniExact} THEN 0` : ""}
+            ${idxCodigoPrefix ? `WHEN ${codigoBusquedaSql} LIKE $${idxCodigoPrefix} THEN 1` : ""}
+            ${idxDniPrefix ? `WHEN ${dniBusquedaSql} LIKE $${idxDniPrefix} THEN 1` : ""}
+            ${idxNombrePrefix ? `WHEN ${nombreBusquedaSql} LIKE $${idxNombrePrefix} THEN 2` : ""}
+            ELSE 3
+          END AS relevancia,
+          ${nombreBusquedaSql} AS nombre_orden
+        FROM contribuyentes c
+        WHERE ${matchParts.join(" OR ")}
+        ORDER BY relevancia ASC, nombre_orden ASC, c.id_contribuyente ASC
+        LIMIT $${idxLimit}
+      ),
+      predio_principal AS (
+        SELECT
+          cc.id_contribuyente,
+          p.id_predio,
+          p.id_calle,
+          p.numero_casa,
+          p.manzana,
+          p.lote,
+          p.referencia_direccion,
+          ROW_NUMBER() OVER (
+            PARTITION BY cc.id_contribuyente
+            ORDER BY p.id_predio ASC
+          ) AS rn
+        FROM candidate_contribuyentes cc
+        LEFT JOIN predios p ON p.id_contribuyente = cc.id_contribuyente
+      ),
+      recibos_objetivo AS (
+        SELECT
+          r.id_recibo,
+          r.id_predio,
+          r.total_pagar,
+          r.anio,
+          r.mes
+        FROM recibos r
+        JOIN predios p ON p.id_predio = r.id_predio
+        JOIN candidate_contribuyentes cc ON cc.id_contribuyente = p.id_contribuyente
+        WHERE (r.anio, r.mes) <= ($1::int, $2::int)
+      ),
+      pagos_por_recibo AS (
+        SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
+        FROM pagos p
+        JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+        WHERE ${buildPagoContableValidoSql("p")}
+        GROUP BY p.id_recibo
+      ),
+      resumen_contribuyente AS (
+        SELECT
+          p3.id_contribuyente,
+          SUM(GREATEST(${totalPagarReferenciaContribSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
+          SUM(COALESCE(pp.total_pagado, 0)) AS abono_total,
+          COUNT(*) FILTER (WHERE (${totalPagarReferenciaContribSql} - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
+        FROM recibos_objetivo ro
+        JOIN predios p3 ON p3.id_predio = ro.id_predio
+        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+        GROUP BY p3.id_contribuyente
+      )
+      SELECT
+        cc.id_contribuyente,
+        pp.id_predio,
+        c.codigo_municipal,
+        c.sec_nombre,
+        COALESCE(
+          NULLIF(TRIM(c.nombre_completo), ''),
+          NULLIF(TRIM(c.sec_nombre), ''),
+          ''
+        ) AS nombre_completo,
+        c.dni_ruc,
+        COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
+        ${buildDireccionSql("ca", "pp")} AS direccion_completa,
+        COALESCE(rc.meses_deuda_total, 0)::int AS meses_deuda,
+        ROUND(COALESCE(rc.deuda_total, 0)::numeric, 2) AS deuda_anio,
+        ROUND(COALESCE(rc.abono_total, 0)::numeric, 2) AS abono_anio
+      FROM candidate_contribuyentes cc
+      JOIN contribuyentes c ON c.id_contribuyente = cc.id_contribuyente
+      LEFT JOIN predio_principal pp
+        ON pp.id_contribuyente = cc.id_contribuyente
+       AND pp.rn = 1
+      LEFT JOIN calles ca ON ca.id_calle = pp.id_calle
+      LEFT JOIN resumen_contribuyente rc ON rc.id_contribuyente = cc.id_contribuyente
+      ORDER BY cc.relevancia ASC, cc.nombre_orden ASC, cc.id_contribuyente ASC
+    `, params);
+
+    resultCount = rows.rows.length;
+    logPerfEvent("CAJA_BUSQUEDA_AGUA", {
+      duracion_ms: Date.now() - startedAt,
+      q_length: qRaw.length,
+      tokens: qTokens.length,
+      limit,
+      resultados: resultCount
+    });
+    res.set("Cache-Control", "no-store");
+    return res.json(rows.rows);
+  } catch (err) {
+    console.error("Error buscando contribuyentes para caja:", err);
+    return res.status(500).json({ error: "Error buscando contribuyentes para caja." });
+  }
+});
+
 app.get("/contribuyentes", async (req, res) => {
   try {
     const now = Date.now();
@@ -9457,6 +9771,39 @@ app.get("/contribuyentes", async (req, res) => {
         LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
         LEFT JOIN ordenes_pendientes_recibo opr ON opr.id_recibo = ro.id_recibo
         GROUP BY ro.id_predio
+      ),
+      predio_principal AS (
+        SELECT
+          base.id_contribuyente,
+          base.id_predio,
+          base.id_calle,
+          base.numero_casa,
+          base.manzana,
+          base.lote,
+          base.referencia_direccion,
+          base.tarifa_agua,
+          base.tarifa_desague,
+          base.tarifa_limpieza,
+          base.tarifa_admin,
+          base.tarifa_extra
+        FROM (
+          SELECT
+            p.id_contribuyente,
+            p.id_predio,
+            p.id_calle,
+            p.numero_casa,
+            p.manzana,
+            p.lote,
+            p.referencia_direccion,
+            p.tarifa_agua,
+            p.tarifa_desague,
+            p.tarifa_limpieza,
+            p.tarifa_admin,
+            p.tarifa_extra,
+            ROW_NUMBER() OVER (PARTITION BY p.id_contribuyente ORDER BY p.id_predio ASC) AS rn
+          FROM predios p
+        ) base
+        WHERE base.rn = 1
       )
       SELECT c.id_contribuyente, c.codigo_municipal, c.sec_cod, c.sec_nombre, c.dni_ruc, c.nombre_completo, c.telefono,
              COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
@@ -9478,7 +9825,7 @@ app.get("/contribuyentes", async (req, res) => {
              NULL::timestamp AS verificar_caja_desde,
              NULL::text AS verificar_caja_observacion
       FROM contribuyentes c
-      LEFT JOIN predios p ON c.id_contribuyente = p.id_contribuyente
+      LEFT JOIN predio_principal p ON p.id_contribuyente = c.id_contribuyente
       LEFT JOIN calles ca ON p.id_calle = ca.id_calle
       LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
       LEFT JOIN ordenes_pendientes_predio opr ON opr.id_predio = p.id_predio
@@ -9514,7 +9861,32 @@ app.get("/contribuyentes/detalle/:id", async (req, res) => {
              COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
              COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn
       FROM contribuyentes c
-      LEFT JOIN predios p ON c.id_contribuyente = p.id_contribuyente
+      LEFT JOIN LATERAL (
+        SELECT
+          p.id_calle,
+          p.numero_casa,
+          p.manzana,
+          p.lote,
+          p.referencia_direccion,
+          p.tarifa_agua,
+          p.tarifa_desague,
+          p.tarifa_limpieza,
+          p.tarifa_admin,
+          p.tarifa_extra,
+          p.tarifa_programada_desde_periodo,
+          p.tarifa_programada_agua,
+          p.tarifa_programada_desague,
+          p.tarifa_programada_limpieza,
+          p.tarifa_programada_admin,
+          p.tarifa_programada_extra,
+          p.agua_sn,
+          p.desague_sn,
+          p.limpieza_sn
+        FROM predios p
+        WHERE p.id_contribuyente = c.id_contribuyente
+        ORDER BY p.id_predio ASC
+        LIMIT 1
+      ) p ON TRUE
       WHERE c.id_contribuyente = $1
     `, [id]);
     const detalle = data.rows[0] || null;
@@ -9539,6 +9911,9 @@ app.post("/contribuyentes", uploadContribuyenteAdjuntosArray("adjuntos"), async 
     } = req.body;
     const estadoConexion = normalizeEstadoConexion(estado_conexion);
     const predioEstado = estadoConexionToPredio(estadoConexion);
+    const numeroCasaNuevo = sanitizeStructuredNumeroCasa(numero_casa);
+    const manzanaNueva = sanitizeStructuredManzana(manzana);
+    const loteNuevo = sanitizeStructuredLote(lote);
 
     if (!nombre_completo || !dni_ruc || !id_calle) {
       cleanupUploadedTempFiles(uploadedFiles);
@@ -9568,7 +9943,7 @@ app.post("/contribuyentes", uploadContribuyenteAdjuntosArray("adjuntos"), async 
 
     await client.query(
       "INSERT INTO predios (id_contribuyente, id_calle, numero_casa, manzana, lote, id_tarifa, estado_servicio, activo_sn) VALUES ($1, $2, $3, $4, $5, 1, $6, $7)",
-      [id, id_calle, numero_casa, manzana, lote, predioEstado.estado_servicio, predioEstado.activo_sn]
+      [id, id_calle, numeroCasaNuevo, manzanaNueva, loteNuevo, predioEstado.estado_servicio, predioEstado.activo_sn]
     );
     if (uploadedFiles.length > 0) {
       await ensureContribuyentesAdjuntosTable(client);
@@ -9744,27 +10119,26 @@ app.put("/contribuyentes/:id", async (req, res) => {
       return res.status(404).json({ error: "Predio no encontrado para actualizar." });
     }
     const idCalleActual = parsePositiveInt(predioActual?.id_calle, 0) || null;
-    const numeroCasaActual = normalizeLimitedText(predioActual?.numero_casa, 30);
-    const manzanaActual = normalizeLimitedText(predioActual?.manzana, 30);
-    const loteActual = normalizeLimitedText(predioActual?.lote, 30);
+    const numeroCasaActual = sanitizeStructuredNumeroCasa(predioActual?.numero_casa);
+    const manzanaActual = sanitizeStructuredManzana(predioActual?.manzana);
+    const loteActual = sanitizeStructuredLote(predioActual?.lote);
     const referenciaDireccionActual = normalizeLimitedText(predioActual?.referencia_direccion, 250);
     const idCalleNuevo = parsePositiveInt(id_calle, 0) || null;
-    const numeroCasaNuevo = normalizeLimitedText(numero_casa, 30);
-    const manzanaNueva = normalizeLimitedText(manzana, 30);
-    const loteNuevo = normalizeLimitedText(lote, 30);
+    const numeroCasaNuevo = sanitizeStructuredNumeroCasa(numero_casa);
+    const manzanaNueva = sanitizeStructuredManzana(manzana);
+    const loteNuevo = sanitizeStructuredLote(lote);
+    const calleNuevaRs = idCalleNuevo
+      ? await client.query("SELECT nombre FROM calles WHERE id_calle = $1 LIMIT 1", [idCalleNuevo])
+      : { rows: [] };
+    const nombreCalleActual = normalizeLimitedText(predioActual?.nombre_calle, 120) || "";
+    const nombreCalleNueva = normalizeLimitedText(calleNuevaRs.rows?.[0]?.nombre, 120) || "";
     const cambioDireccionEstructurada =
       idCalleNuevo !== idCalleActual
       || numeroCasaNuevo !== numeroCasaActual
       || manzanaNueva !== manzanaActual
       || loteNuevo !== loteActual;
     const referenciaDireccionNueva = cambioDireccionEstructurada
-      ? sanitizeStructuredPredioReference({
-        currentReference: referenciaDireccionActual,
-        currentStreet: predioActual?.nombre_calle,
-        numeroCasa: numeroCasaNuevo,
-        manzana: manzanaNueva,
-        lote: loteNuevo
-      })
+      ? null
       : (referenciaDireccionActual || null);
     const undoSnapshotPrevio = {
       contribuyente: actualData.rows[0] || null,
@@ -9774,11 +10148,6 @@ app.put("/contribuyentes/:id", async (req, res) => {
         )
         : null
     };
-    const calleNuevaRs = idCalleNuevo
-      ? await client.query("SELECT nombre FROM calles WHERE id_calle = $1 LIMIT 1", [idCalleNuevo])
-      : { rows: [] };
-    const nombreCalleActual = normalizeLimitedText(predioActual?.nombre_calle, 120) || "";
-    const nombreCalleNueva = normalizeLimitedText(calleNuevaRs.rows?.[0]?.nombre, 120) || "";
 
     if (cambioCodigoMunicipal) {
       const exMunicipal = await client.query(
@@ -13506,8 +13875,200 @@ app.post("/pagos/recibo/:id_recibo/anular-ultimo", async (req, res) => {
     `, [idRecibo]);
 
     if (pagosRs.rows.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "No hay pagos activos para este periodo." });
+      const reciboSinPagosRs = await client.query(`
+        SELECT
+          r.id_recibo,
+          r.total_pagar,
+          r.subtotal_agua,
+          r.subtotal_desague,
+          r.subtotal_limpieza,
+          r.subtotal_admin,
+          r.subtotal_extra,
+          r.mes,
+          r.anio,
+          pr.id_contribuyente
+        FROM recibos r
+        LEFT JOIN predios pr ON pr.id_predio = r.id_predio
+        WHERE r.id_recibo = $1
+        FOR UPDATE OF r
+      `, [idRecibo]);
+      if (reciboSinPagosRs.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "Recibo no encontrado." });
+      }
+
+      let reciboSinPagos = reciboSinPagosRs.rows[0];
+      const idContribuyente = parsePositiveInt(reciboSinPagos.id_contribuyente, 0) || null;
+      const periodoReciboNum = (Number(reciboSinPagos.anio || 0) * 100) + Number(reciboSinPagos.mes || 0);
+      if (idContribuyente > 0 && periodoReciboNum > 0) {
+        await client.query("UPDATE recibos SET estado = 'PENDIENTE' WHERE id_recibo = $1", [idRecibo]);
+        await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
+          desdePeriodoNum: periodoReciboNum,
+          hastaPeriodoNum: periodoReciboNum,
+          incluirPendientesHistoricos: true
+        });
+        await sincronizarRecibosPendientesSinPagoPorServiciosActuales(client, idContribuyente);
+        const reciboRecalculadoRs = await client.query(`
+          SELECT
+            r.id_recibo,
+            r.total_pagar,
+            r.subtotal_agua,
+            r.subtotal_desague,
+            r.subtotal_limpieza,
+            r.subtotal_admin,
+            r.subtotal_extra,
+            r.mes,
+            r.anio,
+            pr.id_contribuyente
+          FROM recibos r
+          LEFT JOIN predios pr ON pr.id_predio = r.id_predio
+          WHERE r.id_recibo = $1
+          LIMIT 1
+        `, [idRecibo]);
+        if (reciboRecalculadoRs.rows.length > 0) {
+          reciboSinPagos = reciboRecalculadoRs.rows[0];
+        }
+      }
+
+      const totalPagadoActivoRs = await client.query(`
+        SELECT COALESCE(SUM(monto_pagado), 0) AS total_pagado
+        FROM pagos
+        WHERE ${buildPagoContableValidoSql("pagos")}
+          AND id_recibo = $1
+      `, [idRecibo]);
+      const totalPagadoActivo = roundMonto2(parseMonto(totalPagadoActivoRs.rows[0]?.total_pagado, 0));
+      let totalRecibo = roundMonto2(parseMonto(reciboSinPagos.total_pagar, 0));
+      if (idContribuyente > 0 && periodoReciboNum > 0 && totalRecibo <= 0.001 && totalPagadoActivo <= 0.001) {
+        const predioTarifasRs = await client.query(`
+          SELECT
+            COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+            COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+            COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+            COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn,
+            p.tarifa_agua,
+            p.tarifa_desague,
+            p.tarifa_limpieza,
+            p.tarifa_admin,
+            p.tarifa_extra,
+            p.tarifa_programada_desde_periodo,
+            p.tarifa_programada_agua,
+            p.tarifa_programada_desague,
+            p.tarifa_programada_limpieza,
+            p.tarifa_programada_admin,
+            p.tarifa_programada_extra
+          FROM predios p
+          WHERE p.id_contribuyente = $1
+          ORDER BY p.id_predio ASC
+          LIMIT 1
+        `, [idContribuyente]);
+        const predioTarifas = predioTarifasRs.rows[0] || null;
+        if (predioTarifas) {
+          const tarifasPeriodo = resolvePredioTarifasByPeriodo(predioTarifas, periodoReciboNum);
+          const subtotalAgua = roundMonto2(parseMonto(tarifasPeriodo.agua, 0));
+          const subtotalDesague = roundMonto2(parseMonto(tarifasPeriodo.desague, 0));
+          const subtotalLimpieza = roundMonto2(parseMonto(tarifasPeriodo.limpieza, 0));
+          const subtotalAdmin = roundMonto2(parseMonto(tarifasPeriodo.admin, 0));
+          const subtotalExtra = roundMonto2(parseMonto(tarifasPeriodo.extra, 0));
+          totalRecibo = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
+          if (totalRecibo > 0.001) {
+            await client.query(`
+              UPDATE recibos
+              SET
+                subtotal_agua = $2,
+                subtotal_desague = $3,
+                subtotal_limpieza = $4,
+                subtotal_admin = $5,
+                subtotal_extra = $6,
+                total_pagar = $7
+              WHERE id_recibo = $1
+            `, [
+              idRecibo,
+              subtotalAgua,
+              subtotalDesague,
+              subtotalLimpieza,
+              subtotalAdmin,
+              subtotalExtra,
+              totalRecibo
+            ]);
+            reciboSinPagos = {
+              ...reciboSinPagos,
+              subtotal_agua: subtotalAgua,
+              subtotal_desague: subtotalDesague,
+              subtotal_limpieza: subtotalLimpieza,
+              subtotal_admin: subtotalAdmin,
+              subtotal_extra: subtotalExtra,
+              total_pagar: totalRecibo
+            };
+          }
+        }
+      }
+      const nuevoEstado = totalPagadoActivo >= totalRecibo - 0.001
+        ? "PAGADO"
+        : (totalPagadoActivo > 0.001 ? "PARCIAL" : "PENDIENTE");
+      await client.query("UPDATE recibos SET estado = $1 WHERE id_recibo = $2", [nuevoEstado, idRecibo]);
+
+      const ordenesHistoricasRs = await client.query(`
+        SELECT DISTINCT pa.id_orden_cobro_original AS id_orden
+        FROM pagos_anulados pa
+        WHERE pa.id_recibo = $1
+          AND pa.id_orden_cobro_original IS NOT NULL
+      `, [idRecibo]);
+      for (const row of ordenesHistoricasRs.rows) {
+        const idOrdenCobro = parsePositiveInt(row?.id_orden, 0);
+        if (!idOrdenCobro) continue;
+        const ordenPagosActivos = await client.query(`
+          SELECT COUNT(*)::int AS cantidad
+          FROM pagos
+          WHERE id_orden_cobro = $1
+        `, [idOrdenCobro]);
+        const cantidadPagosOrden = Number(ordenPagosActivos.rows[0]?.cantidad || 0);
+        if (cantidadPagosOrden === 0) {
+          await client.query(`
+            UPDATE ordenes_cobro
+            SET
+              estado = 'PENDIENTE',
+              cobrado_en = NULL,
+              id_usuario_cobra = NULL,
+              actualizado_en = NOW()
+            WHERE id_orden = $1
+              AND estado = 'COBRADA'
+          `, [idOrdenCobro]);
+        }
+      }
+
+      const contribuyenteAudit = await fetchContribuyenteAuditIdentity(client, idContribuyente);
+      req.skipAutoAudit = true;
+      await registrarAuditoria(
+        client,
+        `POST /pagos/recibo/${idRecibo}/anular-ultimo`,
+        buildStructuredAuditDetail({
+          evento: "Reparar periodo sin pagos activos",
+          id_recibo: Number(reciboSinPagos.id_recibo || 0),
+          id_contribuyente: idContribuyente,
+          codigo_municipal: contribuyenteAudit?.codigo_municipal || "",
+          nombre_completo: contribuyenteAudit?.nombre_completo || "",
+          contribuyente: buildContribuyenteAuditLabel(contribuyenteAudit || {
+            id_contribuyente: idContribuyente
+          }),
+          periodo: formatAuditPeriodo(reciboSinPagos.anio, reciboSinPagos.mes),
+          total_pagar_resultante: totalRecibo,
+          saldo_pendiente: roundMonto2(Math.max(totalRecibo - totalPagadoActivo, 0)),
+          estado_resultante: nuevoEstado,
+          motivo
+        }),
+        req.user?.username || req.user?.nombre || "SISTEMA"
+      );
+
+      await client.query("COMMIT");
+      invalidateContribuyentesCache();
+      return res.json({
+        mensaje: nuevoEstado === "PENDIENTE"
+          ? "No habia pagos activos; el periodo fue reparado y quedo pendiente para cobro."
+          : "No habia pagos activos; el periodo fue sincronizado.",
+        id_recibo: Number(reciboSinPagos.id_recibo || 0),
+        estado: nuevoEstado,
+        saldo_pendiente: roundMonto2(Math.max(totalRecibo - totalPagadoActivo, 0))
+      });
     }
 
     const pagoBase = pagosRs.rows[0];
@@ -14377,7 +14938,8 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
           MAX(fecha_pago) AS fecha_ultimo_pago,
           (ARRAY_AGG(id_pago ORDER BY fecha_pago DESC, id_pago DESC))[1] AS id_ultimo_pago
         FROM pagos
-        WHERE DATE(fecha_pago) <= $4::date
+        WHERE ${buildPagoContableValidoSql("pagos")}
+          AND DATE(fecha_pago) <= $4::date
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       LEFT JOIN LATERAL (
@@ -14787,10 +15349,8 @@ const construirProyeccionCaja = async (fechaReferencia, options = {}) => {
   const finExclusivo = shiftIsoDateByMonths(inicioBase, mesesProyeccion) || inicioBase;
   const periodoInicioProyeccion = parseDateYearMonth(inicioBase);
   const cacheKey = `proyeccion|${inicioBase}|${mesesProyeccion}`;
-  const cached = reportesCajaCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) {
-    return cached.data;
-  }
+  const cached = getShortLivedCacheValue(reportesCajaCache, cacheKey);
+  if (cached) return cached;
 
   const tarifaPredioSql = buildTarifaActualReciboSql("pr", String(periodoInicioProyeccion.periodoNum || getCurrentPeriodoNum()));
   const totalMensualRs = await pool.query(`
@@ -14890,10 +15450,7 @@ const construirProyeccionCaja = async (fechaReferencia, options = {}) => {
     }
   };
 
-  reportesCajaCache.set(cacheKey, {
-    expiresAt: Date.now() + REPORTE_CAJA_CACHE_TTL_MS,
-    data: resumen
-  });
+  setShortLivedCacheValue(reportesCajaCache, cacheKey, resumen, REPORTE_CAJA_CACHE_TTL_MS);
   return resumen;
 };
 
@@ -15012,6 +15569,13 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     ? 0
     : (Number.isFinite(pageSizeRaw) ? Math.min(500, Math.max(25, pageSizeRaw)) : 200);
   const offset = includeAllMovimientos ? 0 : (safePage - 1) * safePageSize;
+  const cacheKey = buildReporteCajaCacheKey(tipo, fechaReferencia, {
+    ...options,
+    page: safePage,
+    pageSize: safePageSize
+  });
+  const cached = getShortLivedCacheValue(reportesCajaCache, cacheKey);
+  if (cached) return cached;
 
   const resumen = await construirResumenCaja(tipo, fechaReferencia, options.rangoManual || null, {
     includeHistoricalValid
@@ -15326,7 +15890,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     ? 1
     : Math.max(1, Math.ceil(cantidadMovimientos / safePageSize));
 
-  return {
+  const reporte = {
     ...resumen,
     total_componentes: totalComponentes.toFixed(2),
     diferencia_desglose: diferenciaDesglose.toFixed(2),
@@ -15339,6 +15903,8 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     movimientos: movimientosSanitizados,
     movimientos_admin: movimientosAdmin
   };
+  setShortLivedCacheValue(reportesCajaCache, cacheKey, reporte, REPORTE_CAJA_CACHE_TTL_MS);
+  return reporte;
 };
 
 const validatePeriodoReporteConexion = (periodo = {}) => {
@@ -15504,6 +16070,7 @@ const consultarCierreCajaBloqueante = async (clientOrPool, fechaReferencia = toI
 };
 
 app.get("/caja/reporte", async (req, res) => {
+  const startedAt = Date.now();
   try {
     res.set("Cache-Control", "no-store");
     const tipoRaw = String(req.query.tipo || "diario").toLowerCase();
@@ -15547,6 +16114,21 @@ app.get("/caja/reporte", async (req, res) => {
       includeCodigoImpresion: mostrarCodigoImpresion,
       rangoManual,
       mesesProyeccion
+    });
+    logPerfEvent("CAJA_REPORTE", {
+      duracion_ms: Date.now() - startedAt,
+      tipo,
+      fecha,
+      page,
+      page_size: pageSize,
+      include_all_movimientos: includeAllMovimientos,
+      include_admin_movimientos: includeAdminMovimientos,
+      include_historical_valid: includeHistoricalValid,
+      admin_allowed: hasMinRole(req.user?.rol, "ADMIN"),
+      rango_desde: rangoManual?.desde || null,
+      rango_hasta: rangoManual?.hasta || null,
+      resultados: Array.isArray(data?.movimientos) ? data.movimientos.length : 0,
+      total_movimientos: Number(data?.cantidad_movimientos || 0)
     });
     res.json(data);
   } catch (err) {
@@ -17256,13 +17838,12 @@ app.get("/exportar/finanzas-completo.txt", authenticateToken, requireSuperAdmin,
 app.post("/auth/registro", async (req, res) => {
   try {
     const { username, password, nombre_completo } = req.body;
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const existe = await pool.query("SELECT * FROM usuarios_sistema WHERE username = $1", [username]);
     if (existe.rows.length > 0) return res.status(400).json({ error: "Usuario ya existe" });
     const passwordHash = await bcrypt.hash(password, 10);
     await pool.query(
-      "INSERT INTO usuarios_sistema (username, password, password_visible, nombre_completo, rol, estado) VALUES ($1, $2, $3, $4, 'BRIGADA', 'PENDIENTE')",
-      [username, passwordHash, String(password || "").slice(0, 120), nombre_completo]
+      "INSERT INTO usuarios_sistema (username, password, nombre_completo, rol, estado) VALUES ($1, $2, $3, 'BRIGADA', 'PENDIENTE')",
+      [username, passwordHash, nombre_completo]
     );
     res.json({ mensaje: "Solicitud enviada." });
   } catch (err) { res.status(500).send("Error registro"); }
@@ -17270,7 +17851,6 @@ app.post("/auth/registro", async (req, res) => {
 
 const handleLogin = async (req, res) => {
   try {
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     cleanupLoginSecurityMaps();
     const usernameInput = normalizeLimitedText(req.body?.username, 120);
     const password = String(req.body?.password || "");
@@ -17311,7 +17891,10 @@ const handleLogin = async (req, res) => {
       loginUserFailMap.set(usernameKey, userFail);
     }
 
-    const user = await pool.query("SELECT * FROM usuarios_sistema WHERE username = $1", [usernameInput]);
+    const user = await pool.query(
+      "SELECT id_usuario, username, nombre_completo, rol, estado, password FROM usuarios_sistema WHERE username = $1 LIMIT 1",
+      [usernameInput]
+    );
     if (user.rows.length === 0) {
       registerLoginFailure(usernameKey);
       return res.status(400).json({ error: "Credenciales invalidas." });
@@ -17319,23 +17902,16 @@ const handleLogin = async (req, res) => {
 
     const datos = user.rows[0];
     const storedPassword = datos.password || "";
-    const passwordVisible = String(password || "").slice(0, 120);
     let passwordOk = false;
     if (isBcryptHash(storedPassword)) {
       passwordOk = await bcrypt.compare(password, storedPassword);
-      if (passwordOk && !String(datos.password_visible || "").trim()) {
-        await pool.query(
-          "UPDATE usuarios_sistema SET password_visible = $1 WHERE id_usuario = $2",
-          [passwordVisible, datos.id_usuario]
-        );
-      }
     } else {
       passwordOk = storedPassword === password;
       if (passwordOk) {
         const newHash = await bcrypt.hash(password, 10);
         await pool.query(
-          "UPDATE usuarios_sistema SET password = $1, password_visible = $2 WHERE id_usuario = $3",
-          [newHash, passwordVisible, datos.id_usuario]
+          "UPDATE usuarios_sistema SET password = $1 WHERE id_usuario = $2",
+          [newHash, datos.id_usuario]
         );
       }
     }
@@ -17367,7 +17943,6 @@ app.post("/login", handleLogin);
 
 app.post("/auth/cambiar-password", async (req, res) => {
   try {
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const usernameInput = normalizeLimitedText(req.body?.username, 120);
     const passwordActual = String(req.body?.password_actual || "");
     const passwordNuevo = String(req.body?.password_nuevo || "");
@@ -17408,8 +17983,8 @@ app.post("/auth/cambiar-password", async (req, res) => {
 
     const newHash = await bcrypt.hash(passwordNuevo, 10);
     await pool.query(
-      "UPDATE usuarios_sistema SET password = $1, password_visible = $2 WHERE id_usuario = $3",
-      [newHash, String(passwordNuevo).slice(0, 120), Number(datos.id_usuario)]
+      "UPDATE usuarios_sistema SET password = $1 WHERE id_usuario = $2",
+      [newHash, Number(datos.id_usuario)]
     );
 
     const ip = getRequestIp(req);
@@ -17427,25 +18002,30 @@ app.post("/auth/cambiar-password", async (req, res) => {
 });
 
 
+const shapeAdminUser = (user) => {
+  const rol = normalizeRole(user.rol);
+  return {
+    id_usuario: Number(user.id_usuario),
+    username: user.username,
+    nombre_completo: user.nombre_completo,
+    rol,
+    rol_label: ROLE_LABELS[rol] || rol,
+    estado: String(user.estado || "").trim().toUpperCase() || "PENDIENTE"
+  };
+};
+
 app.get("/admin/usuarios", authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
-    const usuarios = await pool.query("SELECT id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible FROM usuarios_sistema ORDER BY estado DESC");
-    const rows = usuarios.rows.map((u) => {
-      const rol = normalizeRole(u.rol);
-      return {
-        ...u,
-        rol,
-        rol_label: ROLE_LABELS[rol] || rol
-      };
-    });
+    const usuarios = await pool.query(
+      "SELECT id_usuario, username, nombre_completo, rol, estado FROM usuarios_sistema ORDER BY estado DESC, username ASC"
+    );
+    const rows = usuarios.rows.map(shapeAdminUser);
     res.json(rows);
   } catch (err) { res.status(500).send("Error"); }
 });
 
 app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
-    await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
     const { id } = req.params;
     const targetId = Number(id);
     if (!Number.isInteger(targetId) || targetId <= 0) {
@@ -17485,8 +18065,6 @@ app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req,
       const nuevoPasswordHash = await bcrypt.hash(nuevaPassword, 10);
       updateParts.push(`password = $${paramIndex++}`);
       params.push(nuevoPasswordHash);
-      updateParts.push(`password_visible = $${paramIndex++}`);
-      params.push(String(nuevaPassword).slice(0, 120));
     }
 
     if (updateParts.length === 0) {
@@ -17507,13 +18085,11 @@ app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req,
       `UPDATE usuarios_sistema
        SET ${updateParts.join(", ")}
        WHERE id_usuario = $${paramIndex}
-       RETURNING id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible`,
+       RETURNING id_usuario, username, nombre_completo, rol, estado`,
       params
     );
     if (updated.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
-    const usuario = updated.rows[0];
-    usuario.rol = normalizeRole(usuario.rol);
-    usuario.rol_label = ROLE_LABELS[usuario.rol] || usuario.rol;
+    const usuario = shapeAdminUser(updated.rows[0]);
     res.json({ mensaje: "Usuario actualizado", usuario });
   } catch (err) { res.status(500).send("Error"); }
 });
@@ -20333,6 +20909,16 @@ app.post("/importar/historial", authenticateToken, requireSuperAdmin, uploadImpo
     let resultado;
     
     if (esExcel) {
+      const typeError = validateUploadFileType(req.file, {
+        allowedExts: [".xlsx", ".xls"],
+        allowedMimeTypes: [
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "application/vnd.ms-excel",
+          "application/octet-stream"
+        ]
+      });
+      if (typeError) return res.status(400).json({ error: typeError });
+
       // Importar desde Excel
       const excelBuffer = readBufferFromUploadedFile(req.file);
       if (!excelBuffer.length) {
