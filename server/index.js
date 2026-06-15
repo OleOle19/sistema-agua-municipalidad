@@ -8896,6 +8896,7 @@ const obtenerReporteEstadoConexionRows = async ({
       c.id_contribuyente,
       c.codigo_municipal,
       c.nombre_completo,
+      COALESCE(NULLIF(TRIM(c.dni_ruc), ''), '-') AS dni_ruc,
       COALESCE(NULLIF(TRIM(dp.direccion_completa), ''), '-') AS direccion_completa,
       COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
       COALESCE(tc.monto_mensual_base, 0) AS monto_mensual_base,
@@ -8916,6 +8917,7 @@ const obtenerReporteEstadoConexionRows = async ({
       id_contribuyente: Number(row.id_contribuyente || 0),
       codigo_municipal: row.codigo_municipal || "",
       nombre_completo: row.nombre_completo || "",
+      dni_ruc: row.dni_ruc || "-",
       direccion_completa: row.direccion_completa || "-",
       estado_conexion: normalizeEstadoConexion(row.estado_conexion),
       monto_mensual: montoMensual,
@@ -9371,6 +9373,7 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
       ws.columns = [
         { header: "CODIGO", key: "codigo_municipal", width: 14 },
         { header: "CONTRIBUYENTE", key: "nombre_completo", width: 42 },
+        { header: "DNI/RUC", key: "dni_ruc", width: 18 },
         { header: "DIRECCION", key: "direccion_completa", width: 44 },
         { header: "ESTADO", key: "estado_conexion", width: 18 },
         { header: "Meses Deuda", key: "meses_deuda", width: 14 },
@@ -9382,6 +9385,7 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
         ws.addRow({
           codigo_municipal: row.codigo_municipal,
           nombre_completo: row.nombre_completo,
+          dni_ruc: row.dni_ruc,
           direccion_completa: row.direccion_completa,
           estado_conexion: row.estado_conexion,
           meses_deuda: row.meses_deuda,
@@ -9395,6 +9399,7 @@ app.get("/contribuyentes/reporte-estado-conexion.xlsx", async (req, res) => {
       const totalRow = ws.addRow({
         codigo_municipal: "",
         nombre_completo: "TOTAL",
+        dni_ruc: "",
         direccion_completa: "",
         estado_conexion: "",
         meses_deuda: totalMeses,
