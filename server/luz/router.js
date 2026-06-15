@@ -20,6 +20,24 @@ const ensureLuzImportUploadDir = () => {
     fs.mkdirSync(LUZ_IMPORT_UPLOAD_DIR, { recursive: true });
   } catch {}
 };
+const validateUploadedFilename = (file) => {
+  const originalName = String(file?.originalname || "").trim();
+  if (!originalName) return "Archivo invalido.";
+  if (originalName.length > 240) return "Nombre de archivo demasiado largo.";
+  if (/[\\/]/.test(originalName) || originalName.includes("..")) {
+    return "Nombre de archivo no permitido.";
+  }
+  return "";
+};
+const createUploadFileFilter = (extraValidator = null) => (req, file, cb) => {
+  const nameError = validateUploadedFilename(file);
+  if (nameError) return cb(new Error(nameError));
+  if (typeof extraValidator === "function") {
+    const validationError = extraValidator(file);
+    if (validationError) return cb(new Error(validationError));
+  }
+  return cb(null, true);
+};
 const uploadImport = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
@@ -36,6 +54,7 @@ const uploadImport = multer({
       return cb(null, `${Date.now()}_${crypto.randomBytes(6).toString("hex")}${ext || ".tmp"}`);
     }
   }),
+  fileFilter: createUploadFileFilter(),
   limits: { fileSize: LUZ_IMPORT_MAX_FILE_BYTES }
 });
 const uploadImportSingle = (fieldName) => (req, res, next) => {
@@ -195,6 +214,11 @@ const normalizeText = (value, maxLen = 220) => {
   const txt = String(value || "").trim();
   if (!txt) return "";
   return txt.length > maxLen ? txt.slice(0, maxLen) : txt;
+};
+const logPerfEvent = (label, payload = {}) => {
+  const duracionMs = Number(payload?.duracion_ms || payload?.duration_ms || 0);
+  const level = duracionMs > 1000 ? "warn" : "info";
+  console[level](`[LUZ][PERF][${label}] ${JSON.stringify(payload)}`);
 };
 const normalizeLoginUsername = (value) => String(value || "").trim().toLowerCase().slice(0, 120);
 const getRequestIp = (req) => {
@@ -801,9 +825,9 @@ const ensureLuzAuthSchema = async () => {
   if (adminRs.rows[0]) return;
   const hash = await bcrypt.hash(LUZ_ADMIN_DEFAULT_PASS, 10);
   await pool.query(
-    `INSERT INTO usuarios_sistema (username, password, password_visible, nombre_completo, rol, estado)
-     VALUES ($1, $2, $3, $4, 'ADMIN', 'ACTIVO')`,
-    [LUZ_ADMIN_DEFAULT_USER, hash, LUZ_ADMIN_DEFAULT_PASS.slice(0, 120), LUZ_ADMIN_DEFAULT_NAME]
+    `INSERT INTO usuarios_sistema (username, password, nombre_completo, rol, estado)
+     VALUES ($1, $2, $3, 'ADMIN', 'ACTIVO')`,
+    [LUZ_ADMIN_DEFAULT_USER, hash, LUZ_ADMIN_DEFAULT_NAME]
   );
 };
 const ensureLuzAuthSchemaOnce = async () => {
@@ -1122,8 +1146,8 @@ router.post("/auth/registro", async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
     await pool.query(
-      "INSERT INTO usuarios_sistema (username, password, password_visible, nombre_completo, rol, estado) VALUES ($1, $2, $3, $4, 'CONSULTA', 'PENDIENTE')",
-      [username, hash, String(password || "").slice(0, 120), nombre]
+      "INSERT INTO usuarios_sistema (username, password, nombre_completo, rol, estado) VALUES ($1, $2, $3, 'CONSULTA', 'PENDIENTE')",
+      [username, hash, nombre]
     );
     await registrarAuditoria(null, username, "AUTH_REGISTRO", "Registro de usuario en sistema de luz (estado=PENDIENTE)");
     return res.json({ mensaje: "Solicitud enviada. Espera activación del administrador." });
@@ -1175,30 +1199,26 @@ router.post("/auth/login", async (req, res) => {
       loginUserFailMap.set(usernameKey, userFail);
     }
 
-    const result = await pool.query("SELECT * FROM usuarios_sistema WHERE username = $1", [username]);
+    const result = await pool.query(
+      "SELECT id_usuario, username, nombre_completo, rol, estado, password FROM usuarios_sistema WHERE username = $1 LIMIT 1",
+      [username]
+    );
     if (!result.rows[0]) {
       registerLoginFailure(usernameKey);
       return res.status(400).json({ error: "Credenciales invalidas." });
     }
 
     const user = result.rows[0];
-    const passwordVisible = String(password || "").slice(0, 120);
     let ok = false;
     if (String(user.password || "").startsWith("$2")) {
       ok = await bcrypt.compare(password, user.password);
-      if (ok && !String(user.password_visible || "").trim()) {
-        await pool.query(
-          "UPDATE usuarios_sistema SET password_visible = $1 WHERE id_usuario = $2",
-          [passwordVisible, user.id_usuario]
-        );
-      }
     } else {
       ok = String(user.password || "") === password;
       if (ok) {
         const nextHash = await bcrypt.hash(password, 10);
         await pool.query(
-          "UPDATE usuarios_sistema SET password = $1, password_visible = $2 WHERE id_usuario = $3",
-          [nextHash, passwordVisible, user.id_usuario]
+          "UPDATE usuarios_sistema SET password = $1 WHERE id_usuario = $2",
+          [nextHash, user.id_usuario]
         );
       }
     }
@@ -1266,8 +1286,8 @@ const handleLuzPasswordChange = async (req, res) => {
 
     const nextHash = await bcrypt.hash(passwordNuevo, 10);
     await pool.query(
-      "UPDATE usuarios_sistema SET password = $1, password_visible = $2 WHERE id_usuario = $3",
-      [nextHash, String(passwordNuevo).slice(0, 120), Number(user.id_usuario)]
+      "UPDATE usuarios_sistema SET password = $1 WHERE id_usuario = $2",
+      [nextHash, Number(user.id_usuario)]
     );
     await registrarAuditoria(
       null,
@@ -1285,11 +1305,24 @@ const handleLuzPasswordChange = async (req, res) => {
 router.post("/auth/cambiar-password", handleLuzPasswordChange);
 router.post("/auth/cambiar_password", handleLuzPasswordChange);
 
+const shapeAdminUser = (user) => {
+  const rol = normalizeRole(user.rol);
+  const estado = normalizeEstadoUsuario(user.estado) || "PENDIENTE";
+  return {
+    id_usuario: Number(user.id_usuario),
+    username: user.username,
+    nombre_completo: user.nombre_completo,
+    rol,
+    rol_label: ROLE_LABELS[rol] || rol,
+    estado
+  };
+};
+
 router.get("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async (req, res) => {
   try {
     await ensureLuzAuthSchemaOnce();
     const usuarios = await pool.query(
-      `SELECT id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible
+      `SELECT id_usuario, username, nombre_completo, rol, estado
        FROM usuarios_sistema
        ORDER BY
          CASE UPPER(TRIM(rol))
@@ -1312,19 +1345,7 @@ router.get("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async 
          END ASC,
          username ASC`
     );
-    return res.json(usuarios.rows.map((u) => {
-      const rol = normalizeRole(u.rol);
-      const estado = normalizeEstadoUsuario(u.estado) || "PENDIENTE";
-      return {
-        id_usuario: Number(u.id_usuario),
-        username: u.username,
-        nombre_completo: u.nombre_completo,
-        rol,
-        rol_label: ROLE_LABELS[rol] || rol,
-        estado,
-        password_visible: String(u.password_visible || "")
-      };
-    }));
+    return res.json(usuarios.rows.map(shapeAdminUser));
   } catch (err) {
     console.error("[LUZ] Error listando usuarios admin:", err.message);
     return res.status(500).json({ error: "Error listando usuarios del sistema." });
@@ -1363,10 +1384,10 @@ router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async
 
     const passwordHash = await bcrypt.hash(password, 10);
     const created = await pool.query(
-      `INSERT INTO usuarios_sistema (username, password, password_visible, nombre_completo, rol, estado)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible`,
-      [username, passwordHash, String(password || "").slice(0, 120), nombreCompleto, rol, estado]
+      `INSERT INTO usuarios_sistema (username, password, nombre_completo, rol, estado)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id_usuario, username, nombre_completo, rol, estado`,
+      [username, passwordHash, nombreCompleto, rol, estado]
     );
     const usuario = created.rows[0];
     const rolNormalizado = normalizeRole(usuario.rol);
@@ -1379,15 +1400,7 @@ router.post("/admin/usuarios", authenticateLuzToken, requireRole("ADMIN"), async
     );
     return res.status(201).json({
       mensaje: "Usuario creado.",
-      usuario: {
-        id_usuario: Number(usuario.id_usuario),
-        username: usuario.username,
-        nombre_completo: usuario.nombre_completo,
-        rol: rolNormalizado,
-        rol_label: ROLE_LABELS[rolNormalizado] || rolNormalizado,
-        estado: normalizeEstadoUsuario(usuario.estado) || "PENDIENTE",
-        password_visible: String(usuario.password_visible || "")
-      }
+      usuario: shapeAdminUser(usuario)
     });
   } catch (err) {
     console.error("[LUZ] Error creando usuario admin:", err.message);
@@ -1433,8 +1446,6 @@ router.put("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), as
       const hash = await bcrypt.hash(nuevaPassword, 10);
       updateParts.push(`password = $${index++}`);
       params.push(hash);
-      updateParts.push(`password_visible = $${index++}`);
-      params.push(String(nuevaPassword).slice(0, 120));
     }
 
     if (updateParts.length === 0) {
@@ -1455,13 +1466,12 @@ router.put("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), as
       `UPDATE usuarios_sistema
        SET ${updateParts.join(", ")}
        WHERE id_usuario = $${index}
-       RETURNING id_usuario, username, nombre_completo, rol, estado, COALESCE(password_visible, '') AS password_visible`,
+       RETURNING id_usuario, username, nombre_completo, rol, estado`,
       params
     );
     if (!updated.rows[0]) return res.status(404).json({ error: "Usuario no encontrado." });
 
     const user = updated.rows[0];
-    const rolNormalizado = normalizeRole(user.rol);
     await registrarAuditoria(
       null,
       req.user?.username,
@@ -1470,15 +1480,7 @@ router.put("/admin/usuarios/:id", authenticateLuzToken, requireRole("ADMIN"), as
     );
     return res.json({
       mensaje: "Usuario actualizado.",
-      usuario: {
-        id_usuario: Number(user.id_usuario),
-        username: user.username,
-        nombre_completo: user.nombre_completo,
-        rol: rolNormalizado,
-        rol_label: ROLE_LABELS[rolNormalizado] || rolNormalizado,
-        estado: normalizeEstadoUsuario(user.estado) || "PENDIENTE",
-        password_visible: String(user.password_visible || "")
-      }
+      usuario: shapeAdminUser(user)
     });
   } catch (err) {
     console.error("[LUZ] Error actualizando usuario admin:", err.message);
@@ -2369,10 +2371,12 @@ router.get("/recibos/pendientes/:id_suministro", authenticateLuzToken, requireRo
 
 router.get("/caja/suministros", authenticateCajaMunicipalToken, requireRole("CAJERO"), async (req, res) => {
   if (rejectIfLuzCajaInternaDisabled(res)) return;
+  const startedAt = Date.now();
   try {
     const q = normalizeText(req.query?.q || req.query?.buscar || "", 120).toUpperCase();
     const idZona = parsePositiveInt(req.query?.id_zona, 0);
     const estado = normalizeText(req.query?.estado || "", 20).toUpperCase();
+    const limit = Math.min(500, Math.max(50, parsePositiveInt(req.query?.limit, 300)));
 
     const params = [];
     const where = [];
@@ -2441,11 +2445,11 @@ router.get("/caja/suministros", authenticateCajaMunicipalToken, requireRole("CAJ
         UPPER(COALESCE(s.nro_medidor, '')) ASC,
         UPPER(z.nombre) ASC,
         UPPER(s.nombre_usuario) ASC
-      LIMIT 1500
+      LIMIT ${limit}
     `;
 
     const data = await pool.query(sql, params);
-    return res.json(data.rows.map((r) => ({
+    const rows = data.rows.map((r) => ({
       id_suministro: Number(r.id_suministro),
       id_zona: Number(r.id_zona),
       zona: splitCharcapeZoneName(r.zona, r.nro_medidor) || r.zona,
@@ -2457,7 +2461,16 @@ router.get("/caja/suministros", authenticateCajaMunicipalToken, requireRole("CAJ
       deuda_total: round2(parseMonto(r.deuda_total, 0)),
       abono_total: round2(parseMonto(r.abono_total, 0)),
       meses_deuda: Number(r.meses_deuda || 0)
-    })));
+    }));
+    logPerfEvent("CAJA_BUSQUEDA_LUZ", {
+      duracion_ms: Date.now() - startedAt,
+      q_length: q.length,
+      id_zona: idZona || null,
+      estado: estado || null,
+      limit,
+      resultados: rows.length
+    });
+    return res.json(rows);
   } catch (err) {
     console.error("[LUZ] Error listando suministros de caja:", err.message);
     return res.status(500).json({ error: "Error listando suministros para caja." });

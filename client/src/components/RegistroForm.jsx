@@ -173,16 +173,16 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false, onFlash = 
               </select>
             </div>
             <div className="col-md-6">
-              <label className={labelClass}>Estado de Conexion</label>
+              <label className={labelClass}>Estado de Conexión</label>
               <select className={selectClass} name="estado_conexion" value={formData.estado_conexion} onChange={handleChange}>
-                <option value="CON_CONEXION">Con conexion</option>
-                <option value="SIN_CONEXION">Sin conexion</option>
+                <option value="CON_CONEXION">Con conexión</option>
+                <option value="SIN_CONEXION">Sin conexión</option>
                 <option value="CORTADO">Cortado</option>
               </select>
             </div>
           </div>
 
-          <h6 className={`border-bottom pb-2 mb-3 ${darkMode ? "border-secondary" : "text-primary"}`}>2. Direccion del Predio</h6>
+          <h6 className={`border-bottom pb-2 mb-3 ${darkMode ? "border-secondary" : "text-primary"}`}>2. Dirección del Predio</h6>
           <div className="row g-3 mb-4">
             <div className="col-md-6">
               <label className={labelClass}>Calle</label>

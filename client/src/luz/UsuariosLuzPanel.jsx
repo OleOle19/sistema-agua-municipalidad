@@ -9,11 +9,13 @@ const ROLE_OPTIONS = [
   { value: "CONSULTA", label: "Nivel 4 - Consulta" },
   { value: "BRIGADA", label: "Nivel 5 - Brigada" }
 ];
+
 const STATUS_OPTIONS = [
   { value: "ACTIVO", label: "Activo" },
   { value: "PENDIENTE", label: "Pendiente" },
   { value: "BLOQUEADO", label: "Bloqueado" }
 ];
+
 const MIN_PASSWORD_LEN = 8;
 
 const badgeEstado = (estado) => {
@@ -105,7 +107,7 @@ function UsuariosLuzPanel({ visible, usuarioActivo, canManageUsers, onFlash }) {
       return;
     }
     if (password.length < MIN_PASSWORD_LEN) {
-      showFlash("warning", `La contraseña debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
+      showFlash("warning", `La contrasena debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
       return;
     }
 
@@ -137,7 +139,7 @@ function UsuariosLuzPanel({ visible, usuarioActivo, canManageUsers, onFlash }) {
     if (String(edit.estado || "") !== String(usuario.estado || "")) payload.estado = edit.estado;
     if (String(edit.password || "").length > 0) {
       if (String(edit.password).length < MIN_PASSWORD_LEN) {
-        showFlash("warning", `La contraseña debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
+        showFlash("warning", `La contrasena debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
         return;
       }
       payload.password = edit.password;
@@ -314,7 +316,7 @@ function UsuariosLuzPanel({ visible, usuarioActivo, canManageUsers, onFlash }) {
                 <th>Nombre</th>
                 <th>Rol</th>
                 <th>Estado</th>
-                <th>Password actual</th>
+                <th>Credencial</th>
                 <th>Nueva password</th>
                 <th className="text-center">Accion</th>
               </tr>
@@ -363,7 +365,7 @@ function UsuariosLuzPanel({ visible, usuarioActivo, canManageUsers, onFlash }) {
                       </select>
                     </td>
                     <td style={{ minWidth: "170px" }}>
-                      <code>{String(u.password_visible || "(no disponible)")}</code>
+                      <span className="text-muted small">Resguardada por seguridad</span>
                     </td>
                     <td style={{ minWidth: "220px" }}>
                       <input

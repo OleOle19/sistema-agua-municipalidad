@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { Component, Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { FaTint, FaBolt, FaCashRegister, FaMobileAlt } from "react-icons/fa";
 import { API_BASE_URL } from "./api";
-import AguaApp from "./AguaApp";
-import LuzApp from "./luz/LuzApp";
-import CajaMunicipalApp from "./caja/CajaMunicipalApp";
+
+const AguaApp = lazy(() => import("./AguaApp"));
+const LuzApp = lazy(() => import("./luz/LuzApp"));
+const CajaMunicipalApp = lazy(() => import("./caja/CajaMunicipalApp"));
 
 const MODULE_STORAGE_KEY = "sistema_modulo_activo";
 const AGUA_TOKEN_KEY = "token_agua";
@@ -62,6 +63,55 @@ const readStoredModule = () => {
   return "";
 };
 
+const ModuleLoadingScreen = ({ title }) => (
+  <div className="d-flex align-items-center justify-content-center min-vh-100 bg-light p-3">
+    <div className="card shadow-sm" style={{ maxWidth: "480px", width: "100%" }}>
+      <div className="card-body p-4 text-center">
+        <div className="spinner-border text-primary mb-3" role="status" aria-hidden="true"></div>
+        <div className="fw-semibold">{title}</div>
+      </div>
+    </div>
+  </div>
+);
+
+const ModuleErrorScreen = ({ title }) => (
+  <div className="d-flex align-items-center justify-content-center min-vh-100 bg-light p-3">
+    <div className="card shadow-sm border-danger" style={{ maxWidth: "520px", width: "100%" }}>
+      <div className="card-body p-4 text-center">
+        <div className="fw-bold text-danger mb-2">{title}</div>
+        <p className="text-muted mb-3">
+          Ocurrió un error al cargar este módulo. Puede recargar la página para volver a intentarlo.
+        </p>
+        <button type="button" className="btn btn-danger" onClick={() => window.location.reload()}>
+          Recargar página
+        </button>
+      </div>
+    </div>
+  </div>
+);
+
+class ModuleErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("[APP][MODULE_ERROR]", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <ModuleErrorScreen title={this.props.title || "Error cargando el módulo"} />;
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
   const [modulo, setModulo] = useState(readStoredModule);
   const [selectorAviso, setSelectorAviso] = useState("");
@@ -74,7 +124,7 @@ function App() {
       const value = String(target || "").trim().toLowerCase();
       if (!["agua", "luz", "caja"].includes(value)) return;
       if (value === "caja" && !cajaPermitida) {
-        setSelectorAviso("El modulo Caja Municipal solo permite cuentas de Administrador o Cajero.");
+        setSelectorAviso("El módulo Caja Municipal solo permite cuentas de Administrador o Cajero.");
         return;
       }
       clearAllModuleSessions();
@@ -98,13 +148,31 @@ function App() {
   }, [cajaPermitida, modulo]);
 
   if (modulo === "agua") {
-    return <AguaApp onBackToSelector={actions.volver} />;
+    return (
+      <ModuleErrorBoundary title="Error cargando el sistema de Agua">
+        <Suspense fallback={<ModuleLoadingScreen title="Cargando sistema de Agua..." />}>
+          <AguaApp onBackToSelector={actions.volver} />
+        </Suspense>
+      </ModuleErrorBoundary>
+    );
   }
   if (modulo === "luz") {
-    return <LuzApp onBackToSelector={actions.volver} />;
+    return (
+      <ModuleErrorBoundary title="Error cargando el sistema de Luz">
+        <Suspense fallback={<ModuleLoadingScreen title="Cargando sistema de Luz..." />}>
+          <LuzApp onBackToSelector={actions.volver} />
+        </Suspense>
+      </ModuleErrorBoundary>
+    );
   }
   if (modulo === "caja") {
-    return <CajaMunicipalApp onBackToSelector={actions.volver} />;
+    return (
+      <ModuleErrorBoundary title="Error cargando Caja Municipal">
+        <Suspense fallback={<ModuleLoadingScreen title="Cargando Caja Municipal..." />}>
+          <CajaMunicipalApp onBackToSelector={actions.volver} />
+        </Suspense>
+      </ModuleErrorBoundary>
+    );
   }
 
   return (
@@ -142,7 +210,7 @@ function App() {
                   <span className="fs-2 text-warning module-entry__icon"><FaBolt /></span>
                   <div>
                     <div className="fw-bold fs-5">Sistema de Luz</div>
-                    <div className="small text-muted">Suministros, lecturas, recibos y auditoria.</div>
+                    <div className="small text-muted">Suministros, lecturas, recibos y auditoría.</div>
                   </div>
                 </div>
               </button>
@@ -177,7 +245,7 @@ function App() {
                   <span className="fs-2 text-info module-entry__icon"><FaMobileAlt /></span>
                     <div>
                       <div className="fw-bold fs-5">App Campo</div>
-                      <div className="small text-muted">Brigada Agua y Luz. Corroboracion y visitas.</div>
+                      <div className="small text-muted">Brigada Agua y Luz. Corroboración y visitas.</div>
                     </div>
                   </div>
                 </a>

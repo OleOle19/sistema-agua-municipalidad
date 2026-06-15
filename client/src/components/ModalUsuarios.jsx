@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import api from "../api";
 import { FaSave, FaTrashAlt, FaUserShield } from "react-icons/fa";
 
@@ -35,6 +35,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
   const [guardandoId, setGuardandoId] = useState(null);
   const [usuarioEliminarId, setUsuarioEliminarId] = useState("");
   const [eliminandoId, setEliminandoId] = useState(null);
+
   const showFlash = (type, text) => {
     if (typeof onFlash === "function") onFlash(type, text);
   };
@@ -58,7 +59,9 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
     }
   };
 
-  useEffect(() => { cargarUsuarios(); }, []);
+  useEffect(() => {
+    cargarUsuarios();
+  }, []);
 
   useEffect(() => {
     if (!usuarioEliminarId) return;
@@ -86,7 +89,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
     const quiereCambiarPassword = nuevaPassword.length > 0;
 
     if (quiereCambiarPassword && nuevaPassword.length < MIN_PASSWORD_LEN) {
-      return showFlash("warning", `La nueva contraseña debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
+      return showFlash("warning", `La nueva contrasena debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
     }
 
     const payload = {};
@@ -101,7 +104,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
       await api.put(`/admin/usuarios/${u.id_usuario}`, payload);
       await cargarUsuarios();
       if (quiereCambiarPassword) {
-        showFlash("success", `Contraseña actualizada para "${u.username}".`);
+        showFlash("success", `Contrasena actualizada para "${u.username}".`);
       } else {
         showFlash("success", `Usuario "${u.username}" actualizado.`);
       }
@@ -153,7 +156,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
           </div>
           <div className="modal-body bg-light">
             <div className="alert alert-info small mb-3">
-              Usuario actual: <strong>{usuarioActivo?.nombre || "-"}</strong>. Solo el Nivel 1 puede cambiar rol, estado y contraseña.
+              Usuario actual: <strong>{usuarioActivo?.nombre || "-"}</strong>. Solo el Nivel 1 puede cambiar rol, estado y contrasena.
             </div>
 
             <div className="table-responsive bg-white border rounded">
@@ -166,8 +169,8 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
                     <th>Nuevo rol</th>
                     <th>Estado actual</th>
                     <th>Nuevo estado</th>
-                    <th>Password actual</th>
-                    <th>Nueva contraseña</th>
+                    <th>Credencial</th>
+                    <th>Nueva contrasena</th>
                     <th>Accion</th>
                   </tr>
                 </thead>
@@ -210,7 +213,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
                           </select>
                         </td>
                         <td style={{ minWidth: "170px" }}>
-                          <code>{String(u.password_visible || "(no disponible)")}</code>
+                          <span className="text-muted small">Resguardada por seguridad</span>
                         </td>
                         <td style={{ minWidth: "220px" }}>
                           <input
