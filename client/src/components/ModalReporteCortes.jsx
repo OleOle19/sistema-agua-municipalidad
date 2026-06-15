@@ -25,16 +25,16 @@ const STATUS_META = {
     etiqueta: "Cortado"
   },
   CON_CONEXION: {
-    titulo: "Reporte de Conexion Activa",
+    titulo: "Reporte de Conexión Activa",
     claseBtn: "btn-success",
     claseOutline: "btn-outline-success",
-    etiqueta: "Con conexion"
+    etiqueta: "Con conexión"
   },
   SIN_CONEXION: {
-    titulo: "Reporte de Sin Conexion",
+    titulo: "Reporte de Sin Conexión",
     claseBtn: "btn-secondary",
     claseOutline: "btn-outline-secondary",
-    etiqueta: "Sin conexion"
+    etiqueta: "Sin conexión"
   }
 };
 
@@ -353,16 +353,18 @@ const ModalReporteCortes = ({
       alert("No hay usuarios seleccionados para el reporte.");
       return;
     }
-    const ids = seleccion
-      .map((row) => Number(row.id_contribuyente))
-      .filter((id) => Number.isInteger(id) && id > 0);
+    const ids = modo === "todos"
+      ? []
+      : seleccion
+        .map((row) => Number(row.id_contribuyente))
+        .filter((id) => Number.isInteger(id) && id > 0);
 
     setProcesando(true);
     try {
       const reporteRes = await api.get("/contribuyentes/reporte-estado-conexion", {
         params: {
           estado: estadoFiltro,
-          ids: ids.join(","),
+          ...(ids.length > 0 ? { ids: ids.join(",") } : {}),
           ...buildPeriodoQuery({
             tipoPeriodo,
             periodoDia,
@@ -431,12 +433,14 @@ const ModalReporteCortes = ({
   const exportarReporteExcel = async () => {
     setExportandoExcel(true);
     try {
-      const idsSeleccionados = seleccion
-        .map((row) => Number(row?.id_contribuyente || 0))
-        .filter((id) => Number.isInteger(id) && id > 0);
+      const idsSeleccionados = modo === "todos"
+        ? []
+        : seleccion
+          .map((row) => Number(row?.id_contribuyente || 0))
+          .filter((id) => Number.isInteger(id) && id > 0);
       const params = {
         estado: estadoFiltro,
-        ids: idsSeleccionados.join(","),
+        ...(idsSeleccionados.length > 0 ? { ids: idsSeleccionados.join(",") } : {}),
         ...buildPeriodoQuery({
           tipoPeriodo,
           periodoDia,
@@ -525,7 +529,7 @@ const ModalReporteCortes = ({
                     <option value="mes">Mes</option>
                     <option value="anio">Año</option>
                     <option value="rango">Intervalo de fechas</option>
-                    {permiteProyeccion && <option value="proyeccion">Proyeccion futura</option>}
+                    {permiteProyeccion && <option value="proyeccion">Proyección futura</option>}
                   </select>
                 </div>
                 {tipoPeriodo === "dia" && (
@@ -727,9 +731,9 @@ const ModalReporteCortes = ({
                 <thead>
                   <tr>
                     <th>#</th>
-                    <th>Codigo</th>
+                    <th>Código</th>
                     <th>Contribuyente</th>
-                    <th>Direccion</th>
+                    <th>Dirección</th>
                     {isProyeccion ? (
                       <>
                         <th className="text-end">Agua</th>

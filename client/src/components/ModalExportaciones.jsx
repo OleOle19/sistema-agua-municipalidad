@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { Suspense, lazy, useState } from "react";
 import { FaBalanceScale, FaDatabase, FaDownload, FaEye, FaFileAlt, FaFileExcel, FaFolderOpen, FaMoneyBillWave, FaUsers } from "react-icons/fa";
 import api from "../api";
-import ModalComparacionesLegacy from "./ModalComparacionesLegacy";
+
+const ModalComparacionesLegacy = lazy(() => import("./ModalComparacionesLegacy"));
 
 const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
   const [exportando, setExportando] = useState("");
@@ -109,6 +110,18 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
   const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-primary text-white"}`;
   const closeBtnClass = `btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`;
   const bodyCardClass = darkMode ? "border-secondary bg-dark text-white" : "";
+  const lazyModalFallback = (
+    <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
+      <div className="modal-dialog">
+        <div className={`modal-content ${darkMode ? "bg-dark text-white border-secondary" : ""}`}>
+          <div className="modal-body py-4 text-center">
+            <div className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
+            <span>Cargando comparador...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -309,10 +322,12 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
         </div>
       </div>
       {mostrarComparaciones && (
-        <ModalComparacionesLegacy
-          cerrarModal={() => setMostrarComparaciones(false)}
-          darkMode={darkMode}
-        />
+        <Suspense fallback={lazyModalFallback}>
+          <ModalComparacionesLegacy
+            cerrarModal={() => setMostrarComparaciones(false)}
+            darkMode={darkMode}
+          />
+        </Suspense>
       )}
     </div>
   );

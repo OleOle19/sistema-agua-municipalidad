@@ -238,10 +238,10 @@ const ModalPago = ({
   ), [recibosPendientes, seleccion]);
 
   const emitirOrden = async () => {
-    if (!canEmitir) return showFlash("warning", "No tiene permisos para emitir ordenes.");
+    if (!canEmitir) return showFlash("warning", "No tiene permisos para emitir órdenes.");
     const items = itemsSeleccionadosParaOrden;
 
-    if (items.length === 0) return showFlash("warning", "Seleccione al menos un recibo con monto valido.");
+    if (items.length === 0) return showFlash("warning", "Seleccione al menos un recibo con monto válido.");
     if (!window.confirm(`Emitir orden por S/. ${totalOrden.toFixed(2)}?`)) return;
 
     setCargando(true);

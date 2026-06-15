@@ -22,7 +22,7 @@ const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = nu
   }, [showFlash, usuario]);
 
   const eliminarDeuda = async (id_recibo, mes, anio) => {
-    if (!window.confirm(`Esta seguro? Se borrara la deuda de ${mes}/${anio}.`)) return;
+    if (!window.confirm(`¿Está seguro? Se borrará la deuda de ${mes}/${anio}.`)) return;
     try {
       await api.delete(`/recibos/${id_recibo}`);
       setDeudas((prev) => prev.filter((recibo) => Number(recibo.id_recibo) !== Number(id_recibo)));

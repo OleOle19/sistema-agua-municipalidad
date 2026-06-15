@@ -1,5 +1,6 @@
 ﻿import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useReactToPrint } from "react-to-print";
+import { useDeferredValue } from "react";
 import { FaPrint, FaMoneyBillWave } from "react-icons/fa";
 import api from "../api";
 
@@ -193,6 +194,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   const [paginaMovimientos, setPaginaMovimientos] = useState(1);
   const [reporte, setReporte] = useState(EMPTY_REPORTE);
   const [busquedaMovimiento, setBusquedaMovimiento] = useState("");
+  const busquedaMovimientoDeferred = useDeferredValue(busquedaMovimiento);
   const [cargandoAlertas, setCargandoAlertas] = useState(false);
   const [cargandoAdmin, setCargandoAdmin] = useState(false);
   const [movimientosAdmin, setMovimientosAdmin] = useState([]);
@@ -406,25 +408,28 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     return movimientosRaw.filter((row) => normalizeTipoPagoReporte(row?.tipo_pago) === "CAJA");
   }, [isProyeccion, movimientosRaw]);
   const busquedaMovimientoNormalizada = useMemo(
-    () => normalizeSearchText(busquedaMovimiento),
-    [busquedaMovimiento]
+    () => normalizeSearchText(busquedaMovimientoDeferred),
+    [busquedaMovimientoDeferred]
   );
+  const movimientosBuscables = useMemo(() => movimientos.map((row) => ({
+    row,
+    searchable: normalizeSearchText([
+      row?.nombre_completo,
+      row?.codigo_municipal,
+      row?.direccion_completa,
+      row?.id_contribuyente,
+      row?.id_predio,
+      row?.codigo_recibo,
+      row?.numero_recibo,
+      row?.codigo_impresion
+    ].filter(Boolean).join(" "))
+  })), [movimientos]);
   const movimientosFiltrados = useMemo(() => {
     if (isProyeccion || !busquedaMovimientoNormalizada) return movimientos;
-    return movimientos.filter((row) => {
-      const searchable = normalizeSearchText([
-        row?.nombre_completo,
-        row?.codigo_municipal,
-        row?.direccion_completa,
-        row?.id_contribuyente,
-        row?.id_predio,
-        row?.codigo_recibo,
-        row?.numero_recibo,
-        row?.codigo_impresion
-      ].filter(Boolean).join(" "));
-      return searchable.includes(busquedaMovimientoNormalizada);
-    });
-  }, [busquedaMovimientoNormalizada, isProyeccion, movimientos]);
+    return movimientosBuscables
+      .filter((entry) => entry.searchable.includes(busquedaMovimientoNormalizada))
+      .map((entry) => entry.row);
+  }, [busquedaMovimientoNormalizada, isProyeccion, movimientos, movimientosBuscables]);
   const totalPaginas = Math.max(1, Number(reporte?.paginacion?.total_paginas || 1));
   const paginaActual = Math.max(1, Number(reporte?.paginacion?.pagina || paginaMovimientos));
   const pageSizeActual = Math.max(1, Number(reporte?.paginacion?.page_size || MOVIMIENTOS_PAGE_SIZE));
@@ -748,7 +753,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
 
             <div className="border rounded p-3 mb-3 no-print">
               <div className="d-flex justify-content-between align-items-center mb-2">
-                <div className="fw-bold">Alertas de riesgo (ultimas 24h)</div>
+                <div className="fw-bold">Alertas de riesgo (últimas 24 h)</div>
                 <div className={`badge ${alertasRiesgo?.severidad === "ALTA" ? "bg-danger" : alertasRiesgo?.severidad === "MEDIA" ? "bg-warning text-dark" : "bg-success"}`}>
                   {alertasRiesgo?.severidad || "NORMAL"}
                 </div>
@@ -759,7 +764,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                 <div className="col-md-3"><div className="border rounded p-2 small">Anulaciones frecuentes: <strong>{alertasResumen.anulaciones_frecuentes || 0}</strong></div></div>
                 <div className="col-md-3"><div className="border rounded p-2 small">Reemisiones recibo: <strong>{alertasResumen.reemisiones_recibo || 0}</strong></div></div>
                 <div className="col-md-3"><div className="border rounded p-2 small">Cobros fuera horario: <strong>{alertasResumen.cobros_fuera_horario || 0}</strong></div></div>
-                <div className="col-md-3"><div className="border rounded p-2 small">Cierres con desviacion: <strong>{alertasResumen.cierres_desviacion || 0}</strong></div></div>
+                <div className="col-md-3"><div className="border rounded p-2 small">Cierres con desviación: <strong>{alertasResumen.cierres_desviacion || 0}</strong></div></div>
               </div>
               {(alertasResumen.total_alertas || 0) > 0 && (
                 <div className="small">
@@ -767,14 +772,14 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                     <div key={`anul-${idx}`}>- Anulaciones altas: {a.username} ({a.total_anulaciones})</div>
                   ))}
                   {(alertasDetalle?.reemisiones_recibo || []).slice(0, 3).map((a, idx) => (
-                    <div key={`ree-${idx}`}>- Reemision de recibo: {a.total_ordenes} ordenes</div>
+                    <div key={`ree-${idx}`}>- Reemisión de recibo: {a.total_ordenes} órdenes</div>
                   ))}
                   {(alertasDetalle?.cobros_fuera_horario || []).slice(0, 3).map((a, idx) => (
                     <div key={`off-${idx}`}>- Cobro fuera horario: orden {a.id_orden} ({a.username})</div>
                   ))}
                   {(alertasDetalle?.cierres_desviacion || []).slice(0, 3).map((a, idx) => (
                     <div key={`cierre-${idx}`}>
-                      - Cierre con desviacion: {formatFechaLocal(a.fecha_referencia)} {a.creado_en ? `(${formatFechaHoraLocal(a.creado_en)})` : ""} (S/. {formatMoney(a.desviacion)})
+                      - Cierre con desviación: {formatFechaLocal(a.fecha_referencia)} {a.creado_en ? `(${formatFechaHoraLocal(a.creado_en)})` : ""} (S/. {formatMoney(a.desviacion)})
                     </div>
                   ))}
                 </div>
@@ -784,7 +789,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
             <div className="row g-3 mb-3 no-print">
               <div className="col-12 col-lg-4">
                 <div className="border rounded p-3 h-100">
-                  <div className="fw-bold mb-2">{isProyeccion ? "Proyeccion por mes" : "Recaudacion mensual"}</div>
+                  <div className="fw-bold mb-2">{isProyeccion ? "Proyección por mes" : "Recaudación mensual"}</div>
                   {recaudacionTemporal.length === 0 ? (
                     <div className="small text-muted">Sin datos para el periodo.</div>
                   ) : (
@@ -830,7 +835,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
               </div>
               <div className="col-12 col-lg-4">
                 <div className="border rounded p-3 h-100">
-                  <div className="fw-bold mb-2">{isProyeccion ? "Detalle de meses proyectados" : "Recaudacion por mes de cobro"}</div>
+                  <div className="fw-bold mb-2">{isProyeccion ? "Detalle de meses proyectados" : "Recaudación por mes de cobro"}</div>
                   {recaudacionPeriodo.length === 0 ? (
                     <div className="small text-muted">Sin datos para el periodo.</div>
                   ) : (
@@ -863,9 +868,9 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   />
                   <div>
                     <div><strong>MUNICIPALIDAD DISTRITAL DE PUEBLO NUEVO</strong></div>
-                    <div>Area de Administracion Tributaria - Agua Potable</div>
+                    <div>Área de Administración Tributaria - Agua Potable</div>
                     <div className="fw-bold mt-1" style={{ fontSize: "17px", letterSpacing: "0.3px" }}>
-                      {isProyeccion ? "INFORME DE PROYECCION DE RECAUDACION" : "INFORME DE INGRESOS TRIBUTARIOS"}
+                      {isProyeccion ? "INFORME DE PROYECCIÓN DE RECAUDACIÓN" : "INFORME DE INGRESOS TRIBUTARIOS"}
                     </div>
                   </div>
                 </div>
@@ -916,7 +921,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   <table className="table table-sm mb-0 border border-dark" style={{ fontSize: "12px" }}>
                     <thead>
                       <tr className="border border-dark">
-                        <th>Codigo</th>
+                        <th>Código</th>
                         <th>Contribuyente</th>
                         <th className="text-center">Predios</th>
                         <th className="text-end">Base mensual</th>
@@ -926,7 +931,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                     <tbody>
                       {topContribuyentes.length === 0 ? (
                         <tr>
-                          <td colSpan={5} className="text-center py-3">Sin contribuyentes para proyeccion.</td>
+                          <td colSpan={5} className="text-center py-3">Sin contribuyentes para proyección.</td>
                         </tr>
                       ) : (
                         topContribuyentes.map((row, idx) => (
@@ -983,7 +988,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                                             <td colSpan={10} className="fw-semibold border-bottom">
                                               {String(contrib.nombre_completo || "-").toUpperCase()}
                                               <div className="small fw-normal text-muted">
-                                                Cod: {contrib.codigo_municipal || "-"} | Contribuyente ID: {contrib.id_contribuyente || "-"} | Predio ID: {contrib.id_predio || "-"} | Direccion: {contrib.direccion_completa || "-"}
+                                                Cód.: {contrib.codigo_municipal || "-"} | Contribuyente ID: {contrib.id_contribuyente || "-"} | Predio ID: {contrib.id_predio || "-"} | Dirección: {contrib.direccion_completa || "-"}
                                               </div>
                                             </td>
                                           </tr>

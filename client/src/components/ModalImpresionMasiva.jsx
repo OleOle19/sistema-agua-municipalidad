@@ -262,7 +262,7 @@ const ModalImpresionMasiva = ({
           anio: anioNum,
           meses: mesesFuturosSeleccionados,
           origen: "VENTANILLA_REIMPRESION",
-          motivo: `Habilitacion desde reimpresion para Caja: ${periodosTexto}`
+          motivo: `Habilitación desde reimpresión para Caja: ${periodosTexto}`
         });
       }
       const datosImpresion = (Array.isArray(res.data) ? res.data : []).map((row) => ({
@@ -336,7 +336,7 @@ const ModalImpresionMasiva = ({
                 )}
                 {!cargandoHistorial && periodosHistorial.length > 0 && (
                   <div className="small mt-2">
-                    Ultimo recibo emitido detectado: <strong>{formatPeriodoLabel(periodosHistorial[0].anio, periodosHistorial[0].mes)}</strong>
+                    Último recibo emitido detectado: <strong>{formatPeriodoLabel(periodosHistorial[0].anio, periodosHistorial[0].mes)}</strong>
                   </div>
                 )}
               </div>

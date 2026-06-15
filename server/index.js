@@ -8847,26 +8847,26 @@ const obtenerReporteEstadoConexionRows = async ({
       WHERE ${buildPagoContableValidoSql("p")}
       GROUP BY p.id_recibo
     ),
-    resumen_predio AS (
+    resumen_mensual AS (
       SELECT
-        ro.id_predio,
-        SUM(GREATEST(${totalPagarReferenciaResumenSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
-        SUM(COALESCE(pp.total_pagado, 0)) AS abono_total,
-        COUNT(*) FILTER (WHERE (${totalPagarReferenciaResumenSql} - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total
+        p.id_contribuyente,
+        ro.anio,
+        ro.mes,
+        SUM(GREATEST(${totalPagarReferenciaResumenSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_mes,
+        SUM(COALESCE(pp.total_pagado, 0)) AS abono_mes
       FROM recibos_objetivo ro
       JOIN predios p ON p.id_predio = ro.id_predio
       LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
-      GROUP BY ro.id_predio
+      GROUP BY p.id_contribuyente, ro.anio, ro.mes
     ),
     resumen_contribuyente AS (
       SELECT
-        p.id_contribuyente,
-        SUM(COALESCE(rp.deuda_total, 0)) AS deuda_total,
-        SUM(COALESCE(rp.abono_total, 0)) AS abono_total,
-        SUM(COALESCE(rp.meses_deuda_total, 0)) AS meses_deuda
-      FROM predios p
-      LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
-      GROUP BY p.id_contribuyente
+        id_contribuyente,
+        SUM(deuda_mes) AS deuda_total,
+        SUM(abono_mes) AS abono_total,
+        COUNT(DISTINCT (anio * 100 + mes)) FILTER (WHERE deuda_mes > 0) AS meses_deuda
+      FROM resumen_mensual
+      GROUP BY id_contribuyente
     ),
     tarifa_contribuyente AS (
       SELECT
@@ -9094,6 +9094,14 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
   const tarifaActualComponentesDetalleSql = buildTarifaActualComponentesSql("p", buildPeriodoNumSql("r.anio", "r.mes"));
   const tarifaAdminActualDetalleSql = buildTarifaActualAdminBaseSql("p", buildPeriodoNumSql("r.anio", "r.mes"));
   const tarifaExtraActualDetalleSql = buildTarifaActualExtraSql("p", buildPeriodoNumSql("r.anio", "r.mes"));
+  const deudaMesDetalleSql = `
+      SUM(
+        CASE
+          WHEN (r.anio > $1) OR (r.anio = $1 AND r.mes > $2) THEN 0
+          ELSE GREATEST(${totalPagarReferenciaDetalleSql} - COALESCE(pp.total_pagado, 0), 0)
+        END
+      )
+  `;
 
   const query = `
     WITH pagos_por_recibo AS (
@@ -9132,12 +9140,7 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
       SUM(${tarifaExtraActualDetalleSql}) AS tarifa_extra_actual,
       SUM(${totalPagarReferenciaDetalleSql}) AS total_mes,
       SUM(COALESCE(pp.total_pagado, 0)) AS abono_mes,
-      SUM(
-        CASE
-          WHEN (r.anio > $1) OR (r.anio = $1 AND r.mes > $2) THEN 0
-          ELSE GREATEST(${totalPagarReferenciaDetalleSql} - COALESCE(pp.total_pagado, 0), 0)
-        END
-      ) AS deuda_mes
+      ${deudaMesDetalleSql} AS deuda_mes
     FROM contribuyentes c
     JOIN predios p ON p.id_contribuyente = c.id_contribuyente
     JOIN recibos r ON r.id_predio = p.id_predio
@@ -9152,6 +9155,7 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
       COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION'),
       r.anio,
       r.mes
+    HAVING ${deudaMesDetalleSql} > 0
     ORDER BY c.nombre_completo ASC, r.anio ASC, r.mes ASC
   `;
 
@@ -14584,7 +14588,7 @@ app.post("/actas-corte/generar", authenticateToken, async (req, res) => {
         c.codigo_municipal,
         c.nombre_completo,
         COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
-        COUNT(*) FILTER (
+        COUNT(DISTINCT (r.anio * 100 + r.mes)) FILTER (
           WHERE GREATEST(${totalPagarReferenciaActaSql} - COALESCE(pp.total_pagado, 0), 0) > 0
         ) AS meses_deuda,
         COALESCE(SUM(GREATEST(${totalPagarReferenciaActaSql} - COALESCE(pp.total_pagado, 0), 0)), 0) AS deuda_total
@@ -14717,7 +14721,7 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
         c.codigo_municipal,
         c.nombre_completo,
         COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
-        COUNT(*) FILTER (
+        COUNT(DISTINCT (r.anio * 100 + r.mes)) FILTER (
           WHERE GREATEST(${totalPagarReferenciaActaLoteSql} - COALESCE(pp.total_pagado, 0), 0) > 0
         ) AS meses_deuda,
         COALESCE(SUM(GREATEST(${totalPagarReferenciaActaLoteSql} - COALESCE(pp.total_pagado, 0), 0)), 0) AS deuda_total
