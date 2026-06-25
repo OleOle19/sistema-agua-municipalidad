@@ -3275,7 +3275,8 @@ const recalcularRecibosFuturosPorServicios = async (
     desdePeriodoNum = getNextPeriod().periodoNum,
     hastaPeriodoNum = null,
     montosBase = AUTO_DEUDA_BASE,
-    incluirPendientesHistoricos = false
+    incluirPendientesHistoricos = false,
+    permitirPeriodoActual = false
   } = {}
 ) => {
   const id = parsePositiveInt(idContribuyente, 0);
@@ -3291,10 +3292,12 @@ const recalcularRecibosFuturosPorServicios = async (
   const periodoHasta = Number.isFinite(Number(hastaPeriodoNum))
     ? Number(hastaPeriodoNum)
     : null;
-  const periodoMinimoFuturo = getNextPeriod().periodoNum;
+  const periodoMinimoRecalculo = permitirPeriodoActual
+    ? getCurrentPeriodoNum()
+    : getNextPeriod().periodoNum;
   const periodo = incluirPendientesHistoricos
     ? Math.max(0, periodoSolicitado)
-    : Math.max(periodoSolicitado, periodoMinimoFuturo);
+    : Math.max(periodoSolicitado, periodoMinimoRecalculo);
   const periodoReciboSql = buildPeriodoNumSql("r.anio", "r.mes");
   const tarifaAguaPeriodoSql = buildTarifaPeriodoBaseSql({
     predioAlias: "p",
@@ -8308,6 +8311,7 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       aguaActual !== aguaAplicado ||
       desagueActual !== desagueAplicado ||
       limpiezaActual !== limpiezaAplicado;
+    const estadoCambioAplicado = requestedChanges.estado && estadoActual !== estadoAplicado;
     const tarifasCambiaron =
       parseCampoSolicitudTarifaValue(actual.tarifa_agua) !== parseCampoSolicitudTarifaValue(tarifasPredioAplicadas.tarifa_agua) ||
       parseCampoSolicitudTarifaValue(actual.tarifa_desague) !== parseCampoSolicitudTarifaValue(tarifasPredioAplicadas.tarifa_desague) ||
@@ -8337,9 +8341,10 @@ app.post("/campo/solicitudes/:id/aprobar", async (req, res) => {
       requestedChanges
     });
     let recibosRecalculados = 0;
-    if (serviciosCambiaron || tarifasCambiaron || (requestedChanges.estado && estadoActual !== estadoAplicado)) {
+    if (serviciosCambiaron || tarifasCambiaron || estadoCambioAplicado) {
       const recalc = await recalcularRecibosFuturosPorServicios(client, actual.id_contribuyente, {
-        incluirPendientesHistoricos: true,
+        incluirPendientesHistoricos: !estadoCambioAplicado,
+        permitirPeriodoActual: estadoCambioAplicado,
         desdePeriodoNum: getCurrentPeriodoNum()
       });
       recibosRecalculados = Number(recalc?.actualizados || 0);
@@ -10247,6 +10252,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
       serviciosActuales.agua_sn !== serviciosDespues.agua_sn ||
       serviciosActuales.desague_sn !== serviciosDespues.desague_sn ||
       serviciosActuales.limpieza_sn !== serviciosDespues.limpieza_sn;
+    const estadoConexionCambio = estadoConexion !== normalizeEstadoConexion(actualData.rows[0]?.estado_conexion);
     const tarifasCambiaron =
       parseCampoSolicitudTarifaValue(predioActual?.tarifa_agua) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_agua) ||
       parseCampoSolicitudTarifaValue(predioActual?.tarifa_desague) !== parseCampoSolicitudTarifaValue(tarifasActualizadas.tarifa_desague) ||
@@ -10415,10 +10421,13 @@ app.put("/contribuyentes/:id", async (req, res) => {
         ? Math.min(...periodosRecalculo)
         : getCurrentPeriodoNum();
       const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-        incluirPendientesHistoricos: true,
+        incluirPendientesHistoricos: !estadoConexionCambio,
+        permitirPeriodoActual: estadoConexionCambio,
         desdePeriodoNum: desdePeriodoRecalculo
       });
-      const syncPendientesSinPago = await sincronizarRecibosPendientesSinPagoPorServiciosActuales(client, idContribuyente);
+      const syncPendientesSinPago = estadoConexionCambio
+        ? { actualizados: 0, rows: [] }
+        : await sincronizarRecibosPendientesSinPagoPorServiciosActuales(client, idContribuyente);
       const filasRecalculadas = [
         ...(Array.isArray(recalcManual?.rows) ? recalcManual.rows : []),
         ...(Array.isArray(syncPendientesSinPago?.rows) ? syncPendientesSinPago.rows : [])
@@ -10555,8 +10564,8 @@ app.post("/contribuyentes/cortes/registrar", uploadCorteEvidenciaArray("evidenci
       [predioEstado.activo_sn, predioEstado.estado_servicio, idContribuyente]
     );
     const recalc = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-      incluirPendientesHistoricos: true,
-      desdePeriodoNum: getCurrentPeriodoNum()
+      desdePeriodoNum: getCurrentPeriodoNum(),
+      permitirPeriodoActual: true
     });
     const recibosRecalculados = Number(recalc?.actualizados || 0);
 
@@ -10705,8 +10714,8 @@ app.post("/contribuyentes/:id/estado-conexion", async (req, res) => {
       [predioEstado.activo_sn, predioEstado.estado_servicio, idContribuyente]
     );
     const recalc = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-      incluirPendientesHistoricos: true,
-      desdePeriodoNum: getCurrentPeriodoNum()
+      desdePeriodoNum: getCurrentPeriodoNum(),
+      permitirPeriodoActual: true
     });
     const recibosRecalculados = Number(recalc?.actualizados || 0);
 
@@ -11522,8 +11531,8 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     };
 
     await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-      incluirPendientesHistoricos: true,
-      desdePeriodoNum: getCurrentPeriodoNum()
+      desdePeriodoNum: getCurrentPeriodoNum(),
+      permitirPeriodoActual: true
     });
 
     const totalPagarReferenciaPendSql = buildTotalPagarDeudaVigenteSql({
