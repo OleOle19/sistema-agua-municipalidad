@@ -740,7 +740,7 @@ const normalizeEstadoConexion = (value) => {
   if ([
     "CORTADO", "CORTE", "SUSPENDIDO", "SUSPENSION"
   ].includes(raw)) return ESTADOS_CONEXION.CORTADO;
-  return ESTADOS_CONEXION.CON_CONEXION;
+  return ESTADOS_CONEXION.SIN_CONEXION;
 };
 
 const tryNormalizeEstadoConexion = (value) => {
@@ -2403,14 +2403,11 @@ const getUltimoPeriodoImprimibleNum = (date = new Date()) => {
   }
   return getUltimoPeriodoEmitidoNum(date);
 };
-const validateReciboPeriodoNoFuturo = (anioInput, mesInput) => {
+const validateReciboPeriodo = (anioInput, mesInput) => {
   const anio = parsePositiveInt(anioInput, 0);
   const mes = parsePositiveInt(mesInput, 0);
   if (!anio || mes < 1 || mes > 12) {
     return { ok: false, error: "Año y mes son requeridos." };
-  }
-  if ((anio * 100) + mes > getUltimoPeriodoEmitidoNum()) {
-    return { ok: false, error: "Solo se permite registrar deuda en meses ya cerrados." };
   }
   return { ok: true, anio, mes };
 };
@@ -2829,7 +2826,7 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
         ORDER BY rh.anio DESC, rh.mes DESC, rh.id_recibo DESC
         LIMIT 1
       ) AS limpieza_hist,
-      COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion
+      COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'SIN_CONEXION') AS estado_conexion
     FROM predios p
     JOIN contribuyentes c ON c.id_contribuyente = p.id_contribuyente
     WHERE p.id_contribuyente = $1
@@ -4880,12 +4877,12 @@ const ensureEstadoConexionContribuyentes = async (client) => {
     UPDATE predios p
     SET
       estado_servicio = CASE
-        WHEN UPPER(COALESCE(TRIM(c.estado_conexion), 'CON_CONEXION')) = 'CON_CONEXION' THEN 'ACTIVO'
-        WHEN UPPER(COALESCE(TRIM(c.estado_conexion), 'CON_CONEXION')) = 'CORTADO' THEN 'CORTADO'
+        WHEN UPPER(COALESCE(TRIM(c.estado_conexion), 'SIN_CONEXION')) = 'CON_CONEXION' THEN 'ACTIVO'
+        WHEN UPPER(COALESCE(TRIM(c.estado_conexion), 'SIN_CONEXION')) = 'CORTADO' THEN 'CORTADO'
         ELSE 'SIN_CONEXION'
       END,
       activo_sn = CASE
-        WHEN UPPER(COALESCE(TRIM(c.estado_conexion), 'CON_CONEXION')) = 'CON_CONEXION' THEN 'S'
+        WHEN UPPER(COALESCE(TRIM(c.estado_conexion), 'SIN_CONEXION')) = 'CON_CONEXION' THEN 'S'
         ELSE 'N'
       END
     FROM contribuyentes c
@@ -5912,6 +5909,7 @@ const ensurePerformanceIndexes = async (client) => {
     "CREATE INDEX IF NOT EXISTS idx_predios_id_calle ON predios (id_calle)",
     "CREATE INDEX IF NOT EXISTS idx_contribuyentes_codigo_municipal ON contribuyentes (codigo_municipal)",
     "CREATE INDEX IF NOT EXISTS idx_contribuyentes_nombre_completo ON contribuyentes (nombre_completo)",
+    "CREATE INDEX IF NOT EXISTS idx_contribuyentes_estado_conexion_normalizada ON contribuyentes ((COALESCE(NULLIF(UPPER(TRIM(estado_conexion)), ''), 'SIN_CONEXION')))",
     "CREATE INDEX IF NOT EXISTS idx_codigos_impresion_recibos_json_gin ON codigos_impresion USING GIN (recibos_json)"
   ];
   for (const sql of statements) {
@@ -11188,7 +11186,7 @@ app.post("/recibos", async (req, res) => {
     if (!idContribuyente) {
       return res.status(400).json({ error: "Contribuyente invalido." });
     }
-    const periodo = validateReciboPeriodoNoFuturo(anio, mes);
+    const periodo = validateReciboPeriodo(anio, mes);
     if (!periodo.ok) {
       return res.status(400).json({ error: periodo.error });
     }
@@ -11355,7 +11353,7 @@ app.post("/recibos", async (req, res) => {
 app.post("/recibos/generar-masivo", async (req, res) => {
   try {
     const { tipo_seleccion = "todos", ids_usuarios = [], id_calle, anio, mes, montos } = req.body;
-    const periodo = validateReciboPeriodoNoFuturo(anio, mes);
+    const periodo = validateReciboPeriodo(anio, mes);
     if (!periodo.ok) {
       return res.status(400).json({ error: periodo.error });
     }
@@ -18370,7 +18368,7 @@ const normalizeLegacyEstadoFromFields = (estadoRaw, activoRaw) => {
   const activoTxt = String(activoRaw || "").trim().toUpperCase();
   if (["0", "N", "NO", "FALSE"].includes(activoTxt)) return ESTADOS_CONEXION.SIN_CONEXION;
   if (["1", "S", "SI", "TRUE"].includes(activoTxt)) return ESTADOS_CONEXION.CON_CONEXION;
-  return ESTADOS_CONEXION.CON_CONEXION;
+  return ESTADOS_CONEXION.SIN_CONEXION;
 };
 
 const getLegacyUploadFile = (req, fieldName) => {

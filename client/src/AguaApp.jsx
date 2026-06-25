@@ -16,6 +16,7 @@ import RecibosMasivos from "./components/RecibosMasivos";
 import FlashNotice from "./components/FlashNotice";
 import { buildReporteEstadoConexionPdf } from "./utils/simplePdf";
 import { formatDireccionDisplay } from "./utils/direccionDisplay";
+import { ESTADOS_CONEXION, ESTADO_CONEXION_LABELS, normalizeEstadoConexion } from "./utils/estadoConexion";
 
 const LazyRegistroForm = lazy(() => import("./components/RegistroForm"));
 const LazyModalCierre = lazy(() => import("./components/ModalCierre"));
@@ -62,18 +63,6 @@ const hasMinRole = (role, requiredRole) => {
   return currentLevel >= requiredLevel;
 };
 
-const ESTADOS_CONEXION = {
-  CON_CONEXION: "CON_CONEXION",
-  SIN_CONEXION: "SIN_CONEXION",
-  CORTADO: "CORTADO"
-};
-
-const ESTADO_CONEXION_LABELS = {
-  CON_CONEXION: "Con conexión",
-  SIN_CONEXION: "Sin conexión",
-  CORTADO: "Cortado"
-};
-
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 const SHOW_LEGACY_CAJA_MENU = false;
 const HISTORIAL_CACHE_VERSION = "futuros-v4-admin";
@@ -94,14 +83,6 @@ const normalizeSearchText = (value) => String(value || "")
   .replace(/[^\p{L}\p{N}\s]/gu, " ")
   .replace(/\s+/g, " ")
   .trim();
-
-const normalizeEstadoConexion = (value) => {
-  const raw = String(value || "").trim().toUpperCase();
-  if (["CON_CONEXION", "CONEXION", "CONECTADO", "ACTIVO"].includes(raw)) return ESTADOS_CONEXION.CON_CONEXION;
-  if (["SIN_CONEXION", "SIN CONEXION", "SIN_SERVICIO", "NO_CONECTADO", "INACTIVO"].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
-  if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return ESTADOS_CONEXION.CORTADO;
-  return ESTADOS_CONEXION.CON_CONEXION;
-};
 
 const LazyPanelFallback = ({ darkMode, label = "Cargando..." }) => (
   <div className={`p-4 text-center ${darkMode ? "text-white" : "text-muted"}`}>
@@ -1736,7 +1717,9 @@ const anexoCajaPageStyle = `
           const parsed = JSON.parse(raw);
           if (parsed?.error) mensaje = parsed.error;
         }
-      } catch {}
+      } catch {
+        // Se ignora el parseo secundario del error.
+      }
       showFlash("danger", mensaje);
       console.error(error);
     }

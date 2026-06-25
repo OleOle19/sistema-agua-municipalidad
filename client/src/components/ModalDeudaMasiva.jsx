@@ -3,28 +3,19 @@ import api from "../api";
 import { FaLayerGroup, FaBuilding, FaUsers } from "react-icons/fa";
 import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
 
-const getUltimoPeriodoCerrado = () => {
+const getPeriodoActual = () => {
   const now = new Date();
-  const mesActual = now.getMonth() + 1;
-  if (mesActual === 1) {
-    return { anio: now.getFullYear() - 1, mes: 12 };
-  }
-  return { anio: now.getFullYear(), mes: mesActual - 1 };
+  return { anio: now.getFullYear(), mes: now.getMonth() + 1 };
 };
 
-const validarPeriodoNoFuturo = (anioInput, mesInput) => {
+const validarPeriodoRecibo = (anioInput, mesInput) => {
   const anio = Number.parseInt(String(anioInput ?? ""), 10);
   const mes = Number.parseInt(String(mesInput ?? ""), 10);
   if (!Number.isFinite(anio) || anio < 2000 || anio > 9999) {
-    return { ok: false, error: "Año inválido." };
+    return { ok: false, error: "Ano invalido." };
   }
   if (!Number.isFinite(mes) || mes < 1 || mes > 12) {
-    return { ok: false, error: "Mes inválido." };
-  }
-  const ultimoPeriodoCerrado = getUltimoPeriodoCerrado();
-  const periodoMaximo = (ultimoPeriodoCerrado.anio * 100) + ultimoPeriodoCerrado.mes;
-  if ((anio * 100) + mes > periodoMaximo) {
-    return { ok: false, error: "Solo se puede generar deuda en meses ya cerrados." };
+    return { ok: false, error: "Mes invalido." };
   }
   return { ok: true, anio, mes };
 };
@@ -33,7 +24,7 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
   const [modo, setModo] = useState(idsSeleccionados.length > 0 ? "seleccion" : "todos");
   const [calles, setCalles] = useState([]);
   const [loading, setLoading] = useState(false);
-  const periodoInicial = getUltimoPeriodoCerrado();
+  const periodoInicial = getPeriodoActual();
   const tarifasDefault = { agua: "7.50", desague: "3.50", limpieza: "3.50", admin: "0.50" };
 
   const [form, setForm] = useState({
@@ -51,12 +42,13 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
     limpieza: true,
     admin: true
   });
+
   const showFlash = (type, text) => {
     if (typeof onFlash === "function") onFlash(type, text);
   };
 
   useEffect(() => {
-    api.get("/calles").then(res => setCalles(res.data));
+    api.get("/calles").then((res) => setCalles(res.data));
   }, []);
 
   const parseMonto = (value) => {
@@ -66,9 +58,9 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
   };
 
   const toggleServicio = (key) => {
-    setServicios(prev => {
+    setServicios((prev) => {
       const next = !prev[key];
-      setForm(formPrev => {
+      setForm((formPrev) => {
         if (!next) return { ...formPrev, [key]: "0.00" };
         const current = parseMonto(formPrev[key]);
         const restored = current > 0 ? formPrev[key] : tarifasDefault[key];
@@ -100,9 +92,9 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
     e.preventDefault();
     if (modo === "calle" && !form.id_calle) return showFlash("warning", "Seleccione una calle.");
     if (totalServicios <= 0) return showFlash("warning", "Debe seleccionar al menos un servicio.");
-    const periodo = validarPeriodoNoFuturo(form.anio, form.mes);
+    const periodo = validarPeriodoRecibo(form.anio, form.mes);
     if (!periodo.ok) return showFlash("warning", periodo.error);
-    if (!confirm(`¿Está seguro de generar deuda masiva en modo: ${modo.toUpperCase()}?`)) return;
+    if (!confirm(`Esta seguro de generar deuda masiva en modo: ${modo.toUpperCase()}?`)) return;
 
     setLoading(true);
     try {
@@ -126,11 +118,11 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
       cerrarModal();
     } catch {
       showFlash("danger", "Error al generar deuda.");
-    } 
-    finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Estilos
   const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
   const inputClass = `form-control form-control-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
   const selectClass = `form-select ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
@@ -141,78 +133,77 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
       <div className="modal-dialog">
         <div className="modal-content" style={modalStyle}>
           <div className={`modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-primary text-white"}`}>
-            <h5 className="modal-title">Generación Masiva de Deuda</h5>
+            <h5 className="modal-title">Generacion Masiva de Deuda</h5>
             <button className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
           </div>
           <div className="modal-body">
-            
             <form onSubmit={handleSubmit}>
               <div className={`d-flex justify-content-around mb-4 border-bottom pb-3 ${darkMode ? "border-secondary" : ""}`}>
-                <button type="button" className={`btn btn-sm ${btnOutlineClass(modo==='seleccion')}`} onClick={()=>setModo('seleccion')} disabled={idsSeleccionados.length===0}>
-                    <FaUsers className="mb-1 d-block mx-auto"/> Selección ({idsSeleccionados.length})
+                <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "seleccion")}`} onClick={() => setModo("seleccion")} disabled={idsSeleccionados.length === 0}>
+                  <FaUsers className="mb-1 d-block mx-auto" /> Seleccion ({idsSeleccionados.length})
                 </button>
-                <button type="button" className={`btn btn-sm ${btnOutlineClass(modo==='calle')}`} onClick={()=>setModo('calle')}>
-                    <FaBuilding className="mb-1 d-block mx-auto"/> Por Calle
+                <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "calle")}`} onClick={() => setModo("calle")}>
+                  <FaBuilding className="mb-1 d-block mx-auto" /> Por Calle
                 </button>
-                <button type="button" className={`btn btn-sm ${btnOutlineClass(modo==='todos')}`} onClick={()=>setModo('todos')}>
-                    <FaLayerGroup className="mb-1 d-block mx-auto"/> Todos
+                <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "todos")}`} onClick={() => setModo("todos")}>
+                  <FaLayerGroup className="mb-1 d-block mx-auto" /> Todos
                 </button>
               </div>
 
-              {modo === 'calle' && (
-                  <div className="mb-3">
-                      <label className="form-label">Seleccionar Calle</label>
-                      <select className={selectClass} value={form.id_calle} onChange={e => setForm({...form, id_calle: e.target.value})}>
-                          <option value="">-- Seleccione --</option>
-                          {calles.map(c => <option key={c.id_calle} value={c.id_calle}>{c.nombre}</option>)}
-                      </select>
-                  </div>
+              {modo === "calle" && (
+                <div className="mb-3">
+                  <label className="form-label">Seleccionar Calle</label>
+                  <select className={selectClass} value={form.id_calle} onChange={(e) => setForm({ ...form, id_calle: e.target.value })}>
+                    <option value="">-- Seleccione --</option>
+                    {calles.map((c) => <option key={c.id_calle} value={c.id_calle}>{c.nombre}</option>)}
+                  </select>
+                </div>
               )}
 
               <div className="row g-2 mb-3">
                 <div className="col-6">
-                    <label className="small fw-bold">Mes</label>
-                    <select className={selectClass} value={form.mes} onChange={e => setForm({...form, mes: e.target.value})}>
-                        {[1,2,3,4,5,6,7,8,9,10,11,12].map(m => <option key={m} value={m}>{["","Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"][m]}</option>)}
-                    </select>
+                  <label className="small fw-bold">Mes</label>
+                  <select className={selectClass} value={form.mes} onChange={(e) => setForm({ ...form, mes: e.target.value })}>
+                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((m) => <option key={m} value={m}>{["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"][m]}</option>)}
+                  </select>
                 </div>
                 <div className="col-6">
-                    <label className="small fw-bold">Año</label>
-                    <input type="number" className={inputClass} value={form.anio} onChange={e => setForm({...form, anio: e.target.value})} />
+                  <label className="small fw-bold">Ano</label>
+                  <input type="number" className={inputClass} value={form.anio} onChange={(e) => setForm({ ...form, anio: e.target.value })} />
                 </div>
               </div>
 
               <div className={`row g-2 mb-3 border p-2 rounded ${darkMode ? "bg-dark border-secondary" : "bg-light"}`}>
-                  <div className="col-12 small fw-bold text-center text-primary">Tarifa a Aplicar</div>
-                  <div className="col-3">
-                      <div className="form-check">
-                          <input className="form-check-input" type="checkbox" id="masivo-agua" checked={servicios.agua} onChange={() => toggleServicio("agua")} />
-                          <label className="form-check-label small" htmlFor="masivo-agua">Agua</label>
-                      </div>
-                      <input type="text" inputMode="decimal" className={inputClass} value={form.agua} onChange={e => onChangeMonto("agua", e.target.value)} onBlur={() => onBlurMonto("agua")} disabled={!servicios.agua} />
+                <div className="col-12 small fw-bold text-center text-primary">Tarifa a Aplicar</div>
+                <div className="col-3">
+                  <div className="form-check">
+                    <input className="form-check-input" type="checkbox" id="masivo-agua" checked={servicios.agua} onChange={() => toggleServicio("agua")} />
+                    <label className="form-check-label small" htmlFor="masivo-agua">Agua</label>
                   </div>
-                  <div className="col-3">
-                      <div className="form-check">
-                          <input className="form-check-input" type="checkbox" id="masivo-desague" checked={servicios.desague} onChange={() => toggleServicio("desague")} />
-                          <label className="form-check-label small" htmlFor="masivo-desague">Desagüe</label>
-                      </div>
-                      <input type="text" inputMode="decimal" className={inputClass} value={form.desague} onChange={e => onChangeMonto("desague", e.target.value)} onBlur={() => onBlurMonto("desague")} disabled={!servicios.desague} />
+                  <input type="text" inputMode="decimal" className={inputClass} value={form.agua} onChange={(e) => onChangeMonto("agua", e.target.value)} onBlur={() => onBlurMonto("agua")} disabled={!servicios.agua} />
+                </div>
+                <div className="col-3">
+                  <div className="form-check">
+                    <input className="form-check-input" type="checkbox" id="masivo-desague" checked={servicios.desague} onChange={() => toggleServicio("desague")} />
+                    <label className="form-check-label small" htmlFor="masivo-desague">Desague</label>
                   </div>
-                  <div className="col-3">
-                      <div className="form-check">
-                          <input className="form-check-input" type="checkbox" id="masivo-limpieza" checked={servicios.limpieza} onChange={() => toggleServicio("limpieza")} />
-                          <label className="form-check-label small" htmlFor="masivo-limpieza">Limpieza</label>
-                      </div>
-                      <input type="text" inputMode="decimal" className={inputClass} value={form.limpieza} onChange={e => onChangeMonto("limpieza", e.target.value)} onBlur={() => onBlurMonto("limpieza")} disabled={!servicios.limpieza} />
+                  <input type="text" inputMode="decimal" className={inputClass} value={form.desague} onChange={(e) => onChangeMonto("desague", e.target.value)} onBlur={() => onBlurMonto("desague")} disabled={!servicios.desague} />
+                </div>
+                <div className="col-3">
+                  <div className="form-check">
+                    <input className="form-check-input" type="checkbox" id="masivo-limpieza" checked={servicios.limpieza} onChange={() => toggleServicio("limpieza")} />
+                    <label className="form-check-label small" htmlFor="masivo-limpieza">Limpieza</label>
                   </div>
-                  <div className="col-3">
-                      <div className="form-check">
-                          <input className="form-check-input" type="checkbox" id="masivo-admin" checked={servicios.admin} onChange={() => toggleServicio("admin")} />
-                          <label className="form-check-label small" htmlFor="masivo-admin">Admin</label>
-                      </div>
-                      <input type="text" inputMode="decimal" className={inputClass} value={form.admin} onChange={e => onChangeMonto("admin", e.target.value)} onBlur={() => onBlurMonto("admin")} disabled={!servicios.admin} />
+                  <input type="text" inputMode="decimal" className={inputClass} value={form.limpieza} onChange={(e) => onChangeMonto("limpieza", e.target.value)} onBlur={() => onBlurMonto("limpieza")} disabled={!servicios.limpieza} />
+                </div>
+                <div className="col-3">
+                  <div className="form-check">
+                    <input className="form-check-input" type="checkbox" id="masivo-admin" checked={servicios.admin} onChange={() => toggleServicio("admin")} />
+                    <label className="form-check-label small" htmlFor="masivo-admin">Admin</label>
                   </div>
-                  <div className="col-12 text-end fw-bold mt-1">Total: S/ {totalServicios.toFixed(2)}</div>
+                  <input type="text" inputMode="decimal" className={inputClass} value={form.admin} onChange={(e) => onChangeMonto("admin", e.target.value)} onBlur={() => onBlurMonto("admin")} disabled={!servicios.admin} />
+                </div>
+                <div className="col-12 text-end fw-bold mt-1">Total: S/ {totalServicios.toFixed(2)}</div>
               </div>
 
               <div className="d-flex justify-content-end gap-2">

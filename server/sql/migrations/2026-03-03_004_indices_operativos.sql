@@ -58,5 +58,8 @@ CREATE INDEX IF NOT EXISTS idx_contribuyentes_codigo_municipal
 CREATE INDEX IF NOT EXISTS idx_contribuyentes_nombre_completo
   ON contribuyentes (nombre_completo);
 
+CREATE INDEX IF NOT EXISTS idx_contribuyentes_estado_conexion_normalizada
+  ON contribuyentes ((COALESCE(NULLIF(UPPER(TRIM(estado_conexion)), ''), 'SIN_CONEXION')));
+
 CREATE INDEX IF NOT EXISTS idx_codigos_impresion_recibos_json_gin
   ON codigos_impresion USING GIN (recibos_json);

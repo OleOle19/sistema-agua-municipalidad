@@ -1,14 +1,7 @@
 import { useState, useEffect } from "react";
 import api from "../api";
 import { formatDireccionDisplay } from "../utils/direccionDisplay";
-
-const normalizeEstadoConexion = (value) => {
-  const raw = String(value || "").trim().toUpperCase();
-  if (["CON_CONEXION", "CONEXION", "CONECTADO", "ACTIVO"].includes(raw)) return "CON_CONEXION";
-  if (["SIN_CONEXION", "SIN CONEXION", "SIN_SERVICIO", "NO_CONECTADO", "INACTIVO"].includes(raw)) return "SIN_CONEXION";
-  if (["CORTADO", "CORTE", "SUSPENDIDO"].includes(raw)) return "CORTADO";
-  return "CON_CONEXION";
-};
+import { normalizeEstadoConexion } from "../utils/estadoConexion";
 const normalizeServicioSN = (value, fallback = "S") => {
   const raw = String(value || "").trim().toUpperCase();
   if (["S", "1", "SI", "TRUE", "Y", "YES"].includes(raw)) return "S";

@@ -7,15 +7,11 @@ const toNumber = (value, fallback = 0) => {
   const parsed = parseFloat(normalized);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
-const getUltimoPeriodoCerrado = () => {
+const getPeriodoActual = () => {
   const now = new Date();
-  const mesActual = now.getMonth() + 1;
-  if (mesActual === 1) {
-    return { anio: now.getFullYear() - 1, mes: 12 };
-  }
-  return { anio: now.getFullYear(), mes: mesActual - 1 };
+  return { anio: now.getFullYear(), mes: now.getMonth() + 1 };
 };
-const validarPeriodoNoFuturo = (anioInput, mesInput) => {
+const validarPeriodoRecibo = (anioInput, mesInput) => {
   const anio = Number.parseInt(String(anioInput ?? ""), 10);
   const mes = Number.parseInt(String(mesInput ?? ""), 10);
   if (!Number.isFinite(anio) || anio < 2000 || anio > 9999) {
@@ -24,16 +20,11 @@ const validarPeriodoNoFuturo = (anioInput, mesInput) => {
   if (!Number.isFinite(mes) || mes < 1 || mes > 12) {
     return { ok: false, error: "Mes inválido." };
   }
-  const ultimoPeriodoCerrado = getUltimoPeriodoCerrado();
-  const periodoMaximo = (ultimoPeriodoCerrado.anio * 100) + ultimoPeriodoCerrado.mes;
-  if ((anio * 100) + mes > periodoMaximo) {
-    return { ok: false, error: "Solo se puede registrar deuda en meses ya cerrados." };
-  }
   return { ok: true, anio, mes };
 };
 
 const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null }) => {
-  const periodoInicial = getUltimoPeriodoCerrado();
+  const periodoInicial = getPeriodoActual();
   const [anio, setAnio] = useState(periodoInicial.anio);
   const [mes, setMes] = useState(periodoInicial.mes);
   const [cargando, setCargando] = useState(false);
@@ -101,7 +92,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null 
   const totalServicios = Object.values(montos).reduce((sum, v) => sum + v, 0);
 
   const guardarDeuda = async () => {
-    const periodo = validarPeriodoNoFuturo(anio, mes);
+    const periodo = validarPeriodoRecibo(anio, mes);
     if (!periodo.ok) {
       showFlash("warning", periodo.error);
       return;
