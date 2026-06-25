@@ -1,20 +1,23 @@
 import { useMemo, useState } from "react";
 import { FaPlug, FaSearch, FaUpload } from "react-icons/fa";
 import { compareByDireccionAsc } from "../utils/cortesAddress";
+import { ESTADOS_CONEXION, normalizeEstadoConexion } from "../utils/estadoConexion";
 
-const ESTADOS_CONEXION = {
-  CON_CONEXION: "CON_CONEXION",
-  SIN_CONEXION: "SIN_CONEXION",
-  CORTADO: "CORTADO"
-};
-
-const normalizeEstadoConexion = (value) => {
-  const raw = String(value || "").trim().toUpperCase();
-  if (["CON_CONEXION", "CONEXION", "CONECTADO", "ACTIVO"].includes(raw)) return ESTADOS_CONEXION.CON_CONEXION;
-  if (["SIN_CONEXION", "SIN CONEXION", "SIN_SERVICIO", "NO_CONECTADO", "INACTIVO"].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
-  if (["CORTADO", "CORTE", "SUSPENDIDO", "SUSPENSION"].includes(raw)) return ESTADOS_CONEXION.CORTADO;
-  return ESTADOS_CONEXION.CON_CONEXION;
-};
+const CORTE_EVIDENCIA_MAX_FILE_BYTES = 15 * 1024 * 1024;
+const CORTE_EVIDENCIA_MAX_FILES = 8;
+const CORTE_EVIDENCIA_ACCEPT = [
+  ".pdf",
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".tif",
+  ".tiff",
+  ".doc",
+  ".docx"
+].join(",");
 
 const ModalCorteConexion = ({
   cerrarModal,
@@ -27,6 +30,7 @@ const ModalCorteConexion = ({
   const [idSeleccionado, setIdSeleccionado] = useState(null);
   const [motivo, setMotivo] = useState("Corte de servicio registrado en oficina.");
   const [evidencias, setEvidencias] = useState([]);
+  const [errorLocal, setErrorLocal] = useState("");
 
   const base = useMemo(() => {
     const rows = Array.isArray(contribuyentes) ? contribuyentes : [];
@@ -59,24 +63,58 @@ const ModalCorteConexion = ({
 
   const handleFiles = (event) => {
     const files = Array.from(event?.target?.files || []);
+    event.target.value = "";
+
+    if (files.length === 0) {
+      setEvidencias([]);
+      setErrorLocal("");
+      return;
+    }
+
+    if (files.length > CORTE_EVIDENCIA_MAX_FILES) {
+      setEvidencias([]);
+      setErrorLocal(`Solo se permiten hasta ${CORTE_EVIDENCIA_MAX_FILES} archivos por corte.`);
+      return;
+    }
+
+    const fileInvalido = files.find((file) => {
+      const size = Number(file?.size || 0);
+      const name = String(file?.name || "").toLowerCase();
+      const ext = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+      return size > CORTE_EVIDENCIA_MAX_FILE_BYTES || !CORTE_EVIDENCIA_ACCEPT.includes(ext);
+    });
+
+    if (fileInvalido) {
+      const name = String(fileInvalido?.name || "archivo").trim();
+      const reason = Number(fileInvalido?.size || 0) > CORTE_EVIDENCIA_MAX_FILE_BYTES
+        ? `El archivo ${name} excede el límite de ${Math.round(CORTE_EVIDENCIA_MAX_FILE_BYTES / (1024 * 1024))}MB.`
+        : `El archivo ${name} no tiene un formato permitido.`;
+      setEvidencias([]);
+      setErrorLocal(reason);
+      return;
+    }
+
     setEvidencias(files);
+    setErrorLocal("");
   };
 
   const confirmar = () => {
     const idContribuyente = Number(idSeleccionado);
     const motivoFinal = String(motivo || "").trim();
     if (!Number.isInteger(idContribuyente) || idContribuyente <= 0) {
-      alert("Seleccione un contribuyente con conexión.");
+      setErrorLocal("Seleccione un contribuyente con conexión.");
       return;
     }
     if (!motivoFinal) {
-      alert("Debe ingresar el motivo del corte.");
+      setErrorLocal("Debe ingresar el motivo del corte.");
       return;
     }
     if (!Array.isArray(evidencias) || evidencias.length === 0) {
-      alert("Debe adjuntar al menos una evidencia (PDF o imagen).");
+      setErrorLocal("Debe adjuntar al menos una evidencia (PDF, imagen o documento).");
       return;
     }
+
+    setErrorLocal("");
     onConfirmar?.({
       id_contribuyente: idContribuyente,
       motivo: motivoFinal,
@@ -103,7 +141,7 @@ const ModalCorteConexion = ({
               <input
                 type="text"
                 className={inputClass}
-                placeholder="Buscar por nombre, código, DNI o dirección..."
+                placeholder="Buscar por nombre, codigo, DNI o direccion..."
                 value={busqueda}
                 onChange={(e) => setBusqueda(e.target.value)}
                 autoFocus
@@ -123,7 +161,7 @@ const ModalCorteConexion = ({
                 <tbody>
                   {filtrados.length === 0 ? (
                     <tr>
-                      <td colSpan="4" className="text-center py-3">No hay contribuyentes con conexión para este filtro.</td>
+                      <td colSpan="4" className="text-center py-3">No hay contribuyentes con conexion para este filtro.</td>
                     </tr>
                   ) : (
                     filtrados.map((item) => {
@@ -175,11 +213,17 @@ const ModalCorteConexion = ({
                 type="file"
                 className={inputClass}
                 multiple
-                accept=".pdf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.doc,.docx,image/*,application/pdf"
+                accept={CORTE_EVIDENCIA_ACCEPT}
                 onChange={handleFiles}
               />
-              <div className="form-text">Las evidencias quedan guardadas en el servidor municipal para auditoria del corte.</div>
+              <div className="form-text">
+                Máximo {CORTE_EVIDENCIA_MAX_FILES} archivo(s) de hasta {Math.round(CORTE_EVIDENCIA_MAX_FILE_BYTES / (1024 * 1024))}MB cada uno.
+              </div>
             </div>
+
+            {errorLocal && (
+              <div className="alert alert-warning py-2">{errorLocal}</div>
+            )}
 
             {evidencias.length > 0 && (
               <div className="border rounded p-2">

@@ -673,6 +673,9 @@ const ensureLuzCoreSchema = async () => {
     CREATE INDEX IF NOT EXISTS idx_luz_suministros_medidor
     ON suministros (nro_medidor);
 
+    CREATE INDEX IF NOT EXISTS idx_luz_suministros_zona_estado
+    ON suministros (id_zona, estado, nro_medidor);
+
     CREATE INDEX IF NOT EXISTS idx_luz_recibos_periodo
     ON recibos (anio, mes, id_suministro, id_recibo);
 

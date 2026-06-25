@@ -249,6 +249,7 @@ CREATE TABLE IF NOT EXISTS auditoria (
 
 CREATE INDEX IF NOT EXISTS idx_luz_suministros_nombre ON suministros (nombre_usuario);
 CREATE INDEX IF NOT EXISTS idx_luz_suministros_medidor ON suministros (nro_medidor);
+CREATE INDEX IF NOT EXISTS idx_luz_suministros_zona_estado ON suministros (id_zona, estado, nro_medidor);
 CREATE INDEX IF NOT EXISTS idx_luz_recibos_periodo ON recibos (anio, mes, id_suministro, id_recibo);
 CREATE INDEX IF NOT EXISTS idx_luz_recibos_suministro ON recibos (id_suministro);
 CREATE INDEX IF NOT EXISTS idx_luz_pagos_fecha ON pagos (fecha_pago DESC);

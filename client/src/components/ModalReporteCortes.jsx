@@ -2,20 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import api from "../api";
 import { FaCut, FaFileExcel, FaFilePdf, FaPrint } from "react-icons/fa";
 import { compareByDireccionAsc } from "../utils/cortesAddress";
-
-const ESTADOS_CONEXION = {
-  CON_CONEXION: "CON_CONEXION",
-  SIN_CONEXION: "SIN_CONEXION",
-  CORTADO: "CORTADO"
-};
-
-const normalizeEstadoConexion = (value) => {
-  const raw = String(value || "").trim().toUpperCase();
-  if (["CON_CONEXION", "CONEXION", "ACTIVO", "CONECTADO"].includes(raw)) return ESTADOS_CONEXION.CON_CONEXION;
-  if (["SIN_CONEXION", "SIN CONEXION", "SIN_SERVICIO", "NO_CONECTADO"].includes(raw)) return ESTADOS_CONEXION.SIN_CONEXION;
-  if (["CORTADO", "CORTE", "SUSPENDIDO", "SUSPENSION"].includes(raw)) return ESTADOS_CONEXION.CORTADO;
-  return ESTADOS_CONEXION.CON_CONEXION;
-};
+import { ESTADOS_CONEXION, normalizeEstadoConexion } from "../utils/estadoConexion";
 
 const STATUS_META = {
   CORTADO: {
@@ -57,7 +44,7 @@ const currentYearValue = () => String(new Date().getFullYear());
 
 const buildDownloadNameFromHeaders = (headers = {}, fallback = "reporte_estado_conexion.xlsx") => {
   const contentDisposition = String(headers?.["content-disposition"] || "");
-  const match = contentDisposition.match(/filename\*=UTF-8''([^;]+)|filename=\"?([^\";]+)\"?/i);
+  const match = contentDisposition.match(/filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i);
   const fileNameRaw = decodeURIComponent(match?.[1] || match?.[2] || "").trim();
   return fileNameRaw || fallback;
 };
