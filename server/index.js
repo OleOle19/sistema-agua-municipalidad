@@ -2562,27 +2562,40 @@ const resolveActivatedServiceTarifas = ({
   tarifaAgua = null,
   tarifaDesague = null,
   tarifaLimpieza = null,
-  tarifaAdmin = null
+  tarifaAdmin = null,
+  tarifaProgramadaAgua = null,
+  tarifaProgramadaDesague = null,
+  tarifaProgramadaLimpieza = null,
+  preservarTarifaActualSiProgramada = false
 } = {}) => {
   const normalizeTarifa = (value) => {
     const parsed = parseOptionalTarifaMonto(value);
     if (parsed === "__INVALID__") return null;
     return parsed;
   };
-  const resolveTarifaServicio = (tarifaActual, servicioAntes, servicioDespues, montoBase) => {
+  const resolveTarifaServicio = (tarifaActual, servicioAntes, servicioDespues, montoBase, tarifaProgramada) => {
     const tarifaNormalizada = normalizeTarifa(tarifaActual);
+    const tarifaProgramadaNormalizada = normalizeTarifa(tarifaProgramada);
     const estabaActivo = normalizeSN(activoAntes, "S") === "S" && normalizeSN(servicioAntes, "S") === "S";
     const quedaActivo = normalizeSN(activoDespues, "S") === "S" && normalizeSN(servicioDespues, "S") === "S";
     if (!quedaActivo || estabaActivo) return tarifaNormalizada;
+    if (
+      preservarTarifaActualSiProgramada
+      && tarifaProgramadaNormalizada !== null
+      && tarifaProgramadaNormalizada > 0
+      && (tarifaNormalizada === null || tarifaNormalizada <= 0)
+    ) {
+      return tarifaNormalizada ?? 0;
+    }
     return tarifaNormalizada !== null && tarifaNormalizada > 0 ? tarifaNormalizada : roundMonto2(montoBase);
   };
   const tarifaAdminNormalizada = normalizeTarifa(tarifaAdmin);
   const predioAntesActivo = normalizeSN(activoAntes, "S") === "S";
   const predioDespuesActivo = normalizeSN(activoDespues, "S") === "S";
   return {
-    tarifa_agua: resolveTarifaServicio(tarifaAgua, aguaAntes, aguaDespues, AUTO_DEUDA_BASE.agua),
-    tarifa_desague: resolveTarifaServicio(tarifaDesague, desagueAntes, desagueDespues, AUTO_DEUDA_BASE.desague),
-    tarifa_limpieza: resolveTarifaServicio(tarifaLimpieza, limpiezaAntes, limpiezaDespues, AUTO_DEUDA_BASE.limpieza),
+    tarifa_agua: resolveTarifaServicio(tarifaAgua, aguaAntes, aguaDespues, AUTO_DEUDA_BASE.agua, tarifaProgramadaAgua),
+    tarifa_desague: resolveTarifaServicio(tarifaDesague, desagueAntes, desagueDespues, AUTO_DEUDA_BASE.desague, tarifaProgramadaDesague),
+    tarifa_limpieza: resolveTarifaServicio(tarifaLimpieza, limpiezaAntes, limpiezaDespues, AUTO_DEUDA_BASE.limpieza, tarifaProgramadaLimpieza),
     tarifa_admin: predioDespuesActivo && !predioAntesActivo && !(tarifaAdminNormalizada > 0)
       ? roundMonto2(AUTO_DEUDA_BASE.admin)
       : tarifaAdminNormalizada
@@ -3278,7 +3291,8 @@ const recalcularRecibosFuturosPorServicios = async (
     hastaPeriodoNum = null,
     montosBase = AUTO_DEUDA_BASE,
     incluirPendientesHistoricos = false,
-    permitirPeriodoActual = false
+    permitirPeriodoActual = false,
+    usarDesdePeriodoExacto = false
   } = {}
 ) => {
   const id = parsePositiveInt(idContribuyente, 0);
@@ -3299,7 +3313,11 @@ const recalcularRecibosFuturosPorServicios = async (
     : getNextPeriod().periodoNum;
   const periodo = incluirPendientesHistoricos
     ? Math.max(0, periodoSolicitado)
-    : Math.max(periodoSolicitado, periodoMinimoRecalculo);
+    : (
+      usarDesdePeriodoExacto
+        ? Math.max(0, periodoSolicitado)
+        : Math.max(periodoSolicitado, periodoMinimoRecalculo)
+    );
   const periodoReciboSql = buildPeriodoNumSql("r.anio", "r.mes");
   const tarifaAguaPeriodoSql = buildTarifaPeriodoBaseSql({
     predioAlias: "p",
@@ -10223,7 +10241,11 @@ app.put("/contribuyentes/:id", async (req, res) => {
       tarifaAgua: tarifaAgua ?? predioActual?.tarifa_agua ?? null,
       tarifaDesague: tarifaDesague ?? predioActual?.tarifa_desague ?? null,
       tarifaLimpieza: tarifaLimpieza ?? predioActual?.tarifa_limpieza ?? null,
-      tarifaAdmin: tarifaAdmin ?? predioActual?.tarifa_admin ?? null
+      tarifaAdmin: tarifaAdmin ?? predioActual?.tarifa_admin ?? null,
+      tarifaProgramadaAgua: tarifaProgramadaAguaFinal,
+      tarifaProgramadaDesague: tarifaProgramadaDesagueFinal,
+      tarifaProgramadaLimpieza: tarifaProgramadaLimpiezaFinal,
+      preservarTarifaActualSiProgramada: tarifaProgramadaDesdeFinal !== null
     });
     const tarifaProgramadaPeriodoActual = parseOptionalPeriodoTarifaProgramada(predioActual?.tarifa_programada_desde_periodo);
     const serviciosDespues = {
@@ -10423,13 +10445,12 @@ app.put("/contribuyentes/:id", async (req, res) => {
         ? Math.min(...periodosRecalculo)
         : getCurrentPeriodoNum();
       const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-        incluirPendientesHistoricos: !estadoConexionCambio,
+        incluirPendientesHistoricos: false,
         permitirPeriodoActual: estadoConexionCambio,
+        usarDesdePeriodoExacto: !estadoConexionCambio,
         desdePeriodoNum: desdePeriodoRecalculo
       });
-      const syncPendientesSinPago = estadoConexionCambio
-        ? { actualizados: 0, rows: [] }
-        : await sincronizarRecibosPendientesSinPagoPorServiciosActuales(client, idContribuyente);
+      const syncPendientesSinPago = { actualizados: 0, rows: [] };
       const filasRecalculadas = [
         ...(Array.isArray(recalcManual?.rows) ? recalcManual.rows : []),
         ...(Array.isArray(syncPendientesSinPago?.rows) ? syncPendientesSinPago.rows : [])
