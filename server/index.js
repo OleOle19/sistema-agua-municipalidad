@@ -3479,6 +3479,23 @@ const recalcularRecibosFuturosPorServicios = async (
       ) pagos ON TRUE
       WHERE p.id_contribuyente = $1
         AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM recibos r_dup
+          LEFT JOIN LATERAL (
+            SELECT COALESCE(SUM(pg_dup.monto_pagado), 0)::numeric AS total_pagado
+            FROM pagos pg_dup
+            WHERE pg_dup.id_recibo = r_dup.id_recibo
+              AND ${buildPagoContableValidoSql("pg_dup")}
+          ) pagos_dup ON TRUE
+          WHERE r_dup.id_predio = r.id_predio
+            AND r_dup.anio = r.anio
+            AND r_dup.mes = r.mes
+            AND r_dup.id_recibo <> r.id_recibo
+            AND COALESCE(NULLIF(UPPER(TRIM(CAST(r_dup.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+            AND COALESCE(pagos_dup.total_pagado, 0)::numeric > 0.001
+            AND COALESCE(pagos.total_pagado, 0)::numeric <= 0.001
+        )
         AND (
           $7::int IS NULL
           OR ((r.anio::int * 100) + r.mes::int) <= $7::int
@@ -3555,6 +3572,80 @@ const recalcularRecibosFuturosPorServicios = async (
     actualizados: Number(resultado.rowCount || 0),
     periodos: buildPeriodosRecalculadosResumen(resultado.rows || []),
     rows: resultado.rows || []
+  };
+};
+
+const neutralizarRecibosDuplicadosConPago = async (
+  client,
+  idContribuyente,
+  { desdePeriodoNum = 0 } = {}
+) => {
+  const id = parsePositiveInt(idContribuyente, 0);
+  if (!id) return { actualizados: 0, periodos: buildPeriodosRecalculadosResumen([]), rows: [] };
+  const periodoDesde = Number.isFinite(Number(desdePeriodoNum)) ? Number(desdePeriodoNum) : 0;
+  const fix = await client.query(`
+    WITH pagos_por_recibo AS (
+      SELECT
+        pg.id_recibo,
+        COALESCE(SUM(pg.monto_pagado), 0)::numeric AS total_pagado
+      FROM pagos pg
+      WHERE ${buildPagoContableValidoSql("pg")}
+      GROUP BY pg.id_recibo
+    ),
+    objetivo AS (
+      SELECT
+        r.id_recibo,
+        r.anio,
+        r.mes,
+        COALESCE(r.subtotal_agua, 0) AS old_agua,
+        COALESCE(r.subtotal_desague, 0) AS old_desague,
+        COALESCE(r.subtotal_limpieza, 0) AS old_limpieza,
+        COALESCE(r.subtotal_admin, 0) AS old_admin,
+        COALESCE(r.subtotal_extra, 0) AS old_extra,
+        COALESCE(r.total_pagar, 0) AS old_total
+      FROM recibos r
+      INNER JOIN predios p ON p.id_predio = r.id_predio
+      LEFT JOIN pagos_por_recibo pagos ON pagos.id_recibo = r.id_recibo
+      WHERE p.id_contribuyente = $1
+        AND ($2::int <= 0 OR ((r.anio::int * 100) + r.mes::int) >= $2::int)
+        AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+        AND COALESCE(pagos.total_pagado, 0) <= 0.001
+        AND COALESCE(r.total_pagar, 0) > 0.001
+        AND EXISTS (
+          SELECT 1
+          FROM recibos r2
+          LEFT JOIN pagos_por_recibo pagos2 ON pagos2.id_recibo = r2.id_recibo
+          WHERE r2.id_predio = r.id_predio
+            AND r2.anio = r.anio
+            AND r2.mes = r.mes
+            AND r2.id_recibo <> r.id_recibo
+            AND COALESCE(NULLIF(UPPER(TRIM(CAST(r2.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+            AND COALESCE(pagos2.total_pagado, 0) > 0.001
+        )
+    )
+    UPDATE recibos r
+    SET
+      subtotal_agua = 0,
+      subtotal_desague = 0,
+      subtotal_limpieza = 0,
+      subtotal_admin = 0,
+      subtotal_extra = 0,
+      total_pagar = 0,
+      estado = 'PAGADO'
+    FROM objetivo o
+    WHERE r.id_recibo = o.id_recibo
+      AND COALESCE(r.subtotal_agua, 0) = o.old_agua
+      AND COALESCE(r.subtotal_desague, 0) = o.old_desague
+      AND COALESCE(r.subtotal_limpieza, 0) = o.old_limpieza
+      AND COALESCE(r.subtotal_admin, 0) = o.old_admin
+      AND COALESCE(r.subtotal_extra, 0) = o.old_extra
+      AND COALESCE(r.total_pagar, 0) = o.old_total
+    RETURNING r.id_recibo, r.anio, r.mes
+  `, [id, periodoDesde]);
+  return {
+    actualizados: Number(fix.rowCount || 0),
+    periodos: buildPeriodosRecalculadosResumen(fix.rows || []),
+    rows: fix.rows || []
   };
 };
 
@@ -3701,6 +3792,22 @@ const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, i
           SELECT 1
           FROM pagos pg
           WHERE pg.id_recibo = r.id_recibo
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM recibos r_dup
+          LEFT JOIN (
+            SELECT pg_dup.id_recibo, COALESCE(SUM(pg_dup.monto_pagado), 0)::numeric AS total_pagado
+            FROM pagos pg_dup
+            WHERE ${buildPagoContableValidoSql("pg_dup")}
+            GROUP BY pg_dup.id_recibo
+          ) pagos_dup ON pagos_dup.id_recibo = r_dup.id_recibo
+          WHERE r_dup.id_predio = r.id_predio
+            AND r_dup.anio = r.anio
+            AND r_dup.mes = r.mes
+            AND r_dup.id_recibo <> r.id_recibo
+            AND COALESCE(NULLIF(UPPER(TRIM(CAST(r_dup.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+            AND COALESCE(pagos_dup.total_pagado, 0)::numeric > 0.001
         )
     ),
     actualizables AS (
@@ -10444,6 +10551,9 @@ app.put("/contribuyentes/:id", async (req, res) => {
       const desdePeriodoRecalculo = periodosRecalculo.length > 0
         ? Math.min(...periodosRecalculo)
         : getCurrentPeriodoNum();
+      const duplicateFix = await neutralizarRecibosDuplicadosConPago(client, idContribuyente, {
+        desdePeriodoNum: desdePeriodoRecalculo
+      });
       const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
         incluirPendientesHistoricos: false,
         permitirPeriodoActual: estadoConexionCambio,
@@ -10452,10 +10562,11 @@ app.put("/contribuyentes/:id", async (req, res) => {
       });
       const syncPendientesSinPago = { actualizados: 0, rows: [] };
       const filasRecalculadas = [
+        ...(Array.isArray(duplicateFix?.rows) ? duplicateFix.rows : []),
         ...(Array.isArray(recalcManual?.rows) ? recalcManual.rows : []),
         ...(Array.isArray(syncPendientesSinPago?.rows) ? syncPendientesSinPago.rows : [])
       ];
-      recibosRecalculados = Number(recalcManual?.actualizados || 0) + Number(syncPendientesSinPago?.actualizados || 0);
+      recibosRecalculados = Number(duplicateFix?.actualizados || 0) + Number(recalcManual?.actualizados || 0) + Number(syncPendientesSinPago?.actualizados || 0);
       periodosRecalculados = buildPeriodosRecalculadosResumen(filasRecalculadas);
     }
     if (cambioRazonSocial) {
