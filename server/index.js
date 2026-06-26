@@ -3649,6 +3649,106 @@ const neutralizarRecibosDuplicadosConPago = async (
   };
 };
 
+const preservarRecibosPagadosAntesDeActivarServicios = async (
+  client,
+  idContribuyente,
+  {
+    cutoffPeriodoNum = getCurrentPeriodoNum(),
+    aguaActivado = false,
+    desagueActivado = false,
+    limpiezaActivado = false
+  } = {}
+) => {
+  const id = parsePositiveInt(idContribuyente, 0);
+  const cutoff = Number.isFinite(Number(cutoffPeriodoNum)) ? Number(cutoffPeriodoNum) : getCurrentPeriodoNum();
+  if (!id) return { actualizados: 0, periodos: buildPeriodosRecalculadosResumen([]), rows: [] };
+  if (!aguaActivado && !desagueActivado && !limpiezaActivado) {
+    return { actualizados: 0, periodos: buildPeriodosRecalculadosResumen([]), rows: [] };
+  }
+  const fix = await client.query(`
+    WITH pagos_por_recibo AS (
+      SELECT
+        pg.id_recibo,
+        COALESCE(SUM(pg.monto_pagado), 0)::numeric AS total_pagado
+      FROM pagos pg
+      WHERE ${buildPagoContableValidoSql("pg")}
+      GROUP BY pg.id_recibo
+    ),
+    objetivo AS (
+      SELECT
+        r.id_recibo,
+        r.anio,
+        r.mes,
+        COALESCE(r.subtotal_agua, 0) AS old_agua,
+        COALESCE(r.subtotal_desague, 0) AS old_desague,
+        COALESCE(r.subtotal_limpieza, 0) AS old_limpieza,
+        COALESCE(r.subtotal_admin, 0) AS old_admin,
+        COALESCE(r.subtotal_extra, 0) AS old_extra,
+        COALESCE(r.total_pagar, 0) AS old_total,
+        COALESCE(pagos.total_pagado, 0) AS total_pagado,
+        CASE WHEN $3::boolean THEN COALESCE(r.subtotal_agua, 0) ELSE 0::numeric END AS quitar_agua,
+        CASE WHEN $4::boolean THEN COALESCE(r.subtotal_desague, 0) ELSE 0::numeric END AS quitar_desague,
+        CASE WHEN $5::boolean THEN COALESCE(r.subtotal_limpieza, 0) ELSE 0::numeric END AS quitar_limpieza
+      FROM recibos r
+      INNER JOIN predios p ON p.id_predio = r.id_predio
+      LEFT JOIN pagos_por_recibo pagos ON pagos.id_recibo = r.id_recibo
+      WHERE p.id_contribuyente = $1
+        AND ((r.anio::int * 100) + r.mes::int) < $2::int
+        AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+        AND COALESCE(pagos.total_pagado, 0) > 0.001
+    ),
+    actualizables AS (
+      SELECT
+        id_recibo,
+        anio,
+        mes,
+        old_agua,
+        old_desague,
+        old_limpieza,
+        old_admin,
+        old_extra,
+        old_total,
+        total_pagado,
+        CASE WHEN $3::boolean THEN 0::numeric ELSE old_agua END AS new_agua,
+        CASE WHEN $4::boolean THEN 0::numeric ELSE old_desague END AS new_desague,
+        CASE WHEN $5::boolean THEN 0::numeric ELSE old_limpieza END AS new_limpieza,
+        old_admin AS new_admin,
+        old_extra AS new_extra,
+        (old_total - quitar_agua - quitar_desague - quitar_limpieza) AS new_total
+      FROM objetivo
+      WHERE (quitar_agua + quitar_desague + quitar_limpieza) > 0.001
+        AND ABS(total_pagado - (old_total - quitar_agua - quitar_desague - quitar_limpieza)) <= 0.001
+    )
+    UPDATE recibos r
+    SET
+      subtotal_agua = a.new_agua,
+      subtotal_desague = a.new_desague,
+      subtotal_limpieza = a.new_limpieza,
+      subtotal_admin = a.new_admin,
+      subtotal_extra = a.new_extra,
+      total_pagar = a.new_total,
+      estado = CASE
+        WHEN a.total_pagado >= a.new_total - 0.001 THEN 'PAGADO'
+        WHEN a.total_pagado > 0.001 THEN 'PARCIAL'
+        ELSE 'PENDIENTE'
+      END
+    FROM actualizables a
+    WHERE r.id_recibo = a.id_recibo
+      AND COALESCE(r.subtotal_agua, 0) = a.old_agua
+      AND COALESCE(r.subtotal_desague, 0) = a.old_desague
+      AND COALESCE(r.subtotal_limpieza, 0) = a.old_limpieza
+      AND COALESCE(r.subtotal_admin, 0) = a.old_admin
+      AND COALESCE(r.subtotal_extra, 0) = a.old_extra
+      AND COALESCE(r.total_pagar, 0) = a.old_total
+    RETURNING r.id_recibo, r.anio, r.mes
+  `, [id, cutoff, aguaActivado, desagueActivado, limpiezaActivado]);
+  return {
+    actualizados: Number(fix.rowCount || 0),
+    periodos: buildPeriodosRecalculadosResumen(fix.rows || []),
+    rows: fix.rows || []
+  };
+};
+
 const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, idContribuyente) => {
   const id = parsePositiveInt(idContribuyente, 0);
   if (!id) return { actualizados: 0, periodos: buildPeriodosRecalculadosResumen([]), rows: [] };
@@ -10551,6 +10651,12 @@ app.put("/contribuyentes/:id", async (req, res) => {
       const desdePeriodoRecalculo = periodosRecalculo.length > 0
         ? Math.min(...periodosRecalculo)
         : getCurrentPeriodoNum();
+      const preservacionPagados = await preservarRecibosPagadosAntesDeActivarServicios(client, idContribuyente, {
+        cutoffPeriodoNum: tarifaProgramadaDesdeFinal || getCurrentPeriodoNum(),
+        aguaActivado: serviciosActuales.agua_sn !== "S" && serviciosDespues.agua_sn === "S",
+        desagueActivado: serviciosActuales.desague_sn !== "S" && serviciosDespues.desague_sn === "S",
+        limpiezaActivado: serviciosActuales.limpieza_sn !== "S" && serviciosDespues.limpieza_sn === "S"
+      });
       const duplicateFix = await neutralizarRecibosDuplicadosConPago(client, idContribuyente, {
         desdePeriodoNum: 0
       });
@@ -10562,11 +10668,16 @@ app.put("/contribuyentes/:id", async (req, res) => {
       });
       const syncPendientesSinPago = { actualizados: 0, rows: [] };
       const filasRecalculadas = [
+        ...(Array.isArray(preservacionPagados?.rows) ? preservacionPagados.rows : []),
         ...(Array.isArray(duplicateFix?.rows) ? duplicateFix.rows : []),
         ...(Array.isArray(recalcManual?.rows) ? recalcManual.rows : []),
         ...(Array.isArray(syncPendientesSinPago?.rows) ? syncPendientesSinPago.rows : [])
       ];
-      recibosRecalculados = Number(duplicateFix?.actualizados || 0) + Number(recalcManual?.actualizados || 0) + Number(syncPendientesSinPago?.actualizados || 0);
+      recibosRecalculados =
+        Number(preservacionPagados?.actualizados || 0) +
+        Number(duplicateFix?.actualizados || 0) +
+        Number(recalcManual?.actualizados || 0) +
+        Number(syncPendientesSinPago?.actualizados || 0);
       periodosRecalculados = buildPeriodosRecalculadosResumen(filasRecalculadas);
     }
     if (cambioRazonSocial) {
