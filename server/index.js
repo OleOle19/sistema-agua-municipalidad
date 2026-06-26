@@ -10552,7 +10552,7 @@ app.put("/contribuyentes/:id", async (req, res) => {
         ? Math.min(...periodosRecalculo)
         : getCurrentPeriodoNum();
       const duplicateFix = await neutralizarRecibosDuplicadosConPago(client, idContribuyente, {
-        desdePeriodoNum: desdePeriodoRecalculo
+        desdePeriodoNum: 0
       });
       const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
         incluirPendientesHistoricos: false,
@@ -11684,7 +11684,25 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     const tarifaExtraActualPendSql = buildTarifaActualExtraSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
     const whereParts = [
       "r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)",
-      `(${totalPagarReferenciaPendSql} - COALESCE(p.total_pagado, 0)) > 0`
+      `(${totalPagarReferenciaPendSql} - COALESCE(p.total_pagado, 0)) > 0`,
+      `NOT EXISTS (
+        SELECT 1
+        FROM recibos r_dup
+        LEFT JOIN (
+          SELECT id_recibo, SUM(monto_pagado) AS total_pagado
+          FROM pagos
+          WHERE ${buildPagoContableValidoSql("pagos")}
+            AND DATE(fecha_pago) <= $2::date
+          GROUP BY id_recibo
+        ) pagos_dup ON pagos_dup.id_recibo = r_dup.id_recibo
+        WHERE r_dup.id_predio = r.id_predio
+          AND r_dup.anio = r.anio
+          AND r_dup.mes = r.mes
+          AND r_dup.id_recibo <> r.id_recibo
+          AND COALESCE(NULLIF(UPPER(TRIM(CAST(r_dup.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+          AND COALESCE(pagos_dup.total_pagado, 0) > 0.001
+          AND COALESCE(p.total_pagado, 0) <= 0.001
+      )`
     ];
     const params = [idContribuyente, fechaCorte];
     if (!incluirAdelantados) {
@@ -15151,6 +15169,26 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
         LIMIT 1
       ) mov_admin ON TRUE
       WHERE r.id_predio IN (SELECT id_predio FROM predios WHERE id_contribuyente = $1)
+        AND NOT EXISTS (
+          SELECT 1
+          FROM recibos r_dup
+          LEFT JOIN (
+            SELECT
+              pagos_dup.id_recibo,
+              SUM(pagos_dup.monto_pagado) AS total_pagado
+            FROM pagos pagos_dup
+            WHERE ${buildPagoContableValidoSql("pagos_dup")}
+              AND DATE(pagos_dup.fecha_pago) <= $4::date
+            GROUP BY pagos_dup.id_recibo
+          ) pagos_dup ON pagos_dup.id_recibo = r_dup.id_recibo
+          WHERE r_dup.id_predio = r.id_predio
+            AND r_dup.anio = r.anio
+            AND r_dup.mes = r.mes
+            AND r_dup.id_recibo <> r.id_recibo
+            AND COALESCE(NULLIF(UPPER(TRIM(CAST(r_dup.estado AS text))), ''), 'PENDIENTE') <> 'ANULADA'
+            AND COALESCE(pagos_dup.total_pagado, 0) > 0.001
+            AND COALESCE(p.total_pagado, 0) <= 0.001
+        )
       ${incluirFuturos ? '' : 'AND ((r.anio < $2) OR (r.anio = $2 AND r.mes <= $3))'}
       ${filtrarAnio ? 'AND r.anio = $5' : ''}
       ORDER BY r.anio ASC, r.mes ASC
