@@ -542,6 +542,138 @@ const ensureContribuyenteAdjuntoUploadDir = () => {
     fs.mkdirSync(CONTRIBUYENTE_ADJUNTO_UPLOAD_DIR, { recursive: true });
   } catch {}
 };
+const LANDING_BACKGROUND_MAX_FILE_BYTES = Math.max(
+  1024 * 1024,
+  Number(process.env.LANDING_BACKGROUND_MAX_FILE_BYTES || (12 * 1024 * 1024))
+);
+const LANDING_BACKGROUND_UPLOAD_DIR = path.join(__dirname, "uploads", "landing_background");
+const LANDING_UI_SETTINGS_DIR = path.join(__dirname, ".runtime");
+const LANDING_UI_SETTINGS_FILE = path.join(LANDING_UI_SETTINGS_DIR, "landing_ui_settings.json");
+const LANDING_BACKGROUND_ALLOWED_EXTS = new Set([
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".webp",
+  ".gif"
+]);
+const LANDING_BACKGROUND_ALLOWED_MIMES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "application/octet-stream"
+]);
+const ensureLandingBackgroundUploadDir = () => {
+  try {
+    fs.mkdirSync(LANDING_BACKGROUND_UPLOAD_DIR, { recursive: true });
+  } catch {}
+};
+const ensureLandingUiSettingsDir = () => {
+  try {
+    fs.mkdirSync(LANDING_UI_SETTINGS_DIR, { recursive: true });
+  } catch {}
+};
+const isLandingBackgroundTipoPermitido = (file) => {
+  const ext = String(path.extname(file?.originalname || "") || "").toLowerCase();
+  if (!LANDING_BACKGROUND_ALLOWED_EXTS.has(ext)) return false;
+  const mime = String(file?.mimetype || "").trim().toLowerCase();
+  if (!mime) return true;
+  return LANDING_BACKGROUND_ALLOWED_MIMES.has(mime);
+};
+const readLandingUiSettings = () => {
+  try {
+    ensureLandingUiSettingsDir();
+    if (!fs.existsSync(LANDING_UI_SETTINGS_FILE)) {
+      return { background_filename: "", updated_at: "" };
+    }
+    const raw = fs.readFileSync(LANDING_UI_SETTINGS_FILE, "utf8");
+    const parsed = tryParseJson(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return { background_filename: "", updated_at: "" };
+    }
+    return {
+      background_filename: String(parsed.background_filename || "").trim(),
+      updated_at: String(parsed.updated_at || "").trim()
+    };
+  } catch {
+    return { background_filename: "", updated_at: "" };
+  }
+};
+const writeLandingUiSettings = (nextSettings = {}) => {
+  ensureLandingUiSettingsDir();
+  const payload = {
+    background_filename: String(nextSettings.background_filename || "").trim(),
+    updated_at: String(nextSettings.updated_at || "").trim()
+  };
+  fs.writeFileSync(LANDING_UI_SETTINGS_FILE, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  return payload;
+};
+const cleanupLandingBackgroundFiles = (keepFilename = "") => {
+  ensureLandingBackgroundUploadDir();
+  for (const entry of fs.readdirSync(LANDING_BACKGROUND_UPLOAD_DIR, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    if (keepFilename && entry.name === keepFilename) continue;
+    const absolutePath = path.resolve(LANDING_BACKGROUND_UPLOAD_DIR, entry.name);
+    if (!absolutePath.startsWith(path.resolve(LANDING_BACKGROUND_UPLOAD_DIR))) continue;
+    try {
+      fs.unlinkSync(absolutePath);
+    } catch {}
+  }
+};
+const resolveLandingBackgroundPublicConfig = () => {
+  const settings = readLandingUiSettings();
+  const filename = String(settings.background_filename || "").trim();
+  if (!filename) {
+    return { image_url: "", using_default: true, updated_at: "" };
+  }
+  const absolutePath = path.resolve(LANDING_BACKGROUND_UPLOAD_DIR, filename);
+  if (!absolutePath.startsWith(path.resolve(LANDING_BACKGROUND_UPLOAD_DIR)) || !fs.existsSync(absolutePath)) {
+    writeLandingUiSettings({ background_filename: "", updated_at: "" });
+    return { image_url: "", using_default: true, updated_at: "" };
+  }
+  const updatedAt = String(settings.updated_at || "").trim() || new Date(fs.statSync(absolutePath).mtime).toISOString();
+  return {
+    image_url: `/assets/landing-background/${filename}?v=${encodeURIComponent(updatedAt)}`,
+    using_default: false,
+    updated_at: updatedAt
+  };
+};
+const uploadLandingBackground = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        ensureLandingBackgroundUploadDir();
+        return cb(null, LANDING_BACKGROUND_UPLOAD_DIR);
+      } catch (err) {
+        return cb(err);
+      }
+    },
+    filename: (req, file, cb) => {
+      const extRaw = String(path.extname(file?.originalname || "") || "").toLowerCase();
+      const ext = LANDING_BACKGROUND_ALLOWED_EXTS.has(extRaw) ? extRaw : ".jpg";
+      return cb(null, `${Date.now()}_${crypto.randomBytes(6).toString("hex")}${ext}`);
+    }
+  }),
+  fileFilter: createUploadFileFilter((file) =>
+    isLandingBackgroundTipoPermitido(file) ? "" : "Tipo de imagen no permitido para el fondo del inicio."
+  ),
+  limits: {
+    fileSize: LANDING_BACKGROUND_MAX_FILE_BYTES,
+    files: 1
+  }
+});
+const uploadLandingBackgroundSingle = (fieldName = "background") => (req, res, next) => {
+  uploadLandingBackground.single(fieldName)(req, res, (err) => {
+    if (!err) return next();
+    cleanupUploadedTempFile(req?.file);
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        error: `La imagen excede el límite permitido (${Math.round(LANDING_BACKGROUND_MAX_FILE_BYTES / (1024 * 1024))}MB).`
+      });
+    }
+    return res.status(400).json({ error: err.message || "No se pudo procesar la imagen del fondo." });
+  });
+};
 const isContribuyenteAdjuntoTipoPermitido = (file) => {
   const ext = String(path.extname(file?.originalname || "") || "").toLowerCase();
   if (!CONTRIBUYENTE_ADJUNTO_ALLOWED_EXTS.has(ext)) return false;
@@ -6261,6 +6393,15 @@ app.use((req, res, next) => {
 
 app.get("/health", (req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
+});
+
+app.use("/assets/landing-background", express.static(LANDING_BACKGROUND_UPLOAD_DIR, {
+  fallthrough: true,
+  maxAge: "1h"
+}));
+
+app.get("/ui/landing-settings-public", (req, res) => {
+  return res.json(resolveLandingBackgroundPublicConfig());
 });
 
 // Modulo luz (BD y autenticación separadas)
@@ -20453,6 +20594,52 @@ const buildReimpresionSeleccionRows = async (client, {
   );
   return rows;
 };
+
+app.post("/admin/ui/landing-background", authenticateToken, requireSuperAdmin, uploadLandingBackgroundSingle("background"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Debe adjuntar una imagen para el fondo." });
+    }
+    if (!isLandingBackgroundTipoPermitido(req.file)) {
+      cleanupUploadedTempFile(req.file);
+      return res.status(400).json({
+        error: "Formato de imagen no permitido. Use JPG, PNG, WEBP o GIF."
+      });
+    }
+
+    const nextSettings = writeLandingUiSettings({
+      background_filename: req.file.filename,
+      updated_at: new Date().toISOString()
+    });
+    cleanupLandingBackgroundFiles(req.file.filename);
+
+    return res.json({
+      ok: true,
+      mensaje: "Fondo del inicio actualizado.",
+      ...resolveLandingBackgroundPublicConfig(),
+      updated_at: nextSettings.updated_at
+    });
+  } catch (error) {
+    cleanupUploadedTempFile(req.file);
+    console.error("Error al actualizar fondo del inicio:", error);
+    return res.status(500).json({ error: "No se pudo actualizar el fondo del inicio." });
+  }
+});
+
+app.delete("/admin/ui/landing-background", authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    cleanupLandingBackgroundFiles("");
+    writeLandingUiSettings({ background_filename: "", updated_at: "" });
+    return res.json({
+      ok: true,
+      mensaje: "Fondo del inicio restaurado al predeterminado.",
+      ...resolveLandingBackgroundPublicConfig()
+    });
+  } catch (error) {
+    console.error("Error al restaurar fondo del inicio:", error);
+    return res.status(500).json({ error: "No se pudo restaurar el fondo del inicio." });
+  }
+});
 
 app.get("/admin/backup", authenticateToken, requireSuperAdmin, async (req, res) => {
   let backupConfig;

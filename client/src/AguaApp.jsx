@@ -30,6 +30,7 @@ const LazyModalReporteCortes = lazy(() => import("./components/ModalReporteCorte
 const LazyModalActaCorteSelector = lazy(() => import("./components/ModalActaCorteSelector"));
 const LazyModalCampoSolicitudes = lazy(() => import("./components/ModalCampoSolicitudes"));
 const LazyModalCorteConexion = lazy(() => import("./components/ModalCorteConexion"));
+const LazyModalFondoInicio = lazy(() => import("./components/ModalFondoInicio"));
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -139,7 +140,7 @@ import {
   FaPrint, FaTrashAlt, FaSearch, FaUserEdit, FaUserTimes, 
   FaSort, FaCut, FaShieldAlt, FaFileExcel, FaSignOutAlt, 
   FaUserShield, FaDatabase, FaPlug, FaLink, FaSyncAlt,
-  FaCloudUploadAlt, FaClipboardCheck
+  FaCloudUploadAlt, FaClipboardCheck, FaImage
 } from "react-icons/fa";
 
 // --- SE ELIMINO EL TRUCO CSS GLOBAL ---
@@ -153,6 +154,7 @@ const Sidebar = memo(({
   darkMode, descargarPadron,
   setMostrarImportar,
   setMostrarModalExportaciones,
+  setMostrarModalFondoInicio,
   setMostrarModalCampo,
   abrirModalImpresionMensual,
   abrirModalReimpresion,
@@ -283,6 +285,13 @@ const Sidebar = memo(({
         <li className="nav-item mt-1">
           <button className="nav-link py-2 text-info w-100 text-start small d-flex align-items-center gap-2" onClick={() => setMostrarModalExportaciones(true)}>
             <FaDatabase/> <span>Respaldos y Exportaciones</span>
+          </button>
+        </li>
+      )}
+      {permisos.canSuperAdmin && (
+        <li className="nav-item mt-1">
+          <button className="nav-link py-2 text-primary w-100 text-start small d-flex align-items-center gap-2" onClick={() => setMostrarModalFondoInicio(true)}>
+            <FaImage/> <span>Fondo de Inicio</span>
           </button>
         </li>
       )}
@@ -590,6 +599,7 @@ function AguaApp({ onBackToSelector = null }) {
   const [mostrarImportar, setMostrarImportar] = useState(false);
   const [mostrarModalDeudaMasiva, setMostrarModalDeudaMasiva] = useState(false);
   const [mostrarModalExportaciones, setMostrarModalExportaciones] = useState(false);
+  const [mostrarModalFondoInicio, setMostrarModalFondoInicio] = useState(false);
   const [mostrarModalCampo, setMostrarModalCampo] = useState(false);
   const [mostrarModalArbitrios, setMostrarModalArbitrios] = useState(false);
   const [exportandoArbitriosExcel, setExportandoArbitriosExcel] = useState(false);
@@ -2148,6 +2158,7 @@ const anexoCajaPageStyle = `
         descargarPadron={descargarPadron}
         setMostrarImportar={setMostrarImportar}
         setMostrarModalExportaciones={setMostrarModalExportaciones}
+        setMostrarModalFondoInicio={setMostrarModalFondoInicio}
         setMostrarModalCampo={setMostrarModalCampo}
         abrirModalImpresionMensual={abrirModalImpresionMensual}
         abrirModalReimpresion={abrirModalReimpresion}
@@ -2346,6 +2357,15 @@ const anexoCajaPageStyle = `
             cerrarModal={() => setMostrarModalCampo(false)}
             darkMode={darkMode}
             onAplicado={recargarTodo}
+            onFlash={showFlash}
+          />
+        </Suspense>
+      )}
+      {mostrarModalFondoInicio && (
+        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando configuracion del fondo..." />}>
+          <LazyModalFondoInicio
+            cerrarModal={() => setMostrarModalFondoInicio(false)}
+            darkMode={darkMode}
             onFlash={showFlash}
           />
         </Suspense>

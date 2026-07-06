@@ -1,6 +1,7 @@
-﻿import { useState } from "react";
+import { useState } from "react";
+import { FaKey, FaUserShield } from "react-icons/fa";
 import api from "../api";
-import { FaUserShield, FaKey } from "react-icons/fa";
+import MunicipalBackdrop from "./MunicipalBackdrop";
 
 const MIN_PASSWORD_LEN = 8;
 
@@ -15,7 +16,7 @@ const LoginPage = ({
   changePasswordPath = "/auth/cambiar-password",
   onBackToSelector = null
 }) => {
-  const [modo, setModo] = useState("LOGIN"); // LOGIN | REGISTRO | CAMBIO
+  const [modo, setModo] = useState("LOGIN");
   const [form, setForm] = useState({
     username: "",
     password: "",
@@ -114,131 +115,134 @@ const LoginPage = ({
   };
 
   return (
-    <div className="d-flex justify-content-center align-items-center vh-100 bg-light">
-      <div className="card shadow-lg p-4" style={{ width: "420px" }}>
-        {typeof onBackToSelector === "function" && (
-          <div className="d-flex justify-content-end mb-2">
-            <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onBackToSelector}>
-              Cambiar módulo
-            </button>
-          </div>
-        )}
-        <div className="text-center mb-4">
-          <div className="bg-primary text-white rounded-circle d-inline-flex p-3 mb-2">
-            <FaUserShield size={40} />
-          </div>
-          <h3 className="fw-bold text-primary">{titulo}</h3>
-          <p className="text-muted small">{subtitulo}</p>
-        </div>
-
-        {error && <div className="alert alert-danger text-center small">{error}</div>}
-        {mensaje && <div className="alert alert-success text-center small">{mensaje}</div>}
-
-        <form onSubmit={handleSubmit}>
-          {modo === "REGISTRO" && (
-            <div className="mb-3">
-              <label className="form-label">Nombre completo</label>
-              <input type="text" className="form-control" name="nombre_completo" value={form.nombre_completo} onChange={handleChange} required />
+    <div className="login-shell">
+      <MunicipalBackdrop className="login-stage" contentClassName="login-stage__content" variant="login">
+        <div className="login-card card shadow-lg p-4">
+          {typeof onBackToSelector === "function" && (
+            <div className="d-flex justify-content-end mb-2">
+              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onBackToSelector}>
+                Cambiar modulo
+              </button>
             </div>
           )}
 
-          <div className="mb-3">
-            <label className="form-label">Usuario</label>
-            <input type="text" className="form-control" name="username" value={form.username} onChange={handleChange} required />
+          <div className="text-center mb-4">
+            <div className="bg-primary text-white rounded-circle d-inline-flex p-3 mb-2">
+              <FaUserShield size={40} />
+            </div>
+            <h3 className="fw-bold text-primary">{titulo}</h3>
+            <p className="text-muted small">{subtitulo}</p>
           </div>
 
-          {modo === "LOGIN" && (
-            <div className="mb-3">
-              <label className="form-label">Contraseña</label>
-              <div className="input-group">
-                <span className="input-group-text"><FaKey /></span>
-                <input type="password" className="form-control" name="password" value={form.password} onChange={handleChange} required />
-              </div>
-            </div>
-          )}
+          {error && <div className="alert alert-danger text-center small">{error}</div>}
+          {mensaje && <div className="alert alert-success text-center small">{mensaje}</div>}
 
-          {modo === "REGISTRO" && (
-            <div className="mb-3">
-              <label className="form-label">Contraseña inicial</label>
-              <div className="input-group">
-                <span className="input-group-text"><FaKey /></span>
-                <input type="password" className="form-control" name="password" value={form.password} onChange={handleChange} required />
-              </div>
-              <div className="form-text">Mínimo {MIN_PASSWORD_LEN} caracteres.</div>
-            </div>
-          )}
-
-          {modo === "CAMBIO" && (
-            <>
-              <div className="alert alert-warning small py-2">
-                Por seguridad operativa, el cambio se realiza con usuario + nueva contraseña.
-              </div>
+          <form onSubmit={handleSubmit}>
+            {modo === "REGISTRO" && (
               <div className="mb-3">
-                <label className="form-label">Nueva contraseña</label>
+                <label className="form-label">Nombre completo</label>
+                <input type="text" className="form-control" name="nombre_completo" value={form.nombre_completo} onChange={handleChange} required />
+              </div>
+            )}
+
+            <div className="mb-3">
+              <label className="form-label">Usuario</label>
+              <input type="text" className="form-control" name="username" value={form.username} onChange={handleChange} required />
+            </div>
+
+            {modo === "LOGIN" && (
+              <div className="mb-3">
+                <label className="form-label">Contraseña</label>
                 <div className="input-group">
                   <span className="input-group-text"><FaKey /></span>
-                  <input
-                    type="password"
-                    className="form-control"
-                    name="password_nuevo"
-                    value={form.password_nuevo}
-                    onChange={handleChange}
-                    required
-                  />
+                  <input type="password" className="form-control" name="password" value={form.password} onChange={handleChange} required />
+                </div>
+              </div>
+            )}
+
+            {modo === "REGISTRO" && (
+              <div className="mb-3">
+                <label className="form-label">Contraseña inicial</label>
+                <div className="input-group">
+                  <span className="input-group-text"><FaKey /></span>
+                  <input type="password" className="form-control" name="password" value={form.password} onChange={handleChange} required />
                 </div>
                 <div className="form-text">Mínimo {MIN_PASSWORD_LEN} caracteres.</div>
               </div>
-              <div className="mb-3">
-                <label className="form-label">Confirmar nueva contraseña</label>
-                <div className="input-group">
-                  <span className="input-group-text"><FaKey /></span>
-                  <input
-                    type="password"
-                    className="form-control"
-                    name="password_confirmacion"
-                    value={form.password_confirmacion}
-                    onChange={handleChange}
-                    required
-                  />
+            )}
+
+            {modo === "CAMBIO" && (
+              <>
+                <div className="alert alert-warning small py-2">
+                  Por seguridad operativa, el cambio se realiza con usuario + nueva contraseña.
                 </div>
-              </div>
-            </>
-          )}
+                <div className="mb-3">
+                  <label className="form-label">Nueva contraseña</label>
+                  <div className="input-group">
+                    <span className="input-group-text"><FaKey /></span>
+                    <input
+                      type="password"
+                      className="form-control"
+                      name="password_nuevo"
+                      value={form.password_nuevo}
+                      onChange={handleChange}
+                      required
+                    />
+                  </div>
+                  <div className="form-text">Mínimo {MIN_PASSWORD_LEN} caracteres.</div>
+                </div>
+                <div className="mb-3">
+                  <label className="form-label">Confirmar nueva contraseña</label>
+                  <div className="input-group">
+                    <span className="input-group-text"><FaKey /></span>
+                    <input
+                      type="password"
+                      className="form-control"
+                      name="password_confirmacion"
+                      value={form.password_confirmacion}
+                      onChange={handleChange}
+                      required
+                    />
+                  </div>
+                </div>
+              </>
+            )}
 
-          <button type="submit" className="btn btn-primary w-100 py-2 fw-bold shadow-sm">
-            {modo === "LOGIN" ? "INGRESAR AL SISTEMA" : modo === "REGISTRO" ? "ENVIAR SOLICITUD" : "CAMBIAR CONTRASEÑA"}
-          </button>
-        </form>
+            <button type="submit" className="btn btn-primary w-100 py-2 fw-bold shadow-sm">
+              {modo === "LOGIN" ? "INGRESAR AL SISTEMA" : modo === "REGISTRO" ? "ENVIAR SOLICITUD" : "CAMBIAR CONTRASEÑA"}
+            </button>
+          </form>
 
-        <div className="text-center mt-3 pt-3 border-top">
-          {modo === "LOGIN" ? (
-            <small>
-              ¿No tienes cuenta?{" "}
-              <a href="#" onClick={(e) => { e.preventDefault(); switchModo("REGISTRO"); }}>
-                Solicitar acceso
-              </a>
-              {" | "}
-              <a href="#" onClick={(e) => { e.preventDefault(); switchModo("CAMBIO"); }}>
-                Cambiar contraseña
-              </a>
-            </small>
-          ) : modo === "REGISTRO" ? (
-            <small>
-              ¿Ya tienes cuenta?{" "}
-              <a href="#" onClick={(e) => { e.preventDefault(); switchModo("LOGIN"); }}>
-                Iniciar sesión
-              </a>
-            </small>
-          ) : (
-            <small>
-              Volver a{" "}
-              <a href="#" onClick={(e) => { e.preventDefault(); switchModo("LOGIN"); }}>
-                Iniciar sesión
-              </a>
-            </small>
-          )}
+          <div className="text-center mt-3 pt-3 border-top">
+            {modo === "LOGIN" ? (
+              <small>
+                ¿No tienes cuenta?{" "}
+                <a href="#" onClick={(e) => { e.preventDefault(); switchModo("REGISTRO"); }}>
+                  Solicitar acceso
+                </a>
+                {" | "}
+                <a href="#" onClick={(e) => { e.preventDefault(); switchModo("CAMBIO"); }}>
+                  Cambiar contraseña
+                </a>
+              </small>
+            ) : modo === "REGISTRO" ? (
+              <small>
+                ¿Ya tienes cuenta?{" "}
+                <a href="#" onClick={(e) => { e.preventDefault(); switchModo("LOGIN"); }}>
+                  Iniciar sesión
+                </a>
+              </small>
+            ) : (
+              <small>
+                Volver a{" "}
+                <a href="#" onClick={(e) => { e.preventDefault(); switchModo("LOGIN"); }}>
+                  Iniciar sesión
+                </a>
+              </small>
+            )}
+          </div>
         </div>
-      </div>
+      </MunicipalBackdrop>
     </div>
   );
 };
