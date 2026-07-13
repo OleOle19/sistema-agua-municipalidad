@@ -25,6 +25,8 @@ ops/runtime/historial_patch_*.txt
 # Backups / data exports
 **/backup*/
 **/backups/
+reports/
+tmp/
 *.sql
 !server/sql/migrations/*.sql
 !server/sql/luz_migrations/*.sql
@@ -36,6 +38,8 @@ ops/runtime/historial_patch_*.txt
 server/CATORCE.txt
 server/datos_historial_pagos_*.txt
 server/.tmp/
+server/.runtime/
+server/uploads/landing_background/
 
 # OS
 .DS_Store

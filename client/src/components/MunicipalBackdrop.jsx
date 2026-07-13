@@ -10,32 +10,41 @@ export default function MunicipalBackdrop({
   variant = "hero"
 }) {
   const hostRef = useRef(null);
-  const { resolvedImageUrl } = useLandingBackground(landingHeroArt);
-  const [displayImageUrl, setDisplayImageUrl] = useState(() => resolvedImageUrl || "");
+  const { resolvedMediaUrl, mediaType } = useLandingBackground(landingHeroArt);
+  const [displayMedia, setDisplayMedia] = useState(() => ({
+    url: resolvedMediaUrl || "",
+    type: mediaType || "image"
+  }));
 
   useEffect(() => {
-    const nextImageUrl = String(resolvedImageUrl || "").trim();
-    if (!nextImageUrl || nextImageUrl === displayImageUrl) return;
+    const nextMediaUrl = String(resolvedMediaUrl || "").trim();
+    const nextMediaType = mediaType === "video" ? "video" : "image";
+    if (!nextMediaUrl || (nextMediaUrl === displayMedia.url && nextMediaType === displayMedia.type)) return;
+
+    if (nextMediaType === "video") {
+      setDisplayMedia({ url: nextMediaUrl, type: "video" });
+      return;
+    }
 
     let cancelled = false;
     const image = new Image();
     image.decoding = "async";
     image.onload = () => {
       if (!cancelled) {
-        setDisplayImageUrl(nextImageUrl);
+        setDisplayMedia({ url: nextMediaUrl, type: "image" });
       }
     };
     image.onerror = () => {
-      if (!cancelled && !displayImageUrl) {
-        setDisplayImageUrl(nextImageUrl);
+      if (!cancelled && !displayMedia.url) {
+        setDisplayMedia({ url: nextMediaUrl, type: "image" });
       }
     };
-    image.src = nextImageUrl;
+    image.src = nextMediaUrl;
 
     return () => {
       cancelled = true;
     };
-  }, [displayImageUrl, resolvedImageUrl]);
+  }, [displayMedia.type, displayMedia.url, mediaType, resolvedMediaUrl]);
 
   const rootClassName = [
     "municipal-backdrop",
@@ -54,20 +63,33 @@ export default function MunicipalBackdrop({
       className={rootClassName}
     >
       <div className="municipal-backdrop__media" aria-hidden="true">
-        {displayImageUrl ? (
-          <>
-            <img
-              src={displayImageUrl}
-              alt=""
-              className="municipal-backdrop__image"
-              draggable="false"
+        {displayMedia.url ? (
+          displayMedia.type === "video" ? (
+            <video
+              key={displayMedia.url}
+              src={displayMedia.url}
+              className="municipal-backdrop__video"
+              autoPlay
+              muted
+              loop
+              playsInline
+              preload="auto"
             />
-            <LandingWaterCanvas
-              src={displayImageUrl}
-              hostRef={hostRef}
-              className="municipal-backdrop__canvas"
-            />
-          </>
+          ) : (
+            <>
+              <img
+                src={displayMedia.url}
+                alt=""
+                className="municipal-backdrop__image"
+                draggable="false"
+              />
+              <LandingWaterCanvas
+                src={displayMedia.url}
+                hostRef={hostRef}
+                className="municipal-backdrop__canvas"
+              />
+            </>
+          )
         ) : (
           <div className="municipal-backdrop__placeholder"></div>
         )}

@@ -17,7 +17,7 @@ export default function LandingWaterCanvas({ src = "", className = "" }) {
 
     const startLiquidBackground = async () => {
       try {
-        const { default: LiquidBackground } = await import("threejs-components/build/backgrounds/liquid1.min.js");
+        const { default: LiquidBackground } = await import("../vendor/liquid1.min.js");
         if (disposed) return;
 
         app = LiquidBackground(canvas);

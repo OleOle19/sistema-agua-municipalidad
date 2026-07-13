@@ -215,6 +215,86 @@ const normalizeText = (value, maxLen = 220) => {
   if (!txt) return "";
   return txt.length > maxLen ? txt.slice(0, maxLen) : txt;
 };
+const METODOS_PAGO_CAJA = Object.freeze({
+  EFECTIVO: "EFECTIVO",
+  TARJETA: "TARJETA",
+  YAPE: "YAPE",
+  TRANSFERENCIA: "TRANSFERENCIA"
+});
+const ESTADOS_CONFIRMACION_PAGO = Object.freeze({
+  CONFIRMADO: "CONFIRMADO",
+  PENDIENTE_VERIFICACION: "PENDIENTE_VERIFICACION",
+  RECHAZADO: "RECHAZADO"
+});
+const METODOS_PAGO_CAJA_LIST = Object.freeze(Object.values(METODOS_PAGO_CAJA));
+const METODOS_PAGO_CAJA_HABILITADOS = Object.freeze([
+  METODOS_PAGO_CAJA.EFECTIVO
+]);
+const METODOS_PAGO_CAJA_HABILITADOS_SET = new Set(METODOS_PAGO_CAJA_HABILITADOS);
+const normalizeMetodoPagoCaja = (value, fallback = METODOS_PAGO_CAJA.EFECTIVO) => {
+  const raw = String(value || "").trim().toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "_");
+  if (!raw) return fallback;
+  if (["EFECTIVO", "CASH"].includes(raw)) return METODOS_PAGO_CAJA.EFECTIVO;
+  if (["TARJETA", "TARJETA_CREDITO", "TARJETA_DEBITO", "POS"].includes(raw)) return METODOS_PAGO_CAJA.TARJETA;
+  if (["YAPE", "PLIN"].includes(raw)) return METODOS_PAGO_CAJA.YAPE;
+  if (["TRANSFERENCIA", "TRANSFERENCIA_BANCARIA", "DEPOSITO"].includes(raw)) return METODOS_PAGO_CAJA.TRANSFERENCIA;
+  return fallback;
+};
+const isMetodoPagoCajaHabilitado = (metodo) => METODOS_PAGO_CAJA_HABILITADOS_SET.has(normalizeMetodoPagoCaja(metodo));
+const pagoMetodoRequiereReferencia = (metodo) => normalizeMetodoPagoCaja(metodo) !== METODOS_PAGO_CAJA.EFECTIVO;
+const normalizeEstadoConfirmacionPago = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  return Object.values(ESTADOS_CONFIRMACION_PAGO).includes(raw)
+    ? raw
+    : ESTADOS_CONFIRMACION_PAGO.CONFIRMADO;
+};
+const sanitizePagoMetodoPayload = (body = {}) => {
+  const metodo = normalizeMetodoPagoCaja(body.metodo_pago ?? body.medio_pago ?? body.metodoPago);
+  const referencia = normalizeText(
+    body.referencia_operacion
+      ?? body.referencia_pago
+      ?? body.numero_operacion
+      ?? body.operacion
+      ?? body.referencia,
+    120
+  );
+  const estado = normalizeEstadoConfirmacionPago(body.estado_confirmacion ?? body.estado_pago ?? body.confirmacion_pago);
+  const observacionPago = normalizeText(body.observacion_pago ?? body.observacionMetodo ?? "", 500);
+  if (!isMetodoPagoCajaHabilitado(metodo)) {
+    return {
+      ok: false,
+      error: "Por ahora la municipalidad solo acepta pagos en efectivo.",
+      metodo,
+      referencia_operacion: referencia || null,
+      estado_confirmacion: estado,
+      observacion_pago: observacionPago || null
+    };
+  }
+  if (pagoMetodoRequiereReferencia(metodo) && !referencia) {
+    return {
+      ok: false,
+      error: `Debe indicar numero de operacion o referencia para ${metodo}.`,
+      metodo,
+      referencia_operacion: "",
+      estado_confirmacion: estado,
+      observacion_pago: observacionPago || null
+    };
+  }
+  return {
+    ok: true,
+    metodo,
+    referencia_operacion: referencia || null,
+    estado_confirmacion: estado,
+    observacion_pago: observacionPago || null
+  };
+};
+const buildEmptyTotalesMetodosCaja = () => METODOS_PAGO_CAJA_LIST.reduce((acc, metodo) => {
+  acc[metodo] = 0;
+  return acc;
+}, {});
 const logPerfEvent = (label, payload = {}) => {
   const duracionMs = Number(payload?.duracion_ms || payload?.duration_ms || 0);
   const level = duracionMs > 1000 ? "warn" : "info";
@@ -636,7 +716,12 @@ const ensureLuzCoreSchema = async () => {
       observacion TEXT NULL,
       cobrado_en TIMESTAMP NULL,
       motivo_anulacion TEXT NULL,
-      anulado_en TIMESTAMP NULL
+      anulado_en TIMESTAMP NULL,
+      metodo_pago VARCHAR(24) NULL,
+      referencia_operacion VARCHAR(120) NULL,
+      estado_confirmacion VARCHAR(32) NULL,
+      observacion_pago VARCHAR(500) NULL,
+      metadata_pago JSONB NOT NULL DEFAULT '{}'::jsonb
     );
 
     CREATE TABLE IF NOT EXISTS pagos (
@@ -645,7 +730,12 @@ const ensureLuzCoreSchema = async () => {
       fecha_pago TIMESTAMP NOT NULL DEFAULT NOW(),
       monto_pagado NUMERIC(14,2) NOT NULL,
       usuario_cajero VARCHAR(120) NULL,
-      id_orden_cobro BIGINT NULL REFERENCES ordenes_cobro(id_orden)
+      id_orden_cobro BIGINT NULL REFERENCES ordenes_cobro(id_orden),
+      metodo_pago VARCHAR(24) NOT NULL DEFAULT 'EFECTIVO',
+      referencia_operacion VARCHAR(120) NULL,
+      estado_confirmacion VARCHAR(32) NOT NULL DEFAULT 'CONFIRMADO',
+      observacion_pago VARCHAR(500) NULL,
+      metadata_pago JSONB NOT NULL DEFAULT '{}'::jsonb
     );
 
     CREATE TABLE IF NOT EXISTS codigos_impresion (
@@ -714,6 +804,72 @@ const ensureDefaults = async () => {
   await ensureLuzCoreSchema();
   await runSafe("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
   await runSafe("ALTER TABLE suministros ADD COLUMN IF NOT EXISTS nro_medidor_real VARCHAR(80) NULL");
+  await runSafe(`
+    ALTER TABLE pagos
+    ADD COLUMN IF NOT EXISTS metodo_pago VARCHAR(24) NOT NULL DEFAULT 'EFECTIVO',
+    ADD COLUMN IF NOT EXISTS referencia_operacion VARCHAR(120) NULL,
+    ADD COLUMN IF NOT EXISTS estado_confirmacion VARCHAR(32) NOT NULL DEFAULT 'CONFIRMADO',
+    ADD COLUMN IF NOT EXISTS observacion_pago VARCHAR(500) NULL,
+    ADD COLUMN IF NOT EXISTS metadata_pago JSONB NOT NULL DEFAULT '{}'::jsonb
+  `);
+  await runSafe(`
+    ALTER TABLE ordenes_cobro
+    ADD COLUMN IF NOT EXISTS metodo_pago VARCHAR(24) NULL,
+    ADD COLUMN IF NOT EXISTS referencia_operacion VARCHAR(120) NULL,
+    ADD COLUMN IF NOT EXISTS estado_confirmacion VARCHAR(32) NULL,
+    ADD COLUMN IF NOT EXISTS observacion_pago VARCHAR(500) NULL,
+    ADD COLUMN IF NOT EXISTS metadata_pago JSONB NOT NULL DEFAULT '{}'::jsonb
+  `);
+  await runSafe(`
+    UPDATE pagos
+    SET metodo_pago = 'EFECTIVO'
+    WHERE COALESCE(NULLIF(TRIM(metodo_pago), ''), '') = ''
+  `);
+  await runSafe(`
+    UPDATE pagos
+    SET estado_confirmacion = 'CONFIRMADO'
+    WHERE COALESCE(NULLIF(TRIM(estado_confirmacion), ''), '') = ''
+  `);
+  await runSafe(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_luz_pagos_metodo_pago'
+      ) THEN
+        ALTER TABLE pagos
+        ADD CONSTRAINT chk_luz_pagos_metodo_pago
+        CHECK (UPPER(COALESCE(NULLIF(TRIM(metodo_pago), ''), 'EFECTIVO')) IN ('EFECTIVO', 'TARJETA', 'YAPE', 'TRANSFERENCIA')) NOT VALID;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_luz_pagos_estado_confirmacion'
+      ) THEN
+        ALTER TABLE pagos
+        ADD CONSTRAINT chk_luz_pagos_estado_confirmacion
+        CHECK (UPPER(COALESCE(NULLIF(TRIM(estado_confirmacion), ''), 'CONFIRMADO')) IN ('CONFIRMADO', 'PENDIENTE_VERIFICACION', 'RECHAZADO')) NOT VALID;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_luz_ordenes_metodo_pago'
+      ) THEN
+        ALTER TABLE ordenes_cobro
+        ADD CONSTRAINT chk_luz_ordenes_metodo_pago
+        CHECK (
+          metodo_pago IS NULL
+          OR UPPER(COALESCE(NULLIF(TRIM(metodo_pago), ''), 'EFECTIVO')) IN ('EFECTIVO', 'TARJETA', 'YAPE', 'TRANSFERENCIA')
+        ) NOT VALID;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_luz_ordenes_estado_confirmacion'
+      ) THEN
+        ALTER TABLE ordenes_cobro
+        ADD CONSTRAINT chk_luz_ordenes_estado_confirmacion
+        CHECK (
+          estado_confirmacion IS NULL
+          OR UPPER(COALESCE(NULLIF(TRIM(estado_confirmacion), ''), 'CONFIRMADO')) IN ('CONFIRMADO', 'PENDIENTE_VERIFICACION', 'RECHAZADO')
+        ) NOT VALID;
+      END IF;
+    END $$;
+  `);
+  await runSafe("CREATE INDEX IF NOT EXISTS idx_luz_pagos_metodo_fecha ON pagos (metodo_pago, fecha_pago DESC)");
   await runSafe("ALTER TABLE recibos DROP CONSTRAINT IF EXISTS chk_luz_recibos_lecturas");
   await runSafe("ALTER TABLE recibos DROP CONSTRAINT IF EXISTS chk_luz_recibos_consumo");
   await runSafe(
@@ -2974,6 +3130,10 @@ router.get("/caja/ordenes-cobro/pendientes", authenticateCajaMunicipalToken, req
          oc.id_suministro,
          oc.total_orden,
          oc.observacion,
+         oc.metodo_pago,
+         oc.referencia_operacion,
+         oc.estado_confirmacion,
+         oc.observacion_pago,
          oc.recibos_json,
          s.nro_medidor,
          s.nombre_usuario,
@@ -2996,6 +3156,10 @@ router.get("/caja/ordenes-cobro/pendientes", authenticateCajaMunicipalToken, req
       id_suministro: Number(r.id_suministro),
       total_orden: round2(parseMonto(r.total_orden, 0)),
       observacion: r.observacion || null,
+      metodo_pago: r.metodo_pago || null,
+      referencia_operacion: r.referencia_operacion || null,
+      estado_confirmacion: r.estado_confirmacion || null,
+      observacion_pago: r.observacion_pago || null,
       items: parseOrderItems(safeJsonArray(r.recibos_json)),
       suministro: {
         nro_medidor: r.nro_medidor,
@@ -3015,6 +3179,10 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, re
   try {
     const idOrden = parsePositiveInt(req.params?.id, 0);
     if (!idOrden) return res.status(400).json({ error: "ID orden inválido." });
+    const pagoMetodo = sanitizePagoMetodoPayload(req.body || {});
+    if (!pagoMetodo.ok) {
+      return res.status(400).json({ error: pagoMetodo.error });
+    }
 
     await client.query("BEGIN");
 
@@ -3083,8 +3251,28 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, re
       }
 
       await client.query(
-        "INSERT INTO pagos (id_recibo, monto_pagado, usuario_cajero, id_orden_cobro) VALUES ($1, $2, $3, $4)",
-        [Number(item.id_recibo), monto, req.user?.username || req.user?.nombre || null, idOrden]
+        `INSERT INTO pagos (
+          id_recibo, monto_pagado, usuario_cajero, id_orden_cobro,
+          metodo_pago, referencia_operacion, estado_confirmacion, observacion_pago, metadata_pago
+        ) VALUES (
+          $1, $2, $3, $4,
+          $5, $6, $7, $8, $9::jsonb
+        )`,
+        [
+          Number(item.id_recibo),
+          monto,
+          req.user?.username || req.user?.nombre || null,
+          idOrden,
+          pagoMetodo.metodo,
+          pagoMetodo.referencia_operacion,
+          pagoMetodo.estado_confirmacion,
+          pagoMetodo.observacion_pago,
+          JSON.stringify({
+            origen: "caja_luz",
+            id_orden: idOrden,
+            registrado_en: new Date().toISOString()
+          })
+        ]
       );
 
       const totalPagadoNuevo = round2(parseMonto(row.total_pagado, 0) + monto);
@@ -3098,7 +3286,10 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, re
         monto_pagado: monto,
         estado: nuevoEstado,
         total_pagado: totalPagadoNuevo,
-        saldo: round2(Math.max(parseMonto(row.total_pagar, 0) - totalPagadoNuevo, 0))
+        saldo: round2(Math.max(parseMonto(row.total_pagar, 0) - totalPagadoNuevo, 0)),
+        metodo_pago: pagoMetodo.metodo,
+        referencia_operacion: pagoMetodo.referencia_operacion,
+        estado_confirmacion: pagoMetodo.estado_confirmacion
       });
       totalAplicado = round2(totalAplicado + monto);
     }
@@ -3107,13 +3298,34 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, re
       `UPDATE ordenes_cobro
        SET estado = 'COBRADA',
            id_usuario_cobra = $2,
+           metodo_pago = $3,
+           referencia_operacion = $4,
+           estado_confirmacion = $5,
+           observacion_pago = $6,
+           metadata_pago = $7::jsonb,
            cobrado_en = NOW(),
            actualizado_en = NOW()
        WHERE id_orden = $1`,
-      [idOrden, req.user?.id_usuario || null]
+      [
+        idOrden,
+        req.user?.id_usuario || null,
+        pagoMetodo.metodo,
+        pagoMetodo.referencia_operacion,
+        pagoMetodo.estado_confirmacion,
+        pagoMetodo.observacion_pago,
+        JSON.stringify({
+          origen: "caja_luz",
+          capturado_en: new Date().toISOString()
+        })
+      ]
     );
 
-    await registrarAuditoria(client, req.user?.username, "ORDEN_LUZ_COBRADA", `id_orden=${idOrden}; total=${totalAplicado.toFixed(2)}; recibos=${pagosAplicados.length}`);
+    await registrarAuditoria(
+      client,
+      req.user?.username,
+      "ORDEN_LUZ_COBRADA",
+      `id_orden=${idOrden}; metodo=${pagoMetodo.metodo}; estado_confirmacion=${pagoMetodo.estado_confirmacion}; referencia=${pagoMetodo.referencia_operacion ? "***" : ""}; total=${totalAplicado.toFixed(2)}; recibos=${pagosAplicados.length}`
+    );
 
     await client.query("COMMIT");
     return res.json({
@@ -3122,7 +3334,10 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, re
         id_orden: idOrden,
         estado: "COBRADA",
         total_orden: round2(parseMonto(orden.total_orden, totalAplicado)),
-        total_cobrado: totalAplicado
+        total_cobrado: totalAplicado,
+        metodo_pago: pagoMetodo.metodo,
+        referencia_operacion: pagoMetodo.referencia_operacion,
+        estado_confirmacion: pagoMetodo.estado_confirmacion
       },
       pagos: pagosAplicados
     });
@@ -3213,6 +3428,29 @@ router.get("/reportes/cobranza", authenticateLuzToken, requireRole("ADMIN_SEC"),
          AND fecha_pago < $2::date`,
       [desde, hasta]
     );
+    const totalesMetodo = await pool.query(
+      `SELECT
+         UPPER(COALESCE(NULLIF(TRIM(metodo_pago), ''), 'EFECTIVO')) AS metodo_pago,
+         COUNT(*)::int AS cantidad,
+         ROUND(COALESCE(SUM(monto_pagado), 0)::numeric, 2) AS total
+       FROM pagos
+       WHERE fecha_pago >= $1::date
+         AND fecha_pago < $2::date
+       GROUP BY 1
+       ORDER BY 1`,
+      [desde, hasta]
+    );
+    const totalesPorMetodo = buildEmptyTotalesMetodosCaja();
+    const resumenPorMetodo = totalesMetodo.rows.map((row) => {
+      const metodo = normalizeMetodoPagoCaja(row.metodo_pago);
+      const totalMetodo = round2(parseMonto(row.total, 0));
+      totalesPorMetodo[metodo] = round2(parseMonto(totalesPorMetodo[metodo], 0) + totalMetodo);
+      return {
+        metodo_pago: metodo,
+        cantidad: Number(row.cantidad || 0),
+        total: totalMetodo
+      };
+    });
 
     const movimientos = await pool.query(
       `SELECT
@@ -3221,6 +3459,9 @@ router.get("/reportes/cobranza", authenticateLuzToken, requireRole("ADMIN_SEC"),
          to_char(p.fecha_pago, 'YYYY-MM-DD') AS fecha,
          to_char(p.fecha_pago, 'HH24:MI:SS') AS hora,
          p.monto_pagado,
+         COALESCE(NULLIF(TRIM(p.metodo_pago), ''), 'EFECTIVO') AS metodo_pago,
+         COALESCE(NULLIF(TRIM(p.referencia_operacion), ''), '') AS referencia_operacion,
+         COALESCE(NULLIF(TRIM(p.estado_confirmacion), ''), 'CONFIRMADO') AS estado_confirmacion,
          r.id_recibo,
          r.anio,
          r.mes,
@@ -3245,12 +3486,24 @@ router.get("/reportes/cobranza", authenticateLuzToken, requireRole("ADMIN_SEC"),
       rango: { desde, hasta_exclusivo: hasta },
       total: round2(parseMonto(resumen.rows[0]?.total, 0)).toFixed(2),
       cantidad_movimientos: Number(resumen.rows[0]?.cantidad || 0),
+      totales_por_metodo: totalesPorMetodo,
+      resumen_por_metodo: resumenPorMetodo,
+      graficos: {
+        recaudacion_por_metodo: resumenPorMetodo.map((row) => ({
+          metodo_pago: row.metodo_pago,
+          etiqueta: row.metodo_pago,
+          total: row.total
+        }))
+      },
       movimientos: movimientos.rows.map((m) => ({
         id_pago: Number(m.id_pago),
         fecha_pago: m.fecha_pago,
         fecha: m.fecha,
         hora: m.hora,
         monto_pagado: round2(parseMonto(m.monto_pagado, 0)),
+        metodo_pago: normalizeMetodoPagoCaja(m.metodo_pago),
+        referencia_operacion: normalizeText(m.referencia_operacion, 120) || null,
+        estado_confirmacion: normalizeEstadoConfirmacionPago(m.estado_confirmacion),
         id_recibo: Number(m.id_recibo),
         anio: Number(m.anio),
         mes: Number(m.mes),
@@ -3303,6 +3556,29 @@ router.get("/caja/reporte", authenticateCajaMunicipalToken, requireRole("CAJERO"
          AND fecha_pago < $2::date`,
       [desde, hasta]
     );
+    const totalesMetodo = await pool.query(
+      `SELECT
+         UPPER(COALESCE(NULLIF(TRIM(metodo_pago), ''), 'EFECTIVO')) AS metodo_pago,
+         COUNT(*)::int AS cantidad,
+         ROUND(COALESCE(SUM(monto_pagado), 0)::numeric, 2) AS total
+       FROM pagos
+       WHERE fecha_pago >= $1::date
+         AND fecha_pago < $2::date
+       GROUP BY 1
+       ORDER BY 1`,
+      [desde, hasta]
+    );
+    const totalesPorMetodo = buildEmptyTotalesMetodosCaja();
+    const resumenPorMetodo = totalesMetodo.rows.map((row) => {
+      const metodo = normalizeMetodoPagoCaja(row.metodo_pago);
+      const totalMetodo = round2(parseMonto(row.total, 0));
+      totalesPorMetodo[metodo] = round2(parseMonto(totalesPorMetodo[metodo], 0) + totalMetodo);
+      return {
+        metodo_pago: metodo,
+        cantidad: Number(row.cantidad || 0),
+        total: totalMetodo
+      };
+    });
 
     const movimientos = await pool.query(
       `SELECT
@@ -3311,6 +3587,9 @@ router.get("/caja/reporte", authenticateCajaMunicipalToken, requireRole("CAJERO"
          to_char(p.fecha_pago, 'YYYY-MM-DD') AS fecha,
          to_char(p.fecha_pago, 'HH24:MI:SS') AS hora,
          p.monto_pagado,
+         COALESCE(NULLIF(TRIM(p.metodo_pago), ''), 'EFECTIVO') AS metodo_pago,
+         COALESCE(NULLIF(TRIM(p.referencia_operacion), ''), '') AS referencia_operacion,
+         COALESCE(NULLIF(TRIM(p.estado_confirmacion), ''), 'CONFIRMADO') AS estado_confirmacion,
          r.id_recibo,
          r.anio,
          r.mes,
@@ -3335,12 +3614,24 @@ router.get("/caja/reporte", authenticateCajaMunicipalToken, requireRole("CAJERO"
       rango: { desde, hasta_exclusivo: hasta },
       total: round2(parseMonto(resumen.rows[0]?.total, 0)).toFixed(2),
       cantidad_movimientos: Number(resumen.rows[0]?.cantidad || 0),
+      totales_por_metodo: totalesPorMetodo,
+      resumen_por_metodo: resumenPorMetodo,
+      graficos: {
+        recaudacion_por_metodo: resumenPorMetodo.map((row) => ({
+          metodo_pago: row.metodo_pago,
+          etiqueta: row.metodo_pago,
+          total: row.total
+        }))
+      },
       movimientos: movimientos.rows.map((m) => ({
         id_pago: Number(m.id_pago),
         fecha_pago: m.fecha_pago,
         fecha: m.fecha,
         hora: m.hora,
         monto_pagado: round2(parseMonto(m.monto_pagado, 0)),
+        metodo_pago: normalizeMetodoPagoCaja(m.metodo_pago),
+        referencia_operacion: normalizeText(m.referencia_operacion, 120) || null,
+        estado_confirmacion: normalizeEstadoConfirmacionPago(m.estado_confirmacion),
         id_recibo: Number(m.id_recibo),
         anio: Number(m.anio),
         mes: Number(m.mes),

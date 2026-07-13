@@ -25,6 +25,46 @@ const COBRO_AGUA_MODOS = {
   CAJA: "CAJA",
   COMPENSACION: "COMPENSACION"
 };
+const METODOS_PAGO_CAJA = [
+  { value: "EFECTIVO", label: "Efectivo", requiereReferencia: false }
+];
+const ESTADOS_CONFIRMACION_PAGO = [
+  { value: "CONFIRMADO", label: "Confirmado" },
+  { value: "PENDIENTE_VERIFICACION", label: "Pendiente verificacion" },
+  { value: "RECHAZADO", label: "Rechazado" }
+];
+const buildEmptyDeclaracionMetodos = () => METODOS_PAGO_CAJA.reduce((acc, metodo) => ({
+  ...acc,
+  [metodo.value]: ""
+}), {});
+const normalizeMetodoPagoCaja = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  return METODOS_PAGO_CAJA.some((metodo) => metodo.value === raw) ? raw : "EFECTIVO";
+};
+const getMetodoPagoConfig = (value) => (
+  METODOS_PAGO_CAJA.find((metodo) => metodo.value === normalizeMetodoPagoCaja(value)) || METODOS_PAGO_CAJA[0]
+);
+const getMetodoPagoLabel = (value) => getMetodoPagoConfig(value).label;
+const normalizeEstadoConfirmacionPago = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  return ESTADOS_CONFIRMACION_PAGO.some((estado) => estado.value === raw) ? raw : "CONFIRMADO";
+};
+const buildDeclaracionMetodosFromReporte = (reporte = {}, conteo = {}) => {
+  const totales = reporte?.totales_por_metodo || reporte?.totales_metodos || {};
+  const previo = conteo?.ultimo_pendiente?.declaracion_metodos
+    || conteo?.cierre_hoy?.declaracion_metodos
+    || {};
+  return METODOS_PAGO_CAJA.reduce((acc, metodo) => {
+    const value = previo?.[metodo.value] ?? totales?.[metodo.value] ?? "";
+    const monto = parseMonto(value);
+    acc[metodo.value] = monto > 0 ? monto.toFixed(2) : "";
+    return acc;
+  }, {});
+};
+const totalDeclaracionMetodos = (declaracion = {}) => METODOS_PAGO_CAJA.reduce(
+  (acc, metodo) => round2(acc + parseMonto(declaracion?.[metodo.value])),
+  0
+);
 
 const ANEXO_PAGE_STYLE = `
   @page {
@@ -595,6 +635,13 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const [anioVistaCobroAgua, setAnioVistaCobroAgua] = useState(0);
   const [modoCobroAgua, setModoCobroAgua] = useState(COBRO_AGUA_MODOS.CAJA);
   const [motivoCobroAgua, setMotivoCobroAgua] = useState("");
+  const [metodoPagoAgua, setMetodoPagoAgua] = useState("EFECTIVO");
+  const [referenciaPagoAgua, setReferenciaPagoAgua] = useState("");
+  const [estadoConfirmacionPagoAgua, setEstadoConfirmacionPagoAgua] = useState("CONFIRMADO");
+  const [observacionPagoAgua, setObservacionPagoAgua] = useState("");
+  const [mostrarModalConteoAgua, setMostrarModalConteoAgua] = useState(false);
+  const [declaracionMetodosAgua, setDeclaracionMetodosAgua] = useState(buildEmptyDeclaracionMetodos);
+  const [observacionConteoAgua, setObservacionConteoAgua] = useState("");
   const [permitirContingenciaAgua, setPermitirContingenciaAgua] = useState(false);
   const [mostrarModalReimpresionAgua, setMostrarModalReimpresionAgua] = useState(false);
   const [loadingHistorialReimpresionAgua, setLoadingHistorialReimpresionAgua] = useState(false);
@@ -617,6 +664,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const [cobrandoDirectoLuz, setCobrandoDirectoLuz] = useState(false);
   const [recibosPendientesCobroLuz, setRecibosPendientesCobroLuz] = useState([]);
   const [seleccionCobroLuz, setSeleccionCobroLuz] = useState({});
+  const [metodoPagoLuz, setMetodoPagoLuz] = useState("EFECTIVO");
+  const [referenciaPagoLuz, setReferenciaPagoLuz] = useState("");
+  const [estadoConfirmacionPagoLuz, setEstadoConfirmacionPagoLuz] = useState("CONFIRMADO");
   const [mostrarModalReimpresionLuz, setMostrarModalReimpresionLuz] = useState(false);
   const [loadingHistorialReimpresionLuz, setLoadingHistorialReimpresionLuz] = useState(false);
   const [recibosPagadosReimpresionLuz, setRecibosPagadosReimpresionLuz] = useState([]);
@@ -1024,6 +1074,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
     setRecibosPendientesCobroLuz([]);
     setSeleccionCobroLuz({});
+    setMetodoPagoLuz("EFECTIVO");
+    setReferenciaPagoLuz("");
+    setEstadoConfirmacionPagoLuz("CONFIRMADO");
     setMostrarModalCobroLuz(true);
     setLoadingPendientesCobroLuz(true);
     try {
@@ -1131,30 +1184,44 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setMostrarModalReimpresionLuz(false);
   }, [idReciboReimpresionLuz, recibosPagadosReimpresionLuz, selectedContribuyenteLuz, showFlash]);
 
+  const abrirModalConteoAgua = useCallback(() => {
+    if (!permisos.canCaja) return;
+    if (cajaCerradaAguaHoy) {
+      showFlash("warning", "La caja de agua ya fue cerrada para hoy.");
+      return;
+    }
+    setDeclaracionMetodosAgua(buildDeclaracionMetodosFromReporte(reporteAgua, resumenConteoAgua));
+    setObservacionConteoAgua("");
+    setMostrarModalConteoAgua(true);
+  }, [cajaCerradaAguaHoy, permisos.canCaja, reporteAgua, resumenConteoAgua, showFlash]);
+
   const registrarConteoEfectivoAgua = useCallback(async () => {
     if (!permisos.canCaja) return;
     if (cajaCerradaAguaHoy) {
       showFlash("warning", "La caja de agua ya fue cerrada para hoy.");
       return;
     }
-    const montoPrevio = parseMonto(resumenConteoAgua?.ultimo_pendiente?.monto_efectivo);
-    const montoSugerido = montoPrevio > 0 ? montoPrevio.toFixed(2) : "";
-    const montoRaw = window.prompt("Ingrese conteo de efectivo (S/.):", montoSugerido);
-    if (montoRaw === null) return;
-    const monto = Number.parseFloat(String(montoRaw).replace(",", "."));
-    if (!Number.isFinite(monto) || monto < 0) {
+    const declaracionNormalizada = METODOS_PAGO_CAJA.reduce((acc, metodo) => {
+      const monto = parseMonto(declaracionMetodosAgua?.[metodo.value]);
+      acc[metodo.value] = round2(Math.max(0, monto));
+      return acc;
+    }, {});
+    const totalDeclarado = totalDeclaracionMetodos(declaracionNormalizada);
+    if (totalDeclarado < 0) {
       showFlash("danger", "Monto inválido para conteo de efectivo.");
       return;
     }
-    const observacion = window.prompt("Observacion opcional:", "") || "";
+    const observacion = observacionConteoAgua;
     setEnviandoConteoAgua(true);
     try {
       const res = await api.post("/caja/conteo-efectivo", {
-        monto_efectivo: monto,
+        monto_efectivo: declaracionNormalizada.EFECTIVO,
+        declaracion_metodos: declaracionNormalizada,
         observacion,
         cerrar_caja: true
       });
       showFlash("success", res?.data?.mensaje || "Conteo de efectivo enviado.");
+      setMostrarModalConteoAgua(false);
       await Promise.all([cargarConteoAgua(), cargarReporteAgua()]);
     } catch (err) {
       if (Number(err?.response?.status || 0) === 404) {
@@ -1165,7 +1232,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     } finally {
       setEnviandoConteoAgua(false);
     }
-  }, [cajaCerradaAguaHoy, cargarConteoAgua, cargarReporteAgua, handleApiError, permisos.canCaja, resumenConteoAgua?.ultimo_pendiente?.monto_efectivo, showFlash]);
+  }, [cajaCerradaAguaHoy, cargarConteoAgua, cargarReporteAgua, declaracionMetodosAgua, handleApiError, observacionConteoAgua, permisos.canCaja, showFlash]);
 
   const cargarPeriodosCobroAgua = useCallback(async (
     idContribuyente,
@@ -1316,6 +1383,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setFechaCobroAgua(hoy);
     setModoCobroAgua(COBRO_AGUA_MODOS.CAJA);
     setMotivoCobroAgua("");
+    setMetodoPagoAgua("EFECTIVO");
+    setReferenciaPagoAgua("");
+    setEstadoConfirmacionPagoAgua("CONFIRMADO");
+    setObservacionPagoAgua("");
     setPermitirContingenciaAgua(false);
     setRecibosPendientesCobroAgua([]);
     setSeleccionCobroAgua({});
@@ -1662,6 +1733,15 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash("warning", "Indique el motivo de la compensacion.");
       return;
     }
+    const metodoPago = normalizeMetodoPagoCaja(metodoPagoAgua);
+    const metodoConfig = getMetodoPagoConfig(metodoPago);
+    const referenciaPago = String(referenciaPagoAgua || "").trim();
+    const estadoConfirmacion = normalizeEstadoConfirmacionPago(estadoConfirmacionPagoAgua);
+    const observacionPago = String(observacionPagoAgua || "").trim();
+    if (!esCompensacion && metodoConfig.requiereReferencia && !referenciaPago) {
+      showFlash("warning", `Ingrese numero de operacion o referencia para ${metodoConfig.label}.`);
+      return;
+    }
     const pagos = [];
     const anexoItems = [];
     for (const row of recibosPendientesCobroAgua) {
@@ -1707,7 +1787,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const confirm = window.confirm(
       esCompensacion
         ? `Registrar compensacion por ${formatMoney(totalCobroDirectoAgua)} con fecha ${fechaPago} y dejarla fuera del reporte de caja?`
-        : `Registrar cobro por ${formatMoney(totalCobroDirectoAgua)} con fecha ${fechaPago} y abrir impresion?`
+        : `Registrar cobro por ${formatMoney(totalCobroDirectoAgua)} con ${metodoConfig.label} y abrir impresion?`
     );
     if (!confirm) return;
     setCobrandoDirectoAgua(true);
@@ -1717,10 +1797,20 @@ function CajaMunicipalApp({ onBackToSelector }) {
         pagos,
         fecha_pago: fechaPago,
         tipo_pago: esCompensacion ? COBRO_AGUA_MODOS.COMPENSACION : COBRO_AGUA_MODOS.CAJA,
+        metodo_pago: esCompensacion ? undefined : metodoPago,
+        referencia_operacion: esCompensacion ? undefined : referenciaPago,
+        estado_confirmacion: esCompensacion ? undefined : estadoConfirmacion,
+        observacion_pago: esCompensacion ? undefined : observacionPago,
         motivo: esCompensacion ? motivoCompensacion : undefined
       });
       showFlash("success", res?.data?.mensaje || "Cobro registrado correctamente.");
       const anexoData = buildAnexoDataFromPagoDirecto(selectedContribuyenteAgua, anexoItems);
+      anexoData.pago = esCompensacion ? null : {
+        metodo_pago: metodoPago,
+        metodo_label: metodoConfig.label,
+        referencia_operacion: referenciaPago,
+        estado_confirmacion: estadoConfirmacion
+      };
       setUltimoAnexoCaja(anexoData);
       setDatosAnexoCajaImprimir(anexoData);
       invalidarCobroAguaCache();
@@ -1752,6 +1842,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
     fechaCobroAgua,
     modoCobroAgua,
     motivoCobroAgua,
+    metodoPagoAgua,
+    referenciaPagoAgua,
+    estadoConfirmacionPagoAgua,
+    observacionPagoAgua,
     totalCobroDirectoAgua
   ]);
 
@@ -1760,6 +1854,14 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const idSuministro = Number(selectedContribuyenteLuz?.id_suministro || 0);
     if (!idSuministro) {
       showFlash("warning", "Seleccione un contribuyente de luz para cobrar.");
+      return;
+    }
+    const metodoPago = normalizeMetodoPagoCaja(metodoPagoLuz);
+    const metodoConfig = getMetodoPagoConfig(metodoPago);
+    const referenciaPago = String(referenciaPagoLuz || "").trim();
+    const estadoConfirmacion = normalizeEstadoConfirmacionPago(estadoConfirmacionPagoLuz);
+    if (metodoConfig.requiereReferencia && !referenciaPago) {
+      showFlash("warning", `Ingrese numero de operacion o referencia para ${metodoConfig.label}.`);
       return;
     }
 
@@ -1786,7 +1888,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       return;
     }
 
-    const confirmado = window.confirm(`Registrar cobro de luz por ${formatMoney(totalCobroDirectoLuz)} y abrir impresion?`);
+    const confirmado = window.confirm(`Registrar cobro de luz por ${formatMoney(totalCobroDirectoLuz)} con ${metodoConfig.label} y abrir impresion?`);
     if (!confirmado) return;
 
     setCobrandoDirectoLuz(true);
@@ -1800,7 +1902,11 @@ function CajaMunicipalApp({ onBackToSelector }) {
         showFlash("warning", "No se pudo obtener el numero de orden de luz.");
         return;
       }
-      const cobro = await cajaLuzApi.post(`/caja/ordenes-cobro/${idOrden}/cobrar`);
+      const cobro = await cajaLuzApi.post(`/caja/ordenes-cobro/${idOrden}/cobrar`, {
+        metodo_pago: metodoPago,
+        referencia_operacion: referenciaPago,
+        estado_confirmacion: estadoConfirmacion
+      });
       showFlash("success", cobro?.data?.mensaje || emision?.data?.mensaje || "Cobro de luz registrado.");
       setMostrarModalCobroLuz(false);
       invalidarBusquedaCajaCache();
@@ -1814,7 +1920,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
     buscarContribuyentesLuz,
     handleApiError,
     invalidarBusquedaCajaCache,
-    permisos.canCorregirPagos,
+    metodoPagoLuz,
+    referenciaPagoLuz,
+    estadoConfirmacionPagoLuz,
     recibosPendientesCobroLuz,
     recargarLuz,
     seleccionCobroLuz,
@@ -2010,6 +2118,40 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
   ]), [reporteLuz, totalPendienteLuz]);
 
+  const totalesSistemaMetodosAgua = useMemo(() => {
+    const source = reporteAgua?.totales_por_metodo || reporteAgua?.totales_metodos || {};
+    return METODOS_PAGO_CAJA.reduce((acc, metodo) => {
+      acc[metodo.value] = round2(parseMonto(source?.[metodo.value] ?? source?.[metodo.value.toLowerCase()] ?? 0));
+      return acc;
+    }, {});
+  }, [reporteAgua]);
+  const totalSistemaMetodosAgua = useMemo(
+    () => METODOS_PAGO_CAJA.reduce((acc, metodo) => round2(acc + parseMonto(totalesSistemaMetodosAgua?.[metodo.value])), 0),
+    [totalesSistemaMetodosAgua]
+  );
+  const totalDeclaradoConteoAgua = useMemo(
+    () => totalDeclaracionMetodos(declaracionMetodosAgua),
+    [declaracionMetodosAgua]
+  );
+  const diferenciaConteoAgua = useMemo(
+    () => round2(totalDeclaradoConteoAgua - totalSistemaMetodosAgua),
+    [totalDeclaradoConteoAgua, totalSistemaMetodosAgua]
+  );
+  const setDeclaracionMetodoAgua = useCallback((metodo, value) => {
+    const normalized = normalizeMoneyTyping(value);
+    if (normalized === null) return;
+    setDeclaracionMetodosAgua((prev) => ({
+      ...prev,
+      [metodo]: normalized
+    }));
+  }, []);
+  const finalizarDeclaracionMetodoAgua = useCallback((metodo) => {
+    setDeclaracionMetodosAgua((prev) => ({
+      ...prev,
+      [metodo]: finalizeMoneyInput(prev?.[metodo], { min: 0, emptyValue: "0.00" })
+    }));
+  }, []);
+
   if (!usuarioSistema) {
     return (
       <LoginPage
@@ -2128,7 +2270,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   </button>
                   <button
                     className="btn btn-outline-success d-flex align-items-center gap-2"
-                    onClick={registrarConteoEfectivoAgua}
+                    onClick={abrirModalConteoAgua}
                     disabled={enviandoConteoAgua || cajaCerradaAguaHoy}
                     title={cajaCerradaAguaHoy ? "Caja cerrada para hoy" : "Enviar conteo de efectivo y cerrar caja de hoy"}
                   >
@@ -2395,6 +2537,116 @@ function CajaMunicipalApp({ onBackToSelector }) {
         </div>
       </div>
 
+      {mostrarModalConteoAgua && (
+        <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.45)" }}>
+          <div className="modal-dialog modal-lg modal-dialog-scrollable">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">Conteo y cierre de caja - Agua</h5>
+                <button
+                  type="button"
+                  className="btn-close"
+                  onClick={() => setMostrarModalConteoAgua(false)}
+                  disabled={enviandoConteoAgua}
+                ></button>
+              </div>
+              <div className="modal-body">
+                <div className="alert alert-info py-2 small">
+                  Declare el monto fisico o verificado por cada medio de pago. El sistema comparara estos importes contra los cobros registrados hoy.
+                </div>
+                <div className="table-responsive border rounded">
+                  <table className="table table-sm align-middle mb-0">
+                    <thead className="table-light">
+                      <tr>
+                        <th>Medio</th>
+                        <th className="text-end">Sistema</th>
+                        <th className="text-end">Declarado</th>
+                        <th className="text-end">Diferencia</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {METODOS_PAGO_CAJA.map((metodo) => {
+                        const sistema = round2(parseMonto(totalesSistemaMetodosAgua?.[metodo.value]));
+                        const declarado = round2(parseMonto(declaracionMetodosAgua?.[metodo.value]));
+                        const diferencia = round2(declarado - sistema);
+                        return (
+                          <tr key={`conteo-${metodo.value}`}>
+                            <td>
+                              <div className="fw-semibold">{metodo.label}</div>
+                              {metodo.requiereReferencia && <div className="small text-muted">Verificar contra voucher o banca</div>}
+                            </td>
+                            <td className="text-end">{formatMoney(sistema)}</td>
+                            <td className="text-end">
+                              <div className="input-group input-group-sm ms-auto" style={{ maxWidth: "170px" }}>
+                                <span className="input-group-text">S/.</span>
+                                <input
+                                  type="text"
+                                  className="form-control text-end"
+                                  inputMode="decimal"
+                                  value={declaracionMetodosAgua?.[metodo.value] ?? ""}
+                                  onChange={(e) => setDeclaracionMetodoAgua(metodo.value, e.target.value)}
+                                  onBlur={() => finalizarDeclaracionMetodoAgua(metodo.value)}
+                                  disabled={enviandoConteoAgua}
+                                />
+                              </div>
+                            </td>
+                            <td className={`text-end fw-semibold ${Math.abs(diferencia) >= 0.01 ? "text-danger" : "text-success"}`}>
+                              {formatMoney(diferencia)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot className="table-light">
+                      <tr>
+                        <td className="fw-bold">Totales</td>
+                        <td className="text-end fw-bold">{formatMoney(totalSistemaMetodosAgua)}</td>
+                        <td className="text-end fw-bold">{formatMoney(totalDeclaradoConteoAgua)}</td>
+                        <td className={`text-end fw-bold ${Math.abs(diferenciaConteoAgua) >= 0.01 ? "text-danger" : "text-success"}`}>
+                          {formatMoney(diferenciaConteoAgua)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+                <div className="mt-3">
+                  <label className="form-label form-label-sm mb-1">Observacion de cierre</label>
+                  <textarea
+                    className="form-control form-control-sm"
+                    rows={2}
+                    value={observacionConteoAgua}
+                    onChange={(e) => setObservacionConteoAgua(e.target.value)}
+                    placeholder="Opcional: detalle de diferencias, vouchers pendientes, arqueo, etc."
+                    disabled={enviandoConteoAgua}
+                  />
+                </div>
+                {Math.abs(diferenciaConteoAgua) >= 0.01 && (
+                  <div className="alert alert-warning py-2 small mt-3 mb-0">
+                    Hay diferencia entre sistema y declarado. Puede cerrarse igual, pero quedara registrada para revision.
+                  </div>
+                )}
+              </div>
+              <div className="modal-footer">
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setMostrarModalConteoAgua(false)}
+                  disabled={enviandoConteoAgua}
+                >
+                  Cancelar
+                </button>
+                <button
+                  className="btn btn-success"
+                  onClick={registrarConteoEfectivoAgua}
+                  disabled={enviandoConteoAgua || cajaCerradaAguaHoy}
+                >
+                  {enviandoConteoAgua ? "Registrando cierre..." : "Registrar cierre"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {mostrarModalCobroAgua && (
         <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.45)" }}>
           <div className="modal-dialog modal-lg modal-dialog-scrollable">
@@ -2485,6 +2737,67 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       placeholder="Ej. Compensacion en especie por materiales entregados a la municipalidad."
                       disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || anulandoReciboCobroAguaId > 0 || editandoPagoCobroAguaId > 0}
                     />
+                  </div>
+                )}
+                {modoCobroAgua !== COBRO_AGUA_MODOS.COMPENSACION && (
+                  <div className="border rounded p-2 mb-3">
+                    <div className="fw-semibold small mb-2">Medio de pago</div>
+                    <div className="row g-2 align-items-end">
+                      <div className="col-sm-6 col-lg-3">
+                        <label className="form-label form-label-sm mb-1">Método</label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={metodoPagoAgua}
+                          onChange={(e) => {
+                            const next = normalizeMetodoPagoCaja(e.target.value);
+                            setMetodoPagoAgua(next);
+                            if (next === "EFECTIVO") setReferenciaPagoAgua("");
+                          }}
+                          disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua}
+                        >
+                          {METODOS_PAGO_CAJA.map((metodo) => (
+                            <option key={metodo.value} value={metodo.value}>{metodo.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-sm-6 col-lg-3">
+                        <label className="form-label form-label-sm mb-1">
+                          Referencia {getMetodoPagoConfig(metodoPagoAgua).requiereReferencia ? "*" : ""}
+                        </label>
+                        <input
+                          type="text"
+                          className="form-control form-control-sm"
+                          value={referenciaPagoAgua}
+                          onChange={(e) => setReferenciaPagoAgua(e.target.value)}
+                          placeholder={getMetodoPagoConfig(metodoPagoAgua).requiereReferencia ? "Nro. operacion" : "Opcional"}
+                          disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || metodoPagoAgua === "EFECTIVO"}
+                        />
+                      </div>
+                      <div className="col-sm-6 col-lg-3">
+                        <label className="form-label form-label-sm mb-1">Confirmación</label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={estadoConfirmacionPagoAgua}
+                          onChange={(e) => setEstadoConfirmacionPagoAgua(normalizeEstadoConfirmacionPago(e.target.value))}
+                          disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua}
+                        >
+                          {ESTADOS_CONFIRMACION_PAGO.map((estado) => (
+                            <option key={estado.value} value={estado.value}>{estado.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-sm-6 col-lg-3">
+                        <label className="form-label form-label-sm mb-1">Observación</label>
+                        <input
+                          type="text"
+                          className="form-control form-control-sm"
+                          value={observacionPagoAgua}
+                          onChange={(e) => setObservacionPagoAgua(e.target.value)}
+                          placeholder="Opcional"
+                          disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua}
+                        />
+                      </div>
+                    </div>
                   </div>
                 )}
                 {aniosCobroAgua.length > 0 && (
@@ -2775,6 +3088,54 @@ function CajaMunicipalApp({ onBackToSelector }) {
               <div className="modal-body">
                 <div className="small text-muted mb-3">
                   Seleccione los periodos de luz pendientes y confirme el cobro.
+                </div>
+                <div className="border rounded p-2 mb-3">
+                  <div className="fw-semibold small mb-2">Medio de pago</div>
+                  <div className="row g-2 align-items-end">
+                    <div className="col-sm-4">
+                      <label className="form-label form-label-sm mb-1">Metodo</label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={metodoPagoLuz}
+                        onChange={(e) => {
+                          const next = normalizeMetodoPagoCaja(e.target.value);
+                          setMetodoPagoLuz(next);
+                          if (next === "EFECTIVO") setReferenciaPagoLuz("");
+                        }}
+                        disabled={cobrandoDirectoLuz || loadingPendientesCobroLuz}
+                      >
+                        {METODOS_PAGO_CAJA.map((metodo) => (
+                          <option key={`luz-${metodo.value}`} value={metodo.value}>{metodo.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="col-sm-4">
+                      <label className="form-label form-label-sm mb-1">
+                        Referencia {getMetodoPagoConfig(metodoPagoLuz).requiereReferencia ? "*" : ""}
+                      </label>
+                      <input
+                        type="text"
+                        className="form-control form-control-sm"
+                        value={referenciaPagoLuz}
+                        onChange={(e) => setReferenciaPagoLuz(e.target.value)}
+                        placeholder={getMetodoPagoConfig(metodoPagoLuz).requiereReferencia ? "Nro. operacion" : "Opcional"}
+                        disabled={cobrandoDirectoLuz || loadingPendientesCobroLuz || metodoPagoLuz === "EFECTIVO"}
+                      />
+                    </div>
+                    <div className="col-sm-4">
+                      <label className="form-label form-label-sm mb-1">Confirmacion</label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={estadoConfirmacionPagoLuz}
+                        onChange={(e) => setEstadoConfirmacionPagoLuz(normalizeEstadoConfirmacionPago(e.target.value))}
+                        disabled={cobrandoDirectoLuz || loadingPendientesCobroLuz}
+                      >
+                        {ESTADOS_CONFIRMACION_PAGO.map((estado) => (
+                          <option key={`luz-${estado.value}`} value={estado.value}>{estado.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 </div>
                 <div className="table-responsive border rounded">
                   <table className="table table-sm align-middle mb-0">

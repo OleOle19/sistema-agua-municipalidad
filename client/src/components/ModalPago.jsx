@@ -19,6 +19,26 @@ const hasMinRole = (role, requiredRole) => {
   return currentLevel >= requiredLevel;
 };
 
+const METODOS_PAGO_CAJA = [
+  { value: "EFECTIVO", label: "Efectivo", requiereReferencia: false }
+];
+const ESTADOS_CONFIRMACION_PAGO = [
+  { value: "CONFIRMADO", label: "Confirmado" },
+  { value: "PENDIENTE_VERIFICACION", label: "Pendiente verificacion" },
+  { value: "RECHAZADO", label: "Rechazado" }
+];
+const normalizeMetodoPagoCaja = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  return METODOS_PAGO_CAJA.some((metodo) => metodo.value === raw) ? raw : "EFECTIVO";
+};
+const getMetodoPagoConfig = (value) => (
+  METODOS_PAGO_CAJA.find((metodo) => metodo.value === normalizeMetodoPagoCaja(value)) || METODOS_PAGO_CAJA[0]
+);
+const normalizeEstadoConfirmacionPago = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  return ESTADOS_CONFIRMACION_PAGO.some((estado) => estado.value === raw) ? raw : "CONFIRMADO";
+};
+
 const toNum = (v) => {
   const n = parseMoneyInput(v, Number.NaN);
   return Number.isFinite(n) ? n : 0;
@@ -49,6 +69,10 @@ const ModalPago = ({
   const [ordenId, setOrdenId] = useState(0);
   const [cargandoOrdenes, setCargandoOrdenes] = useState(false);
   const [avisoOrden, setAvisoOrden] = useState("");
+  const [metodoPagoCaja, setMetodoPagoCaja] = useState("EFECTIVO");
+  const [referenciaPagoCaja, setReferenciaPagoCaja] = useState("");
+  const [estadoConfirmacionPagoCaja, setEstadoConfirmacionPagoCaja] = useState("CONFIRMADO");
+  const [observacionPagoCaja, setObservacionPagoCaja] = useState("");
   const maxOrdenConocidaRef = useRef(0);
   const showFlash = useCallback((type, text) => {
     if (typeof onFlash === "function") onFlash(type, text);
@@ -265,15 +289,32 @@ const ModalPago = ({
   const cobrarOrden = async () => {
     if (!isCaja) return;
     if (!ordenSeleccionada) return showFlash("warning", "Seleccione una orden pendiente.");
-    if (!window.confirm(`Cobrar orden #${ordenSeleccionada.id_orden} por S/. ${totalCobroCaja.toFixed(2)}?`)) return;
+    const metodoPago = normalizeMetodoPagoCaja(metodoPagoCaja);
+    const metodoConfig = getMetodoPagoConfig(metodoPago);
+    const referenciaPago = String(referenciaPagoCaja || "").trim();
+    const estadoConfirmacion = normalizeEstadoConfirmacionPago(estadoConfirmacionPagoCaja);
+    const observacionPago = String(observacionPagoCaja || "").trim();
+    if (metodoConfig.requiereReferencia && !referenciaPago) {
+      return showFlash("warning", `Ingrese numero de operacion o referencia para ${metodoConfig.label}.`);
+    }
+    if (!window.confirm(`Cobrar orden #${ordenSeleccionada.id_orden} por S/. ${totalCobroCaja.toFixed(2)} con ${metodoConfig.label}?`)) return;
 
     setCargando(true);
     try {
       await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`, {
-        cargo_reimpresion: 0
+        cargo_reimpresion: 0,
+        metodo_pago: metodoPago,
+        referencia_operacion: referenciaPago,
+        estado_confirmacion: estadoConfirmacion,
+        observacion_pago: observacionPago
       });
       if (typeof onImprimirAnexo === "function") {
-        onImprimirAnexo(buildDatosAnexoCaja(ordenSeleccionada));
+        onImprimirAnexo(buildDatosAnexoCaja(ordenSeleccionada, {
+          metodo_pago: metodoPago,
+          metodo_label: metodoConfig.label,
+          referencia_operacion: referenciaPago,
+          estado_confirmacion: estadoConfirmacion
+        }));
       }
       showFlash("success", "Cobro registrado correctamente.");
       alGuardar?.();
@@ -285,7 +326,7 @@ const ModalPago = ({
     }
   };
 
-  const buildDatosAnexoCaja = (orden) => {
+  const buildDatosAnexoCaja = (orden, pago = null) => {
     const items = Array.isArray(orden?.items) ? orden.items : [];
     const resumenServicios = items.reduce((acc, it) => ({
       agua: round2(acc.agua + toNum(it?.subtotal_agua)),
@@ -329,7 +370,8 @@ const ModalPago = ({
         ruc
       },
       total: totalOrden,
-      detalles
+      detalles,
+      pago
     };
   };
 
@@ -392,6 +434,67 @@ const ModalPago = ({
                         </div>
                       </button>
                     ))}
+                  </div>
+                )}
+                {ordenSeleccionada && (
+                  <div className="border rounded p-2 mb-3">
+                    <div className="small fw-bold mb-2">Medio de pago</div>
+                    <div className="row g-2 align-items-end">
+                      <div className="col-sm-6 col-lg-3">
+                        <label className="form-label form-label-sm mb-1">Metodo</label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={metodoPagoCaja}
+                          onChange={(e) => {
+                            const next = normalizeMetodoPagoCaja(e.target.value);
+                            setMetodoPagoCaja(next);
+                            if (next === "EFECTIVO") setReferenciaPagoCaja("");
+                          }}
+                          disabled={cargando}
+                        >
+                          {METODOS_PAGO_CAJA.map((metodo) => (
+                            <option key={metodo.value} value={metodo.value}>{metodo.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-sm-6 col-lg-3">
+                        <label className="form-label form-label-sm mb-1">
+                          Referencia {getMetodoPagoConfig(metodoPagoCaja).requiereReferencia ? "*" : ""}
+                        </label>
+                        <input
+                          type="text"
+                          className="form-control form-control-sm"
+                          value={referenciaPagoCaja}
+                          onChange={(e) => setReferenciaPagoCaja(e.target.value)}
+                          placeholder={getMetodoPagoConfig(metodoPagoCaja).requiereReferencia ? "Nro. operacion" : "Opcional"}
+                          disabled={cargando || metodoPagoCaja === "EFECTIVO"}
+                        />
+                      </div>
+                      <div className="col-sm-6 col-lg-3">
+                        <label className="form-label form-label-sm mb-1">Confirmacion</label>
+                        <select
+                          className="form-select form-select-sm"
+                          value={estadoConfirmacionPagoCaja}
+                          onChange={(e) => setEstadoConfirmacionPagoCaja(normalizeEstadoConfirmacionPago(e.target.value))}
+                          disabled={cargando}
+                        >
+                          {ESTADOS_CONFIRMACION_PAGO.map((estado) => (
+                            <option key={estado.value} value={estado.value}>{estado.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="col-sm-6 col-lg-3">
+                        <label className="form-label form-label-sm mb-1">Observacion</label>
+                        <input
+                          type="text"
+                          className="form-control form-control-sm"
+                          value={observacionPagoCaja}
+                          onChange={(e) => setObservacionPagoCaja(e.target.value)}
+                          placeholder="Opcional"
+                          disabled={cargando}
+                        />
+                      </div>
+                    </div>
                   </div>
                 )}
                 {ordenSeleccionada && (

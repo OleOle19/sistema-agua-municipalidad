@@ -544,23 +544,38 @@ const ensureContribuyenteAdjuntoUploadDir = () => {
 };
 const LANDING_BACKGROUND_MAX_FILE_BYTES = Math.max(
   1024 * 1024,
-  Number(process.env.LANDING_BACKGROUND_MAX_FILE_BYTES || (12 * 1024 * 1024))
+  Number(process.env.LANDING_BACKGROUND_MAX_FILE_BYTES || (50 * 1024 * 1024))
 );
 const LANDING_BACKGROUND_UPLOAD_DIR = path.join(__dirname, "uploads", "landing_background");
 const LANDING_UI_SETTINGS_DIR = path.join(__dirname, ".runtime");
 const LANDING_UI_SETTINGS_FILE = path.join(LANDING_UI_SETTINGS_DIR, "landing_ui_settings.json");
-const LANDING_BACKGROUND_ALLOWED_EXTS = new Set([
+const LANDING_BACKGROUND_IMAGE_EXTS = new Set([
   ".jpg",
   ".jpeg",
   ".png",
   ".webp",
   ".gif"
 ]);
+const LANDING_BACKGROUND_VIDEO_EXTS = new Set([
+  ".mp4",
+  ".webm",
+  ".mov",
+  ".m4v"
+]);
+const LANDING_BACKGROUND_ALLOWED_EXTS = new Set([
+  ...LANDING_BACKGROUND_IMAGE_EXTS,
+  ...LANDING_BACKGROUND_VIDEO_EXTS
+]);
 const LANDING_BACKGROUND_ALLOWED_MIMES = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
   "image/gif",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "video/x-m4v",
+  "application/mp4",
   "application/octet-stream"
 ]);
 const ensureLandingBackgroundUploadDir = () => {
@@ -580,29 +595,48 @@ const isLandingBackgroundTipoPermitido = (file) => {
   if (!mime) return true;
   return LANDING_BACKGROUND_ALLOWED_MIMES.has(mime);
 };
+const inferLandingBackgroundMediaType = (filename = "") => {
+  const ext = String(path.extname(filename || "") || "").toLowerCase();
+  if (LANDING_BACKGROUND_VIDEO_EXTS.has(ext)) return "video";
+  if (LANDING_BACKGROUND_IMAGE_EXTS.has(ext)) return "image";
+  return "";
+};
+const normalizeLandingBackgroundMediaType = (value = "", filename = "") => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "image" || raw === "video") return raw;
+  return inferLandingBackgroundMediaType(filename) || "image";
+};
 const readLandingUiSettings = () => {
   try {
     ensureLandingUiSettingsDir();
     if (!fs.existsSync(LANDING_UI_SETTINGS_FILE)) {
-      return { background_filename: "", updated_at: "" };
+      return { background_filename: "", background_media_type: "", updated_at: "" };
     }
     const raw = fs.readFileSync(LANDING_UI_SETTINGS_FILE, "utf8");
     const parsed = tryParseJson(raw);
     if (!parsed || typeof parsed !== "object") {
-      return { background_filename: "", updated_at: "" };
+      return { background_filename: "", background_media_type: "", updated_at: "" };
     }
+    const backgroundFilename = String(parsed.background_filename || "").trim();
     return {
-      background_filename: String(parsed.background_filename || "").trim(),
+      background_filename: backgroundFilename,
+      background_media_type: backgroundFilename
+        ? normalizeLandingBackgroundMediaType(parsed.background_media_type, backgroundFilename)
+        : "",
       updated_at: String(parsed.updated_at || "").trim()
     };
   } catch {
-    return { background_filename: "", updated_at: "" };
+    return { background_filename: "", background_media_type: "", updated_at: "" };
   }
 };
 const writeLandingUiSettings = (nextSettings = {}) => {
   ensureLandingUiSettingsDir();
+  const backgroundFilename = String(nextSettings.background_filename || "").trim();
   const payload = {
-    background_filename: String(nextSettings.background_filename || "").trim(),
+    background_filename: backgroundFilename,
+    background_media_type: backgroundFilename
+      ? normalizeLandingBackgroundMediaType(nextSettings.background_media_type, backgroundFilename)
+      : "",
     updated_at: String(nextSettings.updated_at || "").trim()
   };
   fs.writeFileSync(LANDING_UI_SETTINGS_FILE, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
@@ -624,16 +658,21 @@ const resolveLandingBackgroundPublicConfig = () => {
   const settings = readLandingUiSettings();
   const filename = String(settings.background_filename || "").trim();
   if (!filename) {
-    return { image_url: "", using_default: true, updated_at: "" };
+    return { media_url: "", media_type: "image", image_url: "", video_url: "", using_default: true, updated_at: "" };
   }
   const absolutePath = path.resolve(LANDING_BACKGROUND_UPLOAD_DIR, filename);
   if (!absolutePath.startsWith(path.resolve(LANDING_BACKGROUND_UPLOAD_DIR)) || !fs.existsSync(absolutePath)) {
-    writeLandingUiSettings({ background_filename: "", updated_at: "" });
-    return { image_url: "", using_default: true, updated_at: "" };
+    writeLandingUiSettings({ background_filename: "", background_media_type: "", updated_at: "" });
+    return { media_url: "", media_type: "image", image_url: "", video_url: "", using_default: true, updated_at: "" };
   }
   const updatedAt = String(settings.updated_at || "").trim() || new Date(fs.statSync(absolutePath).mtime).toISOString();
+  const mediaType = normalizeLandingBackgroundMediaType(settings.background_media_type, filename);
+  const mediaUrl = `/assets/landing-background/${filename}?v=${encodeURIComponent(updatedAt)}`;
   return {
-    image_url: `/assets/landing-background/${filename}?v=${encodeURIComponent(updatedAt)}`,
+    media_url: mediaUrl,
+    media_type: mediaType,
+    image_url: mediaType === "image" ? mediaUrl : "",
+    video_url: mediaType === "video" ? mediaUrl : "",
     using_default: false,
     updated_at: updatedAt
   };
@@ -655,7 +694,7 @@ const uploadLandingBackground = multer({
     }
   }),
   fileFilter: createUploadFileFilter((file) =>
-    isLandingBackgroundTipoPermitido(file) ? "" : "Tipo de imagen no permitido para el fondo del inicio."
+    isLandingBackgroundTipoPermitido(file) ? "" : "Tipo de archivo no permitido para el fondo del inicio."
   ),
   limits: {
     fileSize: LANDING_BACKGROUND_MAX_FILE_BYTES,
@@ -668,10 +707,10 @@ const uploadLandingBackgroundSingle = (fieldName = "background") => (req, res, n
     cleanupUploadedTempFile(req?.file);
     if (err.code === "LIMIT_FILE_SIZE") {
       return res.status(413).json({
-        error: `La imagen excede el límite permitido (${Math.round(LANDING_BACKGROUND_MAX_FILE_BYTES / (1024 * 1024))}MB).`
+        error: `El archivo excede el límite permitido (${Math.round(LANDING_BACKGROUND_MAX_FILE_BYTES / (1024 * 1024))}MB).`
       });
     }
-    return res.status(400).json({ error: err.message || "No se pudo procesar la imagen del fondo." });
+    return res.status(400).json({ error: err.message || "No se pudo procesar el fondo." });
   });
 };
 const isContribuyenteAdjuntoTipoPermitido = (file) => {
@@ -815,25 +854,127 @@ const PAGO_TIPOS = Object.freeze({
   CAJA: "CAJA",
   COMPENSACION: "COMPENSACION"
 });
+const METODOS_PAGO_CAJA = Object.freeze({
+  EFECTIVO: "EFECTIVO",
+  TARJETA: "TARJETA",
+  YAPE: "YAPE",
+  TRANSFERENCIA: "TRANSFERENCIA"
+});
+const ESTADOS_CONFIRMACION_PAGO = Object.freeze({
+  CONFIRMADO: "CONFIRMADO",
+  PENDIENTE_VERIFICACION: "PENDIENTE_VERIFICACION",
+  RECHAZADO: "RECHAZADO"
+});
+const METODOS_PAGO_CAJA_LIST = Object.freeze(Object.values(METODOS_PAGO_CAJA));
+const METODOS_PAGO_CAJA_HABILITADOS = Object.freeze([
+  METODOS_PAGO_CAJA.EFECTIVO
+]);
+const METODOS_PAGO_CAJA_HABILITADOS_SET = new Set(METODOS_PAGO_CAJA_HABILITADOS);
 const normalizePagoTipo = (value, fallback = PAGO_TIPOS.CAJA) => {
   const raw = String(value || "").trim().toUpperCase();
   if (raw === PAGO_TIPOS.COMPENSACION) return PAGO_TIPOS.COMPENSACION;
   if (raw === PAGO_TIPOS.CAJA) return PAGO_TIPOS.CAJA;
   return fallback;
 };
+const normalizeMetodoPagoCaja = (value, fallback = METODOS_PAGO_CAJA.EFECTIVO) => {
+  const raw = String(value || "").trim().toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "_");
+  if (!raw) return fallback;
+  if (["EFECTIVO", "CASH"].includes(raw)) return METODOS_PAGO_CAJA.EFECTIVO;
+  if (["TARJETA", "TARJETA_CREDITO", "TARJETA_DEBITO", "POS"].includes(raw)) return METODOS_PAGO_CAJA.TARJETA;
+  if (["YAPE", "PLIN"].includes(raw)) return METODOS_PAGO_CAJA.YAPE;
+  if (["TRANSFERENCIA", "TRANSFERENCIA_BANCARIA", "DEPOSITO"].includes(raw)) return METODOS_PAGO_CAJA.TRANSFERENCIA;
+  return fallback;
+};
+const isMetodoPagoCajaHabilitado = (metodo) => METODOS_PAGO_CAJA_HABILITADOS_SET.has(normalizeMetodoPagoCaja(metodo));
+const pagoMetodoRequiereReferencia = (metodo) => normalizeMetodoPagoCaja(metodo) !== METODOS_PAGO_CAJA.EFECTIVO;
+const normalizeEstadoConfirmacionPago = (value, metodo = METODOS_PAGO_CAJA.EFECTIVO) => {
+  const raw = String(value || "").trim().toUpperCase();
+  if (Object.values(ESTADOS_CONFIRMACION_PAGO).includes(raw)) return raw;
+  return normalizeMetodoPagoCaja(metodo) === METODOS_PAGO_CAJA.EFECTIVO
+    ? ESTADOS_CONFIRMACION_PAGO.CONFIRMADO
+    : ESTADOS_CONFIRMACION_PAGO.CONFIRMADO;
+};
+const sanitizePagoMetodoPayload = (body = {}, { requerido = true } = {}) => {
+  const metodo = normalizeMetodoPagoCaja(body.metodo_pago ?? body.medio_pago ?? body.metodoPago);
+  const referencia = normalizeLimitedText(
+    body.referencia_operacion
+      ?? body.referencia_pago
+      ?? body.numero_operacion
+      ?? body.operacion
+      ?? body.referencia,
+    120
+  );
+  const estado = normalizeEstadoConfirmacionPago(
+    body.estado_confirmacion ?? body.estado_pago ?? body.confirmacion_pago,
+    metodo
+  );
+  const observacionPago = normalizeLimitedText(body.observacion_pago ?? body.observacionMetodo ?? "", 500);
+  if (!isMetodoPagoCajaHabilitado(metodo)) {
+    return {
+      ok: false,
+      error: "Por ahora la municipalidad solo acepta pagos en efectivo.",
+      metodo,
+      referencia_operacion: referencia || null,
+      estado_confirmacion: estado,
+      observacion_pago: observacionPago || null
+    };
+  }
+  if (requerido && pagoMetodoRequiereReferencia(metodo) && !referencia) {
+    return {
+      ok: false,
+      error: `Debe indicar numero de operacion o referencia para ${metodo}.`,
+      metodo,
+      referencia_operacion: "",
+      estado_confirmacion: estado,
+      observacion_pago: observacionPago || null
+    };
+  }
+  return {
+    ok: true,
+    metodo,
+    referencia_operacion: referencia || null,
+    estado_confirmacion: estado,
+    observacion_pago: observacionPago || null
+  };
+};
+const normalizeDeclaracionMetodosCaja = (value = {}) => {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const normalized = {};
+  METODOS_PAGO_CAJA_LIST.forEach((metodo) => {
+    normalized[metodo] = roundMonto2(Math.max(0, parseMonto(source[metodo] ?? source[metodo.toLowerCase()], 0)));
+  });
+  return normalized;
+};
+const sumDeclaracionMetodosCaja = (declaracion = {}) => METODOS_PAGO_CAJA_LIST
+  .reduce((acc, metodo) => roundMonto2(acc + parseMonto(declaracion?.[metodo], 0)), 0);
+const buildDesviacionesMetodosCaja = (declaracion = {}, sistema = {}) => {
+  const result = {};
+  METODOS_PAGO_CAJA_LIST.forEach((metodo) => {
+    result[metodo] = roundMonto2(parseMonto(declaracion?.[metodo], 0) - parseMonto(sistema?.[metodo], 0));
+  });
+  return result;
+};
 const buildPagoContableValidoSql = (alias = "p") => {
   const usuarioSql = buildPagoUsuarioNormalizadoSql(alias);
   return `(${PAGOS_HISTORICOS_IGNORADOS.map((usuario) => `${usuarioSql} <> '${usuario}'`).join(" AND ")})`;
 };
-const buildPagoReporteCajaSql = (alias = "p", includeHistoricalValid = false) => {
+const buildPagoReporteCajaSql = (alias = "p", includeHistoricalValid = false, metodoPago = "") => {
   const historicosExcluirSql = includeHistoricalValid
     ? "TRUE"
     : PAGOS_HISTORICOS_VALIDOS.map((usuario) => `${buildPagoUsuarioNormalizadoSql(alias)} <> '${usuario}'`).join(" AND ");
+  const metodoPagoFiltro = metodoPago ? normalizeMetodoPagoCaja(metodoPago) : "";
+  const metodoPagoSql = metodoPagoFiltro
+    ? `AND UPPER(COALESCE(NULLIF(TRIM(${alias}.metodo_pago), ''), 'EFECTIVO')) = '${metodoPagoFiltro}'`
+    : "";
   return `(
     (${alias}.id_orden_cobro IS NOT NULL OR ${buildPagoUsuarioNormalizadoSql(alias)} <> '')
     AND ${buildPagoTipoNormalizadoSql(alias)} = '${PAGO_TIPOS.CAJA}'
     AND ${buildPagoContableValidoSql(alias)}
     AND ${historicosExcluirSql}
+    ${metodoPagoSql}
   )`;
 };
 const PAGO_OPERATIVO_CAJA_SQL = buildPagoReporteCajaSql("p", false);
@@ -4869,7 +5010,8 @@ const buildReporteCajaCacheKey = (tipo, fechaReferencia, options = {}) => JSON.s
   includeAdminMovimientos: Boolean(options?.includeAdminMovimientos),
   includeHistoricalValid: Boolean(options?.includeHistoricalValid),
   adminAllowed: Boolean(options?.adminAllowed),
-  includeCodigoImpresion: Boolean(options?.includeCodigoImpresion)
+  includeCodigoImpresion: Boolean(options?.includeCodigoImpresion),
+  metodoPago: options?.metodoPago ? normalizeMetodoPagoCaja(options.metodoPago) : ""
 });
 
 const invalidateReportesCajaCache = () => {
@@ -5015,6 +5157,14 @@ const ensureOrdenesCobroTable = async (client) => {
     ADD COLUMN IF NOT EXISTS motivo_cargo_reimpresion TEXT NULL
   `);
   await client.query(`
+    ALTER TABLE ordenes_cobro
+    ADD COLUMN IF NOT EXISTS metodo_pago VARCHAR(24) NULL,
+    ADD COLUMN IF NOT EXISTS referencia_operacion VARCHAR(120) NULL,
+    ADD COLUMN IF NOT EXISTS estado_confirmacion VARCHAR(32) NULL,
+    ADD COLUMN IF NOT EXISTS observacion_pago VARCHAR(500) NULL,
+    ADD COLUMN IF NOT EXISTS metadata_pago JSONB NOT NULL DEFAULT '{}'::jsonb
+  `);
+  await client.query(`
     DO $$
     BEGIN
       IF NOT EXISTS (
@@ -5063,6 +5213,36 @@ const ensureOrdenesCobroTable = async (client) => {
     END $$;
   `);
   await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_ordenes_cobro_metodo_pago'
+      ) THEN
+        ALTER TABLE ordenes_cobro
+        ADD CONSTRAINT chk_ordenes_cobro_metodo_pago
+        CHECK (
+          metodo_pago IS NULL
+          OR UPPER(COALESCE(NULLIF(TRIM(metodo_pago), ''), 'EFECTIVO')) IN ('EFECTIVO', 'TARJETA', 'YAPE', 'TRANSFERENCIA')
+        ) NOT VALID;
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'chk_ordenes_cobro_estado_confirmacion'
+      ) THEN
+        ALTER TABLE ordenes_cobro
+        ADD CONSTRAINT chk_ordenes_cobro_estado_confirmacion
+        CHECK (
+          estado_confirmacion IS NULL
+          OR UPPER(COALESCE(NULLIF(TRIM(estado_confirmacion), ''), 'CONFIRMADO')) IN ('CONFIRMADO', 'PENDIENTE_VERIFICACION', 'RECHAZADO')
+        ) NOT VALID;
+      END IF;
+    END $$;
+  `);
+  await client.query(`
     CREATE INDEX IF NOT EXISTS idx_ordenes_cobro_estado_creado
     ON ordenes_cobro (estado, creado_en DESC)
   `);
@@ -5096,6 +5276,13 @@ const ensureCajaCierresTable = async (client) => {
   await client.query(`
     ALTER TABLE caja_cierres
     ADD COLUMN IF NOT EXISTS cierre_bloquea_sn CHAR(1) NOT NULL DEFAULT 'N'
+  `);
+  await client.query(`
+    ALTER TABLE caja_cierres
+    ADD COLUMN IF NOT EXISTS total_declarado NUMERIC(12, 2) NULL,
+    ADD COLUMN IF NOT EXISTS declaracion_metodos_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS totales_metodos_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN IF NOT EXISTS desviaciones_metodos_json JSONB NOT NULL DEFAULT '{}'::jsonb
   `);
   await client.query(`
     DO $$
@@ -5144,6 +5331,10 @@ const ensureCajaConteosEfectivoTable = async (client) => {
       observacion TEXT NULL,
       id_cierre BIGINT NULL REFERENCES caja_cierres(id_cierre)
     )
+  `);
+  await client.query(`
+    ALTER TABLE caja_conteos_efectivo
+    ADD COLUMN IF NOT EXISTS declaracion_metodos_json JSONB NOT NULL DEFAULT '{}'::jsonb
   `);
   await client.query(`
     DO $$
@@ -5945,6 +6136,24 @@ const ensureDataIntegrityGuards = async (client) => {
   `);
   await client.query(`
     ALTER TABLE pagos
+    ADD COLUMN IF NOT EXISTS metodo_pago VARCHAR(24) NOT NULL DEFAULT 'EFECTIVO',
+    ADD COLUMN IF NOT EXISTS referencia_operacion VARCHAR(120) NULL,
+    ADD COLUMN IF NOT EXISTS estado_confirmacion VARCHAR(32) NOT NULL DEFAULT 'CONFIRMADO',
+    ADD COLUMN IF NOT EXISTS observacion_pago VARCHAR(500) NULL,
+    ADD COLUMN IF NOT EXISTS metadata_pago JSONB NOT NULL DEFAULT '{}'::jsonb
+  `);
+  await client.query(`
+    UPDATE pagos
+    SET metodo_pago = 'EFECTIVO'
+    WHERE COALESCE(NULLIF(TRIM(metodo_pago), ''), '') = ''
+  `);
+  await client.query(`
+    UPDATE pagos
+    SET estado_confirmacion = 'CONFIRMADO'
+    WHERE COALESCE(NULLIF(TRIM(estado_confirmacion), ''), '') = ''
+  `);
+  await client.query(`
+    ALTER TABLE pagos
     ALTER COLUMN tipo_pago SET DEFAULT 'CAJA'
   `);
   await client.query(`
@@ -5963,6 +6172,34 @@ const ensureDataIntegrityGuards = async (client) => {
         ALTER TABLE pagos
         ADD CONSTRAINT chk_pagos_tipo_pago
         CHECK (UPPER(COALESCE(NULLIF(TRIM(tipo_pago), ''), 'CAJA')) IN ('CAJA', 'COMPENSACION')) NOT VALID;
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_pagos_metodo_pago'
+      ) THEN
+        ALTER TABLE pagos
+        ADD CONSTRAINT chk_pagos_metodo_pago
+        CHECK (UPPER(COALESCE(NULLIF(TRIM(metodo_pago), ''), 'EFECTIVO')) IN ('EFECTIVO', 'TARJETA', 'YAPE', 'TRANSFERENCIA')) NOT VALID;
+      END IF;
+    END $$;
+  `);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_pagos_estado_confirmacion'
+      ) THEN
+        ALTER TABLE pagos
+        ADD CONSTRAINT chk_pagos_estado_confirmacion
+        CHECK (UPPER(COALESCE(NULLIF(TRIM(estado_confirmacion), ''), 'CONFIRMADO')) IN ('CONFIRMADO', 'PENDIENTE_VERIFICACION', 'RECHAZADO')) NOT VALID;
       END IF;
     END $$;
   `);
@@ -11555,6 +11792,10 @@ const buildOrdenCobroResponse = (row) => {
     total_orden: parseMonto(row?.total_orden, 0),
     cargo_reimpresion: parseMonto(row?.cargo_reimpresion, 0),
     observacion: row?.observacion || null,
+    metodo_pago: row?.metodo_pago ? normalizeMetodoPagoCaja(row.metodo_pago) : null,
+    referencia_operacion: row?.referencia_operacion || null,
+    estado_confirmacion: row?.estado_confirmacion ? normalizeEstadoConfirmacionPago(row.estado_confirmacion, row.metodo_pago) : null,
+    observacion_pago: row?.observacion_pago || null,
     codigo_recibo: codigoRecibo > 0 ? codigoRecibo : null,
     cantidad_recibos: items.length,
     items,
@@ -12737,6 +12978,10 @@ app.get("/caja/ordenes-cobro/pendientes", async (req, res) => {
         oc.total_orden,
         oc.cargo_reimpresion,
         oc.observacion,
+        oc.metodo_pago,
+        oc.referencia_operacion,
+        oc.estado_confirmacion,
+        oc.observacion_pago,
         oc.recibos_json,
         oc.id_usuario_emite,
         COALESCE(
@@ -12857,8 +13102,17 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
     if (fecha !== hoy) {
       return res.status(400).json({ error: "Solo se permite registrar conteo de efectivo para la fecha actual." });
     }
+    const declaracionSource = req.body?.declaracion_metodos
+      ?? req.body?.declaracion_por_metodo
+      ?? req.body?.montos_por_metodo
+      ?? {};
+    const declaracionMetodos = normalizeDeclaracionMetodosCaja(declaracionSource);
     const montoEfectivoRaw = parseMonto(req.body?.monto_efectivo, Number.NaN);
-    const montoEfectivo = Number.isFinite(montoEfectivoRaw) ? roundMonto2(montoEfectivoRaw) : Number.NaN;
+    if (Number.isFinite(montoEfectivoRaw)) {
+      declaracionMetodos.EFECTIVO = roundMonto2(Math.max(0, montoEfectivoRaw));
+    }
+    const montoEfectivo = roundMonto2(parseMonto(declaracionMetodos.EFECTIVO, 0));
+    const totalDeclarado = sumDeclaracionMetodosCaja(declaracionMetodos);
     if (!Number.isFinite(montoEfectivo) || montoEfectivo < 0) {
       return res.status(400).json({ error: "Monto de conteo invalido." });
     }
@@ -12895,9 +13149,10 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
         monto_efectivo,
         estado,
         observacion,
+        declaracion_metodos_json,
         id_cierre
       )
-      VALUES ($1, $2::date, $3, $4, $5, NULL)
+      VALUES ($1, $2::date, $3, $4, $5, $6::jsonb, NULL)
       RETURNING
         id_conteo,
         creado_en,
@@ -12906,13 +13161,15 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
         monto_efectivo,
         estado,
         observacion,
+        declaracion_metodos_json,
         id_cierre`,
       [
         req.user?.id_usuario || null,
         fecha,
         montoEfectivo,
         ESTADOS_CONTEO_EFECTIVO.PENDIENTE,
-        observacion
+        observacion,
+        JSON.stringify(declaracionMetodos)
       ]
     );
     let row = inserted.rows[0];
@@ -12922,7 +13179,9 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
       const umbralAlerta = Math.max(0, roundMonto2(parseMonto(req.body?.umbral_alerta, CAJA_CIERRE_ALERTA_UMBRAL)));
       const resumenSistema = await construirResumenCaja(tipo, fecha);
       const totalSistema = roundMonto2(parseMonto(resumenSistema?.total, 0));
-      const desviacion = roundMonto2(montoEfectivo - totalSistema);
+      const totalesSistemaMetodos = normalizeDeclaracionMetodosCaja(resumenSistema?.totales_por_metodo || {});
+      const desviacionesMetodos = buildDesviacionesMetodosCaja(declaracionMetodos, totalesSistemaMetodos);
+      const desviacion = roundMonto2(totalDeclarado - totalSistema);
       const alerta = Math.abs(desviacion) > umbralAlerta + 0.001;
       const rango = await obtenerRangoCaja(tipo, fecha);
       const existente = await client.query(
@@ -12943,10 +13202,14 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
           desde,
           hasta_exclusivo,
           total_sistema,
+          total_declarado,
           efectivo_declarado,
           desviacion,
           alerta_desviacion_sn,
           cierre_bloquea_sn,
+          declaracion_metodos_json,
+          totales_metodos_json,
+          desviaciones_metodos_json,
           observacion
       `;
       if (existente.rows[0]) {
@@ -12956,11 +13219,15 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
                desde = $3::date,
                hasta_exclusivo = $4::date,
                total_sistema = $5,
-               efectivo_declarado = $6,
-               desviacion = $7,
-               alerta_desviacion_sn = $8,
+               total_declarado = $6,
+               efectivo_declarado = $7,
+               desviacion = $8,
+               alerta_desviacion_sn = $9,
                cierre_bloquea_sn = 'S',
-               observacion = $9
+               declaracion_metodos_json = $10::jsonb,
+               totales_metodos_json = $11::jsonb,
+               desviaciones_metodos_json = $12::jsonb,
+               observacion = $13
            WHERE id_cierre = $1
            ${sqlCommonReturning}`,
           [
@@ -12969,9 +13236,13 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
             rango?.desde || fecha,
             rango?.hasta || fecha,
             totalSistema,
+            totalDeclarado,
             montoEfectivo,
             desviacion,
             alerta ? "S" : "N",
+            JSON.stringify(declaracionMetodos),
+            JSON.stringify(totalesSistemaMetodos),
+            JSON.stringify(desviacionesMetodos),
             observacion || "CIERRE_DESDE_CONTEO_EFECTIVO"
           ]
         );
@@ -12985,13 +13256,17 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
             desde,
             hasta_exclusivo,
             total_sistema,
+            total_declarado,
             efectivo_declarado,
             desviacion,
             alerta_desviacion_sn,
             cierre_bloquea_sn,
+            declaracion_metodos_json,
+            totales_metodos_json,
+            desviaciones_metodos_json,
             observacion
           )
-          VALUES ($1, $2, $3::date, $4::date, $5::date, $6, $7, $8, $9, 'S', $10)
+          VALUES ($1, $2, $3::date, $4::date, $5::date, $6, $7, $8, $9, $10, 'S', $11::jsonb, $12::jsonb, $13::jsonb, $14)
           ${sqlCommonReturning}`,
           [
             req.user?.id_usuario || null,
@@ -13000,9 +13275,13 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
             rango?.desde || fecha,
             rango?.hasta || fecha,
             totalSistema,
+            totalDeclarado,
             montoEfectivo,
             desviacion,
             alerta ? "S" : "N",
+            JSON.stringify(declaracionMetodos),
+            JSON.stringify(totalesSistemaMetodos),
+            JSON.stringify(desviacionesMetodos),
             observacion || "CIERRE_DESDE_CONTEO_EFECTIVO"
           ]
         );
@@ -13023,6 +13302,7 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
              monto_efectivo,
              estado,
              observacion,
+             declaracion_metodos_json,
              id_cierre`,
           [
             Number(row.id_conteo),
@@ -13038,7 +13318,7 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
     await registrarAuditoria(
       client,
       "CAJA_CONTEO_EFECTIVO_REGISTRADO",
-      `id_conteo=${row.id_conteo}; fecha=${fecha}; monto=${montoEfectivo.toFixed(2)}; cerrar_caja=${cerrarCaja ? "S" : "N"}; ip=${ip}`,
+      `id_conteo=${row.id_conteo}; fecha=${fecha}; efectivo=${montoEfectivo.toFixed(2)}; total_declarado=${totalDeclarado.toFixed(2)}; cerrar_caja=${cerrarCaja ? "S" : "N"}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -13049,6 +13329,7 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
       id_conteo: Number(row.id_conteo || 0),
       fecha_referencia: fecha,
       monto_efectivo: montoEfectivo,
+      total_declarado: totalDeclarado,
       caja_cerrada: cerrarCaja
     });
 
@@ -13064,6 +13345,7 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
         monto_efectivo: parseMonto(row.monto_efectivo, 0),
         estado: row.estado || ESTADOS_CONTEO_EFECTIVO.PENDIENTE,
         observacion: row.observacion || null,
+        declaracion_metodos: row.declaracion_metodos_json || declaracionMetodos,
         id_cierre: row.id_cierre ? Number(row.id_cierre) : null,
         id_usuario: req.user?.id_usuario ? Number(req.user.id_usuario) : null,
         username: req.user?.username || null,
@@ -13075,10 +13357,14 @@ app.post("/caja/conteo-efectivo", async (req, res) => {
         tipo: cierreRow.tipo || "diario",
         fecha_referencia: normalizeDateOnly(cierreRow.fecha_referencia) || fecha,
         total_sistema: parseMonto(cierreRow.total_sistema, 0),
+        total_declarado: parseMonto(cierreRow.total_declarado, 0),
         efectivo_declarado: parseMonto(cierreRow.efectivo_declarado, 0),
         desviacion: parseMonto(cierreRow.desviacion, 0),
         alerta_desviacion: cierreRow.alerta_desviacion_sn === "S",
         cierre_bloquea: cierreRow.cierre_bloquea_sn === "S",
+        declaracion_metodos: cierreRow.declaracion_metodos_json || declaracionMetodos,
+        totales_metodos: cierreRow.totales_metodos_json || {},
+        desviaciones_metodos: cierreRow.desviaciones_metodos_json || {},
         observacion: cierreRow.observacion || null
       } : null,
       resumen
@@ -13097,6 +13383,10 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
   try {
     const idOrden = parsePositiveInt(req.params.id, 0);
     if (!idOrden) return res.status(400).json({ error: "Orden invalida." });
+    const pagoMetodo = sanitizePagoMetodoPayload(req.body, { requerido: true });
+    if (!pagoMetodo.ok) {
+      return res.status(400).json({ error: pagoMetodo.error });
+    }
     const validacionFecha = validateCobroDateWindow(
       req.body?.fecha_pago || req.body?.fecha_cobro || req.body?.fecha,
       { role: req.user?.rol, hoyIso: toISODate() }
@@ -13215,8 +13505,35 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       }
 
       await client.query(
-        "INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero, id_orden_cobro) VALUES ($1, $2, ($3::date + LOCALTIME), $4, $5)",
-        [item.id_recibo, monto, fechaPagoSolicitada, req.user?.username || req.user?.nombre || null, idOrden]
+        `INSERT INTO pagos (
+          id_recibo,
+          monto_pagado,
+          fecha_pago,
+          usuario_cajero,
+          id_orden_cobro,
+          metodo_pago,
+          referencia_operacion,
+          estado_confirmacion,
+          observacion_pago,
+          metadata_pago
+        )
+        VALUES ($1, $2, ($3::date + LOCALTIME), $4, $5, $6, $7, $8, $9, $10::jsonb)`,
+        [
+          item.id_recibo,
+          monto,
+          fechaPagoSolicitada,
+          req.user?.username || req.user?.nombre || null,
+          idOrden,
+          pagoMetodo.metodo,
+          pagoMetodo.referencia_operacion,
+          pagoMetodo.estado_confirmacion,
+          pagoMetodo.observacion_pago,
+          JSON.stringify({
+            origen: "ORDEN_COBRO",
+            id_orden: idOrden,
+            capturado_en: new Date().toISOString()
+          })
+        ]
       );
 
       const totalPagadoHastaFechaNuevo = roundMonto2(recibo.total_pagado_hasta_fecha + monto);
@@ -13255,6 +13572,11 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         id_usuario_cobra = $2,
         cargo_reimpresion = $3,
         motivo_cargo_reimpresion = $4,
+        metodo_pago = $5,
+        referencia_operacion = $6,
+        estado_confirmacion = $7,
+        observacion_pago = $8,
+        metadata_pago = COALESCE(metadata_pago, '{}'::jsonb) || $9::jsonb,
         cobrado_en = NOW(),
         actualizado_en = NOW()
       WHERE id_orden = $1
@@ -13262,7 +13584,14 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
       idOrden,
       req.user?.id_usuario || null,
       0,
-      null
+      null,
+      pagoMetodo.metodo,
+      pagoMetodo.referencia_operacion,
+      pagoMetodo.estado_confirmacion,
+      pagoMetodo.observacion_pago,
+      JSON.stringify({
+        metodo_pago_capturado_en: new Date().toISOString()
+      })
     ]);
 
     const usuarioAuditoria = req.user?.username || req.user?.nombre || "SISTEMA";
@@ -13274,7 +13603,7 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
     await registrarAuditoria(
       client,
       "ORDEN_COBRO_COBRADA",
-      `orden=${idOrden}; tipo=${normalizeTipoOrdenCobro(orden.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL)}; codigo_recibo=${codigoReciboOrden}; contribuyente=${orden.id_contribuyente}; fecha_pago=${fechaPagoSolicitada}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=0.00; recibos=${pagosAplicados.length}; detalle_recibos=${recibosDetalle}; ip=${ip}`,
+      `orden=${idOrden}; tipo=${normalizeTipoOrdenCobro(orden.tipo_orden, TIPOS_ORDEN_COBRO.NORMAL)}; codigo_recibo=${codigoReciboOrden}; contribuyente=${orden.id_contribuyente}; fecha_pago=${fechaPagoSolicitada}; metodo=${pagoMetodo.metodo}; estado_confirmacion=${pagoMetodo.estado_confirmacion}; referencia=${pagoMetodo.referencia_operacion ? "***" : ""}; total=${totalAplicado.toFixed(2)}; cargo_reimpresion=0.00; recibos=${pagosAplicados.length}; detalle_recibos=${recibosDetalle}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -13301,7 +13630,10 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         codigo_recibo: codigoReciboOrden,
         total_orden: parseMonto(orden.total_orden, totalAplicado),
         cargo_reimpresion: 0,
-        total_cobrado: totalCobradoFinal
+        total_cobrado: totalCobradoFinal,
+        metodo_pago: pagoMetodo.metodo,
+        referencia_operacion: pagoMetodo.referencia_operacion,
+        estado_confirmacion: pagoMetodo.estado_confirmacion
       },
       pagos: pagosAplicados
     });
@@ -13482,6 +13814,18 @@ app.post("/pagos", async (req, res) => {
     const tipoPago = normalizePagoTipo(req.body?.tipo_pago, PAGO_TIPOS.CAJA);
     const observacionPago = normalizeLimitedText(req.body?.observacion ?? req.body?.motivo, 500);
     const esCompensacion = tipoPago === PAGO_TIPOS.COMPENSACION;
+    const pagoMetodo = esCompensacion
+      ? {
+          ok: true,
+          metodo: METODOS_PAGO_CAJA.EFECTIVO,
+          referencia_operacion: null,
+          estado_confirmacion: ESTADOS_CONFIRMACION_PAGO.CONFIRMADO,
+          observacion_pago: null
+        }
+      : sanitizePagoMetodoPayload(req.body, { requerido: true });
+    if (!pagoMetodo.ok) {
+      return res.status(400).json({ error: pagoMetodo.error });
+    }
     if (esCompensacion && !hasMinRole(req.user?.rol, "ADMIN")) {
       return res.status(403).json({ error: "Solo Administracion puede registrar compensaciones." });
     }
@@ -13796,8 +14140,20 @@ app.post("/pagos", async (req, res) => {
       }
 
       const pagoInsertado = await client.query(
-        `INSERT INTO pagos (id_recibo, monto_pagado, fecha_pago, usuario_cajero, tipo_pago, observacion)
-         VALUES ($1, $2, ($3::date + LOCALTIME), $4, $5, $6)
+        `INSERT INTO pagos (
+          id_recibo,
+          monto_pagado,
+          fecha_pago,
+          usuario_cajero,
+          tipo_pago,
+          observacion,
+          metodo_pago,
+          referencia_operacion,
+          estado_confirmacion,
+          observacion_pago,
+          metadata_pago
+        )
+         VALUES ($1, $2, ($3::date + LOCALTIME), $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
          RETURNING id_pago, fecha_pago`,
         [
           recibo.id_recibo,
@@ -13805,7 +14161,15 @@ app.post("/pagos", async (req, res) => {
           fechaPagoSolicitada,
           req.user?.username || req.user?.nombre || null,
           tipoPago,
-          observacionPago || null
+          observacionPago || null,
+          pagoMetodo.metodo,
+          pagoMetodo.referencia_operacion,
+          pagoMetodo.estado_confirmacion,
+          pagoMetodo.observacion_pago,
+          JSON.stringify({
+            origen: esCompensacion ? "COMPENSACION" : "CAJA_DIRECTA",
+            capturado_en: new Date().toISOString()
+          })
         ]);
       const idPagoInsertado = parsePositiveInt(pagoInsertado.rows?.[0]?.id_pago, 0);
       const fechaPagoInsertado = pagoInsertado.rows?.[0]?.fecha_pago || null;
@@ -13914,6 +14278,9 @@ app.post("/pagos", async (req, res) => {
         anio: recibo.anio,
         id_contribuyente: recibo.id_contribuyente,
         tipo_pago: tipoPago,
+        metodo_pago: pagoMetodo.metodo,
+        referencia_operacion: pagoMetodo.referencia_operacion,
+        estado_confirmacion: pagoMetodo.estado_confirmacion,
         monto_pagado: monto,
         id_anulacion_referencia: idAnulacionReferencia || null,
         estado: nuevoEstado,
@@ -13982,6 +14349,8 @@ app.post("/pagos", async (req, res) => {
       id_recibo: parsePositiveInt(pago.id_recibo, 0) || null,
       periodo: formatAuditPeriodo(pago.anio, pago.mes),
       tipo_pago: normalizePagoTipo(pago.tipo_pago, PAGO_TIPOS.CAJA),
+      metodo_pago: pago.metodo_pago || METODOS_PAGO_CAJA.EFECTIVO,
+      estado_confirmacion: pago.estado_confirmacion || ESTADOS_CONFIRMACION_PAGO.CONFIRMADO,
       monto_cobrado: roundMonto2(parseMonto(pago.monto_pagado, 0)),
       saldo_pendiente: roundMonto2(parseMonto(pago.saldo, 0)),
       estado: String(pago.estado || "").trim(),
@@ -13994,6 +14363,9 @@ app.post("/pagos", async (req, res) => {
       buildStructuredAuditDetail({
         evento: esCompensacion ? "Registrar compensacion" : "Registrar pago",
         tipo_pago: tipoPago,
+        metodo_pago: esCompensacion ? undefined : pagoMetodo.metodo,
+        estado_confirmacion: esCompensacion ? undefined : pagoMetodo.estado_confirmacion,
+        referencia_operacion: !esCompensacion && pagoMetodo.referencia_operacion ? "***" : undefined,
         id_contribuyente: contribuyenteAuditPrincipal?.id_contribuyente || contribuyenteEvento || null,
         codigo_municipal: contribuyenteAuditPrincipal?.codigo_municipal || "",
         contribuyente: buildContribuyenteAuditLabel(contribuyenteAuditPrincipal),
@@ -14023,7 +14395,10 @@ app.post("/pagos", async (req, res) => {
         mensaje: esCompensacion ? "Compensacion registrada correctamente." : "Pago OK",
         estado: p.estado,
         total_pagado: p.total_pagado,
-        saldo: p.saldo
+        saldo: p.saldo,
+        metodo_pago: p.metodo_pago,
+        referencia_operacion: p.referencia_operacion,
+        estado_confirmacion: p.estado_confirmacion
       });
     }
 
@@ -15741,7 +16116,7 @@ const obtenerRangoCaja = async (tipo, fechaReferencia, rangoManual = null) => {
 };
 
 const construirSerieTemporalCaja = async (tipo, desde, hasta, options = {}) => {
-  const pagosReporteSql = buildPagoReporteCajaSql("p", Boolean(options.includeHistoricalValid));
+  const pagosReporteSql = buildPagoReporteCajaSql("p", Boolean(options.includeHistoricalValid), options.metodoPago);
   let labelSql = "to_char(date_trunc('hour', p.fecha_pago), 'HH24:00')";
   let orderSql = "date_trunc('hour', p.fecha_pago)";
 
@@ -15898,19 +16273,20 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null, o
   const rango = await obtenerRangoCaja(tipo, fechaReferencia, rangoManual);
   const desde = rango.desde;
   const hasta = rango.hasta;
-  const pagosReporteSql = buildPagoReporteCajaSql("p", Boolean(options.includeHistoricalValid));
+  const pagosReporteSql = buildPagoReporteCajaSql("p", Boolean(options.includeHistoricalValid), options.metodoPago);
 
   const resumenPagos = await pool.query(`
     WITH movimientos_resumen AS (
       SELECT
         DATE(p.fecha_pago) AS fecha_operativa,
         p.id_recibo,
+        UPPER(COALESCE(NULLIF(TRIM(p.metodo_pago), ''), 'EFECTIVO')) AS metodo_pago,
         SUM(p.monto_pagado)::numeric AS monto_pagado
       FROM pagos p
       WHERE ${pagosReporteSql}
         AND p.fecha_pago >= $1::date
         AND p.fecha_pago < $2::date
-      GROUP BY DATE(p.fecha_pago), p.id_recibo
+      GROUP BY DATE(p.fecha_pago), p.id_recibo, UPPER(COALESCE(NULLIF(TRIM(p.metodo_pago), ''), 'EFECTIVO'))
     )
     SELECT
       COUNT(*)::int AS cantidad,
@@ -15964,6 +16340,29 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null, o
   const periodos = await pool.query(periodosSql, periodosParams);
 
   const serieTemporal = await construirSerieTemporalCaja(tipo, desde, hasta, options);
+  const totalesMetodo = await pool.query(`
+    SELECT
+      UPPER(COALESCE(NULLIF(TRIM(p.metodo_pago), ''), 'EFECTIVO')) AS metodo_pago,
+      COUNT(*)::int AS cantidad,
+      ROUND(COALESCE(SUM(p.monto_pagado), 0)::numeric, 2) AS total
+    FROM pagos p
+    WHERE ${pagosReporteSql}
+      AND p.fecha_pago >= $1::date
+      AND p.fecha_pago < $2::date
+    GROUP BY 1
+    ORDER BY 1
+  `, [desde, hasta]);
+  const totalesPorMetodo = normalizeDeclaracionMetodosCaja({});
+  const resumenPorMetodo = totalesMetodo.rows.map((row) => {
+    const metodo = normalizeMetodoPagoCaja(row.metodo_pago);
+    const totalMetodo = roundMonto2(parseMonto(row.total, 0));
+    totalesPorMetodo[metodo] = roundMonto2(parseMonto(totalesPorMetodo[metodo], 0) + totalMetodo);
+    return {
+      metodo_pago: metodo,
+      cantidad: Number(row.cantidad || 0),
+      total: totalMetodo
+    };
+  });
 
   const resumen = {
     tipo,
@@ -15976,6 +16375,8 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null, o
     total_reimpresion: "0.00",
     total_general: totalGeneral.toFixed(2),
     cantidad_movimientos: cantidadMovimientos,
+    totales_por_metodo: totalesPorMetodo,
+    resumen_por_metodo: resumenPorMetodo,
     graficos: {
       recaudacion_temporal: serieTemporal,
       top_contribuyentes: topContribuyentes.rows.map((r) => ({
@@ -15986,7 +16387,8 @@ const construirResumenCaja = async (tipo, fechaReferencia, rangoManual = null, o
       recaudacion_por_periodo: periodos.rows.map((r) => ({
         periodo: r.periodo,
         total: parseFloat(r.total) || 0
-      }))
+      })),
+      recaudacion_por_metodo: resumenPorMetodo
     }
   };
 
@@ -16001,6 +16403,7 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   const includeCodigoImpresion = Boolean(options.includeCodigoImpresion);
   const includeAdminMovimientos = Boolean(options.includeAdminMovimientos);
   const includeHistoricalValid = Boolean(options.includeHistoricalValid);
+  const metodoPagoFiltro = options.metodoPago ? normalizeMetodoPagoCaja(options.metodoPago) : "";
   const adminAllowed = Boolean(options.adminAllowed);
   const pageRaw = Number(options.page ?? 1);
   const pageSizeRaw = Number(options.pageSize ?? 200);
@@ -16018,12 +16421,13 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
   if (cached) return cached;
 
   const resumen = await construirResumenCaja(tipo, fechaReferencia, options.rangoManual || null, {
-    includeHistoricalValid
+    includeHistoricalValid,
+    metodoPago: metodoPagoFiltro
   });
   const desde = resumen.rango.desde;
   const hasta = resumen.rango.hasta_exclusivo;
   const cantidadMovimientos = Number(resumen.cantidad_movimientos || 0);
-  const pagosReporteSql = buildPagoReporteCajaSql("p", includeHistoricalValid);
+  const pagosReporteSql = buildPagoReporteCajaSql("p", includeHistoricalValid, metodoPagoFiltro);
   const totalPagarReferenciaMovimientoSql = buildTotalPagarReferenciaSql({
     reciboAlias: "r",
     predioAlias: "pr",
@@ -16075,6 +16479,10 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
         p.id_pago,
         p.id_orden_cobro,
         ${buildPagoTipoNormalizadoSql("p")} AS tipo_pago,
+        UPPER(COALESCE(NULLIF(TRIM(p.metodo_pago), ''), 'EFECTIVO')) AS metodo_pago,
+        COALESCE(NULLIF(TRIM(p.referencia_operacion), ''), '') AS referencia_operacion,
+        UPPER(COALESCE(NULLIF(TRIM(p.estado_confirmacion), ''), 'CONFIRMADO')) AS estado_confirmacion,
+        COALESCE(NULLIF(TRIM(p.observacion_pago), ''), '') AS observacion_pago,
         r.id_recibo,
         oc.codigo_recibo,
         p.fecha_pago,
@@ -16149,6 +16557,10 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
         MAX(id_pago) AS id_pago,
         MAX(id_orden_cobro) AS id_orden_cobro,
         MAX(tipo_pago) AS tipo_pago,
+        metodo_pago,
+        estado_confirmacion,
+        STRING_AGG(DISTINCT NULLIF(referencia_operacion, ''), ', ') AS referencia_operacion,
+        STRING_AGG(DISTINCT NULLIF(observacion_pago, ''), ' | ') AS observacion_pago,
         id_recibo,
         MAX(codigo_recibo) AS codigo_recibo,
         MAX(fecha_pago) AS fecha_pago,
@@ -16176,6 +16588,8 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       FROM movimientos_detalle
       GROUP BY
         fecha,
+        metodo_pago,
+        estado_confirmacion,
         id_recibo,
         nombre_completo,
         id_contribuyente,
@@ -16199,6 +16613,10 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
     SELECT
       id_pago,
       tipo_pago,
+      metodo_pago,
+      referencia_operacion,
+      estado_confirmacion,
+      observacion_pago,
       id_recibo,
       codigo_recibo,
       fecha_pago,
@@ -16298,6 +16716,10 @@ const construirReporteCaja = async (tipo, fechaReferencia, options = {}) => {
       || (idRecibo > 0 ? String(idRecibo).padStart(6, "0") : null);
     return {
       ...row,
+      metodo_pago: normalizeMetodoPagoCaja(row?.metodo_pago),
+      referencia_operacion: normalizeLimitedText(row?.referencia_operacion, 120) || null,
+      estado_confirmacion: normalizeEstadoConfirmacionPago(row?.estado_confirmacion, row?.metodo_pago),
+      observacion_pago: normalizeLimitedText(row?.observacion_pago, 500) || null,
       codigo_impresion: codigoImpresion,
       codigo_recibo: codigoRecibo > 0 ? codigoRecibo : null,
       id_recibo: idRecibo > 0 ? idRecibo : null,
@@ -16398,6 +16820,7 @@ const buildConteoEfectivoResumen = async (fechaReferencia = toISODate()) => {
       ce.actualizado_en,
       ce.fecha_referencia,
       ce.monto_efectivo,
+      ce.declaracion_metodos_json,
       ce.estado,
       ce.observacion,
       ce.id_usuario,
@@ -16417,6 +16840,7 @@ const buildConteoEfectivoResumen = async (fechaReferencia = toISODate()) => {
       ce.actualizado_en,
       ce.fecha_referencia,
       ce.monto_efectivo,
+      ce.declaracion_metodos_json,
       ce.estado,
       ce.observacion,
       ce.id_usuario,
@@ -16434,8 +16858,12 @@ const buildConteoEfectivoResumen = async (fechaReferencia = toISODate()) => {
       creado_en,
       fecha_referencia,
       total_sistema,
+      total_declarado,
       efectivo_declarado,
       desviacion,
+      declaracion_metodos_json,
+      totales_metodos_json,
+      desviaciones_metodos_json,
       observacion
     FROM caja_cierres
     WHERE tipo = 'diario'
@@ -16455,6 +16883,7 @@ const buildConteoEfectivoResumen = async (fechaReferencia = toISODate()) => {
     actualizado_en: row.actualizado_en || null,
     fecha_referencia: normalizeDateOnly(row.fecha_referencia) || fecha,
     monto_efectivo: parseMonto(row.monto_efectivo, 0),
+    declaracion_metodos: row.declaracion_metodos_json || normalizeDeclaracionMetodosCaja({ EFECTIVO: row.monto_efectivo }),
     estado: row.estado || ESTADOS_CONTEO_EFECTIVO.PENDIENTE,
     observacion: row.observacion || null,
     id_usuario: row.id_usuario ? Number(row.id_usuario) : null,
@@ -16472,8 +16901,12 @@ const buildConteoEfectivoResumen = async (fechaReferencia = toISODate()) => {
       creado_en: cierre.creado_en || null,
       fecha_referencia: normalizeDateOnly(cierre.fecha_referencia) || fecha,
       total_sistema: parseMonto(cierre.total_sistema, 0),
+      total_declarado: parseMonto(cierre.total_declarado, 0),
       efectivo_declarado: parseMonto(cierre.efectivo_declarado, 0),
       desviacion: parseMonto(cierre.desviacion, 0),
+      declaracion_metodos: cierre.declaracion_metodos_json || {},
+      totales_metodos: cierre.totales_metodos_json || {},
+      desviaciones_metodos: cierre.desviaciones_metodos_json || {},
       observacion: cierre.observacion || null
     } : null,
     ultimo_pendiente: mapConteo(conteo),
@@ -16543,6 +16976,8 @@ app.get("/caja/reporte", async (req, res) => {
     const includeAllMovimientos = normalizeSN(req.query?.all_movimientos ?? req.query?.todos, "N") === "S";
     const includeAdminMovimientos = normalizeSN(req.query?.include_admin_movimientos ?? req.query?.admin_movimientos, "N") === "S";
     const includeHistoricalValid = normalizeSN(req.query?.include_historical_valid ?? req.query?.historicos_validos, "N") === "S";
+    const metodoPagoFiltroRaw = String(req.query?.metodo_pago ?? req.query?.metodo ?? "").trim();
+    const metodoPagoFiltro = metodoPagoFiltroRaw ? normalizeMetodoPagoCaja(metodoPagoFiltroRaw) : "";
     const mostrarCodigoImpresion = true;
     const data = await construirReporteCaja(tipo, fecha, {
       page,
@@ -16553,8 +16988,10 @@ app.get("/caja/reporte", async (req, res) => {
       adminAllowed: hasMinRole(req.user?.rol, "ADMIN"),
       includeCodigoImpresion: mostrarCodigoImpresion,
       rangoManual,
-      mesesProyeccion
+      mesesProyeccion,
+      metodoPago: metodoPagoFiltro
     });
+    if (metodoPagoFiltro) data.filtro_metodo_pago = metodoPagoFiltro;
     logPerfEvent("CAJA_REPORTE", {
       duracion_ms: Date.now() - startedAt,
       tipo,
@@ -16606,13 +17043,17 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
     }
     const mostrarCodigoImpresion = true;
     const includeHistoricalValid = normalizeSN(req.query?.include_historical_valid ?? req.query?.historicos_validos, "N") === "S";
+    const metodoPagoFiltroRaw = String(req.query?.metodo_pago ?? req.query?.metodo ?? "").trim();
+    const metodoPagoFiltro = metodoPagoFiltroRaw ? normalizeMetodoPagoCaja(metodoPagoFiltroRaw) : "";
     const data = await construirReporteCaja(tipo, fecha, {
       includeAllMovimientos: true,
       includeHistoricalValid,
       includeCodigoImpresion: mostrarCodigoImpresion,
       rangoManual,
-      mesesProyeccion
+      mesesProyeccion,
+      metodoPago: metodoPagoFiltro
     });
+    if (metodoPagoFiltro) data.filtro_metodo_pago = metodoPagoFiltro;
 
     const workbook = new ExcelJS.Workbook();
 
@@ -16628,6 +17069,14 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
     wsResumen.addRow({ campo: "Rango hasta (exclusivo)", valor: data.rango?.hasta_exclusivo || "" });
     wsResumen.addRow({ campo: "Cantidad movimientos", valor: data.cantidad_movimientos || 0 });
     wsResumen.addRow({ campo: "Total caja", valor: parseFloat(data.total_general || 0) });
+    if (Array.isArray(data?.resumen_por_metodo) && data.resumen_por_metodo.length > 0) {
+      data.resumen_por_metodo.forEach((row) => {
+        wsResumen.addRow({
+          campo: `Total ${row.metodo_pago || "METODO"}`,
+          valor: parseFloat(row.total || 0)
+        });
+      });
+    }
     if (tipo === "proyeccion") {
       wsResumen.addRow({ campo: "Meses proyectados", valor: Number(data?.proyeccion?.meses_proyeccion || 0) });
       wsResumen.addRow({ campo: "Base mensual estimada", valor: parseFloat(data?.proyeccion?.total_mensual || 0) });
@@ -16680,6 +17129,9 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
         { header: "CONTRIBUYENTE", key: "nombre_completo", width: 36 },
         { header: "DIRECCION", key: "direccion_completa", width: 42 },
         { header: "PERIODO", key: "periodo", width: 12 },
+        { header: "METODO", key: "metodo_pago", width: 18 },
+        { header: "REFERENCIA", key: "referencia_operacion", width: 22 },
+        { header: "CONFIRMACION", key: "estado_confirmacion", width: 22 },
         { header: "MONTO", key: "monto_pagado", width: 14 }
       ];
       wsMov.getRow(1).font = { bold: true };
@@ -16695,6 +17147,9 @@ app.get("/caja/reporte/excel", authenticateToken, async (req, res) => {
           nombre_completo: m.nombre_completo || "",
           direccion_completa: m.direccion_completa || "",
           periodo: `${m.mes || ""}/${m.anio || ""}`,
+          metodo_pago: m.metodo_pago || "EFECTIVO",
+          referencia_operacion: m.referencia_operacion || "",
+          estado_confirmacion: m.estado_confirmacion || "CONFIRMADO",
           monto_pagado: parseFloat(m.monto_pagado || 0)
         });
       });
@@ -16744,6 +17199,15 @@ app.post("/caja/cierre", async (req, res) => {
     }
     const efectivoDeclaradoRaw = parseMonto(req.body?.efectivo_declarado, Number.NaN);
     let efectivoDeclarado = Number.isFinite(efectivoDeclaradoRaw) ? roundMonto2(efectivoDeclaradoRaw) : Number.NaN;
+    let declaracionMetodos = normalizeDeclaracionMetodosCaja(
+      req.body?.declaracion_metodos
+        ?? req.body?.declaracion_por_metodo
+        ?? req.body?.montos_por_metodo
+        ?? {}
+    );
+    if (Number.isFinite(efectivoDeclarado)) {
+      declaracionMetodos.EFECTIVO = efectivoDeclarado;
+    }
     const umbralAlerta = Math.max(0, roundMonto2(parseMonto(req.body?.umbral_alerta, CAJA_CIERRE_ALERTA_UMBRAL)));
     const observacion = normalizeLimitedText(req.body?.observacion, 500) || null;
 
@@ -16756,6 +17220,7 @@ app.post("/caja/cierre", async (req, res) => {
          id_conteo,
          creado_en,
          monto_efectivo,
+         declaracion_metodos_json,
          observacion,
          id_usuario
        FROM caja_conteos_efectivo
@@ -16772,6 +17237,7 @@ app.post("/caja/cierre", async (req, res) => {
          id_conteo,
          creado_en,
          monto_efectivo,
+         declaracion_metodos_json,
          observacion,
          id_usuario,
          estado
@@ -16784,10 +17250,16 @@ app.post("/caja/cierre", async (req, res) => {
     );
     const conteoUltimoHoyRow = conteoUltimoHoy.rows[0] || null;
     if ((!Number.isFinite(efectivoDeclarado) || efectivoDeclarado < 0) && conteoPendienteRow) {
-      efectivoDeclarado = roundMonto2(parseMonto(conteoPendienteRow.monto_efectivo, Number.NaN));
+      declaracionMetodos = normalizeDeclaracionMetodosCaja(conteoPendienteRow.declaracion_metodos_json || {
+        EFECTIVO: conteoPendienteRow.monto_efectivo
+      });
+      efectivoDeclarado = roundMonto2(parseMonto(declaracionMetodos.EFECTIVO, Number.NaN));
     }
     if ((!Number.isFinite(efectivoDeclarado) || efectivoDeclarado < 0) && conteoUltimoHoyRow) {
-      efectivoDeclarado = roundMonto2(parseMonto(conteoUltimoHoyRow.monto_efectivo, Number.NaN));
+      declaracionMetodos = normalizeDeclaracionMetodosCaja(conteoUltimoHoyRow.declaracion_metodos_json || {
+        EFECTIVO: conteoUltimoHoyRow.monto_efectivo
+      });
+      efectivoDeclarado = roundMonto2(parseMonto(declaracionMetodos.EFECTIVO, Number.NaN));
     }
 
     const existente = await client.query(
@@ -16806,9 +17278,13 @@ app.post("/caja/cierre", async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(400).json({ error: "Efectivo declarado invalido." });
     }
+    declaracionMetodos.EFECTIVO = efectivoDeclarado;
+    const totalDeclarado = sumDeclaracionMetodosCaja(declaracionMetodos);
     const resumen = await construirResumenCaja(tipo, fecha);
     const totalSistema = roundMonto2(parseMonto(resumen?.total, 0));
-    const desviacion = roundMonto2(efectivoDeclarado - totalSistema);
+    const totalesSistemaMetodos = normalizeDeclaracionMetodosCaja(resumen?.totales_por_metodo || {});
+    const desviacionesMetodos = buildDesviacionesMetodosCaja(declaracionMetodos, totalesSistemaMetodos);
+    const desviacion = roundMonto2(totalDeclarado - totalSistema);
     const alerta = Math.abs(desviacion) > umbralAlerta + 0.001;
     const rango = await obtenerRangoCaja(tipo, fecha);
 
@@ -16821,10 +17297,14 @@ app.post("/caja/cierre", async (req, res) => {
         desde,
         hasta_exclusivo,
         total_sistema,
+        total_declarado,
         efectivo_declarado,
         desviacion,
         alerta_desviacion_sn,
         cierre_bloquea_sn,
+        declaracion_metodos_json,
+        totales_metodos_json,
+        desviaciones_metodos_json,
         observacion
     `;
     let row = null;
@@ -16835,11 +17315,15 @@ app.post("/caja/cierre", async (req, res) => {
              desde = $3::date,
              hasta_exclusivo = $4::date,
              total_sistema = $5,
-             efectivo_declarado = $6,
-             desviacion = $7,
-             alerta_desviacion_sn = $8,
+             total_declarado = $6,
+             efectivo_declarado = $7,
+             desviacion = $8,
+             alerta_desviacion_sn = $9,
              cierre_bloquea_sn = 'S',
-             observacion = $9
+             declaracion_metodos_json = $10::jsonb,
+             totales_metodos_json = $11::jsonb,
+             desviaciones_metodos_json = $12::jsonb,
+             observacion = $13
          WHERE id_cierre = $1
          ${sqlCommonReturning}`,
         [
@@ -16848,9 +17332,13 @@ app.post("/caja/cierre", async (req, res) => {
           rango?.desde || fecha,
           rango?.hasta || fecha,
           totalSistema,
+          totalDeclarado,
           efectivoDeclarado,
           desviacion,
           alerta ? "S" : "N",
+          JSON.stringify(declaracionMetodos),
+          JSON.stringify(totalesSistemaMetodos),
+          JSON.stringify(desviacionesMetodos),
           observacion
         ]
       );
@@ -16864,13 +17352,17 @@ app.post("/caja/cierre", async (req, res) => {
           desde,
           hasta_exclusivo,
           total_sistema,
+          total_declarado,
           efectivo_declarado,
           desviacion,
           alerta_desviacion_sn,
           cierre_bloquea_sn,
+          declaracion_metodos_json,
+          totales_metodos_json,
+          desviaciones_metodos_json,
           observacion
         )
-        VALUES ($1, $2, $3::date, $4::date, $5::date, $6, $7, $8, $9, 'S', $10)
+        VALUES ($1, $2, $3::date, $4::date, $5::date, $6, $7, $8, $9, $10, 'S', $11::jsonb, $12::jsonb, $13::jsonb, $14)
         ${sqlCommonReturning}`,
         [
           req.user?.id_usuario || null,
@@ -16879,9 +17371,13 @@ app.post("/caja/cierre", async (req, res) => {
           rango?.desde || fecha,
           rango?.hasta || fecha,
           totalSistema,
+          totalDeclarado,
           efectivoDeclarado,
           desviacion,
           alerta ? "S" : "N",
+          JSON.stringify(declaracionMetodos),
+          JSON.stringify(totalesSistemaMetodos),
+          JSON.stringify(desviacionesMetodos),
           observacion
         ]
       );
@@ -16909,7 +17405,7 @@ app.post("/caja/cierre", async (req, res) => {
     await registrarAuditoria(
       client,
       "CAJA_CIERRE_REGISTRADO",
-      `id_cierre=${row.id_cierre}; tipo=${tipo}; fecha=${fecha}; total_sistema=${totalSistema.toFixed(2)}; efectivo=${efectivoDeclarado.toFixed(2)}; desviacion=${desviacion.toFixed(2)}; alerta=${alerta ? "S" : "N"}; ip=${ip}`,
+      `id_cierre=${row.id_cierre}; tipo=${tipo}; fecha=${fecha}; total_sistema=${totalSistema.toFixed(2)}; total_declarado=${totalDeclarado.toFixed(2)}; efectivo=${efectivoDeclarado.toFixed(2)}; desviacion=${desviacion.toFixed(2)}; alerta=${alerta ? "S" : "N"}; ip=${ip}`,
       usuarioAuditoria
     );
 
@@ -16947,11 +17443,15 @@ app.post("/caja/cierre", async (req, res) => {
           hasta_exclusivo: row.hasta_exclusivo
         },
         total_sistema: parseMonto(row.total_sistema, 0),
+        total_declarado: parseMonto(row.total_declarado, 0),
         efectivo_declarado: parseMonto(row.efectivo_declarado, 0),
         desviacion: parseMonto(row.desviacion, 0),
         umbral_alerta: umbralAlerta,
         alerta_desviacion: row.alerta_desviacion_sn === "S",
         cierre_bloquea: row.cierre_bloquea_sn === "S",
+        declaracion_metodos: row.declaracion_metodos_json || declaracionMetodos,
+        totales_metodos: row.totales_metodos_json || totalesSistemaMetodos,
+        desviaciones_metodos: row.desviaciones_metodos_json || desviacionesMetodos,
         observacion: row.observacion || null,
         conteo_aplicado: conteoAplicado,
         conteos_aplicados: Number(conteosAplicados.rows.length || 0)
@@ -20598,17 +21098,19 @@ const buildReimpresionSeleccionRows = async (client, {
 app.post("/admin/ui/landing-background", authenticateToken, requireSuperAdmin, uploadLandingBackgroundSingle("background"), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: "Debe adjuntar una imagen para el fondo." });
+      return res.status(400).json({ error: "Debe adjuntar una imagen o video para el fondo." });
     }
     if (!isLandingBackgroundTipoPermitido(req.file)) {
       cleanupUploadedTempFile(req.file);
       return res.status(400).json({
-        error: "Formato de imagen no permitido. Use JPG, PNG, WEBP o GIF."
+        error: "Formato de fondo no permitido. Use JPG, PNG, WEBP, GIF, MP4, WEBM, MOV o M4V."
       });
     }
 
+    const mediaType = inferLandingBackgroundMediaType(req.file.filename || req.file.originalname);
     const nextSettings = writeLandingUiSettings({
       background_filename: req.file.filename,
+      background_media_type: mediaType,
       updated_at: new Date().toISOString()
     });
     cleanupLandingBackgroundFiles(req.file.filename);
@@ -20629,7 +21131,7 @@ app.post("/admin/ui/landing-background", authenticateToken, requireSuperAdmin, u
 app.delete("/admin/ui/landing-background", authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
     cleanupLandingBackgroundFiles("");
-    writeLandingUiSettings({ background_filename: "", updated_at: "" });
+    writeLandingUiSettings({ background_filename: "", background_media_type: "", updated_at: "" });
     return res.json({
       ok: true,
       mensaje: "Fondo del inicio restaurado al predeterminado.",
@@ -21620,6 +22122,14 @@ const registrarAutoCierreCajaDiario = async () => {
 
     const resumen = await construirResumenCaja("diario", fechaHoy);
     const totalSistema = roundMonto2(parseMonto(resumen?.total, 0));
+    const totalesSistemaMetodos = normalizeDeclaracionMetodosCaja(resumen?.totales_por_metodo || {});
+    let totalDeclarado = sumDeclaracionMetodosCaja(totalesSistemaMetodos);
+    if (totalDeclarado <= 0 && totalSistema > 0) {
+      totalesSistemaMetodos[METODOS_PAGO_CAJA.EFECTIVO] = totalSistema;
+      totalDeclarado = totalSistema;
+    }
+    const desviacionesMetodos = buildDesviacionesMetodosCaja(totalesSistemaMetodos, totalesSistemaMetodos);
+    const efectivoDeclarado = roundMonto2(parseMonto(totalesSistemaMetodos?.[METODOS_PAGO_CAJA.EFECTIVO], 0));
     const rango = await obtenerRangoCaja("diario", fechaHoy);
     const insertAuto = await client.query(
       `INSERT INTO caja_cierres (
@@ -21629,12 +22139,16 @@ const registrarAutoCierreCajaDiario = async () => {
         desde,
         hasta_exclusivo,
         total_sistema,
+        total_declarado,
         efectivo_declarado,
         desviacion,
         alerta_desviacion_sn,
+        declaracion_metodos_json,
+        totales_metodos_json,
+        desviaciones_metodos_json,
         observacion
       )
-      VALUES ($1, 'diario', $2::date, $3::date, $4::date, $5, $6, $7, 'N', $8)
+      VALUES ($1, 'diario', $2::date, $3::date, $4::date, $5, $6, $7, $8, 'N', $9::jsonb, $10::jsonb, $11::jsonb, $12)
       RETURNING id_cierre`,
       [
         null,
@@ -21642,8 +22156,12 @@ const registrarAutoCierreCajaDiario = async () => {
         rango?.desde || fechaHoy,
         rango?.hasta || fechaHoy,
         totalSistema,
-        totalSistema,
+        totalDeclarado,
+        efectivoDeclarado,
         0,
+        JSON.stringify(totalesSistemaMetodos),
+        JSON.stringify(totalesSistemaMetodos),
+        JSON.stringify(desviacionesMetodos),
         `AUTO_CIERRE_${CAJA_AUTO_CIERRE_HORA}`
       ]
     );
@@ -21665,7 +22183,7 @@ const registrarAutoCierreCajaDiario = async () => {
     await registrarAuditoria(
       client,
       "CAJA_CIERRE_AUTO",
-      `fecha=${fechaHoy}; total_sistema=${totalSistema.toFixed(2)}; hora_programada=${CAJA_AUTO_CIERRE_HORA}`,
+      `fecha=${fechaHoy}; total_sistema=${totalSistema.toFixed(2)}; total_declarado=${totalDeclarado.toFixed(2)}; hora_programada=${CAJA_AUTO_CIERRE_HORA}`,
       "SISTEMA"
     );
     await client.query("COMMIT");

@@ -74,6 +74,26 @@ const normalizeTipoPagoReporte = (value) => {
   const raw = String(value || "").trim().toUpperCase();
   return raw || "CAJA";
 };
+const METODOS_PAGO_REPORTE = [
+  { value: "EFECTIVO", label: "Efectivo" },
+  { value: "TARJETA", label: "Tarjeta / POS" },
+  { value: "YAPE", label: "Yape" },
+  { value: "TRANSFERENCIA", label: "Transferencia" }
+];
+const METODOS_PAGO_FILTRO_REPORTE = METODOS_PAGO_REPORTE.filter((metodo) => metodo.value === "EFECTIVO");
+const normalizeMetodoPagoReporte = (value) => {
+  const raw = String(value || "").trim().toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "_");
+  if (["TARJETA", "TARJETA_CREDITO", "TARJETA_DEBITO", "POS"].includes(raw)) return "TARJETA";
+  if (["YAPE", "PLIN"].includes(raw)) return "YAPE";
+  if (["TRANSFERENCIA", "TRANSFERENCIA_BANCARIA", "DEPOSITO"].includes(raw)) return "TRANSFERENCIA";
+  return "EFECTIVO";
+};
+const getMetodoPagoReporteLabel = (value) => (
+  METODOS_PAGO_REPORTE.find((metodo) => metodo.value === normalizeMetodoPagoReporte(value))?.label || "Efectivo"
+);
 const normalizeSearchText = (value) => String(value || "")
   .normalize("NFD")
   .replace(/[\u0300-\u036f]/g, "")
@@ -101,6 +121,7 @@ const buildResumenLocalDesdeMovimientos = (rows = [], reporteTipo = "diario") =>
   const temporalMap = new Map();
   const topMap = new Map();
   const periodoMap = new Map();
+  const metodoMap = new Map();
   let totalGeneral = 0;
 
   items.forEach((row) => {
@@ -112,6 +133,17 @@ const buildResumenLocalDesdeMovimientos = (rows = [], reporteTipo = "diario") =>
 
     const periodoKey = buildPeriodoCobroLabel(row);
     periodoMap.set(periodoKey, (periodoMap.get(periodoKey) || 0) + monto);
+
+    const metodoKey = normalizeMetodoPagoReporte(row?.metodo_pago);
+    const currentMetodo = metodoMap.get(metodoKey) || {
+      metodo_pago: metodoKey,
+      label: getMetodoPagoReporteLabel(metodoKey),
+      cantidad: 0,
+      total: 0
+    };
+    currentMetodo.cantidad += 1;
+    currentMetodo.total += monto;
+    metodoMap.set(metodoKey, currentMetodo);
 
     const topKey = `${row?.id_contribuyente || 0}|${row?.codigo_municipal || ""}|${row?.nombre_completo || ""}`;
     const currentTop = topMap.get(topKey) || {
@@ -139,7 +171,13 @@ const buildResumenLocalDesdeMovimientos = (rows = [], reporteTipo = "diario") =>
       })),
     recaudacionPeriodo: Array.from(periodoMap.entries())
       .map(([periodo, total]) => ({ periodo, total: Number(total || 0) }))
-      .sort((a, b) => String(a.periodo || "").localeCompare(String(b.periodo || "")))
+      .sort((a, b) => String(a.periodo || "").localeCompare(String(b.periodo || ""))),
+    resumenMetodos: METODOS_PAGO_REPORTE.map((metodo) => metodoMap.get(metodo.value) || {
+      metodo_pago: metodo.value,
+      label: metodo.label,
+      cantidad: 0,
+      total: 0
+    }).filter((row) => Number(row.total || 0) > 0 || Number(row.cantidad || 0) > 0)
   };
 };
 
@@ -194,6 +232,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
   const [paginaMovimientos, setPaginaMovimientos] = useState(1);
   const [reporte, setReporte] = useState(EMPTY_REPORTE);
   const [busquedaMovimiento, setBusquedaMovimiento] = useState("");
+  const [metodoPagoFiltro, setMetodoPagoFiltro] = useState("TODOS");
   const busquedaMovimientoDeferred = useDeferredValue(busquedaMovimiento);
   const [cargandoAlertas, setCargandoAlertas] = useState(false);
   const [cargandoAdmin, setCargandoAdmin] = useState(false);
@@ -252,6 +291,9 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
           ...(reporteTipo === "proyeccion" ? {
             meses_proyeccion: mesesProyeccion
           } : {}),
+          ...(metodoPagoFiltro !== "TODOS" ? {
+            metodo_pago: metodoPagoFiltro
+          } : {}),
           page: paginaMovimientos,
           page_size: MOVIMIENTOS_PAGE_SIZE
         },
@@ -265,7 +307,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     } finally {
       if (!signal?.aborted) setCargando(false);
     }
-  }, [esAdminPrincipal, fechaConsulta, fechaDesdeRango, fechaHastaRango, includeHistoricalValid, isProyeccion, mesesProyeccion, paginaMovimientos, reporteTipo]);
+  }, [esAdminPrincipal, fechaConsulta, fechaDesdeRango, fechaHastaRango, includeHistoricalValid, isProyeccion, mesesProyeccion, metodoPagoFiltro, paginaMovimientos, reporteTipo]);
 
   const cargarAlertasRiesgo = useCallback(async (signal) => {
     try {
@@ -337,6 +379,9 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
           } : {}),
           ...(reporteTipo === "proyeccion" ? {
             meses_proyeccion: mesesProyeccion
+          } : {}),
+          ...(metodoPagoFiltro !== "TODOS" ? {
+            metodo_pago: metodoPagoFiltro
           } : {})
         },
         responseType: "blob",
@@ -362,7 +407,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
 
   useEffect(() => {
     setPaginaMovimientos(1);
-  }, [reporteTipo, fechaConsulta, fechaDesdeRango, fechaHastaRango, mesesProyeccion]);
+  }, [reporteTipo, fechaConsulta, fechaDesdeRango, fechaHastaRango, mesesProyeccion, metodoPagoFiltro]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -421,7 +466,11 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
       row?.id_predio,
       row?.codigo_recibo,
       row?.numero_recibo,
-      row?.codigo_impresion
+      row?.codigo_impresion,
+      row?.metodo_pago,
+      getMetodoPagoReporteLabel(row?.metodo_pago),
+      row?.referencia_operacion,
+      row?.estado_confirmacion
     ].filter(Boolean).join(" "))
   })), [movimientos]);
   const movimientosFiltrados = useMemo(() => {
@@ -448,6 +497,30 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
       ? Number(resumenLocal.totalGeneral || 0)
       : (reporte.total_general || reporte.total || 0)
   );
+  const resumenMetodosPago = useMemo(() => {
+    if (isProyeccion) return [];
+    if (resumenLocal?.resumenMetodos) return resumenLocal.resumenMetodos;
+    const map = new Map();
+    movimientosFiltrados.forEach((row) => {
+      const metodo = normalizeMetodoPagoReporte(row?.metodo_pago);
+      const monto = Number(row?.monto_pagado || 0) || 0;
+      const current = map.get(metodo) || {
+        metodo_pago: metodo,
+        label: getMetodoPagoReporteLabel(metodo),
+        cantidad: 0,
+        total: 0
+      };
+      current.cantidad += 1;
+      current.total += monto;
+      map.set(metodo, current);
+    });
+    return METODOS_PAGO_REPORTE.map((metodo) => map.get(metodo.value) || {
+      metodo_pago: metodo.value,
+      label: metodo.label,
+      cantidad: 0,
+      total: 0
+    }).filter((row) => Number(row.total || 0) > 0 || Number(row.cantidad || 0) > 0);
+  }, [isProyeccion, movimientosFiltrados, resumenLocal]);
   const totalComponentesReporteApi = Number(reporte?.total_componentes || 0);
   const diferenciaDesgloseApi = Number(reporte?.diferencia_desglose || 0);
   const alertasResumen = alertasRiesgo?.resumen || {};
@@ -698,6 +771,21 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                   />
                 </div>
               )}
+              {!isProyeccion && (
+                <div className="col-12 col-md-3 col-lg-2">
+                  <label className="form-label small mb-1">Medio de pago</label>
+                  <select
+                    className="form-select form-select-sm"
+                    value={metodoPagoFiltro}
+                    onChange={(e) => setMetodoPagoFiltro(e.target.value || "TODOS")}
+                  >
+                    <option value="TODOS">Todos</option>
+                    {METODOS_PAGO_FILTRO_REPORTE.map((metodo) => (
+                      <option key={`filtro-${metodo.value}`} value={metodo.value}>{metodo.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               {isProyeccion && (
                 <div className="col-12 col-md-3 col-lg-2">
                   <label className="form-label small mb-1">Meses a proyectar</label>
@@ -785,6 +873,23 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                 </div>
               )}
             </div>
+
+            {!isProyeccion && resumenMetodosPago.length > 0 && (
+              <div className="border rounded p-3 mb-3 no-print">
+                <div className="fw-bold mb-2">Resumen por medio de pago</div>
+                <div className="row g-2">
+                  {resumenMetodosPago.map((row) => (
+                    <div className="col-12 col-sm-6 col-lg-3" key={`metodo-card-${row.metodo_pago}`}>
+                      <div className="border rounded p-2 h-100">
+                        <div className="small text-muted">{row.label || getMetodoPagoReporteLabel(row.metodo_pago)}</div>
+                        <div className="fw-bold">S/. {formatMoney(row.total || 0)}</div>
+                        <div className="small text-muted">{Number(row.cantidad || 0)} movimiento(s)</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="row g-3 mb-3 no-print">
               <div className="col-12 col-lg-4">
@@ -881,6 +986,12 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                 </div>
               </div>
               <hr className="mt-1 mb-2" />
+              {!isProyeccion && resumenMetodosPago.length > 0 && (
+                <div className="mb-2" style={{ fontSize: "12px" }}>
+                  <strong>Resumen por medio de pago:</strong>{" "}
+                  {resumenMetodosPago.map((row) => `${row.label || getMetodoPagoReporteLabel(row.metodo_pago)} S/. ${formatMontoReporte(row.total || 0)}`).join(" | ")}
+                </div>
+              )}
               {isProyeccion ? (
                 <>
                   <div className="mb-3" style={{ fontSize: "12px" }}>
@@ -995,7 +1106,11 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                                           {contrib.items.map((item) => (
                                             <tr key={`item-${item.id_pago}`}>
                                               <td style={{ width: "34%" }}>
-                                                <span className="small text-muted">Cobro: {String(item?.hora || "").slice(0, 5) || "--:--"}</span>
+                                                <span className="small text-muted">
+                                                  Cobro: {String(item?.hora || "").slice(0, 5) || "--:--"} | {getMetodoPagoReporteLabel(item?.metodo_pago)}
+                                                  {item?.referencia_operacion ? ` | Ref: ${item.referencia_operacion}` : ""}
+                                                  {String(item?.estado_confirmacion || "").toUpperCase() !== "CONFIRMADO" ? ` | ${item.estado_confirmacion}` : ""}
+                                                </span>
                                               </td>
                                               <td className="text-center" style={{ width: "14%" }}>{item.numero_recibo || item.codigo_impresion || "-"}</td>
                                               <td className="text-center" style={{ width: "7%" }}>{item.anio || "-"}</td>

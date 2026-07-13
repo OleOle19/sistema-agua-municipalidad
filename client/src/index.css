@@ -61,6 +61,7 @@ body {
 }
 
 .municipal-backdrop__image,
+.municipal-backdrop__video,
 .municipal-backdrop__canvas,
 .municipal-backdrop__placeholder {
   position: absolute;
@@ -71,6 +72,14 @@ body {
 }
 
 .municipal-backdrop__image {
+  object-fit: cover;
+  object-position: center center;
+  user-select: none;
+  background: transparent !important;
+  z-index: 1;
+}
+
+.municipal-backdrop__video {
   object-fit: cover;
   object-position: center center;
   user-select: none;

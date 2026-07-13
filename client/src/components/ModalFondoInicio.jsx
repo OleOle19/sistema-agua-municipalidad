@@ -2,10 +2,61 @@ import { useEffect, useMemo, useState } from "react";
 import api, { API_BASE_URL } from "../api";
 
 const PUBLIC_SETTINGS_URL = `${API_BASE_URL}/ui/landing-settings-public`;
-const MAX_FILE_BYTES = 12 * 1024 * 1024;
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_FILE_MB = Math.round(MAX_FILE_BYTES / (1024 * 1024));
+const SUPPORTED_BACKGROUND_LABEL = "JPG, PNG, WEBP, GIF, MP4, WEBM, MOV o M4V";
+
+const toAbsoluteMediaUrl = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `${API_BASE_URL}${raw.startsWith("/") ? raw : `/${raw}`}`;
+};
+
+const inferMediaTypeFromName = (value = "") => {
+  const cleanName = String(value || "").split("?")[0].split("#")[0].toLowerCase();
+  if (/\.(mp4|webm|mov|m4v)$/i.test(cleanName)) return "video";
+  if (/\.(jpe?g|png|webp|gif)$/i.test(cleanName)) return "image";
+  return "";
+};
+
+const normalizeMediaType = (value = "", mediaUrl = "") => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "video" || raw === "image") return raw;
+  return inferMediaTypeFromName(mediaUrl) || "image";
+};
+
+const getFileMediaType = (file) => {
+  const mime = String(file?.type || "").trim().toLowerCase();
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("image/")) return "image";
+  return inferMediaTypeFromName(file?.name);
+};
+
+const buildConfigFromPayload = (payload = {}) => {
+  const mediaUrl = String(payload?.media_url || payload?.video_url || payload?.image_url || "").trim();
+  const mediaType = normalizeMediaType(payload?.media_type, mediaUrl);
+  return {
+    media_url: mediaUrl,
+    media_type: mediaType,
+    image_url: String(payload?.image_url || "").trim(),
+    video_url: String(payload?.video_url || "").trim(),
+    using_default: Boolean(payload?.using_default),
+    updated_at: String(payload?.updated_at || "").trim()
+  };
+};
+
+const DEFAULT_CONFIG = {
+  media_url: "",
+  media_type: "image",
+  image_url: "",
+  video_url: "",
+  using_default: true,
+  updated_at: ""
+};
 
 export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlash }) {
-  const [config, setConfig] = useState({ image_url: "", using_default: true, updated_at: "" });
+  const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -20,11 +71,7 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
         if (!response.ok) throw new Error("No se pudo cargar la configuracion actual.");
         const payload = await response.json();
         if (!isMounted) return;
-        setConfig({
-          image_url: String(payload?.image_url || "").trim(),
-          using_default: Boolean(payload?.using_default),
-          updated_at: String(payload?.updated_at || "").trim()
-        });
+        setConfig(buildConfigFromPayload(payload));
       } catch (error) {
         if (!isMounted) return;
         setErrorLocal(error?.message || "No se pudo cargar el fondo actual.");
@@ -40,9 +87,13 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
 
   const previewUrl = useMemo(() => {
     if (selectedFile) return URL.createObjectURL(selectedFile);
-    const currentUrl = String(config?.image_url || "").trim();
-    return currentUrl ? `${API_BASE_URL}${currentUrl}` : "";
-  }, [config?.image_url, selectedFile]);
+    return toAbsoluteMediaUrl(config?.media_url);
+  }, [config?.media_url, selectedFile]);
+
+  const previewMediaType = useMemo(() => {
+    if (selectedFile) return getFileMediaType(selectedFile) || "image";
+    return normalizeMediaType(config?.media_type, config?.media_url);
+  }, [config?.media_type, config?.media_url, selectedFile]);
 
   useEffect(() => {
     return () => {
@@ -63,13 +114,17 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
       setSelectedFile(null);
       return;
     }
-    if (!String(file.type || "").startsWith("image/")) {
-      setErrorLocal("Seleccione una imagen valida (JPG, PNG, WEBP o GIF).");
+
+    const nextMediaType = getFileMediaType(file);
+    if (nextMediaType !== "image" && nextMediaType !== "video") {
+      setSelectedFile(null);
+      setErrorLocal(`Seleccione una imagen o video valido (${SUPPORTED_BACKGROUND_LABEL}).`);
       event.target.value = "";
       return;
     }
     if (Number(file.size || 0) > MAX_FILE_BYTES) {
-      setErrorLocal("La imagen excede el limite de 12 MB.");
+      setSelectedFile(null);
+      setErrorLocal(`El archivo excede el limite de ${MAX_FILE_MB} MB.`);
       event.target.value = "";
       return;
     }
@@ -78,7 +133,7 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
 
   const handleGuardar = async () => {
     if (!selectedFile) {
-      setErrorLocal("Seleccione una imagen antes de guardar.");
+      setErrorLocal("Seleccione una imagen o video antes de guardar.");
       return;
     }
     try {
@@ -90,16 +145,12 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
         headers: { "Content-Type": "multipart/form-data" }
       });
       const payload = response?.data || {};
-      setConfig({
-        image_url: String(payload?.image_url || "").trim(),
-        using_default: Boolean(payload?.using_default),
-        updated_at: String(payload?.updated_at || "").trim()
-      });
+      setConfig(buildConfigFromPayload(payload));
       setSelectedFile(null);
       onFlash?.("success", payload?.mensaje || "Fondo del inicio actualizado.");
       cerrarModal?.();
     } catch (error) {
-      setErrorLocal(error?.response?.data?.error || "No se pudo guardar la nueva imagen.");
+      setErrorLocal(error?.response?.data?.error || "No se pudo guardar el nuevo fondo.");
     } finally {
       setSaving(false);
     }
@@ -111,16 +162,12 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
       setErrorLocal("");
       const response = await api.delete("/admin/ui/landing-background");
       const payload = response?.data || {};
-      setConfig({
-        image_url: "",
-        using_default: true,
-        updated_at: ""
-      });
+      setConfig(DEFAULT_CONFIG);
       setSelectedFile(null);
-      onFlash?.("info", payload?.mensaje || "Se restauro la imagen predeterminada.");
+      onFlash?.("info", payload?.mensaje || "Se restauro el fondo predeterminado.");
       cerrarModal?.();
     } catch (error) {
-      setErrorLocal(error?.response?.data?.error || "No se pudo restaurar la imagen predeterminada.");
+      setErrorLocal(error?.response?.data?.error || "No se pudo restaurar el fondo predeterminado.");
     } finally {
       setSaving(false);
     }
@@ -137,7 +184,7 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
 
           <div className="modal-body">
             <p className={`small mb-3 ${darkMode ? "text-light" : "text-muted"}`}>
-              Cambie la imagen del selector principal. La nueva imagen se aplicara para todos los usuarios.
+              Suba una imagen o un video para el selector principal. Si sube un video, se reproducira en bucle para todos los usuarios.
             </p>
 
             {errorLocal && (
@@ -157,37 +204,56 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
                     className="rounded border overflow-hidden"
                     style={{
                       minHeight: "240px",
-                      background: previewUrl
-                        ? `center / cover no-repeat url(${previewUrl})`
-                        : darkMode
-                          ? "linear-gradient(135deg, #0b1220, #10253a)"
-                          : "linear-gradient(135deg, #d9e8f5, #f7fafc)"
+                      background: darkMode
+                        ? "linear-gradient(135deg, #0b1220, #10253a)"
+                        : "linear-gradient(135deg, #d9e8f5, #f7fafc)"
                     }}
                   >
-                    {!previewUrl && (
+                    {previewUrl ? (
+                      previewMediaType === "video" ? (
+                        <video
+                          key={previewUrl}
+                          src={previewUrl}
+                          className="d-block w-100"
+                          style={{ minHeight: "240px", maxHeight: "360px", objectFit: "cover" }}
+                          autoPlay
+                          muted
+                          loop
+                          playsInline
+                          controls
+                        />
+                      ) : (
+                        <img
+                          src={previewUrl}
+                          alt="Vista previa del fondo"
+                          className="d-block w-100"
+                          style={{ minHeight: "240px", maxHeight: "360px", objectFit: "cover" }}
+                        />
+                      )
+                    ) : (
                       <div className={`d-flex align-items-center justify-content-center h-100 py-5 ${darkMode ? "text-light" : "text-muted"}`}>
-                        Usando imagen predeterminada del sistema
+                        Usando fondo predeterminado del sistema
                       </div>
                     )}
                   </div>
                 </div>
 
                 <div className="mb-3">
-                  <label className="form-label fw-semibold">Nueva imagen</label>
+                  <label className="form-label fw-semibold">Nueva imagen o video</label>
                   <input
                     type="file"
                     className="form-control"
-                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/quicktime,video/x-m4v,.mp4,.webm,.mov,.m4v"
                     onChange={handleFileChange}
                     disabled={saving}
                   />
                   <div className={`form-text ${darkMode ? "text-light" : ""}`}>
-                    Formatos permitidos: JPG, PNG, WEBP o GIF. Tamano maximo: 12 MB.
+                    Formatos permitidos: {SUPPORTED_BACKGROUND_LABEL}. Tamano maximo: {MAX_FILE_MB} MB.
                   </div>
                 </div>
 
                 <div className={`small ${darkMode ? "text-light" : "text-muted"}`}>
-                  Estado actual: {config.using_default ? "Predeterminado" : "Personalizado"}
+                  Estado actual: {config.using_default ? "Predeterminado" : `Personalizado (${previewMediaType === "video" ? "video en bucle" : "imagen"})`}
                 </div>
               </>
             )}
@@ -201,7 +267,7 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
               Restaurar predeterminado
             </button>
             <button type="button" className="btn btn-primary" onClick={handleGuardar} disabled={saving || loading || !selectedFile}>
-              {saving ? "Guardando..." : "Guardar imagen"}
+              {saving ? "Guardando..." : "Guardar fondo"}
             </button>
           </div>
         </div>

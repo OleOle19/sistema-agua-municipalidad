@@ -2,41 +2,59 @@ import { useEffect, useState } from "react";
 import { API_BASE_URL } from "../api";
 
 const LANDING_SETTINGS_PUBLIC_URL = `${API_BASE_URL}/ui/landing-settings-public`;
-const LANDING_BACKGROUND_CACHE_KEY = "landing_public_background_cache_v1";
+const LANDING_BACKGROUND_CACHE_KEY = "landing_public_background_cache_v2";
+const LANDING_BACKGROUND_OLD_CACHE_KEY = "landing_public_background_cache_v1";
 
-const toAbsoluteImageUrl = (value) => {
+const toAbsoluteMediaUrl = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
   if (/^https?:\/\//i.test(raw)) return raw;
   return `${API_BASE_URL}${raw.startsWith("/") ? raw : `/${raw}`}`;
 };
 
+const inferMediaTypeFromUrl = (value = "") => {
+  const cleanUrl = String(value || "").split("?")[0].split("#")[0].toLowerCase();
+  if (/\.(mp4|webm|mov|m4v)$/i.test(cleanUrl)) return "video";
+  return "image";
+};
+
+const normalizeMediaType = (value = "", mediaUrl = "") => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "video" || raw === "image") return raw;
+  return inferMediaTypeFromUrl(mediaUrl);
+};
+
 const readCachedBackground = () => {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.localStorage.getItem(LANDING_BACKGROUND_CACHE_KEY);
+    const raw = window.localStorage.getItem(LANDING_BACKGROUND_CACHE_KEY)
+      || window.localStorage.getItem(LANDING_BACKGROUND_OLD_CACHE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    const imageUrl = String(parsed?.imageUrl || "").trim();
-    if (!imageUrl) return null;
+    const mediaUrl = String(parsed?.mediaUrl || parsed?.imageUrl || "").trim();
+    if (!mediaUrl) return null;
+    const mediaType = normalizeMediaType(parsed?.mediaType, mediaUrl);
     return {
-      imageUrl,
-      hasCustomImage: true
+      mediaUrl,
+      mediaType,
+      hasCustomMedia: true
     };
   } catch {
     return null;
   }
 };
 
-const writeCachedBackground = (imageUrl) => {
+const writeCachedBackground = (mediaUrl, mediaType = "image") => {
   if (typeof window === "undefined") return;
   try {
-    if (!imageUrl) {
+    if (!mediaUrl) {
       window.localStorage.removeItem(LANDING_BACKGROUND_CACHE_KEY);
+      window.localStorage.removeItem(LANDING_BACKGROUND_OLD_CACHE_KEY);
       return;
     }
     window.localStorage.setItem(LANDING_BACKGROUND_CACHE_KEY, JSON.stringify({
-      imageUrl,
+      mediaUrl,
+      mediaType: normalizeMediaType(mediaType, mediaUrl),
       savedAt: Date.now()
     }));
   } catch {
@@ -45,15 +63,27 @@ const writeCachedBackground = (imageUrl) => {
 };
 
 export default function useLandingBackground(defaultImageUrl = "") {
-  const cached = readCachedBackground();
-  const [state, setState] = useState(() => ({
-    imageUrl: cached?.imageUrl || "",
-    hasCustomImage: Boolean(cached?.hasCustomImage),
-    isReady: Boolean(cached?.hasCustomImage)
-  }));
+  const [state, setState] = useState(() => {
+    const cached = readCachedBackground();
+    return {
+      mediaUrl: cached?.mediaUrl || "",
+      mediaType: cached?.mediaType || "image",
+      hasCustomMedia: Boolean(cached?.hasCustomMedia),
+      isReady: Boolean(cached?.hasCustomMedia)
+    };
+  });
 
   useEffect(() => {
     const controller = new AbortController();
+    const cached = readCachedBackground();
+    if (cached?.mediaUrl) {
+      setState({
+        mediaUrl: cached.mediaUrl,
+        mediaType: cached.mediaType,
+        hasCustomMedia: true,
+        isReady: true
+      });
+    }
 
     const load = async () => {
       try {
@@ -64,37 +94,42 @@ export default function useLandingBackground(defaultImageUrl = "") {
         });
         if (!response.ok) {
           setState((prev) => ({
-            imageUrl: prev.imageUrl || defaultImageUrl,
-            hasCustomImage: prev.hasCustomImage,
+            mediaUrl: prev.mediaUrl || defaultImageUrl,
+            mediaType: prev.mediaType || "image",
+            hasCustomMedia: prev.hasCustomMedia,
             isReady: true
           }));
           return;
         }
 
         const payload = await response.json();
-        const customImageUrl = toAbsoluteImageUrl(payload?.image_url);
+        const customMediaUrl = toAbsoluteMediaUrl(payload?.media_url || payload?.video_url || payload?.image_url);
+        const customMediaType = normalizeMediaType(payload?.media_type, customMediaUrl);
 
-        if (customImageUrl) {
-          writeCachedBackground(customImageUrl);
+        if (customMediaUrl) {
+          writeCachedBackground(customMediaUrl, customMediaType);
           setState({
-            imageUrl: customImageUrl,
-            hasCustomImage: true,
+            mediaUrl: customMediaUrl,
+            mediaType: customMediaType,
+            hasCustomMedia: true,
             isReady: true
           });
           return;
         }
 
-        writeCachedBackground("");
+        writeCachedBackground("", "image");
         setState({
-          imageUrl: defaultImageUrl,
-          hasCustomImage: false,
+          mediaUrl: defaultImageUrl,
+          mediaType: "image",
+          hasCustomMedia: false,
           isReady: true
         });
       } catch (error) {
         if (error?.name === "AbortError") return;
         setState((prev) => ({
-          imageUrl: prev.imageUrl || defaultImageUrl,
-          hasCustomImage: prev.hasCustomImage,
+          mediaUrl: prev.mediaUrl || defaultImageUrl,
+          mediaType: prev.mediaType || "image",
+          hasCustomMedia: prev.hasCustomMedia,
           isReady: true
         }));
       }
@@ -105,9 +140,14 @@ export default function useLandingBackground(defaultImageUrl = "") {
     return () => controller.abort();
   }, [defaultImageUrl]);
 
+  const mediaType = state.mediaType || "image";
+
   return {
-    resolvedImageUrl: state.imageUrl,
-    hasCustomImage: state.hasCustomImage,
+    resolvedMediaUrl: state.mediaUrl,
+    mediaType,
+    hasCustomMedia: state.hasCustomMedia,
+    resolvedImageUrl: mediaType === "image" ? state.mediaUrl : defaultImageUrl,
+    hasCustomImage: state.hasCustomMedia && mediaType === "image",
     isReady: state.isReady
   };
 }
