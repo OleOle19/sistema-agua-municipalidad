@@ -301,22 +301,59 @@ const ModalPago = ({
 
     setCargando(true);
     try {
-      await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`, {
+      const res = await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`, {
         cargo_reimpresion: 0,
         metodo_pago: metodoPago,
         referencia_operacion: referenciaPago,
         estado_confirmacion: estadoConfirmacion,
         observacion_pago: observacionPago
       });
+      const payload = res?.data || {};
+      const pagosAplicados = Array.isArray(payload?.pagos) ? payload.pagos : [];
+      const totalCobradoRespuesta = round2(toNum(
+        payload?.orden?.total_cobrado
+        ?? pagosAplicados.reduce((acc, pago) => acc + toNum(pago?.monto_cobrado ?? pago?.monto_pagado), 0)
+        ?? ordenSeleccionada.total_orden
+      ));
+      const ordenParaAnexo = pagosAplicados.length > 0
+        ? {
+          ...ordenSeleccionada,
+          total_orden: totalCobradoRespuesta,
+          items: pagosAplicados.map((pago) => {
+            const idPagoRecibo = Number(pago?.id_recibo || 0);
+            const original = (Array.isArray(ordenSeleccionada?.items) ? ordenSeleccionada.items : [])
+              .find((it) => Number(it?.id_recibo || 0) === idPagoRecibo);
+            const montoAplicado = round2(toNum(pago?.monto_cobrado ?? pago?.monto_pagado ?? original?.monto_autorizado));
+            return {
+              ...original,
+              ...pago,
+              id_recibo: idPagoRecibo || Number(original?.id_recibo || 0),
+              mes: Number(pago?.mes || original?.mes || 0),
+              anio: Number(pago?.anio || original?.anio || 0),
+              monto_autorizado: montoAplicado,
+              subtotal_agua: round2(toNum(pago?.subtotal_agua ?? original?.subtotal_agua)),
+              subtotal_desague: round2(toNum(pago?.subtotal_desague ?? original?.subtotal_desague)),
+              subtotal_limpieza: round2(toNum(pago?.subtotal_limpieza ?? original?.subtotal_limpieza)),
+              subtotal_admin: round2(toNum(pago?.subtotal_admin ?? original?.subtotal_admin))
+            };
+          })
+        }
+        : ordenSeleccionada;
+      const huboAjusteSaldo = pagosAplicados.some((pago) => Boolean(pago?.ajustado_al_saldo));
       if (typeof onImprimirAnexo === "function") {
-        onImprimirAnexo(buildDatosAnexoCaja(ordenSeleccionada, {
+        onImprimirAnexo(buildDatosAnexoCaja(ordenParaAnexo, {
           metodo_pago: metodoPago,
           metodo_label: metodoConfig.label,
           referencia_operacion: referenciaPago,
           estado_confirmacion: estadoConfirmacion
         }));
       }
-      showFlash("success", "Cobro registrado correctamente.");
+      showFlash(
+        huboAjusteSaldo ? "info" : "success",
+        huboAjusteSaldo
+          ? "Cobro registrado. Uno o más montos se ajustaron al saldo real del recibo para evitar sobrecobros."
+          : "Cobro registrado correctamente."
+      );
       alGuardar?.();
       cerrarModal?.();
     } catch (err) {

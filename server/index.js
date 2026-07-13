@@ -2713,6 +2713,34 @@ const parsePositiveMonto = (value) => {
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   return parsed;
 };
+const COBRO_MONTO_TOLERANCIA = 0.001;
+const resolveMontoCobroContraSaldo = (montoSolicitadoRaw, saldoDisponibleRaw) => {
+  const saldoDisponible = roundMonto2(Math.max(parseMonto(saldoDisponibleRaw, 0), 0));
+  const montoSolicitado = parsePositiveMonto(montoSolicitadoRaw);
+  if (saldoDisponible <= COBRO_MONTO_TOLERANCIA) {
+    return {
+      monto: 0,
+      saldo_disponible: saldoDisponible,
+      monto_solicitado: montoSolicitado,
+      ajustado_al_saldo: false
+    };
+  }
+  if (montoSolicitado <= 0) {
+    return {
+      monto: saldoDisponible,
+      saldo_disponible: saldoDisponible,
+      monto_solicitado: 0,
+      ajustado_al_saldo: false
+    };
+  }
+  const excedeSaldo = montoSolicitado > saldoDisponible + COBRO_MONTO_TOLERANCIA;
+  return {
+    monto: excedeSaldo ? saldoDisponible : roundMonto2(Math.min(montoSolicitado, saldoDisponible)),
+    saldo_disponible: saldoDisponible,
+    monto_solicitado: montoSolicitado,
+    ajustado_al_saldo: excedeSaldo
+  };
+};
 const parseOptionalTarifaMonto = (value) => {
   if (value === undefined || value === null) return null;
   const raw = String(value).trim();
@@ -12833,12 +12861,11 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(400).json({ error: `El recibo ${item.id_recibo} ya no tiene saldo pendiente.` });
       }
-      if (item.monto_autorizado > saldo + 0.001) {
+      const montoResolucion = resolveMontoCobroContraSaldo(item.monto_autorizado, saldo);
+      const montoAutorizado = montoResolucion.monto;
+      if (montoAutorizado <= 0) {
         await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: `Monto autorizado excede saldo del recibo ${item.id_recibo}.`,
-          saldo_disponible: saldo
-        });
+        return res.status(400).json({ error: `El recibo ${item.id_recibo} ya no tiene saldo pendiente.` });
       }
 
       let agua = parseSubtotalOrden(item.subtotal_agua);
@@ -12847,7 +12874,7 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
       let admin = parseSubtotalOrden(item.subtotal_admin);
       const componentesAsignados = allocateMontoByComponentPriority(
         { agua, desague, limpieza, admin },
-        item.monto_autorizado,
+        montoAutorizado,
         ["agua", "desague", "limpieza", "admin"]
       );
       agua = roundMonto2(componentesAsignados.agua);
@@ -12859,7 +12886,9 @@ app.post("/caja/ordenes-cobro", async (req, res) => {
         id_recibo: item.id_recibo,
         mes: parsePositiveInt(item.mes, 0) || Number(row.mes),
         anio: parsePositiveInt(item.anio, 0) || Number(row.anio),
-        monto_autorizado: roundMonto2(item.monto_autorizado),
+        monto_autorizado: montoAutorizado,
+        monto_solicitado: montoResolucion.monto_solicitado,
+        ajustado_al_saldo: montoResolucion.ajustado_al_saldo,
         saldo_al_emitir: saldo,
         subtotal_agua: agua,
         subtotal_desague: desague,
@@ -13490,19 +13519,28 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(400).json({ error: `Recibo ${item.id_recibo} no disponible para cobro.` });
       }
-      const monto = parsePositiveMonto(item.monto_autorizado);
       const saldoPrevio = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado_hasta_fecha, 0));
-      if (saldoPrevio <= 0) {
+      const saldoDisponibleActual = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado_actual, 0));
+      if (saldoDisponibleActual <= 0) {
         await client.query("ROLLBACK");
         return res.status(409).json({ error: `Recibo ${item.id_recibo} ya fue cancelado.` });
       }
-      if (monto > saldoPrevio + 0.001) {
+      const montoResolucion = resolveMontoCobroContraSaldo(item.monto_autorizado, saldoDisponibleActual);
+      const monto = montoResolucion.monto;
+      if (monto <= 0) {
         await client.query("ROLLBACK");
-        return res.status(409).json({
-          error: `Monto autorizado ya no coincide con saldo disponible para recibo ${item.id_recibo}.`,
-          saldo_disponible: saldoPrevio
-        });
+        return res.status(409).json({ error: `Recibo ${item.id_recibo} ya fue cancelado.` });
       }
+      const componentesAplicados = allocateMontoByComponentPriority(
+        {
+          agua: parseSubtotalOrden(item.subtotal_agua),
+          desague: parseSubtotalOrden(item.subtotal_desague),
+          limpieza: parseSubtotalOrden(item.subtotal_limpieza),
+          admin: parseSubtotalOrden(item.subtotal_admin)
+        },
+        monto,
+        ["agua", "desague", "limpieza", "admin"]
+      );
 
       await client.query(
         `INSERT INTO pagos (
@@ -13531,6 +13569,8 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
           JSON.stringify({
             origen: "ORDEN_COBRO",
             id_orden: idOrden,
+            monto_solicitado: montoResolucion.monto_solicitado || null,
+            ajustado_al_saldo: Boolean(montoResolucion.ajustado_al_saldo),
             capturado_en: new Date().toISOString()
           })
         ]
@@ -13555,10 +13595,14 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         total_pagado_hasta_fecha: totalPagadoHastaFechaNuevo,
         saldo: saldoPosterior,
         estado: nuevoEstado,
-        subtotal_agua: parseSubtotalOrden(item.subtotal_agua),
-        subtotal_desague: parseSubtotalOrden(item.subtotal_desague),
-        subtotal_limpieza: parseSubtotalOrden(item.subtotal_limpieza),
-        subtotal_admin: parseSubtotalOrden(item.subtotal_admin)
+        monto_solicitado: montoResolucion.monto_solicitado,
+        ajustado_al_saldo: montoResolucion.ajustado_al_saldo,
+        saldo_disponible: saldoDisponibleActual,
+        saldo_hasta_fecha: saldoPrevio,
+        subtotal_agua: roundMonto2(componentesAplicados.agua),
+        subtotal_desague: roundMonto2(componentesAplicados.desague),
+        subtotal_limpieza: roundMonto2(componentesAplicados.limpieza),
+        subtotal_admin: roundMonto2(componentesAplicados.admin)
       });
       totalAplicado = roundMonto2(totalAplicado + monto);
       recibo.total_pagado_hasta_fecha = totalPagadoHastaFechaNuevo;
@@ -14124,19 +14168,11 @@ app.post("/pagos", async (req, res) => {
 
       const saldoPrevio = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado_hasta_fecha, 0));
       const saldoDisponibleActual = roundMonto2(Math.max(recibo.total_pagar - recibo.total_pagado_actual, 0));
-      const montoSolicitado = parsePositiveMonto(pagoReq.monto_pagado);
-      const monto = montoSolicitado > 0 ? montoSolicitado : saldoDisponibleActual;
+      const montoResolucion = resolveMontoCobroContraSaldo(pagoReq.monto_pagado, saldoDisponibleActual);
+      const monto = montoResolucion.monto;
       if (monto <= 0) {
         await client.query("ROLLBACK");
         return res.status(400).json({ error: `Recibo ${recibo.id_recibo} ya no tiene saldo pendiente.` });
-      }
-      if (monto > saldoDisponibleActual + 0.001) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: `El monto excede el saldo del recibo ${recibo.id_recibo}.`,
-          saldo_disponible: saldoDisponibleActual,
-          saldo_hasta_fecha: saldoPrevio
-        });
       }
 
       const pagoInsertado = await client.query(
@@ -14168,6 +14204,8 @@ app.post("/pagos", async (req, res) => {
           pagoMetodo.observacion_pago,
           JSON.stringify({
             origen: esCompensacion ? "COMPENSACION" : "CAJA_DIRECTA",
+            monto_solicitado: montoResolucion.monto_solicitado || null,
+            ajustado_al_saldo: Boolean(montoResolucion.ajustado_al_saldo),
             capturado_en: new Date().toISOString()
           })
         ]);
@@ -14271,6 +14309,16 @@ app.post("/pagos", async (req, res) => {
       );
 
       const saldo = roundMonto2(Math.max(recibo.total_pagar - totalPagadoActualNuevo, 0));
+      const componentesAplicados = allocateMontoByComponentPriority(
+        {
+          agua: recibo.subtotal_agua,
+          desague: recibo.subtotal_desague,
+          limpieza: recibo.subtotal_limpieza,
+          admin: recibo.subtotal_admin
+        },
+        monto,
+        ["agua", "desague", "limpieza", "admin"]
+      );
       pagosAplicados.push({
         id_pago: idPagoInsertado || null,
         id_recibo: recibo.id_recibo,
@@ -14286,10 +14334,14 @@ app.post("/pagos", async (req, res) => {
         estado: nuevoEstado,
         total_pagado: totalPagadoActualNuevo,
         total_pagado_hasta_fecha: totalPagadoHastaFechaNuevo,
-        subtotal_agua: recibo.subtotal_agua,
-        subtotal_desague: recibo.subtotal_desague,
-        subtotal_limpieza: recibo.subtotal_limpieza,
-        subtotal_admin: recibo.subtotal_admin,
+        monto_solicitado: montoResolucion.monto_solicitado,
+        ajustado_al_saldo: montoResolucion.ajustado_al_saldo,
+        saldo_disponible: saldoDisponibleActual,
+        saldo_hasta_fecha: saldoPrevio,
+        subtotal_agua: roundMonto2(componentesAplicados.agua),
+        subtotal_desague: roundMonto2(componentesAplicados.desague),
+        subtotal_limpieza: roundMonto2(componentesAplicados.limpieza),
+        subtotal_admin: roundMonto2(componentesAplicados.admin),
         saldo
       });
       recibo.total_pagado_hasta_fecha = totalPagadoHastaFechaNuevo;
@@ -14396,9 +14448,16 @@ app.post("/pagos", async (req, res) => {
         estado: p.estado,
         total_pagado: p.total_pagado,
         saldo: p.saldo,
+        id_pago: p.id_pago,
+        id_recibo: p.id_recibo,
+        monto_pagado: p.monto_pagado,
         metodo_pago: p.metodo_pago,
         referencia_operacion: p.referencia_operacion,
-        estado_confirmacion: p.estado_confirmacion
+        estado_confirmacion: p.estado_confirmacion,
+        ajustado_al_saldo: Boolean(p.ajustado_al_saldo),
+        monto_solicitado: p.monto_solicitado,
+        pago: p,
+        pagos: [p]
       });
     }
 

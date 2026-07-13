@@ -1774,6 +1774,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
         return;
       }
       anexoItems.push({
+        id_recibo: idRecibo,
         ...buildDetalleProrrateadoRecibo(row, monto),
         mes,
         anio,
@@ -1804,7 +1805,32 @@ function CajaMunicipalApp({ onBackToSelector }) {
         motivo: esCompensacion ? motivoCompensacion : undefined
       });
       showFlash("success", res?.data?.mensaje || "Cobro registrado correctamente.");
-      const anexoData = buildAnexoDataFromPagoDirecto(selectedContribuyenteAgua, anexoItems);
+      const pagosAplicadosServidor = Array.isArray(res?.data?.pagos) ? res.data.pagos : [];
+      const anexoItemsFinal = pagosAplicadosServidor.length > 0
+        ? pagosAplicadosServidor.map((pago) => {
+          const idPagoRecibo = Number(pago?.id_recibo || 0);
+          const mesPago = Number(pago?.mes || 0);
+          const anioPago = Number(pago?.anio || 0);
+          const rowOriginal = recibosPendientesCobroAgua.find((row) => {
+            const idRow = Number(row?.id_recibo || 0);
+            if (idPagoRecibo > 0 && idRow === idPagoRecibo) return true;
+            return Number(row?.mes || 0) === mesPago && Number(row?.anio || 0) === anioPago;
+          });
+          const montoAplicado = round2(parseMonto(pago?.monto_pagado ?? pago?.monto_cobrado ?? pago?.monto_autorizado));
+          return {
+            id_recibo: idPagoRecibo,
+            ...(rowOriginal ? buildDetalleProrrateadoRecibo(rowOriginal, montoAplicado) : buildDetalleProrrateadoRecibo(pago, montoAplicado)),
+            mes: mesPago || Number(rowOriginal?.mes || 0),
+            anio: anioPago || Number(rowOriginal?.anio || 0),
+            monto_pagado: montoAplicado
+          };
+        })
+        : anexoItems;
+      const huboAjusteSaldo = pagosAplicadosServidor.some((pago) => Boolean(pago?.ajustado_al_saldo));
+      if (huboAjusteSaldo) {
+        showFlash("info", "Uno o más montos se ajustaron al saldo real del recibo para evitar sobrecobros.");
+      }
+      const anexoData = buildAnexoDataFromPagoDirecto(selectedContribuyenteAgua, anexoItemsFinal);
       anexoData.pago = esCompensacion ? null : {
         metodo_pago: metodoPago,
         metodo_label: metodoConfig.label,

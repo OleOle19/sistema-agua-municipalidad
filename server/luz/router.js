@@ -203,6 +203,34 @@ const parseMonto = (value, fallback = 0) => {
   const parsed = Number.parseFloat(normalized);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+const LUZ_COBRO_MONTO_TOLERANCIA = 0.001;
+const resolveMontoCobroContraSaldo = (montoSolicitadoRaw, saldoDisponibleRaw) => {
+  const saldoDisponible = round2(Math.max(parseMonto(saldoDisponibleRaw, 0), 0));
+  const montoSolicitado = round2(Math.max(parseMonto(montoSolicitadoRaw, 0), 0));
+  if (saldoDisponible <= LUZ_COBRO_MONTO_TOLERANCIA) {
+    return {
+      monto: 0,
+      saldo_disponible: saldoDisponible,
+      monto_solicitado: montoSolicitado,
+      ajustado_al_saldo: false
+    };
+  }
+  if (montoSolicitado <= 0) {
+    return {
+      monto: saldoDisponible,
+      saldo_disponible: saldoDisponible,
+      monto_solicitado: 0,
+      ajustado_al_saldo: false
+    };
+  }
+  const excedeSaldo = montoSolicitado > saldoDisponible + LUZ_COBRO_MONTO_TOLERANCIA;
+  return {
+    monto: excedeSaldo ? saldoDisponible : round2(Math.min(montoSolicitado, saldoDisponible)),
+    saldo_disponible: saldoDisponible,
+    monto_solicitado: montoSolicitado,
+    ajustado_al_saldo: excedeSaldo
+  };
+};
 
 const parsePositiveInt = (value, fallback = 0) => {
   const parsed = Number.parseInt(String(value ?? ""), 10);
@@ -2861,16 +2889,19 @@ router.post("/ordenes-cobro", authenticateLuzToken, requireRole("ADMIN_SEC"), as
         await client.query("ROLLBACK");
         return res.status(400).json({ error: `Recibo ${item.id_recibo} sin saldo.` });
       }
-      const monto = round2(item.monto_autorizado > 0 ? item.monto_autorizado : saldo);
-      if (monto <= 0 || monto > saldo + 0.001) {
+      const montoResolucion = resolveMontoCobroContraSaldo(item.monto_autorizado, saldo);
+      const monto = montoResolucion.monto;
+      if (monto <= 0) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ error: `Monto autorizado inválido para recibo ${item.id_recibo}.` });
+        return res.status(400).json({ error: `Recibo ${item.id_recibo} sin saldo.` });
       }
       detalle.push({
         id_recibo: Number(item.id_recibo),
         anio: Number(row.anio),
         mes: Number(row.mes),
         monto_autorizado: monto,
+        monto_solicitado: montoResolucion.monto_solicitado,
+        ajustado_al_saldo: montoResolucion.ajustado_al_saldo,
         saldo_al_emitir: saldo,
         consumo_kwh: round2(parseMonto(row.consumo_kwh, 0)),
         energia_activa: round2(parseMonto(row.energia_activa, 0)),
@@ -3049,16 +3080,19 @@ router.post("/caja/ordenes-cobro", authenticateCajaMunicipalToken, requireRole("
         await client.query("ROLLBACK");
         return res.status(400).json({ error: `Recibo ${item.id_recibo} sin saldo.` });
       }
-      const monto = round2(item.monto_autorizado > 0 ? item.monto_autorizado : saldo);
-      if (monto <= 0 || monto > saldo + 0.001) {
+      const montoResolucion = resolveMontoCobroContraSaldo(item.monto_autorizado, saldo);
+      const monto = montoResolucion.monto;
+      if (monto <= 0) {
         await client.query("ROLLBACK");
-        return res.status(400).json({ error: `Monto autorizado inválido para recibo ${item.id_recibo}.` });
+        return res.status(400).json({ error: `Recibo ${item.id_recibo} sin saldo.` });
       }
       detalle.push({
         id_recibo: Number(item.id_recibo),
         anio: Number(row.anio),
         mes: Number(row.mes),
         monto_autorizado: monto,
+        monto_solicitado: montoResolucion.monto_solicitado,
+        ajustado_al_saldo: montoResolucion.ajustado_al_saldo,
         saldo_al_emitir: saldo,
         consumo_kwh: round2(parseMonto(row.consumo_kwh, 0)),
         energia_activa: round2(parseMonto(row.energia_activa, 0)),
@@ -3244,10 +3278,11 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, re
         await client.query("ROLLBACK");
         return res.status(409).json({ error: `Recibo ${item.id_recibo} ya pagado.` });
       }
-      const monto = round2(item.monto_autorizado > 0 ? item.monto_autorizado : saldo);
-      if (monto <= 0 || monto > saldo + 0.001) {
+      const montoResolucion = resolveMontoCobroContraSaldo(item.monto_autorizado, saldo);
+      const monto = montoResolucion.monto;
+      if (monto <= 0) {
         await client.query("ROLLBACK");
-        return res.status(409).json({ error: `Monto autorizado inválido para recibo ${item.id_recibo}.` });
+        return res.status(409).json({ error: `Recibo ${item.id_recibo} ya pagado.` });
       }
 
       await client.query(
@@ -3270,6 +3305,8 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, re
           JSON.stringify({
             origen: "caja_luz",
             id_orden: idOrden,
+            monto_solicitado: montoResolucion.monto_solicitado || null,
+            ajustado_al_saldo: Boolean(montoResolucion.ajustado_al_saldo),
             registrado_en: new Date().toISOString()
           })
         ]
@@ -3287,6 +3324,9 @@ router.post("/caja/ordenes-cobro/:id/cobrar", authenticateCajaMunicipalToken, re
         estado: nuevoEstado,
         total_pagado: totalPagadoNuevo,
         saldo: round2(Math.max(parseMonto(row.total_pagar, 0) - totalPagadoNuevo, 0)),
+        monto_solicitado: montoResolucion.monto_solicitado,
+        ajustado_al_saldo: montoResolucion.ajustado_al_saldo,
+        saldo_disponible: saldo,
         metodo_pago: pagoMetodo.metodo,
         referencia_operacion: pagoMetodo.referencia_operacion,
         estado_confirmacion: pagoMetodo.estado_confirmacion
