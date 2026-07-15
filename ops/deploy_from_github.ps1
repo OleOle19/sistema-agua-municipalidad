@@ -22,6 +22,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
 $startBackendScript = Join-Path $scriptDir "start_backend.ps1"
 $stopBackendScript = Join-Path $scriptDir "stop_backend.ps1"
+$securityConfigScript = Join-Path $scriptDir "ensure_security_config.ps1"
 $aprilImportScript = Join-Path $repoRoot "server\scripts\importar_pagos_abril_2026.js"
 $pagosActaImportScript = Join-Path $repoRoot "server\scripts\importar_pagos_acta_txt.js"
 $healthUrl = "http://127.0.0.1:5000/health"
@@ -138,6 +139,18 @@ try {
     }
   } else {
     Write-Host ">> Omitiendo instalacion de dependencias (usa -InstallDependencies para incluirla)."
+  }
+
+  Run-OrFail "Validando configuracion segura" {
+    & $securityConfigScript
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo asegurar server/.env." }
+  }
+
+  Run-OrFail "Aplicando migraciones de Agua" {
+    Invoke-OrFail -Cmd "npm" -CommandArgs @("--prefix", "server", "run", "migrate")
+  }
+  Run-OrFail "Aplicando migraciones de Luz" {
+    Invoke-OrFail -Cmd "npm" -CommandArgs @("--prefix", "server", "run", "migrate:luz")
   }
 
   if (-not $SkipBuild) {

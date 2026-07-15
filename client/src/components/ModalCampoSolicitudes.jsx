@@ -665,7 +665,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
                       </tr>
                     );
                     const groupItems = group.items.map((rowData) => {
-                      const { solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt, calleLabel, verificacionEstado, verificacionMotivo, predioTemporalSN, fotoFachada, fotoDisponible, autoApplySafe } = rowData;
+                      const { solicitud: s, changes, metadata, tipoSolicitud, servicios, seguimientoPendiente, seguimientoMotivo, visitadoSN, hasObservacion, montosAbonoTxt, calleLabel, verificacionEstado, verificacionMotivo, predioTemporalSN, fotoDisponible, autoApplySafe } = rowData;
                       const pending = s.estado_solicitud === "PENDIENTE";
                       const disabled = procesandoId === s.id_solicitud;
                       const isAltaPredio = tipoSolicitud === "ALTA_PREDIO";

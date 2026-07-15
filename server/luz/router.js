@@ -994,7 +994,6 @@ const ensureDefaults = async () => {
 
   await ensureLuzAuthSchemaOnce();
   await ensureLuzCoreSchema();
-  await runSafe("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
   await runSafe("ALTER TABLE suministros ADD COLUMN IF NOT EXISTS nro_medidor_real VARCHAR(80) NULL");
   await runSafe(`
     ALTER TABLE pagos
@@ -1156,7 +1155,6 @@ const ensureLuzAuthSchema = async () => {
       id_usuario SERIAL PRIMARY KEY,
       username VARCHAR(120) NOT NULL,
       password TEXT NOT NULL,
-      password_visible VARCHAR(120) NULL,
       nombre_completo VARCHAR(180) NOT NULL,
       rol VARCHAR(40) NOT NULL DEFAULT 'CONSULTA',
       estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE'
@@ -1166,8 +1164,6 @@ const ensureLuzAuthSchema = async () => {
     CREATE UNIQUE INDEX IF NOT EXISTS uq_luz_usuarios_sistema_username
     ON usuarios_sistema (UPPER(TRIM(username)))
   `);
-  await pool.query("ALTER TABLE usuarios_sistema ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL");
-
   if (!LUZ_ADMIN_DEFAULT_USER || !LUZ_ADMIN_DEFAULT_PASS || !LUZ_ADMIN_DEFAULT_NAME) return;
   const adminRs = await pool.query(
     "SELECT id_usuario FROM usuarios_sistema WHERE username = $1 LIMIT 1",
@@ -1651,8 +1647,8 @@ const handleLuzPasswordChange = async (req, res) => {
     const username = normalizeText(req.body?.username, 120);
     const passwordActual = String(req.body?.password_actual || "");
     const passwordNuevo = String(req.body?.password_nuevo || "");
-    if (!username || !passwordNuevo) {
-      return res.status(400).json({ error: "Usuario y nueva contraseña son obligatorios." });
+    if (!username || !passwordActual || !passwordNuevo) {
+      return res.status(400).json({ error: "Usuario, contraseña actual y nueva contraseña son obligatorios." });
     }
     if (passwordNuevo.length < 8 || passwordNuevo.length > 120) {
       return res.status(400).json({ error: "Password invalido. Debe tener entre 8 y 120 caracteres." });
@@ -1668,19 +1664,14 @@ const handleLuzPasswordChange = async (req, res) => {
       return res.status(403).json({ error: "Cuenta no activa." });
     }
 
-    if (passwordActual) {
-      let ok = false;
-      if (String(user.password || "").startsWith("$2")) {
-        ok = await bcrypt.compare(passwordActual, String(user.password || ""));
-      } else {
-        ok = String(user.password || "") === passwordActual;
-      }
-      if (!ok) {
-        return res.status(400).json({ error: "Password actual incorrecta." });
-      }
-      if (passwordActual === passwordNuevo) {
-        return res.status(400).json({ error: "La nueva password debe ser diferente a la actual." });
-      }
+    const ok = String(user.password || "").startsWith("$2")
+      ? await bcrypt.compare(passwordActual, String(user.password || ""))
+      : String(user.password || "") === passwordActual;
+    if (!ok) {
+      return res.status(400).json({ error: "Password actual incorrecta." });
+    }
+    if (passwordActual === passwordNuevo) {
+      return res.status(400).json({ error: "La nueva password debe ser diferente a la actual." });
     }
 
     const nextHash = await bcrypt.hash(passwordNuevo, 10);
@@ -1692,7 +1683,7 @@ const handleLuzPasswordChange = async (req, res) => {
       null,
       user.username,
       "AUTH_PASSWORD_CAMBIO",
-      `id_usuario=${Number(user.id_usuario)}; username=${user.username}; via=${passwordActual ? "CON_PASSWORD_ACTUAL" : "SIN_PASSWORD_ACTUAL"}; ip=${getRequestIp(req)}`
+      `id_usuario=${Number(user.id_usuario)}; username=${user.username}; via=CON_PASSWORD_ACTUAL; ip=${getRequestIp(req)}`
     );
     return res.json({ mensaje: "Password actualizada correctamente." });
   } catch (err) {

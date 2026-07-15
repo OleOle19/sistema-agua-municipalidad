@@ -40,12 +40,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\deploy_from_github.ps1
 Ese comando hace:
 
 1. `git fetch + git pull --ff-only` en `main`.
-2. `npm --prefix client run build`.
-3. reinicio backend (`ops/stop_backend.ps1 -Force` + `ops/start_backend.ps1`).
-4. verificacion de healthcheck en `http://127.0.0.1:5000/health`.
+2. valida y endurece `server/.env` (incluye rotacion de un JWT debil).
+3. aplica migraciones pendientes de Agua y Luz.
+4. `npm --prefix client run build`.
+5. reinicio backend (`ops/stop_backend.ps1 -Force` + `ops/start_backend.ps1`).
+6. verificacion de healthcheck en `http://127.0.0.1:5000/health`.
 
 Nota:
-- Ese flujo actualiza codigo, pero no aplica cambios de datos en PostgreSQL.
+- Las migraciones son incrementales y no ejecutan las conciliaciones financieras excluidas de este trabajo.
 - Si quieres reflejar pagos abril 2026 en reportes del servidor, usa la opcion especial de abajo.
 - Si quieres reflejar pagos historicos desde `PAGOSACTA.TXT`, usa la opcion especial nueva de abajo.
 
@@ -151,13 +153,15 @@ Notas:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\deploy_from_github.ps1 -Force
 ```
 
-## 4) Recuperar acceso completo por URL remota (no solo campo)
+## 4) Publicacion remota segura
 
-En `server/.env` del servidor:
+El Quick Tunnel solo debe publicar Campo. Mantener siempre:
 
 ```env
-CAMPO_PUBLIC_ONLY=0
+CAMPO_PUBLIC_ONLY=1
 CORS_ALLOW_TRYCLOUDFLARE=1
 ```
 
-Luego reinicia backend para aplicar cambios.
+No expongas Agua, Luz, Caja ni Administracion mediante `trycloudflare`. Para acceso remoto completo usa una VPN municipal o un dominio propio con HTTPS, autenticacion adicional y una lista cerrada de origenes.
+
+El despliegue ejecuta `ops/ensure_security_config.ps1`: activa el arranque estricto y reemplaza automaticamente un `JWT_SECRET` debil. La rotacion cierra las sesiones anteriores.

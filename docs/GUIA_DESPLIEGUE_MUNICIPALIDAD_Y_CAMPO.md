@@ -57,9 +57,11 @@ DB_HOST=127.0.0.1
 DB_PORT=5432
 DB_NAME=db_agua_pueblonuevo
 
-JWT_SECRET=CAMBIAR_ESTA_CLAVE_LARGA
+NODE_ENV=production
+JWT_SECRET=CAMBIAR_ESTA_CLAVE_LARGA_DE_AL_MENOS_32_CARACTERES
 JWT_EXPIRES_IN=30d
 AUTH_OPTIONAL_DEV=0
+SECURITY_STRICT_STARTUP=1
 
 SERVER_HOST=0.0.0.0
 SERVER_PORT=5000
@@ -201,13 +203,18 @@ Si necesitas rollback rapido:
    - `AUTO_BACKUP_ACTIVO=1`
    - `AUTO_BACKUP_HORA=23:55` (fin de dia)
    - `AUTO_BACKUP_TIMEZONE=America/Lima`
-   - `AUTO_BACKUP_DIR=C:\respaldos\sistema-agua`
+   - `AUTO_BACKUP_DIR=C:\respaldos\sistema-municipal`
    - `AUTO_BACKUP_RETENTION_DAYS=30`
+   - `AUTO_BACKUP_MIRROR_DIR=E:\respaldos\sistema-municipal` (disco externo cifrado con BitLocker)
+   - `AUTO_BACKUP_REQUIRE_MIRROR=1`
 2. Reiniciar backend (`npm --prefix server start`).
 3. Verificar en logs mensaje `[AUTO_BACKUP] Activa...`.
-4. Revisar que aparezca un `.sql` diario en carpeta de respaldos.
+4. Revisar que aparezca un directorio `backup_municipal_FECHA_HORA` diario. Debe contener `agua.sql`, `luz.sql`, `server_uploads/` y `backup-manifest.json`.
+5. Verificar integridad: `npm --prefix server run backup:verify -- "C:\respaldos\sistema-municipal\backup_municipal_FECHA_HORA"`.
 
 Notas:
 - Si backend se reinicia despues de la hora programada, al iniciar intenta ejecutar respaldo del dia.
-- Retencion recomendada minima: 30 diarios. Mantener ademas 12 mensuales en almacenamiento externo.
-- Probar restauracion al menos 1 vez por mes.
+- El respaldo completo incluye ambas bases de datos, adjuntos y fondos multimedia; no copia `server/.env` porque contiene secretos.
+- Retencion recomendada minima: 30 diarios. Mantener ademas 12 mensuales en el disco externo cifrado.
+- Ejecutar la verificacion de checksums cada semana. Probar una restauracion real de ambas bases en un equipo aislado al menos 1 vez por mes.
+- Registrar fecha, responsable y resultado de cada prueba de restauracion.

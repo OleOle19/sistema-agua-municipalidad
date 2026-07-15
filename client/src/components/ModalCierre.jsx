@@ -532,17 +532,6 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
       return acc + (esPendiente ? getMovimientoAdminMontoAnterior(row) : 0);
     }, 0)
   );
-  const periodoLabel = reporteTipo === "semanal"
-    ? "Semanal"
-    : reporteTipo === "mensual"
-      ? "Mensual"
-      : reporteTipo === "anual"
-        ? "Anual"
-        : reporteTipo === "rango"
-          ? "Intervalo"
-          : reporteTipo === "proyeccion"
-            ? "Proyeccion"
-        : "Diario";
   const graficosCaja = reporte?.graficos || {};
   const recaudacionTemporal = resumenLocal
     ? resumenLocal.recaudacionTemporal

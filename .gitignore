@@ -39,7 +39,7 @@ server/CATORCE.txt
 server/datos_historial_pagos_*.txt
 server/.tmp/
 server/.runtime/
-server/uploads/landing_background/
+server/uploads/
 
 # OS
 .DS_Store

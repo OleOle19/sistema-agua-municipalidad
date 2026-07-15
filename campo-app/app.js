@@ -1056,6 +1056,16 @@
   async function idbPut(store, value) { const db = await openDb(); return new Promise((resolve, reject) => { const tx = db.transaction(store, "readwrite"); tx.objectStore(store).put(value); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); }); }
   async function idbDel(store, key) { const db = await openDb(); return new Promise((resolve, reject) => { const tx = db.transaction(store, "readwrite"); tx.objectStore(store).delete(key); tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); }); }
   async function idbAll(store) { const db = await openDb(); return new Promise((resolve, reject) => { const tx = db.transaction(store, "readonly"); const r = tx.objectStore(store).getAll(); r.onsuccess = () => resolve(Array.isArray(r.result) ? r.result : []); r.onerror = () => reject(r.error); }); }
+  async function clearOfflineData() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const stores = [STORE_META, STORE_CALLES, STORE_CONTRIB, STORE_QUEUE];
+      const tx = db.transaction(stores, "readwrite");
+      stores.forEach((store) => tx.objectStore(store).clear());
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error("No se pudieron borrar los datos offline."));
+    });
+  }
   async function queueByUser(userId) {
     if (!userId) return [];
     const db = await openDb();
@@ -2205,12 +2215,27 @@
   }
 
   async function logout() {
+    const currentUserId = Number(state.user && state.user.id_usuario || 0);
+    const pending = currentUserId > 0 ? await queueByUser(currentUserId) : [];
+    if (pending.length > 0) {
+      const confirmed = window.confirm(
+        `Hay ${pending.length} solicitud(es) sin enviar. Al cerrar sesion se borraran del telefono junto con el padron offline. ¿Deseas continuar?`
+      );
+      if (!confirmed) return;
+    }
+    await clearOfflineData();
     state.token = ""; state.user = null;
+    state.calles = [];
+    state.contribuyentes = [];
+    state.snapshot = null;
+    state.recentSubmissions = [];
     state.queueActionKey = "";
     state.lastQueueSyncAt = null;
     state.lastQueueSyncOkAt = null;
     state.lastQueueSyncError = "";
     localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY);
+    localStorage.removeItem(RECENT_SUBMISSIONS_KEY);
+    await loadLocalData();
     await refreshQueueCount();
     renderAuth();
     setStatus("Sesion cerrada.", "success", 1500);

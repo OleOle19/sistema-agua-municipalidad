@@ -39,7 +39,7 @@ const normalizeRole = (role) => {
 
 const canEnterCajaModuleByRole = (role) => {
   const normalized = normalizeRole(role);
-  return normalized === "ADMIN" || normalized === "CAJERO";
+  return normalized === "ADMIN" || normalized === "ADMIN_SEC" || normalized === "CAJERO";
 };
 
 const parseJwtPayload = (token) => {
@@ -131,7 +131,7 @@ function App() {
       const value = String(target || "").trim().toLowerCase();
       if (!["agua", "luz", "caja"].includes(value)) return;
       if (value === "caja" && !cajaPermitida) {
-        setSelectorAviso("El modulo Caja Municipal solo permite cuentas de Administrador o Cajero.");
+        setSelectorAviso("El modulo Caja Municipal requiere un perfil de Administrador, Ventanilla o Cajero.");
         return;
       }
       clearAllModuleSessions();
@@ -245,7 +245,7 @@ function App() {
                       <div className="small module-entry__desc">
                         {cajaPermitida
                           ? "Cobranza unificada de Agua y Luz."
-                          : "Disponible solo para cuentas ADMIN o CAJERO."}
+                          : "Disponible para cuentas ADMIN, ADMIN_SEC o CAJERO."}
                       </div>
                     </div>
                   </div>

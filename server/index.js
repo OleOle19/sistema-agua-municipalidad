@@ -31,6 +31,9 @@ const {
   normalizeAuditEventCode,
   redactAuditPayload
 } = require("./audit-utils");
+const { resolveAutoDebtPeriod } = require("./automation-utils");
+const { getMigrationState } = require("./migration-health");
+const { LUZ_LEGACY_ACCEPTED_CHECKSUMS } = require("./migration-policy");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
 
 // --- HELPERS DE DIRECCIÓN ---
@@ -1003,6 +1006,8 @@ const AUTO_BACKUP_ACTIVO = process.env.AUTO_BACKUP_ACTIVO !== "0";
 const AUTO_BACKUP_HORA = normalizeHoraHM(process.env.AUTO_BACKUP_HORA, "23:55");
 const AUTO_BACKUP_CHECK_MS = Math.max(60 * 1000, Number(process.env.AUTO_BACKUP_CHECK_MS || (5 * 60 * 1000)));
 const AUTO_BACKUP_DIR = String(process.env.AUTO_BACKUP_DIR || path.join(__dirname, "..", "backups")).trim();
+const AUTO_BACKUP_MIRROR_DIR = String(process.env.AUTO_BACKUP_MIRROR_DIR || "").trim();
+const AUTO_BACKUP_REQUIRE_MIRROR = process.env.AUTO_BACKUP_REQUIRE_MIRROR === "1";
 const AUTO_BACKUP_RETENTION_DAYS = Math.min(
   3650,
   Math.max(1, Number(process.env.AUTO_BACKUP_RETENTION_DAYS || 30))
@@ -6963,10 +6968,6 @@ const consultarMovimientosAdministrativosPago = async (
 };
 
 const ensurePerformanceIndexes = async (client) => {
-  await client.query(`
-    ALTER TABLE usuarios_sistema
-    ADD COLUMN IF NOT EXISTS password_visible VARCHAR(120) NULL
-  `);
   await ensureCodigosImpresionTable(client);
   await ensureOrdenesCobroTable(client);
   await ensureCajaCierresTable(client);
@@ -7002,55 +7003,6 @@ const ensurePerformanceIndexes = async (client) => {
   }
 };
 
-const removerArtefactosReniec = async () => {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    await client.query(`
-      DO $$
-      DECLARE r record;
-      BEGIN
-        FOR r IN
-          SELECT schemaname, tablename
-          FROM pg_tables
-          WHERE schemaname = 'public'
-            AND tablename ILIKE 'reniec%'
-        LOOP
-          EXECUTE format('DROP TABLE IF EXISTS %I.%I CASCADE', r.schemaname, r.tablename);
-        END LOOP;
-      END $$;
-    `);
-
-    await client.query(`
-      DO $$
-      DECLARE r record;
-      BEGIN
-        FOR r IN
-          SELECT table_schema, table_name, column_name
-          FROM information_schema.columns
-          WHERE table_schema = 'public'
-            AND column_name ILIKE 'reniec%'
-        LOOP
-          EXECUTE format(
-            'ALTER TABLE %I.%I DROP COLUMN IF EXISTS %I CASCADE',
-            r.table_schema,
-            r.table_name,
-            r.column_name
-          );
-        END LOOP;
-      END $$;
-    `);
-
-    await client.query("COMMIT");
-  } catch (err) {
-    try { await client.query("ROLLBACK"); } catch {}
-    console.error("[RENIEC] Error limpiando artefactos de base de datos:", err.message);
-  } finally {
-    client.release();
-  }
-};
-
 // Middleware
 const CORS_ALLOWED_ORIGINS = String(process.env.CORS_ALLOWED_ORIGINS || "")
   .split(",")
@@ -7062,6 +7014,9 @@ const CAMPO_PUBLIC_HOST_PATTERN = new RegExp(
   process.env.CAMPO_PUBLIC_HOST_PATTERN || "\\.trycloudflare\\.com$",
   "i"
 );
+if (SECURITY_STRICT_STARTUP && CORS_ALLOW_TRYCLOUDFLARE && !CAMPO_PUBLIC_ONLY) {
+  throw new Error("[SECURITY] CAMPO_PUBLIC_ONLY=1 es obligatorio al publicar mediante trycloudflare.");
+}
 const JSON_BODY_LIMIT = String(process.env.JSON_BODY_LIMIT || "2mb");
 const corsOptionsDelegate = (req, callback) => {
   const requestOrigin = String(req.header("Origin") || "").trim();
@@ -7122,8 +7077,46 @@ app.use((req, res, next) => {
   return next();
 });
 
-app.get("/health", (req, res) => {
-  res.json({ ok: true, ts: new Date().toISOString() });
+const getBackupHealth = () => {
+  const backupDir = path.resolve(AUTO_BACKUP_DIR);
+  if (!fs.existsSync(backupDir)) return { ok: false, status: "SIN_BACKUPS" };
+  const manifests = [];
+  for (const entry of fs.readdirSync(backupDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith("backup_municipal_")) continue;
+    const manifestPath = path.join(backupDir, entry.name, "backup-manifest.json");
+    if (!fs.existsSync(manifestPath)) continue;
+    manifests.push({ name: entry.name, mtimeMs: fs.statSync(manifestPath).mtimeMs });
+  }
+  manifests.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  if (!manifests[0]) return { ok: false, status: "SIN_BACKUP_COMPLETO" };
+  const ageHours = Math.round(((Date.now() - manifests[0].mtimeMs) / 3600000) * 10) / 10;
+  return { ok: ageHours <= 36, status: ageHours <= 36 ? "VIGENTE" : "ATRASADO", age_hours: ageHours, latest: manifests[0].name };
+};
+
+const readSystemHealth = async () => {
+  const aguaDir = path.join(__dirname, "sql", "migrations");
+  const luzDir = path.join(__dirname, "sql", "luz_migrations");
+  const [aguaMigrations, luzMigrations] = await Promise.all([
+    getMigrationState(pool, aguaDir),
+    getMigrationState(luzPool, luzDir, LUZ_LEGACY_ACCEPTED_CHECKSUMS)
+  ]);
+  return {
+    ok: aguaMigrations.ok && luzMigrations.ok,
+    databases: { agua: "OK", luz: "OK" },
+    migrations: { agua: aguaMigrations, luz: luzMigrations },
+    backup: getBackupHealth(),
+    uptime_seconds: Math.round(process.uptime()),
+    ts: new Date().toISOString()
+  };
+};
+
+app.get("/health", async (req, res) => {
+  try {
+    const health = await readSystemHealth();
+    return res.status(health.ok ? 200 : 503).json(health);
+  } catch (error) {
+    return res.status(503).json({ ok: false, databases: "ERROR", error: "No se pudo verificar el estado del sistema.", ts: new Date().toISOString() });
+  }
 });
 
 app.use("/assets/landing-background", express.static(LANDING_BACKGROUND_UPLOAD_DIR, {
@@ -19478,8 +19471,8 @@ app.post("/auth/cambiar-password", async (req, res) => {
     const usernameInput = normalizeLimitedText(req.body?.username, 120);
     const passwordActual = String(req.body?.password_actual || "");
     const passwordNuevo = String(req.body?.password_nuevo || "");
-    if (!usernameInput || !passwordNuevo) {
-      return res.status(400).json({ error: "Usuario y nueva contraseña son obligatorios." });
+    if (!usernameInput || !passwordActual || !passwordNuevo) {
+      return res.status(400).json({ error: "Usuario, contraseña actual y nueva contraseña son obligatorios." });
     }
     if (passwordNuevo.length < 8 || passwordNuevo.length > 120) {
       return res.status(400).json({ error: "Password invalido. Debe tener entre 8 y 120 caracteres." });
@@ -19497,20 +19490,15 @@ app.post("/auth/cambiar-password", async (req, res) => {
       return res.status(403).json({ error: "Cuenta no activa." });
     }
 
-    if (passwordActual) {
-      const storedPassword = String(datos.password || "");
-      let passwordOk = false;
-      if (isBcryptHash(storedPassword)) {
-        passwordOk = await bcrypt.compare(passwordActual, storedPassword);
-      } else {
-        passwordOk = storedPassword === passwordActual;
-      }
-      if (!passwordOk) {
-        return res.status(400).json({ error: "Password actual incorrecta." });
-      }
-      if (passwordActual === passwordNuevo) {
-        return res.status(400).json({ error: "La nueva password debe ser diferente a la actual." });
-      }
+    const storedPassword = String(datos.password || "");
+    const passwordOk = isBcryptHash(storedPassword)
+      ? await bcrypt.compare(passwordActual, storedPassword)
+      : storedPassword === passwordActual;
+    if (!passwordOk) {
+      return res.status(400).json({ error: "Password actual incorrecta." });
+    }
+    if (passwordActual === passwordNuevo) {
+      return res.status(400).json({ error: "La nueva password debe ser diferente a la actual." });
     }
 
     const newHash = await bcrypt.hash(passwordNuevo, 10);
@@ -19523,7 +19511,7 @@ app.post("/auth/cambiar-password", async (req, res) => {
     await registrarAuditoria(
       null,
       "AUTH_PASSWORD_CAMBIO",
-      `id_usuario=${Number(datos.id_usuario)}; username=${datos.username}; via=${passwordActual ? "CON_PASSWORD_ACTUAL" : "SIN_PASSWORD_ACTUAL"}; ip=${ip}`,
+      `id_usuario=${Number(datos.id_usuario)}; username=${datos.username}; via=CON_PASSWORD_ACTUAL; ip=${ip}`,
       datos.username || "SISTEMA"
     );
 
@@ -21094,6 +21082,18 @@ const getBackupConfig = () => {
     PG_DUMP_PATH
   };
 };
+const getLuzBackupConfig = () => {
+  const agua = getBackupConfig();
+  const DB_USER = String(process.env.LUZ_DB_USER || process.env.DB_USER || "").trim();
+  const DB_HOST = String(process.env.LUZ_DB_HOST || process.env.DB_HOST || "").trim();
+  const DB_NAME = String(process.env.LUZ_DB_NAME || "db_luz_pueblonuevo").trim();
+  const DB_PORT = String(process.env.LUZ_DB_PORT || process.env.DB_PORT || "").trim();
+  const DB_PASSWORD = String(process.env.LUZ_DB_PASSWORD || process.env.DB_PASSWORD || "");
+  if (!DB_USER || !DB_HOST || !DB_NAME || !DB_PORT || !DB_PASSWORD) {
+    throw new Error("Configuración de base de datos de Luz incompleta para backup.");
+  }
+  return { DB_USER, DB_HOST, DB_NAME, DB_PORT, DB_PASSWORD, PG_DUMP_PATH: agua.PG_DUMP_PATH };
+};
 async function getContribuyenteTarifaReferencia(db, idContribuyente) {
   const id = parsePositiveInt(idContribuyente, 0);
   if (!id) return null;
@@ -21287,13 +21287,15 @@ const cleanupBackupsAntiguos = (backupDir, retentionDays = 30) => {
     return 0;
   }
   for (const entry of entries) {
-    if (!entry?.isFile?.()) continue;
-    if (!/^backup_agua_.*\.sql$/i.test(String(entry.name || ""))) continue;
+    const isLegacyFile = entry?.isFile?.() && /^backup_agua_.*\.sql$/i.test(String(entry.name || ""));
+    const isMunicipalSet = entry?.isDirectory?.() && /^backup_municipal_\d{4}-\d{2}-\d{2}_/i.test(String(entry.name || ""));
+    if (!isLegacyFile && !isMunicipalSet) continue;
     const filePath = path.join(backupDir, entry.name);
     try {
       const stats = fs.statSync(filePath);
       if ((ahora - stats.mtimeMs) > limiteMs) {
-        fs.unlinkSync(filePath);
+        if (isMunicipalSet) fs.rmSync(filePath, { recursive: true, force: true });
+        else fs.unlinkSync(filePath);
         eliminados += 1;
       }
     } catch {}
@@ -21787,6 +21789,40 @@ app.get("/admin/backup", authenticateToken, requireSuperAdmin, async (req, res) 
   reader.on("close", cleanupTemp);
   res.on("close", cleanupTemp);
   reader.pipe(res);
+});
+
+app.post("/admin/backup-completo", authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const backupDir = getAutoBackupDir();
+    fs.mkdirSync(backupDir, { recursive: true });
+    const { fechaHora } = getFechaHoraBackup(new Date(), AUTO_BACKUP_TIMEZONE);
+    const backupSet = await crearConjuntoBackupMunicipal({ backupDir, fechaHora });
+    const mirrorTarget = replicarConjuntoBackup(backupSet);
+    await registrarAuditoria(
+      null,
+      "BACKUP_COMPLETO_MANUAL",
+      `conjunto=${backupSet.setName}; bytes=${backupSet.bytes}; archivos=${backupSet.files.length}; espejo=${mirrorTarget ? "SI" : "NO"}`,
+      req.user?.username || "SISTEMA",
+      {
+        actorId: Number(req.user?.id_usuario || 0) || null,
+        actorRol: req.user?.rol || "ADMIN",
+        entidadTipo: "BACKUP",
+        entidadId: backupSet.setName,
+        ip: getRequestIp(req),
+        requestId: req.auditRequestId
+      }
+    );
+    return res.json({
+      ok: true,
+      conjunto: backupSet.setName,
+      bytes: backupSet.bytes,
+      archivos: backupSet.files.length,
+      espejo: Boolean(mirrorTarget)
+    });
+  } catch (error) {
+    console.error("[BACKUP] Error creando backup completo manual:", error.message);
+    return res.status(500).json({ error: "No se pudo crear el backup completo." });
+  }
 });
 
 // ==========================================
@@ -22606,8 +22642,89 @@ const existeBackupAutomaticoDelDia = (backupDir, fechaDia) => {
   } catch {
     return false;
   }
-  const regex = new RegExp(`^backup_agua_${fechaDia}_\\d{2}-\\d{2}-\\d{2}\\.sql$`, "i");
-  return entries.some((entry) => entry?.isFile?.() && regex.test(String(entry.name || "")));
+  const legacyRegex = new RegExp(`^backup_agua_${fechaDia}_\\d{2}-\\d{2}-\\d{2}\\.sql$`, "i");
+  const setRegex = new RegExp(`^backup_municipal_${fechaDia}_\\d{2}-\\d{2}-\\d{2}$`, "i");
+  return entries.some((entry) => (
+    (entry?.isFile?.() && legacyRegex.test(String(entry.name || "")))
+    || (entry?.isDirectory?.()
+      && setRegex.test(String(entry.name || ""))
+      && fs.existsSync(path.join(backupDir, entry.name, "backup-manifest.json")))
+  ));
+};
+const hashFileSha256 = (filePath) => {
+  const hash = crypto.createHash("sha256");
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest("hex");
+};
+const listBackupFiles = (rootDir, currentDir = rootDir) => {
+  if (!fs.existsSync(currentDir)) return [];
+  const result = [];
+  for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+    const absolute = path.join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      result.push(...listBackupFiles(rootDir, absolute));
+    } else if (entry.isFile() && entry.name !== "backup-manifest.json") {
+      const stats = fs.statSync(absolute);
+      result.push({
+        path: path.relative(rootDir, absolute).replace(/\\/g, "/"),
+        bytes: Number(stats.size || 0),
+        sha256: hashFileSha256(absolute)
+      });
+    }
+  }
+  return result.sort((a, b) => a.path.localeCompare(b.path));
+};
+const crearConjuntoBackupMunicipal = async ({ backupDir, fechaHora }) => {
+  const setName = `backup_municipal_${fechaHora}`;
+  const setDir = path.resolve(backupDir, setName);
+  const backupRoot = path.resolve(backupDir);
+  if (path.dirname(setDir) !== backupRoot) throw new Error("Ruta de backup fuera del directorio permitido.");
+  fs.mkdirSync(setDir, { recursive: false });
+  try {
+    const aguaPath = path.join(setDir, "agua.sql");
+    const luzPath = path.join(setDir, "luz.sql");
+    await ejecutarPgDump({ outputPath: aguaPath, backupConfig: getBackupConfig() });
+    await ejecutarPgDump({ outputPath: luzPath, backupConfig: getLuzBackupConfig() });
+
+    const uploadsSource = path.join(__dirname, "uploads");
+    if (fs.existsSync(uploadsSource)) {
+      fs.cpSync(uploadsSource, path.join(setDir, "server_uploads"), { recursive: true, force: false });
+    }
+
+    const files = listBackupFiles(setDir);
+    if (!files.some((file) => file.path === "agua.sql" && file.bytes > 0)
+      || !files.some((file) => file.path === "luz.sql" && file.bytes > 0)) {
+      throw new Error("El conjunto de backup no contiene ambas bases de datos.");
+    }
+    const manifest = {
+      format_version: 1,
+      created_at: new Date().toISOString(),
+      includes: ["postgres_agua", "postgres_luz", "server_uploads"],
+      files
+    };
+    fs.writeFileSync(path.join(setDir, "backup-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    return { setName, setDir, files, bytes: files.reduce((sum, file) => sum + Number(file.bytes || 0), 0) };
+  } catch (error) {
+    try { fs.rmSync(setDir, { recursive: true, force: true }); } catch {}
+    throw error;
+  }
+};
+const replicarConjuntoBackup = (backupSet) => {
+  if (!AUTO_BACKUP_MIRROR_DIR) {
+    if (AUTO_BACKUP_REQUIRE_MIRROR) throw new Error("AUTO_BACKUP_MIRROR_DIR es obligatorio.");
+    return null;
+  }
+  const mirrorRoot = path.resolve(AUTO_BACKUP_MIRROR_DIR);
+  const sourceDir = path.resolve(backupSet.setDir);
+  if (mirrorRoot === sourceDir || mirrorRoot.startsWith(`${sourceDir}${path.sep}`)) {
+    throw new Error("AUTO_BACKUP_MIRROR_DIR no puede estar dentro del conjunto local.");
+  }
+  fs.mkdirSync(mirrorRoot, { recursive: true });
+  const mirrorTarget = path.resolve(mirrorRoot, backupSet.setName);
+  if (path.dirname(mirrorTarget) !== mirrorRoot) throw new Error("Ruta de espejo inválida.");
+  if (fs.existsSync(mirrorTarget)) fs.rmSync(mirrorTarget, { recursive: true, force: true });
+  fs.cpSync(sourceDir, mirrorTarget, { recursive: true, force: false });
+  return mirrorTarget;
 };
 const crearBackupAutomaticoDiario = async () => {
   if (!AUTO_BACKUP_ACTIVO || autoBackupEnCurso) return;
@@ -22621,7 +22738,8 @@ const crearBackupAutomaticoDiario = async () => {
 
   autoBackupEnCurso = true;
   try {
-    const backupConfig = getBackupConfig();
+    getBackupConfig();
+    getLuzBackupConfig();
     autoBackupConfigNotificada = false;
     const backupDir = getAutoBackupDir();
     fs.mkdirSync(backupDir, { recursive: true });
@@ -22631,21 +22749,15 @@ const crearBackupAutomaticoDiario = async () => {
     }
 
     const { fechaHora } = getFechaHoraBackup(new Date(), AUTO_BACKUP_TIMEZONE);
-    const filename = `backup_agua_${fechaHora}.sql`;
-    const destino = path.join(backupDir, filename);
-    await ejecutarPgDump({ outputPath: destino, backupConfig });
-    if (!fs.existsSync(destino)) {
-      throw new Error("No se pudo generar archivo de backup.");
-    }
-
-    const bytes = Number(fs.statSync(destino).size || 0);
+    const backupSet = await crearConjuntoBackupMunicipal({ backupDir, fechaHora });
+    const mirrorTarget = replicarConjuntoBackup(backupSet);
     const eliminados = cleanupBackupsAntiguos(backupDir, AUTO_BACKUP_RETENTION_DAYS);
     ultimoDiaAutoBackup = fechaHoy;
-    console.log(`[AUTO_BACKUP] OK ${fechaHoy}: ${filename} (${bytes} bytes). Eliminados=${eliminados}.`);
+    console.log(`[AUTO_BACKUP] OK ${fechaHoy}: ${backupSet.setName} (${backupSet.bytes} bytes, ${backupSet.files.length} archivos, espejo=${mirrorTarget ? "SI" : "NO"}). Eliminados=${eliminados}.`);
     registrarAuditoria(
       null,
       "AUTO_BACKUP_DIARIO",
-      `fecha=${fechaHoy}; archivo=${filename}; bytes=${bytes}; retention_dias=${AUTO_BACKUP_RETENTION_DAYS}; eliminados=${eliminados}`
+      `fecha=${fechaHoy}; conjunto=${backupSet.setName}; bytes=${backupSet.bytes}; archivos=${backupSet.files.length}; espejo=${mirrorTarget ? "SI" : "NO"}; retention_dias=${AUTO_BACKUP_RETENTION_DAYS}; eliminados=${eliminados}`
     ).catch(() => {});
   } catch (err) {
     const msg = String(err?.message || err || "Error desconocido");
@@ -22809,21 +22921,9 @@ const generarDeudaMensualAutomatica = async () => {
 
   const { anio, mes, dia, hora, minuto } = getFechaLocalPartes();
   const diasDelMesActual = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
-  const esCierreMes = dia === diasDelMesActual && hora === 23 && minuto >= 55;
-  const esInicioMes = dia === 1 && hora === 0 && minuto <= 10;
-  if (!esCierreMes && !esInicioMes) return;
-
-  let anioObjetivo = anio;
-  let mesObjetivo = mes;
-  if (esInicioMes && !esCierreMes) {
-    // Contingencia: si el servidor no corrió al cierre, en el minuto 0 del día 1
-    // se intenta crear el periodo del mes que acaba de terminar.
-    mesObjetivo -= 1;
-    if (mesObjetivo < 1) {
-      mesObjetivo = 12;
-      anioObjetivo -= 1;
-    }
-  }
+  const { anio: anioObjetivo, mes: mesObjetivo, modo } = resolveAutoDebtPeriod({
+    anio, mes, dia, hora, minuto, diasDelMes: diasDelMesActual
+  });
 
   const periodo = `${anioObjetivo}-${String(mesObjetivo).padStart(2, "0")}`;
   if (ultimoPeriodoAutoDeuda === periodo) return;
@@ -22831,6 +22931,14 @@ const generarDeudaMensualAutomatica = async () => {
   autoDeudaEnCurso = true;
   const client = await pool.connect();
   try {
+    const periodoExistente = await client.query(
+      "SELECT 1 FROM recibos WHERE anio = $1 AND mes = $2 LIMIT 1",
+      [anioObjetivo, mesObjetivo]
+    );
+    if (periodoExistente.rows[0]) {
+      ultimoPeriodoAutoDeuda = periodo;
+      return;
+    }
     const params = [
       anioObjetivo,
       mesObjetivo,
@@ -22911,7 +23019,7 @@ const generarDeudaMensualAutomatica = async () => {
     await registrarAuditoria(
       null,
       "AUTO_DEUDA_MENSUAL",
-      `Generacion automatica ${periodo}: ${resultado.rowCount} recibos creados.`
+      `Generacion automatica ${periodo}: ${resultado.rowCount} recibos creados; modo=${modo}.`
     );
     if (Number(resultado.rowCount || 0) > 0) {
       invalidateContribuyentesCache();
@@ -22922,7 +23030,7 @@ const generarDeudaMensualAutomatica = async () => {
         periodo
       });
     }
-    console.log(`[AUTO_DEUDA] ${periodo}: ${resultado.rowCount} recibos generados.`);
+    console.log(`[AUTO_DEUDA] ${periodo}: ${resultado.rowCount} recibos generados (modo=${modo}).`);
   } catch (err) {
     console.error("[AUTO_DEUDA] Error en generación automática:", err);
   } finally {
@@ -22940,10 +23048,7 @@ const iniciarTareaAutoDeuda = () => {
   const intervaloBase = Number.isFinite(AUTO_DEUDA_CHECK_MS) && AUTO_DEUDA_CHECK_MS > 0
     ? AUTO_DEUDA_CHECK_MS
     : 60 * 60 * 1000;
-  const intervalo = Math.min(intervaloBase, 60 * 1000);
-  if (intervaloBase > intervalo) {
-    console.log(`[AUTO_DEUDA] Intervalo ajustado a ${intervalo}ms para ejecución precisa al cierre de mes (${AUTO_DEUDA_TIMEZONE}).`);
-  }
+  const intervalo = Math.max(60 * 1000, intervaloBase);
 
   generarDeudaMensualAutomatica().catch((err) => {
     console.error("[AUTO_DEUDA] Error inicial:", err);
@@ -23005,9 +23110,6 @@ const onServerStarted = (label, host, port) => {
   });
   repararRecibosPendientesSnLegacy().catch((err) => {
     console.error("[MIGRACION_SN] Error iniciando corrección legacy:", err);
-  });
-  removerArtefactosReniec().catch((err) => {
-    console.error("[RENIEC] Error en limpieza inicial:", err);
   });
   iniciarTareaAutoDeuda();
   iniciarTareaAutoCierreCaja();
@@ -23104,12 +23206,16 @@ const setupRealtimeWs = (server, serverLabel) => {
 };
 
 const httpServer = http.createServer(app);
-setupRealtimeWs(httpServer, "HTTP");
-httpServer.listen(SERVER_PORT, SERVER_HOST, () => {
-  onServerStarted("Servidor HTTP", SERVER_HOST, SERVER_PORT);
-});
+let httpsServer = null;
+const realtimeWsServers = [];
+const startServers = () => {
+  const httpWs = setupRealtimeWs(httpServer, "HTTP");
+  if (httpWs) realtimeWsServers.push(httpWs);
+  httpServer.listen(SERVER_PORT, SERVER_HOST, () => {
+    onServerStarted("Servidor HTTP", SERVER_HOST, SERVER_PORT);
+  });
 
-if (HTTPS_ENABLED) {
+  if (!HTTPS_ENABLED) return;
   try {
     if (!HTTPS_KEY_FILE || !HTTPS_CERT_FILE) {
       throw new Error("HTTPS_KEY_FILE y HTTPS_CERT_FILE son obligatorios cuando HTTPS_ENABLED=1.");
@@ -23121,12 +23227,62 @@ if (HTTPS_ENABLED) {
     if (HTTPS_CA_FILE) {
       httpsOptions.ca = fs.readFileSync(HTTPS_CA_FILE);
     }
-    const httpsServer = https.createServer(httpsOptions, app);
-    setupRealtimeWs(httpsServer, "HTTPS");
+    httpsServer = https.createServer(httpsOptions, app);
+    const httpsWs = setupRealtimeWs(httpsServer, "HTTPS");
+    if (httpsWs) realtimeWsServers.push(httpsWs);
     httpsServer.listen(HTTPS_PORT, SERVER_HOST, () => {
       onServerStarted("Servidor HTTPS", SERVER_HOST, HTTPS_PORT);
     });
   } catch (err) {
-    console.error("[HTTPS] No se pudo iniciar servidor HTTPS:", err.message);
+    throw new Error(`[HTTPS] No se pudo iniciar servidor HTTPS: ${err.message}`);
   }
-}
+};
+
+const verifyStartup = async () => {
+  const health = await readSystemHealth();
+  const pending = [
+    ...health.migrations.agua.pending.map((file) => `AGUA:${file}`),
+    ...health.migrations.luz.pending.map((file) => `LUZ:${file}`)
+  ];
+  const mismatches = [
+    ...health.migrations.agua.mismatches.map((file) => `AGUA:${file}`),
+    ...health.migrations.luz.mismatches.map((file) => `LUZ:${file}`)
+  ];
+  if (pending.length > 0 || mismatches.length > 0) {
+    throw new Error(`[MIGRACIONES] Inicio bloqueado. Pendientes=${pending.join(",") || "ninguna"}; inconsistentes=${mismatches.join(",") || "ninguna"}. Ejecute npm --prefix server run migrate y migrate:luz.`);
+  }
+};
+
+let shuttingDown = false;
+const closeServer = (server) => new Promise((resolve) => {
+  if (!server?.listening) return resolve();
+  server.close(() => resolve());
+});
+const gracefulShutdown = async (signal) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[SHUTDOWN] ${signal}: cerrando servidores y conexiones.`);
+  const forceTimer = setTimeout(() => process.exit(1), 10000);
+  forceTimer.unref();
+  for (const wss of realtimeWsServers) {
+    for (const client of wss.clients) {
+      try { client.close(1001, "SERVER_SHUTDOWN"); } catch {}
+    }
+    try { wss.close(); } catch {}
+  }
+  await Promise.allSettled([closeServer(httpServer), closeServer(httpsServer)]);
+  await Promise.allSettled([pool.end(), luzPool.end()]);
+  clearTimeout(forceTimer);
+  process.exit(0);
+};
+
+process.once("SIGINT", () => gracefulShutdown("SIGINT"));
+process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));
+
+verifyStartup()
+  .then(startServers)
+  .catch((error) => {
+    console.error(`[STARTUP] ${error.message}`);
+    process.exitCode = 1;
+    Promise.allSettled([pool.end(), luzPool.end()]).finally(() => process.exit(1));
+  });

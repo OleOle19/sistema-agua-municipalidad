@@ -1,0 +1,31 @@
+name: Validacion
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+      - name: Dependencias backend
+        run: npm ci --prefix server
+      - name: Dependencias frontend
+        run: npm ci --prefix client
+      - name: Vulnerabilidades de produccion
+        run: npm audit --prefix server --omit=dev --audit-level=high
+      - name: Pruebas backend
+        run: npm test --prefix server
+      - name: Lint frontend
+        run: npm run lint --prefix client
+      - name: Build frontend
+        run: npm run build --prefix client

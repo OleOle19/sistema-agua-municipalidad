@@ -21,6 +21,7 @@ const LoginPage = ({
     username: "",
     password: "",
     nombre_completo: "",
+    password_actual: "",
     password_nuevo: "",
     password_confirmacion: ""
   });
@@ -39,6 +40,7 @@ const LoginPage = ({
       username: "",
       password: "",
       nombre_completo: "",
+      password_actual: "",
       password_nuevo: "",
       password_confirmacion: ""
     });
@@ -80,9 +82,10 @@ const LoginPage = ({
       }
 
       const username = String(form.username || "").trim();
+      const passwordActual = String(form.password_actual || "");
       const passwordNuevo = String(form.password_nuevo || "");
       const passwordConfirmacion = String(form.password_confirmacion || "");
-      if (!username || !passwordNuevo || !passwordConfirmacion) {
+      if (!username || !passwordActual || !passwordNuevo || !passwordConfirmacion) {
         setError("Complete todos los campos para cambiar la contraseña.");
         return;
       }
@@ -97,6 +100,7 @@ const LoginPage = ({
 
       await apiClient.post(changePasswordPath, {
         username,
+        password_actual: passwordActual,
         password_nuevo: passwordNuevo
       });
 
@@ -106,6 +110,7 @@ const LoginPage = ({
       setForm((prev) => ({
         ...prev,
         password: "",
+        password_actual: "",
         password_nuevo: "",
         password_confirmacion: ""
       }));
@@ -140,32 +145,32 @@ const LoginPage = ({
           <form onSubmit={handleSubmit}>
             {modo === "REGISTRO" && (
               <div className="mb-3">
-                <label className="form-label">Nombre completo</label>
-                <input type="text" className="form-control" name="nombre_completo" value={form.nombre_completo} onChange={handleChange} required />
+                <label className="form-label" htmlFor="login-nombre-completo">Nombre completo</label>
+                <input id="login-nombre-completo" type="text" className="form-control" name="nombre_completo" value={form.nombre_completo} onChange={handleChange} required />
               </div>
             )}
 
             <div className="mb-3">
-              <label className="form-label">Usuario</label>
-              <input type="text" className="form-control" name="username" value={form.username} onChange={handleChange} required />
+              <label className="form-label" htmlFor="login-username">Usuario</label>
+              <input id="login-username" type="text" className="form-control" name="username" value={form.username} onChange={handleChange} autoComplete="username" required />
             </div>
 
             {modo === "LOGIN" && (
               <div className="mb-3">
-                <label className="form-label">Contraseña</label>
+                <label className="form-label" htmlFor="login-password">Contraseña</label>
                 <div className="input-group">
                   <span className="input-group-text"><FaKey /></span>
-                  <input type="password" className="form-control" name="password" value={form.password} onChange={handleChange} required />
+                  <input id="login-password" type="password" className="form-control" name="password" value={form.password} onChange={handleChange} autoComplete="current-password" required />
                 </div>
               </div>
             )}
 
             {modo === "REGISTRO" && (
               <div className="mb-3">
-                <label className="form-label">Contraseña inicial</label>
+                <label className="form-label" htmlFor="registro-password">Contraseña inicial</label>
                 <div className="input-group">
                   <span className="input-group-text"><FaKey /></span>
-                  <input type="password" className="form-control" name="password" value={form.password} onChange={handleChange} required />
+                  <input id="registro-password" type="password" className="form-control" name="password" value={form.password} onChange={handleChange} autoComplete="new-password" required />
                 </div>
                 <div className="form-text">Mínimo {MIN_PASSWORD_LEN} caracteres.</div>
               </div>
@@ -174,33 +179,53 @@ const LoginPage = ({
             {modo === "CAMBIO" && (
               <>
                 <div className="alert alert-warning small py-2">
-                  Por seguridad operativa, el cambio se realiza con usuario + nueva contraseña.
+                  Por seguridad, debes confirmar tu contraseña actual antes de registrar una nueva.
                 </div>
                 <div className="mb-3">
-                  <label className="form-label">Nueva contraseña</label>
+                  <label className="form-label" htmlFor="cambio-password-actual">Contraseña actual</label>
                   <div className="input-group">
                     <span className="input-group-text"><FaKey /></span>
                     <input
+                      id="cambio-password-actual"
+                      type="password"
+                      className="form-control"
+                      name="password_actual"
+                      value={form.password_actual}
+                      onChange={handleChange}
+                      autoComplete="current-password"
+                      required
+                    />
+                  </div>
+                </div>
+                <div className="mb-3">
+                  <label className="form-label" htmlFor="cambio-password-nueva">Nueva contraseña</label>
+                  <div className="input-group">
+                    <span className="input-group-text"><FaKey /></span>
+                    <input
+                      id="cambio-password-nueva"
                       type="password"
                       className="form-control"
                       name="password_nuevo"
                       value={form.password_nuevo}
                       onChange={handleChange}
+                      autoComplete="new-password"
                       required
                     />
                   </div>
                   <div className="form-text">Mínimo {MIN_PASSWORD_LEN} caracteres.</div>
                 </div>
                 <div className="mb-3">
-                  <label className="form-label">Confirmar nueva contraseña</label>
+                  <label className="form-label" htmlFor="cambio-password-confirmacion">Confirmar nueva contraseña</label>
                   <div className="input-group">
                     <span className="input-group-text"><FaKey /></span>
                     <input
+                      id="cambio-password-confirmacion"
                       type="password"
                       className="form-control"
                       name="password_confirmacion"
                       value={form.password_confirmacion}
                       onChange={handleChange}
+                      autoComplete="new-password"
                       required
                     />
                   </div>
@@ -217,27 +242,27 @@ const LoginPage = ({
             {modo === "LOGIN" ? (
               <small>
                 ¿No tienes cuenta?{" "}
-                <a href="#" onClick={(e) => { e.preventDefault(); switchModo("REGISTRO"); }}>
+                <button type="button" className="btn btn-link btn-sm p-0 align-baseline" onClick={() => switchModo("REGISTRO")}>
                   Solicitar acceso
-                </a>
+                </button>
                 {" | "}
-                <a href="#" onClick={(e) => { e.preventDefault(); switchModo("CAMBIO"); }}>
+                <button type="button" className="btn btn-link btn-sm p-0 align-baseline" onClick={() => switchModo("CAMBIO")}>
                   Cambiar contraseña
-                </a>
+                </button>
               </small>
             ) : modo === "REGISTRO" ? (
               <small>
                 ¿Ya tienes cuenta?{" "}
-                <a href="#" onClick={(e) => { e.preventDefault(); switchModo("LOGIN"); }}>
+                <button type="button" className="btn btn-link btn-sm p-0 align-baseline" onClick={() => switchModo("LOGIN")}>
                   Iniciar sesión
-                </a>
+                </button>
               </small>
             ) : (
               <small>
                 Volver a{" "}
-                <a href="#" onClick={(e) => { e.preventDefault(); switchModo("LOGIN"); }}>
+                <button type="button" className="btn btn-link btn-sm p-0 align-baseline" onClick={() => switchModo("LOGIN")}>
                   Iniciar sesión
-                </a>
+                </button>
               </small>
             )}
           </div>

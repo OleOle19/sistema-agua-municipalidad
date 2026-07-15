@@ -44,7 +44,6 @@ const normalizeMetodoPagoCaja = (value) => {
 const getMetodoPagoConfig = (value) => (
   METODOS_PAGO_CAJA.find((metodo) => metodo.value === normalizeMetodoPagoCaja(value)) || METODOS_PAGO_CAJA[0]
 );
-const getMetodoPagoLabel = (value) => getMetodoPagoConfig(value).label;
 const normalizeEstadoConfirmacionPago = (value) => {
   const raw = String(value || "").trim().toUpperCase();
   return ESTADOS_CONFIRMACION_PAGO.some((estado) => estado.value === raw) ? raw : "CONFIRMADO";
@@ -129,7 +128,7 @@ const normalizeRole = (role) => {
 
 const canEnterCajaModuleByRole = (role) => {
   const normalized = normalizeRole(role);
-  return normalized === "ADMIN" || normalized === "CAJERO";
+  return normalized === "ADMIN" || normalized === "ADMIN_SEC" || normalized === "CAJERO";
 };
 const canCorregirPagosByRole = (role) => {
   const normalized = normalizeRole(role);
@@ -225,11 +224,6 @@ const normalizeSearchText = (value) => String(value || "")
   .toLowerCase()
   .replace(/\s+/g, " ")
   .trim();
-
-const tokenizeSearchText = (value) => normalizeSearchText(value)
-  .split(/[^a-z0-9]+/)
-  .map((t) => t.trim())
-  .filter(Boolean);
 
 const normalizeDigits = (value) => String(value || "").replace(/\D/g, "");
 
@@ -678,7 +672,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const imprimiendoReciboLuzRef = useRef(false);
 
   const [datosAnexoCajaImprimir, setDatosAnexoCajaImprimir] = useState(null);
-  const [ultimoAnexoCaja, setUltimoAnexoCaja] = useState(null);
   const [imprimiendoAnexoCaja, setImprimiendoAnexoCaja] = useState(false);
   const anexoCajaRef = useRef(null);
   const isPrintingAnexoCajaRef = useRef(false);
@@ -784,7 +777,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
     setReciboLuzImpresion(null);
     setMostrarReporteCajaLuz(false);
     setFechaReporteLuz(toIsoDate());
-    setUltimoAnexoCaja(null);
     setImprimiendoAnexoCaja(false);
     busquedaAguaCacheRef.current.clear();
     busquedaAguaRequestSeqRef.current = 0;
@@ -984,8 +976,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const msg = handleApiError(err, "No se pudo buscar contribuyentes.");
       setErrorBusquedaContribuyenteAgua(msg);
     } finally {
-      if (requestId !== busquedaAguaRequestSeqRef.current) return;
-      setBuscandoContribuyenteAgua(false);
+      if (requestId === busquedaAguaRequestSeqRef.current) {
+        setBuscandoContribuyenteAgua(false);
+      }
     }
   }, [busquedaContribuyenteAgua, handleApiError, selectedContribuyenteAgua?.id_contribuyente, showFlash]);
 
@@ -1061,8 +1054,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const msg = handleApiError(err, "No se pudo buscar contribuyentes de luz.");
       setErrorBusquedaContribuyenteLuz(msg);
     } finally {
-      if (requestId !== busquedaLuzRequestSeqRef.current) return;
-      setBuscandoContribuyenteLuz(false);
+      if (requestId === busquedaLuzRequestSeqRef.current) {
+        setBuscandoContribuyenteLuz(false);
+      }
     }
   }, [busquedaContribuyenteLuz, handleApiError, selectedContribuyenteLuz?.id_suministro, showFlash]);
 
@@ -1837,7 +1831,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
         referencia_operacion: referenciaPago,
         estado_confirmacion: estadoConfirmacion
       };
-      setUltimoAnexoCaja(anexoData);
       setDatosAnexoCajaImprimir(anexoData);
       invalidarCobroAguaCache();
       invalidarBusquedaCajaCache();
@@ -2006,15 +1999,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
     return () => cancelAnimationFrame(raf);
   }, [handlePrintReciboLuz, reciboLuzImpresion]);
 
-  const reimprimirUltimoAnexoCaja = useCallback(() => {
-    if (!ultimoAnexoCaja) {
-      showFlash("warning", "No hay un anexo reciente para reimprimir.");
-      return;
-    }
-    if (imprimiendoAnexoCaja || isPrintingAnexoCajaRef.current) return;
-    setDatosAnexoCajaImprimir(ultimoAnexoCaja);
-  }, [imprimiendoAnexoCaja, ultimoAnexoCaja, showFlash]);
-
   const abrirReimpresionAgua = useCallback(async () => {
     const idContribuyente = Number(selectedContribuyenteAgua?.id_contribuyente || 0);
     if (!idContribuyente) {
@@ -2067,7 +2051,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
       return;
     }
     const anexoData = buildAnexoDataFromReciboPagado(selectedContribuyenteAgua, recibo);
-    setUltimoAnexoCaja(anexoData);
     setDatosAnexoCajaImprimir(anexoData);
     setMostrarModalReimpresionAgua(false);
   }, [idReciboReimpresionAgua, recibosPagadosReimpresionAgua, selectedContribuyenteAgua, showFlash]);
@@ -2191,7 +2174,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
         onLoginSuccess={(datos) => {
           const nextUser = datos ? { ...datos, rol: normalizeRole(datos.rol) } : null;
           if (!nextUser || !canEnterCajaModuleByRole(nextUser.rol)) {
-            alert("Acceso denegado. El modulo Caja Municipal solo permite cuentas ADMIN o CAJERO.");
+            alert("Acceso denegado. Caja Municipal requiere una cuenta ADMIN, ADMIN_SEC o CAJERO.");
             return;
           }
           setUsuarioSistema(nextUser);
@@ -2895,7 +2878,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         const estadoUpper = String(row?.estado || "").trim().toUpperCase();
                         const tipoMovimientoAdmin = String(row?.tipo_movimiento_admin || "").trim().toUpperCase();
                         const estadoMovimientoAdmin = String(row?.estado_movimiento_admin || "").trim().toUpperCase();
-                        const idAnulacionPendiente = Number(row?.id_anulacion_pendiente || 0);
                         const tieneReintegroPendiente = hasCobroAguaPendingReingreso(row) && estadoUpper !== "PAGADO";
                         const fueEditado = tipoMovimientoAdmin === "EDICION_MONTO" || estadoMovimientoAdmin === "EDITADO";
                         const fueReintegrado = tipoMovimientoAdmin === "REINTEGRACION" || estadoMovimientoAdmin === "REINTEGRADO";

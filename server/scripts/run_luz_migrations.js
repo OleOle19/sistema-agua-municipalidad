@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const pool = require("../luz/db");
+const { LUZ_LEGACY_ACCEPTED_CHECKSUMS } = require("../migration-policy");
 
 const MIGRATIONS_DIR = path.resolve(__dirname, "../sql/luz_migrations");
 const STATUS_ONLY = process.argv.includes("--status");
@@ -50,10 +51,11 @@ const run = async () => {
         console.log(`[PENDIENTE] ${file}`);
         continue;
       }
-      if (appliedChecksum !== checksum) {
+      const acceptedLegacy = LUZ_LEGACY_ACCEPTED_CHECKSUMS.get(file)?.has(appliedChecksum) === true;
+      if (appliedChecksum !== checksum && !acceptedLegacy) {
         throw new Error(`La migracion ${file} ya fue aplicada con otro checksum. No la modifiques; crea una nueva migracion.`);
       }
-      console.log(`[OK] ${file}`);
+      console.log(`${acceptedLegacy ? "[OK LEGACY]" : "[OK]"} ${file}`);
     }
 
     if (STATUS_ONLY) {

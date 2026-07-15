@@ -75,15 +75,6 @@ export default function useLandingBackground(defaultImageUrl = "") {
 
   useEffect(() => {
     const controller = new AbortController();
-    const cached = readCachedBackground();
-    if (cached?.mediaUrl) {
-      setState({
-        mediaUrl: cached.mediaUrl,
-        mediaType: cached.mediaType,
-        hasCustomMedia: true,
-        isReady: true
-      });
-    }
 
     const load = async () => {
       try {

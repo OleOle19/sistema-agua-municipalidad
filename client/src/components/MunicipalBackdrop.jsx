@@ -22,8 +22,10 @@ export default function MunicipalBackdrop({
     if (!nextMediaUrl || (nextMediaUrl === displayMedia.url && nextMediaType === displayMedia.type)) return;
 
     if (nextMediaType === "video") {
-      setDisplayMedia({ url: nextMediaUrl, type: "video" });
-      return;
+      const frameId = window.requestAnimationFrame(() => {
+        setDisplayMedia({ url: nextMediaUrl, type: "video" });
+      });
+      return () => window.cancelAnimationFrame(frameId);
     }
 
     let cancelled = false;
