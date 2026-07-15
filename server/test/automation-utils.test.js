@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { previousPeriod, resolveAutoDebtPeriod, buildFuturePeriods } = require("../automation-utils");
+const { previousPeriod, resolveAutoDebtPeriod, buildRemainingYearPeriods } = require("../automation-utils");
 
 test("previousPeriod cruza de enero al diciembre anterior", () => {
   assert.deepEqual(previousPeriod(2026, 1), { anio: 2025, mes: 12 });
@@ -20,18 +20,17 @@ test("auto deuda recupera el ultimo periodo cerrado en cualquier otro momento", 
   );
 });
 
-test("la proyeccion futura inicia en el periodo actual y cruza de año", () => {
-  const periods = buildFuturePeriods({ anio: 2026, mes: 7, futureMonths: 24 });
+test("la proyeccion inicia en el periodo actual y termina en diciembre", () => {
+  const periods = buildRemainingYearPeriods({ anio: 2026, mes: 7 });
 
-  assert.equal(periods.length, 25);
+  assert.equal(periods.length, 6);
   assert.deepEqual(periods[0], { anio: 2026, mes: 7, periodoNum: 202607 });
   assert.deepEqual(periods[5], { anio: 2026, mes: 12, periodoNum: 202612 });
-  assert.deepEqual(periods[6], { anio: 2027, mes: 1, periodoNum: 202701 });
-  assert.deepEqual(periods[24], { anio: 2028, mes: 7, periodoNum: 202807 });
   assert.equal(periods.some((period) => period.periodoNum < 202607), false);
+  assert.equal(periods.some((period) => period.anio !== 2026), false);
 });
 
-test("la proyeccion futura rechaza un periodo inicial invalido", () => {
-  assert.deepEqual(buildFuturePeriods({ anio: 2026, mes: 0 }), []);
-  assert.deepEqual(buildFuturePeriods({ anio: 0, mes: 7 }), []);
+test("la proyeccion anual rechaza un periodo inicial invalido", () => {
+  assert.deepEqual(buildRemainingYearPeriods({ anio: 2026, mes: 0 }), []);
+  assert.deepEqual(buildRemainingYearPeriods({ anio: 0, mes: 7 }), []);
 });

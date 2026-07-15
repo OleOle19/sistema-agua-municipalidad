@@ -31,7 +31,7 @@ const {
   normalizeAuditEventCode,
   redactAuditPayload
 } = require("./audit-utils");
-const { resolveAutoDebtPeriod, buildFuturePeriods } = require("./automation-utils");
+const { resolveAutoDebtPeriod, buildRemainingYearPeriods } = require("./automation-utils");
 const { getMigrationState } = require("./migration-health");
 const { LUZ_LEGACY_ACCEPTED_CHECKSUMS } = require("./migration-policy");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
@@ -789,10 +789,6 @@ const AUTO_DEUDA_BASE = {
   limpieza: parseMonto(process.env.AUTO_DEUDA_LIMPIEZA, 3.5),
   admin: parseMonto(process.env.AUTO_DEUDA_ADMIN, 0.5)
 };
-const arbitriosProyeccionMesesRaw = Number(process.env.ARBITRIOS_PROYECCION_MESES_FUTUROS || 24);
-const ARBITRIOS_PROYECCION_MESES_FUTUROS = Number.isFinite(arbitriosProyeccionMesesRaw)
-  ? Math.max(1, Math.min(60, Math.trunc(arbitriosProyeccionMesesRaw)))
-  : 24;
 const AUDIT_REDACT_KEYS = new Set([
   "password",
   "password_actual",
@@ -3498,10 +3494,9 @@ const appendProjectedArbitriosRows = async (
     (Number(row?.anio || 0) * 100) + Number(row?.mes || 0)
   ));
   const anioFiltroNum = Number(anioFiltro || 0);
-  const periodosAProyectar = buildFuturePeriods({
+  const periodosAProyectar = buildRemainingYearPeriods({
     anio: anioObjetivo,
-    mes: mesObjetivo,
-    futureMonths: ARBITRIOS_PROYECCION_MESES_FUTUROS
+    mes: mesObjetivo
   }).filter((periodo) => (
     (!filtrarAnio || periodo.anio === anioFiltroNum)
     && !periodosExistentes.has(periodo.periodoNum)

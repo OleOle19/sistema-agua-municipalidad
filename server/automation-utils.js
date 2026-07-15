@@ -17,24 +17,21 @@ const resolveAutoDebtPeriod = ({ anio, mes, dia, hora, minuto, diasDelMes }) => 
   return { ...previousPeriod(currentYear, currentMonth), modo: "RECUPERACION" };
 };
 
-const buildFuturePeriods = ({ anio, mes, futureMonths = 24 } = {}) => {
+const buildRemainingYearPeriods = ({ anio, mes } = {}) => {
   const startYear = Number(anio);
   const startMonth = Number(mes);
-  const monthsAhead = Math.max(0, Math.min(60, Math.trunc(Number(futureMonths) || 0)));
   if (!Number.isInteger(startYear) || startYear < 1900 || !Number.isInteger(startMonth) || startMonth < 1 || startMonth > 12) {
     return [];
   }
 
-  return Array.from({ length: monthsAhead + 1 }, (_, offset) => {
-    const absoluteMonth = (startYear * 12) + (startMonth - 1) + offset;
-    const periodYear = Math.floor(absoluteMonth / 12);
-    const periodMonth = (absoluteMonth % 12) + 1;
+  return Array.from({ length: 13 - startMonth }, (_, offset) => {
+    const periodMonth = startMonth + offset;
     return {
-      anio: periodYear,
+      anio: startYear,
       mes: periodMonth,
-      periodoNum: (periodYear * 100) + periodMonth
+      periodoNum: (startYear * 100) + periodMonth
     };
   });
 };
 
-module.exports = { previousPeriod, resolveAutoDebtPeriod, buildFuturePeriods };
+module.exports = { previousPeriod, resolveAutoDebtPeriod, buildRemainingYearPeriods };
