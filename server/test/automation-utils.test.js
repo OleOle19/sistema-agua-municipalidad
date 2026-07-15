@@ -1,6 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { previousPeriod, resolveAutoDebtPeriod, buildRemainingYearPeriods } = require("../automation-utils");
+const {
+  previousPeriod,
+  resolveAutoDebtPeriod,
+  buildRemainingYearPeriods,
+  buildForwardPeriods
+} = require("../automation-utils");
 
 test("previousPeriod cruza de enero al diciembre anterior", () => {
   assert.deepEqual(previousPeriod(2026, 1), { anio: 2025, mes: 12 });
@@ -33,4 +38,24 @@ test("la proyeccion inicia en el periodo actual y termina en diciembre", () => {
 test("la proyeccion anual rechaza un periodo inicial invalido", () => {
   assert.deepEqual(buildRemainingYearPeriods({ anio: 2026, mes: 0 }), []);
   assert.deepEqual(buildRemainingYearPeriods({ anio: 0, mes: 7 }), []);
+});
+
+test("los adelantos de noviembre pueden cubrir hasta diciembre del año siguiente", () => {
+  const periods = buildForwardPeriods({ anio: 2026, mes: 11, totalMonths: 14 });
+
+  assert.equal(periods.length, 14);
+  assert.deepEqual(periods[0], { anio: 2026, mes: 11, periodoNum: 202611 });
+  assert.deepEqual(periods[1], { anio: 2026, mes: 12, periodoNum: 202612 });
+  assert.deepEqual(periods[2], { anio: 2027, mes: 1, periodoNum: 202701 });
+  assert.deepEqual(periods[13], { anio: 2027, mes: 12, periodoNum: 202712 });
+});
+
+test("los adelantos de diciembre cruzan de año sin repetir periodos", () => {
+  const periods = buildForwardPeriods({ anio: 2026, mes: 12, totalMonths: 13 });
+
+  assert.equal(periods.length, 13);
+  assert.deepEqual(periods[0], { anio: 2026, mes: 12, periodoNum: 202612 });
+  assert.deepEqual(periods[1], { anio: 2027, mes: 1, periodoNum: 202701 });
+  assert.deepEqual(periods[12], { anio: 2027, mes: 12, periodoNum: 202712 });
+  assert.equal(new Set(periods.map((period) => period.periodoNum)).size, periods.length);
 });

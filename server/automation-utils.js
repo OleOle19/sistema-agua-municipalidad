@@ -34,4 +34,32 @@ const buildRemainingYearPeriods = ({ anio, mes } = {}) => {
   });
 };
 
-module.exports = { previousPeriod, resolveAutoDebtPeriod, buildRemainingYearPeriods };
+const buildForwardPeriods = ({ anio, mes, totalMonths = 1 } = {}) => {
+  const startYear = Number(anio);
+  const startMonth = Number(mes);
+  const requestedMonths = Number(totalMonths);
+  if (
+    !Number.isInteger(startYear)
+    || startYear < 1900
+    || !Number.isInteger(startMonth)
+    || startMonth < 1
+    || startMonth > 12
+    || !Number.isFinite(requestedMonths)
+  ) {
+    return [];
+  }
+
+  const months = Math.max(1, Math.min(24, Math.trunc(requestedMonths)));
+  return Array.from({ length: months }, (_, offset) => {
+    const absoluteMonth = (startYear * 12) + (startMonth - 1) + offset;
+    const periodYear = Math.floor(absoluteMonth / 12);
+    const periodMonth = (absoluteMonth % 12) + 1;
+    return {
+      anio: periodYear,
+      mes: periodMonth,
+      periodoNum: (periodYear * 100) + periodMonth
+    };
+  });
+};
+
+module.exports = { previousPeriod, resolveAutoDebtPeriod, buildRemainingYearPeriods, buildForwardPeriods };

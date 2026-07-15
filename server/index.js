@@ -31,7 +31,7 @@ const {
   normalizeAuditEventCode,
   redactAuditPayload
 } = require("./audit-utils");
-const { resolveAutoDebtPeriod, buildRemainingYearPeriods } = require("./automation-utils");
+const { resolveAutoDebtPeriod, buildRemainingYearPeriods, buildForwardPeriods } = require("./automation-utils");
 const { getMigrationState } = require("./migration-health");
 const { LUZ_LEGACY_ACCEPTED_CHECKSUMS } = require("./migration-policy");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
@@ -12805,14 +12805,19 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
         }
       }
     }
+    const periodosDisponibles = buildForwardPeriods({
+      anio: startPeriodo.anio,
+      mes: startPeriodo.mes,
+      totalMonths: mesesAGenerar
+    });
     const existing = new Set(
       rows.map((row) => `${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`)
     );
     // Siempre incluimos el mes de la fecha de corte si falta. Si hay permisos
     // de futuros aprobados, extendemos el rango hasta el ultimo mes permitido.
     // La contingencia completa sigue controlando si se rellenan meses futuros extra.
-    if (idContribuyente > 0) {
-      const endPeriodoDate = new Date(Date.UTC(startPeriodo.anio, (startPeriodo.mes - 1) + Math.max(0, mesesAGenerar - 1), 1));
+    if (idContribuyente > 0 && periodosDisponibles.length > 0) {
+      const endPeriodo = periodosDisponibles[periodosDisponibles.length - 1];
       const periodosExistentesRs = await client.query(`
         SELECT DISTINCT r.anio, r.mes
         FROM recibos r
@@ -12824,20 +12829,19 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
         idContribuyente,
         startPeriodo.anio,
         startPeriodo.mes,
-        endPeriodoDate.getUTCFullYear(),
-        endPeriodoDate.getUTCMonth() + 1
+        endPeriodo.anio,
+        endPeriodo.mes
       ]);
       for (const row of periodosExistentesRs.rows) {
         existing.add(`${Number(row?.anio || 0)}-${Number(row?.mes || 0)}`);
       }
     }
-    for (let i = 0; i < mesesAGenerar; i += 1) {
-      const dt = new Date(startPeriodo.anio, (startPeriodo.mes - 1) + i, 1);
-      const anio = dt.getFullYear();
-      const mes = dt.getMonth() + 1;
+    for (const periodoDisponible of periodosDisponibles) {
+      const anio = periodoDisponible.anio;
+      const mes = periodoDisponible.mes;
       const key = `${anio}-${mes}`;
       if (existing.has(key)) continue;
-      const periodoNum = (anio * 100) + mes;
+      const periodoNum = periodoDisponible.periodoNum;
       if (periodoNum > periodoActual && incluirAdelantados && aplicarFiltroPermisosFuturos) {
         if (!permisosFuturosSet || !permisosFuturosSet.has(periodoNum)) {
           continue;

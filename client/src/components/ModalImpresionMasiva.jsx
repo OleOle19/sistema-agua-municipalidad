@@ -117,6 +117,7 @@ const ModalImpresionMasiva = ({
     }, base);
   }, [periodosHistorial, soloSeleccion, ultimoPeriodoEmitido.anio, ultimoPeriodoEmitido.mes]);
   const anioMaximoEmitido = Math.floor(maxPeriodoEmitidoNum / 100) || ultimoPeriodoEmitido.anio;
+  const anioSiguiente = ultimoPeriodoEmitido.anio + 1;
   const anioSeleccionado = Number(seleccion.anio || anioMaximoEmitido);
   const permitirMesesNoEmitidos = soloSeleccion ? permitirMesesFuturos : false;
   const idContribuyenteSeleccionado = Number(Array.isArray(idsSeleccionados) ? idsSeleccionados[0] : 0);
@@ -414,14 +415,31 @@ const ModalImpresionMasiva = ({
                 </div>
                 <div className="col-12">
                   <label className="form-label fw-bold">Año</label>
-                  <input
-                    type="number"
-                    className={inputClass}
-                    min={ultimoPeriodoEmitido.anio - 30}
-                    max={permitirMesesNoEmitidos ? ultimoPeriodoEmitido.anio + 5 : ultimoPeriodoEmitido.anio}
-                    value={seleccion.anio}
-                    onChange={(e) => setSeleccion({ ...seleccion, anio: e.target.value })}
-                  />
+                  <div className="input-group">
+                    <input
+                      type="number"
+                      className={inputClass}
+                      min={ultimoPeriodoEmitido.anio - 30}
+                      max={permitirMesesNoEmitidos ? ultimoPeriodoEmitido.anio + 5 : ultimoPeriodoEmitido.anio}
+                      value={seleccion.anio}
+                      onChange={(e) => setSeleccion({ ...seleccion, anio: e.target.value })}
+                    />
+                    {soloSeleccion && permitirMesesNoEmitidos && (
+                      <button
+                        type="button"
+                        className="btn btn-outline-primary"
+                        onClick={() => setSeleccion((prev) => ({ ...prev, anio: anioSiguiente, meses: [] }))}
+                        disabled={cargando}
+                      >
+                        Ir a {anioSiguiente}
+                      </button>
+                    )}
+                  </div>
+                  {soloSeleccion && permitirMesesNoEmitidos && (
+                    <div className="form-text">
+                      Para adelantos de fin de año, vaya a {anioSiguiente} y seleccione solo los meses que pagará. Caja los recibirá como ADELANTADO.
+                    </div>
+                  )}
                 </div>
               </div>
 
