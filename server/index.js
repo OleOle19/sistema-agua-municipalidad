@@ -31,7 +31,7 @@ const {
   normalizeAuditEventCode,
   redactAuditPayload
 } = require("./audit-utils");
-const { resolveAutoDebtPeriod } = require("./automation-utils");
+const { resolveAutoDebtPeriod, buildFuturePeriods } = require("./automation-utils");
 const { getMigrationState } = require("./migration-health");
 const { LUZ_LEGACY_ACCEPTED_CHECKSUMS } = require("./migration-policy");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
@@ -789,6 +789,10 @@ const AUTO_DEUDA_BASE = {
   limpieza: parseMonto(process.env.AUTO_DEUDA_LIMPIEZA, 3.5),
   admin: parseMonto(process.env.AUTO_DEUDA_ADMIN, 0.5)
 };
+const arbitriosProyeccionMesesRaw = Number(process.env.ARBITRIOS_PROYECCION_MESES_FUTUROS || 24);
+const ARBITRIOS_PROYECCION_MESES_FUTUROS = Number.isFinite(arbitriosProyeccionMesesRaw)
+  ? Math.max(1, Math.min(60, Math.trunc(arbitriosProyeccionMesesRaw)))
+  : 24;
 const AUDIT_REDACT_KEYS = new Set([
   "password",
   "password_actual",
@@ -3332,11 +3336,16 @@ const buildPeriodosRecalculadosResumen = (rows = []) => {
   };
 };
 
-const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
+const buildProjectedArbitriosRows = async (db, idContribuyente, periodosRaw = []) => {
   const id = parsePositiveInt(idContribuyente, 0);
-  const anioNum = Number(anio || 0);
-  const mesNum = Number(mes || 0);
-  if (!id || anioNum < 1900 || mesNum < 1 || mesNum > 12) return null;
+  const periodos = clampArray(periodosRaw, 61)
+    .map((periodo) => ({
+      anio: Number(periodo?.anio || 0),
+      mes: Number(periodo?.mes || 0),
+      periodoNum: Number(periodo?.periodoNum || 0)
+    }))
+    .filter((periodo) => periodo.anio >= 1900 && periodo.mes >= 1 && periodo.mes <= 12 && periodo.periodoNum > 0);
+  if (!id || periodos.length === 0) return [];
 
   const predioRs = await db.query(`
     SELECT
@@ -3350,6 +3359,12 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
       p.tarifa_limpieza,
       p.tarifa_admin,
       p.tarifa_extra,
+      p.tarifa_programada_desde_periodo,
+      p.tarifa_programada_agua,
+      p.tarifa_programada_desague,
+      p.tarifa_programada_limpieza,
+      p.tarifa_programada_admin,
+      p.tarifa_programada_extra,
       (
         SELECT COALESCE(rh.subtotal_agua, 0)
         FROM recibos rh
@@ -3381,10 +3396,10 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
     ORDER BY p.id_predio ASC
     LIMIT 1
   `, [id]);
-  if (predioRs.rows.length === 0) return null;
+  if (predioRs.rows.length === 0) return [];
 
   const predio = predioRs.rows[0];
-  if (predio.estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) return null;
+  if (predio.estado_conexion !== ESTADOS_CONEXION.CON_CONEXION) return [];
 
   const historialContribuyenteRs = await db.query(`
     SELECT
@@ -3419,62 +3434,51 @@ const buildProjectedArbitriosRow = async (db, idContribuyente, anio, mes) => {
   `, [id]);
   const historialContribuyente = historialContribuyenteRs.rows[0] || null;
 
-  const activoSN = normalizeSN(predio.activo_sn, "S");
-  const aguaHabilitado = activoSN === "S" && normalizeSN(predio.agua_sn, "S") === "S";
-  const desagueHabilitado = activoSN === "S" && normalizeSN(predio.desague_sn, "S") === "S";
-  const limpiezaHabilitado = activoSN === "S" && normalizeSN(predio.limpieza_sn, "S") === "S";
-  const subtotalAgua = aguaHabilitado
-    ? roundMonto2(parseMonto(
+  const predioConTarifasBase = {
+    ...predio,
+    tarifa_agua: parseMonto(
       predio.tarifa_agua,
-      parseMonto(
-        historialContribuyente?.subtotal_agua,
-        parseMonto(predio.agua_hist, AUTO_DEUDA_BASE.agua)
-      )
-    ))
-    : 0;
-  const subtotalDesague = desagueHabilitado
-    ? roundMonto2(parseMonto(
+      parseMonto(historialContribuyente?.subtotal_agua, parseMonto(predio.agua_hist, AUTO_DEUDA_BASE.agua))
+    ),
+    tarifa_desague: parseMonto(
       predio.tarifa_desague,
-      parseMonto(
-        historialContribuyente?.subtotal_desague,
-        parseMonto(predio.desague_hist, AUTO_DEUDA_BASE.desague)
-      )
-    ))
-    : 0;
-  const subtotalLimpieza = limpiezaHabilitado
-    ? roundMonto2(parseMonto(
+      parseMonto(historialContribuyente?.subtotal_desague, parseMonto(predio.desague_hist, AUTO_DEUDA_BASE.desague))
+    ),
+    tarifa_limpieza: parseMonto(
       predio.tarifa_limpieza,
-      parseMonto(
-        historialContribuyente?.subtotal_limpieza,
-        parseMonto(predio.limpieza_hist, AUTO_DEUDA_BASE.limpieza)
-      )
-    ))
-    : 0;
-  const subtotalAdmin = activoSN === "S"
-    ? roundMonto2(parseMonto(predio.tarifa_admin, parseMonto(historialContribuyente?.subtotal_admin, AUTO_DEUDA_BASE.admin)))
-    : 0;
-  const subtotalExtra = activoSN === "S"
-    ? roundMonto2(parseMonto(predio.tarifa_extra, parseMonto(historialContribuyente?.subtotal_extra, 0)))
-    : 0;
-  const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
-  if (totalPagar <= 0) return null;
-
-  return {
-    id_recibo: null,
-    mes: mesNum,
-    anio: anioNum,
-    subtotal_agua: subtotalAgua,
-    subtotal_desague: subtotalDesague,
-    subtotal_limpieza: subtotalLimpieza,
-    subtotal_admin: subtotalAdmin,
-    subtotal_extra: subtotalExtra,
-    tarifa_extra_actual: subtotalExtra,
-    total_pagar: totalPagar,
-    abono_mes: 0,
-    deuda_mes: 0,
-    estado: "PROYECTADO",
-    es_proyectado: true
+      parseMonto(historialContribuyente?.subtotal_limpieza, parseMonto(predio.limpieza_hist, AUTO_DEUDA_BASE.limpieza))
+    ),
+    tarifa_admin: parseMonto(predio.tarifa_admin, parseMonto(historialContribuyente?.subtotal_admin, AUTO_DEUDA_BASE.admin)),
+    tarifa_extra: parseMonto(predio.tarifa_extra, parseMonto(historialContribuyente?.subtotal_extra, 0))
   };
+
+  return periodos.map((periodo) => {
+    const tarifas = resolvePredioTarifasByPeriodo(predioConTarifasBase, periodo.periodoNum);
+    const subtotalAgua = roundMonto2(parseMonto(tarifas.agua, 0));
+    const subtotalDesague = roundMonto2(parseMonto(tarifas.desague, 0));
+    const subtotalLimpieza = roundMonto2(parseMonto(tarifas.limpieza, 0));
+    const subtotalAdmin = roundMonto2(parseMonto(tarifas.admin, 0));
+    const subtotalExtra = roundMonto2(parseMonto(tarifas.extra, 0));
+    const totalPagar = roundMonto2(subtotalAgua + subtotalDesague + subtotalLimpieza + subtotalAdmin + subtotalExtra);
+    if (totalPagar <= 0) return null;
+
+    return {
+      id_recibo: null,
+      mes: periodo.mes,
+      anio: periodo.anio,
+      subtotal_agua: subtotalAgua,
+      subtotal_desague: subtotalDesague,
+      subtotal_limpieza: subtotalLimpieza,
+      subtotal_admin: subtotalAdmin,
+      subtotal_extra: subtotalExtra,
+      tarifa_extra_actual: subtotalExtra,
+      total_pagar: totalPagar,
+      abono_mes: 0,
+      deuda_mes: 0,
+      estado: "PROYECTADO",
+      es_proyectado: true
+    };
+  }).filter(Boolean);
 };
 
 const appendProjectedArbitriosRows = async (
@@ -3489,17 +3493,23 @@ const appendProjectedArbitriosRows = async (
   const anioObjetivo = Number(anioActual || 0);
   const mesObjetivo = Number(mesActual || 0);
   if (anioObjetivo < 1900 || mesObjetivo < 1 || mesObjetivo > 12) return baseRows;
-  if (filtrarAnio && Number(anioFiltro || 0) !== anioObjetivo) return baseRows;
 
-  const existePeriodo = baseRows.some((row) =>
-    Number(row?.anio || 0) === anioObjetivo && Number(row?.mes || 0) === mesObjetivo
-  );
-  if (existePeriodo) return baseRows;
+  const periodosExistentes = new Set(baseRows.map((row) =>
+    (Number(row?.anio || 0) * 100) + Number(row?.mes || 0)
+  ));
+  const anioFiltroNum = Number(anioFiltro || 0);
+  const periodosAProyectar = buildFuturePeriods({
+    anio: anioObjetivo,
+    mes: mesObjetivo,
+    futureMonths: ARBITRIOS_PROYECCION_MESES_FUTUROS
+  }).filter((periodo) => (
+    (!filtrarAnio || periodo.anio === anioFiltroNum)
+    && !periodosExistentes.has(periodo.periodoNum)
+  ));
+  if (periodosAProyectar.length === 0) return baseRows;
 
-  const projectedRow = await buildProjectedArbitriosRow(db, idContribuyente, anioObjetivo, mesObjetivo);
-  if (!projectedRow) return baseRows;
-
-  baseRows.push(projectedRow);
+  const projectedRows = await buildProjectedArbitriosRows(db, idContribuyente, periodosAProyectar);
+  baseRows.push(...projectedRows);
   baseRows.sort((a, b) => ((Number(a?.anio || 0) * 100 + Number(a?.mes || 0)) - (Number(b?.anio || 0) * 100 + Number(b?.mes || 0))));
   return baseRows;
 };
