@@ -2342,6 +2342,7 @@ const anexoCajaPageStyle = `
           <LazyModalAuditoria
             cerrarModal={() => setMostrarModalAuditoria(false)}
             darkMode={darkMode}
+            canUndo={permisos.canSuperAdmin}
             onUndoApplied={() => cargarContribuyentes(0, { forceFresh: true })}
           />
         </Suspense>

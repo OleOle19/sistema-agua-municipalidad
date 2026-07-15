@@ -311,6 +311,11 @@ function LuzApp({ onBackToSelector }) {
   const [importacion, setImportacion] = useState(createImportState);
   const [auditoriaRows, setAuditoriaRows] = useState([]);
   const [auditoriaFiltro, setAuditoriaFiltro] = useState("");
+  const [auditoriaCategoria, setAuditoriaCategoria] = useState("TODOS");
+  const [auditoriaUsuarioId, setAuditoriaUsuarioId] = useState("");
+  const [auditoriaUsuarios, setAuditoriaUsuarios] = useState([]);
+  const [auditoriaPagina, setAuditoriaPagina] = useState(1);
+  const [auditoriaTotal, setAuditoriaTotal] = useState(0);
   const [loadingAuditoria, setLoadingAuditoria] = useState(false);
 
   const [reciboImpresion, setReciboImpresion] = useState(null);
@@ -631,13 +636,21 @@ function LuzApp({ onBackToSelector }) {
   const cargarAuditoria = useCallback(async () => {
     setLoadingAuditoria(true);
     try {
-      const params = {};
+      const params = { page: auditoriaPagina, page_size: 100 };
       if (String(auditoriaFiltro || "").trim()) params.q = auditoriaFiltro.trim();
+      if (auditoriaCategoria !== "TODOS") params.categoria = auditoriaCategoria;
+      if (auditoriaUsuarioId) params.usuario_id = auditoriaUsuarioId;
       const res = await luzApi.get("/auditoria", { params });
-      setAuditoriaRows(Array.isArray(res.data) ? res.data : []);
+      const payload = res.data;
+      const rows = Array.isArray(payload) ? payload : (Array.isArray(payload?.rows) ? payload.rows : []);
+      setAuditoriaRows(rows);
+      setAuditoriaTotal(Number(Array.isArray(payload) ? rows.length : payload?.total || 0));
+      setAuditoriaUsuarios(Array.isArray(payload?.usuarios) ? payload.usuarios : []);
     } catch (err) {
       if (Number(err?.response?.status || 0) === 404) {
         setAuditoriaRows([]);
+        setAuditoriaTotal(0);
+        setAuditoriaUsuarios([]);
         showFlash("warning", "Auditoria no disponible en el backend actual. Reinicie backend para aplicar la nueva ruta.");
       } else {
         handleApiError(err, "No se pudo cargar auditoria.");
@@ -645,7 +658,7 @@ function LuzApp({ onBackToSelector }) {
     } finally {
       setLoadingAuditoria(false);
     }
-  }, [auditoriaFiltro, handleApiError, showFlash]);
+  }, [auditoriaCategoria, auditoriaFiltro, auditoriaPagina, auditoriaUsuarioId, handleApiError, showFlash]);
 
   const cargarReporteCobranza = useCallback(async (fechaRef = fechaReporteCobranza) => {
     if (!permisos.canViewReportes) return;
@@ -2093,19 +2106,58 @@ function LuzApp({ onBackToSelector }) {
             {tab === "auditoria" && (
               <div className="row g-3">
                 <div className="col-12">
-                  <div className="d-flex flex-wrap gap-2 align-items-center mb-2">
-                    <div className="input-group" style={{ maxWidth: "360px" }}>
+                  <div className="d-flex flex-wrap gap-2 align-items-center mb-3">
+                    <div className="input-group flex-grow-1" style={{ minWidth: "260px", maxWidth: "420px" }}>
                       <span className="input-group-text"><FaSearch /></span>
                       <input
                         className="form-control"
                         placeholder="Buscar por usuario, movimiento o detalle"
                         value={auditoriaFiltro}
-                        onChange={(e) => setAuditoriaFiltro(e.target.value)}
+                        onChange={(e) => {
+                          setAuditoriaFiltro(e.target.value);
+                          setAuditoriaPagina(1);
+                        }}
                       />
                     </div>
+                    <select
+                      className="form-select form-select-sm"
+                      style={{ width: "170px" }}
+                      value={auditoriaCategoria}
+                      onChange={(e) => {
+                        setAuditoriaCategoria(e.target.value);
+                        setAuditoriaPagina(1);
+                      }}
+                    >
+                      <option value="TODOS">Área: TODAS</option>
+                      <option value="SEGURIDAD">Área: Seguridad</option>
+                      <option value="CAJA">Área: Caja</option>
+                      <option value="DEUDA">Área: Deuda</option>
+                      <option value="PADRON">Área: Padrón</option>
+                      <option value="CAMPO">Área: Campo</option>
+                      <option value="DATOS">Área: Datos</option>
+                      <option value="ADMINISTRACION">Área: Administración</option>
+                      <option value="CONSULTA">Área: Consulta</option>
+                      <option value="SISTEMA">Área: General</option>
+                    </select>
+                    <select
+                      className="form-select form-select-sm"
+                      style={{ width: "260px" }}
+                      value={auditoriaUsuarioId}
+                      onChange={(e) => {
+                        setAuditoriaUsuarioId(e.target.value);
+                        setAuditoriaPagina(1);
+                      }}
+                    >
+                      <option value="">Usuario: TODOS</option>
+                      {auditoriaUsuarios.map((usuario) => (
+                        <option key={usuario.id_usuario} value={usuario.id_usuario}>
+                          {usuario.username}{usuario.nombre && usuario.nombre !== usuario.username ? ` - ${usuario.nombre}` : ""}
+                        </option>
+                      ))}
+                    </select>
                     <button className="btn btn-outline-primary btn-sm d-flex align-items-center gap-2" onClick={cargarAuditoria} disabled={loadingAuditoria}>
                       <FaSyncAlt />
-                      Recargar lista
+                      Recargar
                     </button>
                   </div>
 
@@ -2116,24 +2168,57 @@ function LuzApp({ onBackToSelector }) {
                           <th style={{ minWidth: "170px" }}>Fecha</th>
                           <th style={{ minWidth: "170px" }}>Usuario</th>
                           <th style={{ minWidth: "220px" }}>Movimiento</th>
+                          <th>Categoría</th>
                           <th>Resumen</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {loadingAuditoria && <tr><td colSpan="4" className="text-center py-3">Cargando...</td></tr>}
+                        {loadingAuditoria && <tr><td colSpan="5" className="text-center py-3">Cargando...</td></tr>}
                         {!loadingAuditoria && auditoriaRows.length === 0 && (
-                          <tr><td colSpan="4" className="text-center py-3 text-muted">Sin registros de auditoria.</td></tr>
+                          <tr><td colSpan="5" className="text-center py-3 text-muted">Sin registros de auditoría con estos filtros.</td></tr>
                         )}
                         {!loadingAuditoria && auditoriaRows.map((row) => (
                           <tr key={row.id_auditoria}>
                             <td>{formatFechaHora(row.fecha)}</td>
-                            <td>{row.usuario || "-"}</td>
-                            <td><span className="badge bg-secondary">{formatLuzAuditAction(row.accion)}</span></td>
+                            <td>
+                              <div>{row.usuario || "-"}</div>
+                              {row.actor_rol && <small className="text-muted">{row.actor_rol}</small>}
+                            </td>
+                            <td><span className="badge bg-secondary">{formatLuzAuditAction(row.evento || row.accion)}</span></td>
+                            <td>{formatLuzAuditAction(row.categoria || "SISTEMA")}</td>
                             <td>{formatLuzAuditDetail(row.detalle)}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                  <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 mt-2">
+                    <small className="text-muted">
+                      {auditoriaTotal === 0
+                        ? "0 movimientos"
+                        : `${((auditoriaPagina - 1) * 100) + 1}-${Math.min(auditoriaPagina * 100, auditoriaTotal)} de ${auditoriaTotal}`}
+                    </small>
+                    <div className="btn-group btn-group-sm">
+                      <button
+                        type="button"
+                        className="btn btn-outline-secondary"
+                        disabled={loadingAuditoria || auditoriaPagina <= 1}
+                        onClick={() => setAuditoriaPagina((page) => Math.max(1, page - 1))}
+                      >
+                        Anterior
+                      </button>
+                      <button type="button" className="btn btn-outline-secondary" disabled>
+                        Página {auditoriaPagina} de {Math.max(1, Math.ceil(auditoriaTotal / 100))}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-outline-secondary"
+                        disabled={loadingAuditoria || auditoriaPagina >= Math.ceil(auditoriaTotal / 100)}
+                        onClick={() => setAuditoriaPagina((page) => page + 1)}
+                      >
+                        Siguiente
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

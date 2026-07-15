@@ -8,6 +8,13 @@ const ExcelJS = require("exceljs");
 const multer = require("multer");
 const { Readable } = require("stream");
 const pool = require("./db");
+const {
+  inferAuditCategory,
+  inferAuditEntity,
+  inferAuditRisk,
+  normalizeAuditEventCode,
+  redactAuditPayload
+} = require("../audit-utils");
 
 const router = express.Router();
 const LUZ_IMPORT_MAX_FILE_BYTES = Math.max(
@@ -488,10 +495,28 @@ const authenticateLuzToken = async (req, res, next) => {
   const auth = String(req.headers.authorization || "");
   const [scheme, token] = auth.split(" ");
   if (scheme !== "Bearer" || !token) {
+    req.skipAutoAudit = true;
+    registrarAuditoria(null, "ANONIMO", "ACCESO_NO_AUTENTICADO", `ruta=${req.path}; motivo=TOKEN_AUSENTE`, {
+      categoria: "SEGURIDAD",
+      nivelRiesgo: "ALTO",
+      resultado: "RECHAZADO",
+      ip: getRequestIp(req),
+      requestId: req.auditRequestId,
+      metadata: { ruta: req.path, metodo: req.method, motivo: "TOKEN_AUSENTE" }
+    }).catch(() => {});
     return res.status(401).json({ error: "No autorizado" });
   }
   const resolved = await resolverUsuarioLuz(token);
   if (!resolved.ok) {
+    req.skipAutoAudit = true;
+    registrarAuditoria(null, "ANONIMO", "ACCESO_NO_AUTENTICADO", `ruta=${req.path}; motivo=TOKEN_INVALIDO`, {
+      categoria: "SEGURIDAD",
+      nivelRiesgo: "ALTO",
+      resultado: "RECHAZADO",
+      ip: getRequestIp(req),
+      requestId: req.auditRequestId,
+      metadata: { ruta: req.path, metodo: req.method, motivo: "TOKEN_INVALIDO" }
+    }).catch(() => {});
     return res.status(resolved.status || 401).json({ error: resolved.error || "No autorizado" });
   }
   req.user = resolved.user;
@@ -523,10 +548,28 @@ const authenticateCajaMunicipalToken = async (req, res, next) => {
   const auth = String(req.headers.authorization || "");
   const [scheme, token] = auth.split(" ");
   if (scheme !== "Bearer" || !token) {
+    req.skipAutoAudit = true;
+    registrarAuditoria(null, "ANONIMO", "ACCESO_NO_AUTENTICADO", `ruta=${req.path}; motivo=TOKEN_AUSENTE`, {
+      categoria: "SEGURIDAD",
+      nivelRiesgo: "ALTO",
+      resultado: "RECHAZADO",
+      ip: getRequestIp(req),
+      requestId: req.auditRequestId,
+      metadata: { ruta: req.path, metodo: req.method, motivo: "TOKEN_AUSENTE" }
+    }).catch(() => {});
     return res.status(401).json({ error: "No autorizado" });
   }
   const resolved = await resolveCajaUserFromAnySystemToken(token);
   if (!resolved.ok) {
+    req.skipAutoAudit = true;
+    registrarAuditoria(null, "ANONIMO", "ACCESO_NO_AUTENTICADO", `ruta=${req.path}; motivo=TOKEN_INVALIDO`, {
+      categoria: "SEGURIDAD",
+      nivelRiesgo: "ALTO",
+      resultado: "RECHAZADO",
+      ip: getRequestIp(req),
+      requestId: req.auditRequestId,
+      metadata: { ruta: req.path, metodo: req.method, motivo: "TOKEN_INVALIDO" }
+    }).catch(() => {});
     return res.status(resolved.status || 401).json({ error: resolved.error || "No autorizado" });
   }
   req.user = resolved.user;
@@ -535,20 +578,70 @@ const authenticateCajaMunicipalToken = async (req, res, next) => {
 
 const requireRole = (minRole) => (req, res, next) => {
   if (!hasMinRole(req.user?.rol, minRole)) {
+    req.skipAutoAudit = true;
+    registrarAuditoria(
+      null,
+      req.user?.username || req.user?.nombre || "SISTEMA",
+      "ACCESO_DENEGADO_ROL",
+      `ruta=${req.path}; metodo=${req.method}; rol=${req.user?.rol || "SIN_ROL"}; requiere=${minRole}`,
+      {
+        categoria: "SEGURIDAD",
+        nivelRiesgo: "ALTO",
+        resultado: "RECHAZADO",
+        actorId: req.user?.id_usuario,
+        actorRol: req.user?.rol,
+        ip: getRequestIp(req),
+        requestId: req.auditRequestId,
+        metadata: { ruta: req.path, metodo: req.method, rol_requerido: minRole }
+      }
+    ).catch(() => {});
     return res.status(403).json({ error: "Acceso denegado." });
   }
   return next();
 };
 
-const registrarAuditoria = async (clientOrPool, usuario, accion, detalle) => {
+const registrarAuditoria = async (clientOrPool, usuario, accion, detalle, options = {}) => {
   const db = clientOrPool || pool;
   try {
-    await db.query(
-      "INSERT INTO auditoria (usuario, accion, detalle) VALUES ($1, $2, $3)",
-      [usuario || "SISTEMA", accion, detalle || null]
-    );
+    const evento = normalizeAuditEventCode(options.evento || accion);
+    const categoria = String(options.categoria || inferAuditCategory(evento, options.method)).trim().toUpperCase();
+    const nivelRiesgo = String(options.nivelRiesgo || inferAuditRisk(evento, categoria)).trim().toUpperCase();
+    const metadata = redactAuditPayload(options.metadata || {}, {
+      maxDepth: 6,
+      maxArrayItems: 100,
+      maxStringLength: 1000
+    });
+    const inserted = await db.query(`
+      INSERT INTO auditoria (
+        usuario, accion, detalle, sistema, actor_id, actor_rol, evento,
+        categoria, nivel_riesgo, resultado, entidad_tipo, entidad_id,
+        ip, request_id, datos_antes, datos_despues, metadata
+      )
+      VALUES ($1, $2, $3, 'LUZ', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15::jsonb, $16::jsonb)
+      RETURNING id_auditoria
+    `, [
+      usuario || "SISTEMA",
+      accion,
+      detalle || null,
+      parsePositiveInt(options.actorId, 0) || null,
+      options.actorRol ? String(options.actorRol).trim().toUpperCase() : null,
+      evento,
+      categoria || "SISTEMA",
+      nivelRiesgo || "BAJO",
+      String(options.resultado || "EXITO").trim().toUpperCase(),
+      options.entidadTipo ? String(options.entidadTipo).trim().toUpperCase() : null,
+      options.entidadId === undefined || options.entidadId === null ? null : String(options.entidadId).trim().slice(0, 120),
+      options.ip ? String(options.ip).trim().slice(0, 80) : null,
+      options.requestId ? String(options.requestId).trim().slice(0, 80) : null,
+      options.datosAntes === undefined ? null : JSON.stringify(redactAuditPayload(options.datosAntes)),
+      options.datosDespues === undefined ? null : JSON.stringify(redactAuditPayload(options.datosDespues)),
+      JSON.stringify(metadata || {})
+    ]);
+    return parsePositiveInt(inserted.rows?.[0]?.id_auditoria, 0) || null;
   } catch (err) {
     console.error("[LUZ] Error guardando auditoria:", err.message);
+    if (clientOrPool || options.critical) throw err;
+    return null;
   }
 };
 
@@ -778,7 +871,21 @@ const ensureLuzCoreSchema = async () => {
       fecha TIMESTAMP NOT NULL DEFAULT NOW(),
       usuario VARCHAR(160) NULL,
       accion VARCHAR(120) NOT NULL,
-      detalle TEXT NULL
+      detalle TEXT NULL,
+      sistema VARCHAR(16) NOT NULL DEFAULT 'LUZ',
+      actor_id BIGINT NULL,
+      actor_rol VARCHAR(40) NULL,
+      evento VARCHAR(120) NULL,
+      categoria VARCHAR(40) NULL,
+      nivel_riesgo VARCHAR(16) NULL,
+      resultado VARCHAR(20) NOT NULL DEFAULT 'EXITO',
+      entidad_tipo VARCHAR(80) NULL,
+      entidad_id VARCHAR(120) NULL,
+      ip VARCHAR(80) NULL,
+      request_id VARCHAR(80) NULL,
+      datos_antes JSONB NULL,
+      datos_despues JSONB NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS uq_luz_tarifas_activa
@@ -814,6 +921,63 @@ const ensureLuzCoreSchema = async () => {
 
     CREATE INDEX IF NOT EXISTS idx_luz_codigos_gin
     ON codigos_impresion USING GIN (recibos_json);
+  `);
+  await pool.query(`
+    ALTER TABLE auditoria
+      ADD COLUMN IF NOT EXISTS sistema VARCHAR(16) NOT NULL DEFAULT 'LUZ',
+      ADD COLUMN IF NOT EXISTS actor_id BIGINT NULL,
+      ADD COLUMN IF NOT EXISTS actor_rol VARCHAR(40) NULL,
+      ADD COLUMN IF NOT EXISTS evento VARCHAR(120) NULL,
+      ADD COLUMN IF NOT EXISTS categoria VARCHAR(40) NULL,
+      ADD COLUMN IF NOT EXISTS nivel_riesgo VARCHAR(16) NULL,
+      ADD COLUMN IF NOT EXISTS resultado VARCHAR(20) NOT NULL DEFAULT 'EXITO',
+      ADD COLUMN IF NOT EXISTS entidad_tipo VARCHAR(80) NULL,
+      ADD COLUMN IF NOT EXISTS entidad_id VARCHAR(120) NULL,
+      ADD COLUMN IF NOT EXISTS ip VARCHAR(80) NULL,
+      ADD COLUMN IF NOT EXISTS request_id VARCHAR(80) NULL,
+      ADD COLUMN IF NOT EXISTS datos_antes JSONB NULL,
+      ADD COLUMN IF NOT EXISTS datos_despues JSONB NULL,
+      ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+    UPDATE auditoria
+    SET evento = LEFT(REGEXP_REPLACE(UPPER(COALESCE(accion, 'EVENTO_SISTEMA')), '[^A-Z0-9_-]+', '_', 'g'), 120)
+    WHERE evento IS NULL OR TRIM(evento) = '';
+    UPDATE auditoria
+    SET categoria = CASE
+      WHEN UPPER(COALESCE(evento, accion, '')) ~ '(AUTH|LOGIN|PASSWORD|ACCESO)' THEN 'SEGURIDAD'
+      WHEN UPPER(COALESCE(evento, accion, '')) ~ '(PAGO|COBRO|CAJA|CIERRE|ORDEN)' THEN 'CAJA'
+      WHEN UPPER(COALESCE(evento, accion, '')) ~ '(RECIBO|DEUDA)' THEN 'DEUDA'
+      WHEN UPPER(COALESCE(evento, accion, '')) ~ '(SUMINISTRO|PADRON)' THEN 'PADRON'
+      WHEN UPPER(COALESCE(evento, accion, '')) ~ '(CAMPO|CORTE|ACTA)' THEN 'CAMPO'
+      WHEN UPPER(COALESCE(evento, accion, '')) ~ '(IMPORT|EXPORT|BACKUP)' THEN 'DATOS'
+      WHEN UPPER(COALESCE(evento, accion, '')) ~ '(USUARIO|CONFIG|TARIFA)' THEN 'ADMINISTRACION'
+      ELSE 'SISTEMA'
+    END
+    WHERE categoria IS NULL OR TRIM(categoria) = '';
+    UPDATE auditoria
+    SET nivel_riesgo = CASE
+      WHEN UPPER(COALESCE(evento, accion, '')) ~ '(ELIMIN|DELETE|ANUL|PASSWORD|DESHECH|REINTEGR|BACKUP|IMPORT|ACCESO_DENEGADO)' THEN 'ALTO'
+      WHEN categoria IN ('CAJA', 'DEUDA', 'SEGURIDAD', 'ADMINISTRACION') THEN 'MEDIO'
+      ELSE 'BAJO'
+    END
+    WHERE nivel_riesgo IS NULL OR TRIM(nivel_riesgo) = '';
+    CREATE INDEX IF NOT EXISTS idx_luz_auditoria_fecha_desc ON auditoria (fecha DESC, id_auditoria DESC);
+    CREATE INDEX IF NOT EXISTS idx_luz_auditoria_usuario_fecha ON auditoria (usuario, fecha DESC);
+    CREATE INDEX IF NOT EXISTS idx_luz_auditoria_evento_fecha ON auditoria (evento, fecha DESC);
+    CREATE INDEX IF NOT EXISTS idx_luz_auditoria_categoria_riesgo_fecha ON auditoria (categoria, nivel_riesgo, fecha DESC);
+    CREATE INDEX IF NOT EXISTS idx_luz_auditoria_entidad ON auditoria (entidad_tipo, entidad_id, fecha DESC);
+    CREATE INDEX IF NOT EXISTS idx_luz_auditoria_resultado_fecha ON auditoria (resultado, fecha DESC);
+    CREATE TABLE IF NOT EXISTS auditoria_reversiones (
+      id_reversion BIGSERIAL PRIMARY KEY,
+      id_auditoria_origen BIGINT NOT NULL REFERENCES auditoria(id_auditoria),
+      id_auditoria_reversion BIGINT NULL REFERENCES auditoria(id_auditoria),
+      motivo VARCHAR(500) NOT NULL,
+      usuario VARCHAR(160) NOT NULL,
+      actor_id BIGINT NULL,
+      fecha TIMESTAMP NOT NULL DEFAULT NOW(),
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      CONSTRAINT uq_luz_auditoria_reversion_origen UNIQUE (id_auditoria_origen)
+    );
+    CREATE INDEX IF NOT EXISTS idx_luz_auditoria_reversiones_fecha ON auditoria_reversiones (fecha DESC);
   `);
 };
 
@@ -1315,6 +1479,43 @@ router.use(async (req, res, next) => {
   }
 });
 
+router.use((req, res, next) => {
+  if (!req.auditRequestId) {
+    const incoming = String(req.headers["x-request-id"] || "").trim();
+    req.auditRequestId = (incoming && incoming.length <= 80) ? incoming : crypto.randomUUID();
+    res.setHeader("X-Request-Id", req.auditRequestId);
+  }
+  const method = String(req.method || "GET").toUpperCase();
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(method)) return next();
+  res.on("finish", () => {
+    if (res.statusCode < 400 || req.skipAutoAudit) return;
+    const entity = inferAuditEntity(req.path, req.params || {});
+    registrarAuditoria(
+      null,
+      req.user?.username || req.body?.username || "ANONIMO",
+      `${method} ${req.path}`,
+      `ruta=${req.path}; status=${res.statusCode}`,
+      {
+        actorId: req.user?.id_usuario,
+        actorRol: req.user?.rol,
+        method,
+        resultado: res.statusCode >= 500 ? "ERROR" : "RECHAZADO",
+        entidadTipo: entity.entidad_tipo,
+        entidadId: entity.entidad_id,
+        ip: getRequestIp(req),
+        requestId: req.auditRequestId,
+        metadata: {
+          ruta: req.path,
+          status_code: res.statusCode,
+          params: redactAuditPayload(req.params || {}),
+          body: redactAuditPayload(req.body || {}, { maxDepth: 4, maxArrayItems: 12, maxStringLength: 150 })
+        }
+      }
+    ).catch(() => {});
+  });
+  return next();
+});
+
 router.get("/health", (req, res) => {
   return res.json({ ok: true, sistema: "LUZ", ts: new Date().toISOString() });
 });
@@ -1419,6 +1620,17 @@ router.post("/auth/login", async (req, res) => {
       return res.status(403).json({ error: "Cuenta no activa." });
     }
     clearLoginFailure(usernameKey);
+    await registrarAuditoria(null, user.username, "AUTH_LOGIN", `ip=${getRequestIp(req)}`, {
+      evento: "AUTH_LOGIN",
+      categoria: "SEGURIDAD",
+      nivelRiesgo: "MEDIO",
+      resultado: "EXITO",
+      actorId: user.id_usuario,
+      actorRol: user.rol,
+      ip: getRequestIp(req),
+      requestId: req.auditRequestId,
+      metadata: { sistema: "LUZ" }
+    });
     const token = issueLuzToken(user);
     return res.json({
       token,
@@ -1921,44 +2133,142 @@ router.get("/zonas", authenticateLuzToken, requireRole("BRIGADA"), async (req, r
 
 router.get("/auditoria", authenticateLuzToken, requireRole("ADMIN_SEC"), async (req, res) => {
   try {
-    const q = normalizeText(req.query?.q || "", 160).toUpperCase();
-    const accion = normalizeText(req.query?.accion || "", 120).toUpperCase();
-    const limitRaw = parsePositiveInt(req.query?.limit, 250);
-    const limit = Math.min(Math.max(limitRaw, 1), 1000);
+    const q = normalizeText(req.query?.q || "", 160);
+    const categoria = normalizeText(req.query?.categoria || "", 40).toUpperCase();
+    const riesgo = normalizeText(req.query?.nivel_riesgo || req.query?.riesgo || "", 16).toUpperCase();
+    const resultado = normalizeText(req.query?.resultado || "", 20).toUpperCase();
+    const usuario = normalizeText(req.query?.usuario || "", 120);
+    const actorId = parsePositiveInt(req.query?.usuario_id || req.query?.actor_id, 0) || null;
+    const evento = normalizeText(req.query?.evento || req.query?.accion || "", 120).toUpperCase();
+    const fechaDesde = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query?.fecha_desde || "")) ? String(req.query.fecha_desde) : "";
+    const fechaHasta = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query?.fecha_hasta || "")) ? String(req.query.fecha_hasta) : "";
+    const page = Math.max(1, parsePositiveInt(req.query?.page, 1));
+    const pageSize = Math.min(500, Math.max(10, parsePositiveInt(req.query?.page_size || req.query?.limit, 100)));
+    const offset = (page - 1) * pageSize;
 
     const params = [];
     const where = [];
 
-    if (accion) {
-      params.push(accion);
-      where.push(`UPPER(a.accion) = $${params.length}`);
-    }
     if (q) {
       params.push(`%${q}%`);
       where.push(`(
-        UPPER(COALESCE(a.usuario, '')) LIKE $${params.length}
-        OR UPPER(COALESCE(a.accion, '')) LIKE $${params.length}
-        OR UPPER(COALESCE(a.detalle, '')) LIKE $${params.length}
+        COALESCE(a.usuario, '') ILIKE $${params.length}
+        OR COALESCE(a.accion, '') ILIKE $${params.length}
+        OR COALESCE(a.evento, '') ILIKE $${params.length}
+        OR COALESCE(a.detalle, '') ILIKE $${params.length}
       )`);
     }
+    if (categoria && categoria !== "TODOS") {
+      params.push(categoria);
+      where.push(`UPPER(COALESCE(a.categoria, 'SISTEMA')) = $${params.length}`);
+    }
+    if (riesgo && riesgo !== "TODOS") {
+      params.push(riesgo);
+      where.push(`UPPER(COALESCE(a.nivel_riesgo, 'BAJO')) = $${params.length}`);
+    }
+    if (resultado && resultado !== "TODOS") {
+      params.push(resultado);
+      where.push(`UPPER(COALESCE(a.resultado, 'EXITO')) = $${params.length}`);
+    }
+    if (usuario) {
+      params.push(`%${usuario}%`);
+      where.push(`COALESCE(a.usuario, '') ILIKE $${params.length}`);
+    }
+    if (actorId) {
+      params.push(actorId);
+      const idx = params.length;
+      where.push(`(
+        a.actor_id = $${idx}
+        OR EXISTS (
+          SELECT 1
+          FROM usuarios_sistema au
+          WHERE au.id_usuario = $${idx}
+            AND (
+              LOWER(TRIM(COALESCE(a.usuario, ''))) = LOWER(TRIM(COALESCE(au.username, '')))
+              OR LOWER(TRIM(COALESCE(a.usuario, ''))) = LOWER(TRIM(COALESCE(au.nombre_completo, '')))
+            )
+        )
+      )`);
+    }
+    if (evento) {
+      params.push(`%${evento}%`);
+      where.push(`UPPER(COALESCE(a.evento, a.accion, '')) LIKE $${params.length}`);
+    }
+    if (fechaDesde) {
+      params.push(fechaDesde);
+      where.push(`a.fecha >= $${params.length}::date`);
+    }
+    if (fechaHasta) {
+      params.push(fechaHasta);
+      where.push(`a.fecha < ($${params.length}::date + INTERVAL '1 day')`);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    params.push(limit);
+    const summary = await pool.query(`
+      SELECT
+        COUNT(*)::bigint AS total,
+        COUNT(*) FILTER (WHERE UPPER(COALESCE(a.nivel_riesgo, 'BAJO')) = 'ALTO')::bigint AS alto_riesgo,
+        COUNT(*) FILTER (WHERE UPPER(COALESCE(a.resultado, 'EXITO')) <> 'EXITO')::bigint AS no_exitosos,
+        COUNT(*) FILTER (WHERE ar.id_reversion IS NOT NULL)::bigint AS reversiones,
+        COUNT(*) FILTER (WHERE UPPER(COALESCE(a.evento, a.accion, '')) LIKE '%EXPORT%')::bigint AS exportaciones
+      FROM auditoria a
+      LEFT JOIN auditoria_reversiones ar ON ar.id_auditoria_origen = a.id_auditoria
+      ${whereSql}
+    `, params);
+
+    const rowParams = [...params, pageSize, offset];
     const rows = await pool.query(
-      `SELECT a.id_auditoria, a.fecha, a.usuario, a.accion, a.detalle
+      `SELECT
+         a.id_auditoria, a.fecha, a.usuario, a.accion, a.detalle,
+         COALESCE(a.sistema, 'LUZ') AS sistema,
+         a.actor_id, a.actor_rol,
+         COALESCE(a.evento, a.accion) AS evento,
+         COALESCE(a.categoria, 'SISTEMA') AS categoria,
+         COALESCE(a.nivel_riesgo, 'BAJO') AS nivel_riesgo,
+         COALESCE(a.resultado, 'EXITO') AS resultado,
+         a.entidad_tipo, a.entidad_id, a.ip, a.request_id,
+         a.datos_antes, a.datos_despues, COALESCE(a.metadata, '{}'::jsonb) AS metadata,
+         CASE WHEN ar.id_reversion IS NULL THEN 'N' ELSE 'S' END AS reversion_aplicada_sn
        FROM auditoria a
-       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       LEFT JOIN auditoria_reversiones ar ON ar.id_auditoria_origen = a.id_auditoria
+       ${whereSql}
        ORDER BY a.fecha DESC, a.id_auditoria DESC
-       LIMIT $${params.length}`,
-      params
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      rowParams
     );
 
-    return res.json(rows.rows.map((r) => ({
-      id_auditoria: Number(r.id_auditoria),
-      fecha: r.fecha,
-      usuario: r.usuario || null,
-      accion: r.accion,
-      detalle: r.detalle || null
-    })));
+    const users = await pool.query(`
+      SELECT u.id_usuario, u.username, u.nombre_completo
+      FROM usuarios_sistema u
+      WHERE EXISTS (
+        SELECT 1
+        FROM auditoria a
+        WHERE a.actor_id = u.id_usuario
+          OR LOWER(TRIM(COALESCE(a.usuario, ''))) = LOWER(TRIM(COALESCE(u.username, '')))
+          OR LOWER(TRIM(COALESCE(a.usuario, ''))) = LOWER(TRIM(COALESCE(u.nombre_completo, '')))
+      )
+      ORDER BY u.username ASC, u.nombre_completo ASC
+      LIMIT 500
+    `);
+    const totals = summary.rows?.[0] || {};
+    return res.json({
+      page,
+      page_size: pageSize,
+      total: Number(totals.total || 0),
+      resumen: {
+        total: Number(totals.total || 0),
+        alto_riesgo: Number(totals.alto_riesgo || 0),
+        no_exitosos: Number(totals.no_exitosos || 0),
+        reversiones: Number(totals.reversiones || 0),
+        exportaciones: Number(totals.exportaciones || 0)
+      },
+      usuarios: users.rows.map((row) => ({
+        id_usuario: Number(row.id_usuario),
+        username: row.username,
+        nombre: row.nombre_completo
+      })),
+      rows: rows.rows.map((r) => ({ ...r, id_auditoria: Number(r.id_auditoria) }))
+    });
   } catch (err) {
     console.error("[LUZ] Error listando auditoria:", err.message);
     return res.status(500).json({ error: "Error listando auditoria." });

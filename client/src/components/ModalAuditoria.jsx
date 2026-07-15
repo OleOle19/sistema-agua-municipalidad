@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import api from "../api";
 import {
   FaChevronLeft,
@@ -22,7 +22,10 @@ const ACTION_LABELS = {
   AUTH_PASSWORD_CAMBIO: "Cambio de clave",
   AUTH_REGISTRO: "Registro de usuario",
   AUTH_LOGIN: "Inicio de sesion",
+  ACCESO_NO_AUTENTICADO: "Acceso no autenticado",
+  ACCESO_DENEGADO_ROL: "Acceso denegado por rol",
   AUDITORIA_DESHECHA: "Cambio deshecho",
+  AUDITORIA_REVERSION_APLICADA: "Reversion de auditoria aplicada",
   ADMIN_LUZ_USUARIO_CREADO: "Usuario de luz creado",
   ADMIN_LUZ_USUARIO_ACTUALIZADO: "Usuario de luz actualizado",
   ADMIN_LUZ_USUARIO_ELIMINADO: "Usuario de luz eliminado",
@@ -133,48 +136,17 @@ const formatArrayHint = (value) => {
 };
 
 const METHOD_FILTER_OPTIONS = [
-  { value: "TODOS", label: "Todos" },
-  { value: "GET", label: "Consultas" },
-  { value: "POST", label: "Registros" },
-  { value: "PUT", label: "Cambios" },
-  { value: "PATCH", label: "Ajustes" },
-  { value: "DELETE", label: "Eliminaciones" },
-  { value: "SISTEMA", label: "Sistema" }
+  { value: "TODOS", label: "Tipo: TODOS" },
+  { value: "GET", label: "Tipo: Consultas" },
+  { value: "POST", label: "Tipo: Registros" },
+  { value: "PUT", label: "Tipo: Ediciones" },
+  { value: "PATCH", label: "Tipo: Ajustes" },
+  { value: "DELETE", label: "Tipo: Eliminaciones" },
+  { value: "SISTEMA", label: "Tipo: Procesos internos" }
 ];
-
-const getActionBadgeClass = (accion) => {
-  const txt = String(accion || "").toUpperCase();
-  if (!txt) return "bg-secondary";
-  if (txt.includes("DELETE") || txt.includes("ELIMINAR") || txt.includes("ANULAR")) return "bg-danger";
-  if (txt.includes("PUT") || txt.includes("PATCH") || txt.includes("UPDATE")) return "bg-warning text-dark";
-  if (txt.includes("GET") || txt.includes("EXPORT")) return "bg-info text-dark";
-  return "bg-success";
-};
-
-const normalizeAuditSearch = (value) => String(value || "")
-  .normalize("NFD")
-  .replace(/[\u0300-\u036f]/g, "")
-  .toLowerCase()
-  .replace(/[^a-z0-9\s]/g, " ")
-  .replace(/\s+/g, " ")
-  .trim();
-
-const getActionMethod = (accion) => {
-  const raw = String(accion || "").trim();
-  const match = raw.match(/^(GET|POST|PUT|PATCH|DELETE)\b/i);
-  return match ? match[1].toUpperCase() : "SISTEMA";
-};
-
-const isSensitiveAction = (accion) => {
-  const txt = String(accion || "").toUpperCase();
-  return txt.includes("DELETE")
-    || txt.includes("ANULAR")
-    || txt.includes("PASSWORD")
-    || txt.includes("BACKUP")
-    || txt.includes("CERR")
-    || txt.includes("CORTE")
-    || txt.includes("ELIMIN");
-};
+const CATEGORY_FILTER_OPTIONS = [
+  "TODOS", "SEGURIDAD", "CAJA", "DEUDA", "PADRON", "CAMPO", "DATOS", "ADMINISTRACION", "CONSULTA", "SISTEMA"
+];
 
 const toFriendlyHttpAction = (method, pathRaw) => {
   const path = String(pathRaw || "").split("?")[0].trim();
@@ -434,6 +406,7 @@ const isUndoAlreadyApplied = (rows = []) => {
 };
 const isInternalAuditLabel = (label) => INTERNAL_AUDIT_LABELS.has(String(label || "").trim().toLowerCase());
 const isUndoableAuditAction = (log = {}, detalleRows = []) => {
+  if (String(log?.reversion_aplicada_sn || "").trim().toUpperCase() === "S") return false;
   if (isUndoAlreadyApplied(detalleRows)) return false;
   const undoType = getUndoTypeFromRows(detalleRows);
   if (undoType) return true;
@@ -452,114 +425,146 @@ const getUndoPrompt = (undoType = "", accion = "") => {
   return "Se intentara deshacer este movimiento. Continuar?";
 };
 
-const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null }) => {
+const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo = false }) => {
   const [logs, setLogs] = useState([]);
   const [totalLogs, setTotalLogs] = useState(0);
+  const [usuariosDisponibles, setUsuariosDisponibles] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [exportando, setExportando] = useState(false);
   const [deshaciendoId, setDeshaciendoId] = useState(0);
   const [filtroTexto, setFiltroTexto] = useState("");
   const [filtroMetodo, setFiltroMetodo] = useState("TODOS");
-  const [soloSensibles, setSoloSensibles] = useState(false);
+  const [filtroCategoria, setFiltroCategoria] = useState("TODOS");
+  const [filtroUsuarioId, setFiltroUsuarioId] = useState("");
   const [fechaDesde, setFechaDesde] = useState("");
   const [fechaHasta, setFechaHasta] = useState("");
   const [pagina, setPagina] = useState(1);
+  const [seleccionado, setSeleccionado] = useState(null);
+  const [reversionPendiente, setReversionPendiente] = useState(null);
+  const [motivoReversion, setMotivoReversion] = useState("");
+  const [mensaje, setMensaje] = useState("");
+  const [error, setError] = useState("");
+  const [warnings, setWarnings] = useState([]);
+  const requestSequenceRef = useRef(0);
+  const abortRef = useRef(null);
 
   const formatFecha = (isoString) => {
     const date = new Date(isoString);
     if (Number.isNaN(date.getTime())) return "-";
-    return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+    return date.toLocaleString("es-PE");
+  };
+  const resetPage = (setter, value) => {
+    setPagina(1);
+    setter(value);
   };
 
   const construirParamsConsulta = useCallback((pageValue = pagina) => {
-    const params = {
-      page: pageValue,
-      page_size: AUDITORIA_PAGE_SIZE
-    };
+    const params = { page: pageValue, page_size: AUDITORIA_PAGE_SIZE, sistema: "AGUA" };
     const texto = String(filtroTexto || "").trim();
     if (texto) params.q = texto;
     if (filtroMetodo !== "TODOS") params.method = filtroMetodo;
-    if (soloSensibles) params.sensitive = "S";
+    if (filtroCategoria !== "TODOS") params.categoria = filtroCategoria;
+    if (filtroUsuarioId) params.usuario_id = filtroUsuarioId;
     if (fechaDesde) params.fecha_desde = fechaDesde;
     if (fechaHasta) params.fecha_hasta = fechaHasta;
     return params;
-  }, [fechaDesde, fechaHasta, filtroMetodo, filtroTexto, pagina, soloSensibles]);
+  }, [
+    fechaDesde, fechaHasta, filtroCategoria, filtroMetodo, filtroTexto, filtroUsuarioId, pagina
+  ]);
 
   const cargarLogs = useCallback(async (pageValue = pagina) => {
+    const sequence = requestSequenceRef.current + 1;
+    requestSequenceRef.current = sequence;
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
       setCargando(true);
+      setError("");
       const res = await api.get("/auditoria", {
-        params: construirParamsConsulta(pageValue)
+        params: construirParamsConsulta(pageValue),
+        signal: controller.signal
       });
-      const rows = Array.isArray(res?.data?.rows)
-        ? res.data.rows
-        : (Array.isArray(res?.data) ? res.data : []);
+      if (sequence !== requestSequenceRef.current) return;
+      const rows = Array.isArray(res?.data?.rows) ? res.data.rows : (Array.isArray(res?.data) ? res.data : []);
       setLogs(rows);
       setTotalLogs(Number(res?.data?.total || 0));
+      setUsuariosDisponibles(Array.isArray(res?.data?.usuarios) ? res.data.usuarios : []);
+      setWarnings(Array.isArray(res?.data?.warnings) ? res.data.warnings : []);
       setPagina(Math.max(1, Number(res?.data?.page || pageValue || 1)));
-    } catch {
-      console.error("Error cargando auditoria");
+      setSeleccionado((current) => {
+        if (!current) return null;
+        return rows.find((row) => row.id_auditoria === current.id_auditoria) || current;
+      });
+    } catch (err) {
+      if (err?.code === "ERR_CANCELED" || err?.name === "CanceledError") return;
+      if (sequence !== requestSequenceRef.current) return;
       setLogs([]);
       setTotalLogs(0);
+      setError(String(err?.response?.data?.error || "No se pudo cargar la auditoria."));
     } finally {
-      setCargando(false);
+      if (sequence === requestSequenceRef.current) setCargando(false);
     }
   }, [construirParamsConsulta, pagina]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      cargarLogs();
-    }, 250);
+    const timer = window.setTimeout(() => cargarLogs(), 300);
     return () => window.clearTimeout(timer);
   }, [cargarLogs]);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
-  const totalPaginas = useMemo(
-    () => Math.max(1, Math.ceil(Number(totalLogs || 0) / AUDITORIA_PAGE_SIZE)),
-    [totalLogs]
-  );
+  const totalPaginas = useMemo(() => Math.max(1, Math.ceil(Number(totalLogs || 0) / AUDITORIA_PAGE_SIZE)), [totalLogs]);
   const rangoInicio = totalLogs > 0 ? ((pagina - 1) * AUDITORIA_PAGE_SIZE) + 1 : 0;
   const rangoFin = totalLogs > 0 ? Math.min(((pagina - 1) * AUDITORIA_PAGE_SIZE) + logs.length, totalLogs) : 0;
+  const detalleSeleccionado = useMemo(() => parseDetalle(seleccionado?.detalle), [seleccionado]);
+  const detalleVisible = useMemo(() => detalleSeleccionado.filter((item) => !isInternalAuditLabel(item.label)), [detalleSeleccionado]);
+  const undoTypeSeleccionado = getUndoTypeFromRows(detalleSeleccionado);
 
   const descargarExcel = async () => {
     try {
       setExportando(true);
+      setError("");
       const res = await api.get("/exportar/auditoria", {
         params: construirParamsConsulta(1),
         responseType: "blob",
         timeout: 0
       });
-      const blob = new Blob([res.data], {
-        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-      });
+      const blob = new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "auditoria.xlsx";
+      a.download = `auditoria_${new Date().toISOString().slice(0, 10)}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-    } catch {
-      alert("No se pudo exportar la auditoria.");
+      setMensaje("Auditoria exportada con los filtros actuales.");
+    } catch (err) {
+      setError(String(err?.response?.data?.error || "No se pudo exportar la auditoria."));
     } finally {
       setExportando(false);
     }
   };
-  const deshacerAuditoria = async (log, undoType) => {
+
+  const confirmarReversion = async () => {
+    const log = reversionPendiente;
     const idAuditoria = Number(log?.id_auditoria || 0);
-    if (!idAuditoria) return;
-    const confirmado = window.confirm(getUndoPrompt(undoType, log?.accion));
-    if (!confirmado) return;
+    const motivo = String(motivoReversion || "").replace(/\s+/g, " ").trim();
+    if (!idAuditoria || motivo.length < 5) {
+      setError("Indique un motivo de al menos 5 caracteres.");
+      return;
+    }
     try {
       setDeshaciendoId(idAuditoria);
-      const res = await api.post(`/auditoria/${idAuditoria}/deshacer`);
-      window.alert(res?.data?.mensaje || "Solicitud deshecha correctamente.");
-      if (typeof onUndoApplied === "function") {
-        await onUndoApplied(res?.data || null, log);
-      }
+      setError("");
+      const res = await api.post(`/auditoria/${idAuditoria}/deshacer`, { motivo });
+      setMensaje(res?.data?.mensaje || "Movimiento deshecho correctamente.");
+      setReversionPendiente(null);
+      setMotivoReversion("");
+      if (typeof onUndoApplied === "function") await onUndoApplied(res?.data || null, log);
       await cargarLogs();
     } catch (err) {
-      window.alert(String(err?.response?.data?.error || "No se pudo deshacer la auditoria."));
+      setError(String(err?.response?.data?.error || "No se pudo deshacer la auditoria."));
     } finally {
       setDeshaciendoId(0);
     }
@@ -569,235 +574,98 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null }) => {
   const modalContentStyle = darkMode ? { backgroundColor: "#2b3035", border: "1px solid #495057" } : {};
   const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-secondary text-white"}`;
   const closeBtnClass = `btn-close ${darkMode ? "btn-close-white" : ""}`;
-  const tableClass = `table mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
+  const tableClass = `table table-sm align-middle mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
   const filtroInputClass = `form-control form-control-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
   const filtroSelectClass = `form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
   const filtroGroupTextClass = `input-group-text ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const detalleCardStyle = darkMode
-    ? { backgroundColor: "#20262c", border: "1px solid #495057" }
-    : { backgroundColor: "#f8f9fa", border: "1px solid #dee2e6" };
+  const panelClass = `border rounded-3 ${darkMode ? "border-secondary bg-dark" : "bg-light"}`;
 
   return (
-    <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
-      <div className="modal-dialog modal-xl">
+    <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
+      <div className="modal-dialog modal-fullscreen-xl-down modal-xl">
         <div className={modalContentClass} style={modalContentStyle}>
           <div className={headerClass}>
-            <h5 className="modal-title"><FaShieldAlt className="me-2" /> Bitacora de Seguridad y Movimientos</h5>
-            <button type="button" className={closeBtnClass} onClick={cerrarModal}></button>
+            <div>
+              <h5 className="modal-title"><FaShieldAlt className="me-2" /> Auditoria Municipal</h5>
+              <div className="small opacity-75">Movimientos y cambios realizados en el sistema de agua</div>
+            </div>
+            <button type="button" className={closeBtnClass} onClick={cerrarModal} aria-label="Cerrar auditoria" />
           </div>
           <div className="modal-body p-0">
             <div className={`p-3 border-bottom ${darkMode ? "border-secondary" : ""}`}>
-              <div className="row g-2 align-items-center">
-                <div className="col-xl-4 col-lg-6">
+              {error && <div className="alert alert-danger py-2 mb-2">{error}</div>}
+              {mensaje && <div className="alert alert-success py-2 mb-2">{mensaje}</div>}
+              {warnings.length > 0 && <div className="alert alert-warning py-2 mb-2">Vista parcial: {warnings.join(" · ")}</div>}
+              <div className="row g-2">
+                <div className="col-xl-5 col-lg-6">
                   <div className="input-group input-group-sm">
                     <span className={filtroGroupTextClass}><FaSearch /></span>
-                    <input
-                      type="text"
-                      className={filtroInputClass}
-                      placeholder="Buscar por usuario, movimiento o detalle..."
-                      value={filtroTexto}
-                      onChange={(e) => {
-                        setPagina(1);
-                        setFiltroTexto(e.target.value);
-                      }}
-                    />
+                    <input className={filtroInputClass} placeholder="Buscar evento, usuario o detalle..." value={filtroTexto} onChange={(e) => resetPage(setFiltroTexto, e.target.value)} />
                   </div>
                 </div>
-                <div className="col-xl-2 col-md-3">
-                  <select
-                    className={filtroSelectClass}
-                    value={filtroMetodo}
-                    onChange={(e) => {
-                      setPagina(1);
-                      setFiltroMetodo(e.target.value);
-                    }}
-                  >
-                    {METHOD_FILTER_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
+                <div className="col-xl-2 col-md-3"><select className={filtroSelectClass} value={filtroCategoria} onChange={(e) => resetPage(setFiltroCategoria, e.target.value)}>{CATEGORY_FILTER_OPTIONS.map((v) => <option key={v} value={v}>Area: {v === "SISTEMA" ? "GENERAL" : v}</option>)}</select></div>
+                <div className="col-xl-2 col-md-3"><select className={filtroSelectClass} value={filtroMetodo} onChange={(e) => resetPage(setFiltroMetodo, e.target.value)}>{METHOD_FILTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+                <div className="col-xl-3 col-md-4">
+                  <select className={filtroSelectClass} value={filtroUsuarioId} onChange={(e) => resetPage(setFiltroUsuarioId, e.target.value)}>
+                    <option value="">Usuario: TODOS</option>
+                    {usuariosDisponibles.map((usuario) => (
+                      <option key={usuario.id_usuario} value={usuario.id_usuario}>
+                        {usuario.username}{usuario.nombre && usuario.nombre !== usuario.username ? ` - ${usuario.nombre}` : ""}
+                      </option>
                     ))}
                   </select>
                 </div>
-                <div className="col-xl-2 col-md-3">
-                  <div className="input-group input-group-sm">
-                    <span className={filtroGroupTextClass}>Desde</span>
-                    <input
-                      type="date"
-                      className={filtroInputClass}
-                      value={fechaDesde}
-                      onChange={(e) => {
-                        setPagina(1);
-                        setFechaDesde(e.target.value);
-                      }}
-                    />
-                  </div>
-                </div>
-                <div className="col-xl-2 col-md-3">
-                  <div className="input-group input-group-sm">
-                    <span className={filtroGroupTextClass}>Hasta</span>
-                    <input
-                      type="date"
-                      className={filtroInputClass}
-                      value={fechaHasta}
-                      onChange={(e) => {
-                        setPagina(1);
-                        setFechaHasta(e.target.value);
-                      }}
-                    />
-                  </div>
-                </div>
-                <div className="col-xl-2 col-md-3">
-                  <div className="d-flex flex-column flex-md-row gap-2 justify-content-md-end align-items-md-center">
-                    <div className="form-check form-switch mt-1 mb-0">
-                      <input
-                        className="form-check-input"
-                        type="checkbox"
-                        id="auditoria-sensibles"
-                        checked={soloSensibles}
-                        onChange={(e) => {
-                          setPagina(1);
-                          setSoloSensibles(e.target.checked);
-                        }}
-                      />
-                      <label className="form-check-label small" htmlFor="auditoria-sensibles">Solo delicados</label>
-                    </div>
-                    <button
-                      type="button"
-                      className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`}
-                      onClick={() => cargarLogs()}
-                      disabled={cargando}
-                    >
-                      <FaSyncAlt className="me-1" /> Recargar
-                    </button>
-                  </div>
+                <div className="col-xl-2 col-md-3"><div className="input-group input-group-sm"><span className={filtroGroupTextClass}>Desde</span><input type="date" className={filtroInputClass} value={fechaDesde} onChange={(e) => resetPage(setFechaDesde, e.target.value)} /></div></div>
+                <div className="col-xl-2 col-md-3"><div className="input-group input-group-sm"><span className={filtroGroupTextClass}>Hasta</span><input type="date" className={filtroInputClass} value={fechaHasta} onChange={(e) => resetPage(setFechaHasta, e.target.value)} /></div></div>
+                <div className="col-xl-1 col-md-3 d-flex align-items-center justify-content-xl-end">
+                  <button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => cargarLogs()} disabled={cargando}><FaSyncAlt className="me-1" /> Recargar</button>
                 </div>
               </div>
-              <div className="small mt-2 opacity-75 d-flex flex-wrap gap-3">
-                <span>Mostrando {rangoInicio}-{rangoFin} de {totalLogs} registro(s)</span>
-                <span>Pagina {pagina} de {totalPaginas}</span>
-                <span>Lote de {AUDITORIA_PAGE_SIZE}</span>
-              </div>
+              <div className="small mt-2 opacity-75">Mostrando {rangoInicio}-{rangoFin} de {totalLogs} · Pagina {pagina} de {totalPaginas}</div>
             </div>
-            <div className="table-responsive" style={{ maxHeight: "60vh" }}>
-              <table className={tableClass} style={{ minWidth: "980px" }}>
-                <colgroup>
-                  <col style={{ width: "16%" }} />
-                  <col style={{ width: "14%" }} />
-                  <col style={{ width: "16%" }} />
-                  <col style={{ width: "54%" }} />
-                </colgroup>
-                <thead className={darkMode ? "" : "table-light"}>
-                  <tr>
-                    <th>Fecha / Hora</th>
-                    <th>Usuario</th>
-                    <th>Movimiento</th>
-                    <th>Resumen</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cargando ? (
-                    <tr><td colSpan="4" className="text-center p-3">Cargando bitacora...</td></tr>
-                  ) : logs.length === 0 ? (
-                    <tr><td colSpan="4" className="text-center p-3">{totalLogs === 0 ? "No hay registros." : "No hay registros para este filtro."}</td></tr>
-                  ) : (
-                    logs.map((log) => {
-                      const accionSimple = toFriendlyAction(log.accion);
-                      const detalleRows = parseDetalle(log.detalle);
-                      const undoType = getUndoTypeFromRows(detalleRows);
-                      const visibleDetalleRows = detalleRows.filter((item) => !isInternalAuditLabel(item.label));
-                      return (
-                        <tr key={log.id_auditoria}>
-                          <td className="align-top text-nowrap">{formatFecha(log.fecha)}</td>
-                          <td className="fw-bold align-top">{log.usuario || "SISTEMA"}</td>
-                          <td className="align-top">
-                            <span className={`badge ${getActionBadgeClass(log.accion)}`}>
-                              {accionSimple}
-                            </span>
-                          </td>
-                          <td className="align-top">
-                            <div className="rounded-3 p-2 w-100" style={detalleCardStyle}>
-                              {isUndoableAuditAction(log, detalleRows) && (
-                                <div className="d-flex justify-content-end mb-2">
-                                  <button
-                                    type="button"
-                                    className={`btn btn-sm ${darkMode ? "btn-outline-warning" : "btn-outline-danger"}`}
-                                    onClick={() => deshacerAuditoria(log, undoType)}
-                                    disabled={deshaciendoId === Number(log.id_auditoria || 0)}
-                                  >
-                                    <FaUndo className="me-1" />
-                                    {deshaciendoId === Number(log.id_auditoria || 0) ? "Deshaciendo..." : "Deshacer"}
-                                  </button>
-                                </div>
-                              )}
-                              {visibleDetalleRows.length === 0 ? (
-                                <span className="small text-muted">Sin detalle</span>
-                              ) : (
-                                visibleDetalleRows.map((item, idx) => {
-                                  const labelKey = String(item.label || "").trim().toLowerCase();
-                                  const valueToRender = formatValueForDisplay(item.label, item.text, item.isJson);
-                                  const showAsCodeBlock = item.isJson
-                                    && labelKey !== "params"
-                                    && labelKey !== "body"
-                                    && labelKey !== "cambios_aplicados"
-                                    && labelKey !== "cambios_solicitados"
-                                    && labelKey !== "detalle_recibos"
-                                    && labelKey !== "contribuyentes"
-                                    && labelKey !== "anulaciones_reintegradas";
-                                  return (
-                                    <div key={`${log.id_auditoria}-${idx}`} className={idx < visibleDetalleRows.length - 1 ? "mb-2" : ""}>
-                                      <div className="small text-uppercase fw-semibold opacity-75">{prettyLabel(item.label)}</div>
-                                      {showAsCodeBlock ? (
-                                        <pre
-                                          className="mb-0 small"
-                                          style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "Consolas, monospace" }}
-                                        >
-                                          {valueToRender}
-                                        </pre>
-                                      ) : (
-                                        <div className="small" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                                          {valueToRender}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })
-                              )}
-                            </div>
-                          </td>
+
+            <div className="row g-0">
+              <div className={seleccionado ? "col-xl-8" : "col-12"}>
+                <div className="table-responsive" style={{ maxHeight: "55vh" }}>
+                  <table className={tableClass} style={{ minWidth: "720px" }}>
+                    <thead className={`${darkMode ? "" : "table-light"} sticky-top`}><tr><th>Fecha</th><th>Usuario</th><th>Evento</th><th></th></tr></thead>
+                    <tbody>
+                      {cargando ? <tr><td colSpan="4" className="text-center p-4">Cargando bitacora...</td></tr> : logs.length === 0 ? <tr><td colSpan="4" className="text-center p-4">No hay registros para estos filtros.</td></tr> : logs.map((log) => (
+                        <tr key={log.id_auditoria} className={seleccionado?.id_auditoria === log.id_auditoria ? "table-active" : ""}>
+                          <td className="text-nowrap small">{formatFecha(log.fecha)}</td>
+                          <td><div className="fw-semibold">{log.usuario || "SISTEMA"}</div>{log.actor_rol && <div className="small opacity-75">{log.actor_rol}</div>}</td>
+                          <td><div className="fw-semibold small">{toFriendlyAction(log.evento || log.accion)}</div><div className="small opacity-75">{log.categoria || "SISTEMA"}</div></td>
+                          <td><button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-primary"}`} onClick={() => { setSeleccionado(log); setReversionPendiente(null); setMotivoReversion(""); }}>Ver detalle</button></td>
                         </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {seleccionado && (
+                <aside className={`col-xl-4 border-start ${darkMode ? "border-secondary" : ""}`}>
+                  <div className="p-3" style={{ maxHeight: "55vh", overflowY: "auto" }}>
+                    <div className="d-flex justify-content-between gap-2 mb-3"><div><div className="fw-bold">Detalle del movimiento</div><div className="small opacity-75">ID {seleccionado.id_auditoria}</div></div><button type="button" className={closeBtnClass} onClick={() => setSeleccionado(null)} aria-label="Cerrar detalle" /></div>
+                    <div className={`${panelClass} p-2 mb-2 small`}><div className="fw-semibold">{toFriendlyAction(seleccionado.evento || seleccionado.accion)}</div><div>{formatFecha(seleccionado.fecha)} · {seleccionado.usuario || "SISTEMA"}</div>{seleccionado.request_id && <div className="text-break opacity-75">Solicitud: {seleccionado.request_id}</div>}</div>
+                    {detalleVisible.map((item, idx) => <div key={`${seleccionado.id_auditoria}-detail-${idx}`} className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">{prettyLabel(item.label)}</div><div className="small" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{formatValueForDisplay(item.label, item.text, item.isJson)}</div></div>)}
+                    {seleccionado.metadata && Object.keys(seleccionado.metadata).length > 0 && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Metadata estructurada</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{JSON.stringify(seleccionado.metadata, null, 2)}</pre></div>}
+                    {seleccionado.datos_antes && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Antes</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(seleccionado.datos_antes, null, 2)}</pre></div>}
+                    {seleccionado.datos_despues && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Despues</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(seleccionado.datos_despues, null, 2)}</pre></div>}
+                    {seleccionado.reversion_aplicada_sn === "S" && <div className="alert alert-info py-2 small">Movimiento revertido{seleccionado.reversion_motivo ? `: ${seleccionado.reversion_motivo}` : "."}</div>}
+                    {canUndo && isUndoableAuditAction(seleccionado, detalleSeleccionado) && (
+                      <div className="border border-danger rounded-3 p-2 mt-3">
+                        {!reversionPendiente ? <button type="button" className="btn btn-outline-danger btn-sm w-100" onClick={() => { setReversionPendiente(seleccionado); setMotivoReversion(""); }}><FaUndo className="me-1" /> Deshacer movimiento</button> : <><div className="small fw-semibold mb-1">{getUndoPrompt(undoTypeSeleccionado, seleccionado.accion)}</div><textarea className={filtroInputClass} rows="3" maxLength="500" placeholder="Motivo obligatorio de la reversion" value={motivoReversion} onChange={(e) => setMotivoReversion(e.target.value)} /><div className="d-flex gap-2 mt-2"><button type="button" className="btn btn-danger btn-sm" disabled={deshaciendoId > 0 || motivoReversion.trim().length < 5} onClick={confirmarReversion}>{deshaciendoId > 0 ? "Deshaciendo..." : "Confirmar"}</button><button type="button" className="btn btn-outline-secondary btn-sm" disabled={deshaciendoId > 0} onClick={() => { setReversionPendiente(null); setMotivoReversion(""); }}>Cancelar</button></div></>}
+                      </div>
+                    )}
+                  </div>
+                </aside>
+              )}
             </div>
           </div>
           <div className={`modal-footer ${darkMode ? "border-secondary" : ""} d-flex justify-content-between gap-2 flex-wrap`}>
-            <div className="d-flex align-items-center gap-2">
-              <button
-                type="button"
-                className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`}
-                onClick={() => setPagina((current) => Math.max(1, current - 1))}
-                disabled={cargando || pagina <= 1}
-              >
-                <FaChevronLeft />
-              </button>
-              <span className="small opacity-75">Pagina {pagina} de {totalPaginas}</span>
-              <button
-                type="button"
-                className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`}
-                onClick={() => setPagina((current) => Math.min(totalPaginas, current + 1))}
-                disabled={cargando || pagina >= totalPaginas}
-              >
-                <FaChevronRight />
-              </button>
-            </div>
-            <div className="d-flex gap-2">
-              <button type="button" className="btn btn-success" onClick={descargarExcel} disabled={exportando}>
-                <FaFileExcel className="me-2" />
-                {exportando ? "Exportando..." : "Exportar Excel"}
-              </button>
-              <button type="button" className={`btn ${darkMode ? "btn-secondary" : "btn-dark"}`} onClick={cerrarModal}>Cerrar</button>
-            </div>
+            <div className="d-flex align-items-center gap-2"><button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => setPagina((current) => Math.max(1, current - 1))} disabled={cargando || pagina <= 1}><FaChevronLeft /></button><span className="small opacity-75">Pagina {pagina} de {totalPaginas}</span><button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => setPagina((current) => Math.min(totalPaginas, current + 1))} disabled={cargando || pagina >= totalPaginas}><FaChevronRight /></button></div>
+            <div className="d-flex gap-2"><button type="button" className="btn btn-success" onClick={descargarExcel} disabled={exportando}><FaFileExcel className="me-2" />{exportando ? "Exportando..." : "Exportar Excel"}</button><button type="button" className={`btn ${darkMode ? "btn-secondary" : "btn-dark"}`} onClick={cerrarModal}>Cerrar</button></div>
           </div>
         </div>
       </div>

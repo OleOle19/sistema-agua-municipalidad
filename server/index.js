@@ -12,6 +12,7 @@ const express = require("express");
 const app = express();
 const cors = require("cors");
 const pool = require("./db");
+const luzPool = require("./luz/db");
 const luzRouter = require("./luz/router");
 const { importarDeudas } = require("./importar_deudas");
 const { importarDestritoExcel } = require("./importar_deudas_excel");
@@ -23,6 +24,13 @@ const { Readable } = require('stream');
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { WebSocketServer } = require("ws");
+const {
+  inferAuditCategory,
+  inferAuditEntity,
+  inferAuditRisk,
+  normalizeAuditEventCode,
+  redactAuditPayload
+} = require("./audit-utils");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
 
 // --- HELPERS DE DIRECCIÓN ---
@@ -1707,17 +1715,28 @@ const parseStructuredAuditDetail = (detailRaw = "") => {
     });
   return entries;
 };
-const markAuditUndoApplied = async (client, idAuditoria, detail = {}, username = "SISTEMA") => {
+const markAuditUndoApplied = async (client, idAuditoria, {
+  idAuditoriaReversion = null,
+  motivo = "Reversion autorizada",
+  username = "SISTEMA",
+  actorId = null,
+  metadata = {}
+} = {}) => {
   const id = parsePositiveInt(idAuditoria, 0);
   if (!id) return;
-  const detailBase = detail && typeof detail === "object" ? { ...detail } : {};
-  detailBase.undo_aplicado_sn = "S";
-  detailBase.undo_aplicado_por = String(username || "SISTEMA").trim() || "SISTEMA";
-  detailBase.undo_aplicado_en = toLocalAuditTimestamp(new Date());
-  await client.query(
-    "UPDATE auditoria SET detalle = $2 WHERE id_auditoria = $1",
-    [id, buildStructuredAuditDetail(detailBase)]
-  );
+  await client.query(`
+    INSERT INTO auditoria_reversiones (
+      id_auditoria_origen, id_auditoria_reversion, motivo, usuario, actor_id, metadata
+    )
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+  `, [
+    id,
+    parsePositiveInt(idAuditoriaReversion, 0) || null,
+    String(motivo || "Reversion autorizada").trim().slice(0, 500),
+    String(username || "SISTEMA").trim() || "SISTEMA",
+    parsePositiveInt(actorId, 0) || null,
+    JSON.stringify(redactAuditPayload(metadata || {}, { maxDepth: 5, maxArrayItems: 50, maxStringLength: 500 }))
+  ]);
 };
 const encodeCompressedAuditPayload = (payload) => {
   if (payload === undefined) return "";
@@ -2181,9 +2200,25 @@ const normalizeAuditMethodFilter = (value) => {
   if (["GET", "POST", "PUT", "PATCH", "DELETE", "SISTEMA"].includes(raw)) return raw;
   return "TODOS";
 };
+const normalizeAuditEnumFilter = (value, allowed, fallback = "TODOS") => {
+  const raw = String(value || "").trim().toUpperCase();
+  return allowed.includes(raw) ? raw : fallback;
+};
 const readAuditoriaFilters = (query = {}, { forExport = false } = {}) => {
   const q = String(query?.q || "").replace(/\s+/g, " ").trim().slice(0, 200);
   const method = normalizeAuditMethodFilter(query?.method ?? query?.tipo ?? query?.metodo);
+  const sistema = normalizeAuditEnumFilter(query?.sistema, ["TODOS", "AGUA", "LUZ"]);
+  const categoria = normalizeAuditEnumFilter(
+    query?.categoria,
+    ["TODOS", "SEGURIDAD", "CAJA", "DEUDA", "PADRON", "CAMPO", "DATOS", "ADMINISTRACION", "CONSULTA", "SISTEMA"]
+  );
+  const nivelRiesgo = normalizeAuditEnumFilter(query?.nivel_riesgo ?? query?.riesgo, ["TODOS", "BAJO", "MEDIO", "ALTO"]);
+  const resultado = normalizeAuditEnumFilter(query?.resultado, ["TODOS", "EXITO", "RECHAZADO", "ERROR"]);
+  const usuario = String(query?.usuario || "").replace(/\s+/g, " ").trim().slice(0, 120);
+  const actorId = parsePositiveInt(query?.usuario_id ?? query?.actor_id, 0) || null;
+  const evento = String(query?.evento || "").replace(/\s+/g, " ").trim().toUpperCase().slice(0, 120);
+  const entidadTipo = String(query?.entidad_tipo || "").replace(/\s+/g, " ").trim().toUpperCase().slice(0, 80);
+  const entidadId = String(query?.entidad_id || "").replace(/\s+/g, " ").trim().slice(0, 120);
   const soloSensibles = normalizeSN(
     query?.sensitive ?? query?.solo_sensibles ?? query?.delicados,
     "N"
@@ -2214,6 +2249,15 @@ const readAuditoriaFilters = (query = {}, { forExport = false } = {}) => {
   return {
     q,
     method,
+    sistema,
+    categoria,
+    nivelRiesgo,
+    resultado,
+    usuario,
+    actorId,
+    evento,
+    entidadTipo,
+    entidadId,
     soloSensibles,
     fechaDesde,
     fechaHasta,
@@ -2230,40 +2274,89 @@ const buildAuditoriaWhereClause = (filters = {}) => {
     params.push(`%${filters.q}%`);
     const idx = params.length;
     where.push(`(
-      COALESCE(usuario, '') ILIKE $${idx}
-      OR COALESCE(accion, '') ILIKE $${idx}
-      OR COALESCE(detalle, '') ILIKE $${idx}
+      COALESCE(a.usuario, '') ILIKE $${idx}
+      OR COALESCE(a.accion, '') ILIKE $${idx}
+      OR COALESCE(a.evento, '') ILIKE $${idx}
+      OR COALESCE(a.detalle, '') ILIKE $${idx}
+      OR COALESCE(a.entidad_tipo, '') ILIKE $${idx}
+      OR COALESCE(a.entidad_id, '') ILIKE $${idx}
     )`);
   }
 
   if (filters.method && filters.method !== "TODOS") {
     if (filters.method === "SISTEMA") {
-      where.push(`COALESCE(accion, '') !~* '^(GET|POST|PUT|PATCH|DELETE)\\b'`);
+      where.push(`COALESCE(a.accion, '') !~* '^(GET|POST|PUT|PATCH|DELETE)\\b'`);
     } else {
       params.push(`^${filters.method}\\b`);
-      where.push(`COALESCE(accion, '') ~* $${params.length}`);
+      where.push(`COALESCE(a.accion, '') ~* $${params.length}`);
     }
+  }
+
+  if (filters.categoria && filters.categoria !== "TODOS") {
+    params.push(filters.categoria);
+    where.push(`UPPER(COALESCE(a.categoria, 'SISTEMA')) = $${params.length}`);
+  }
+  if (filters.nivelRiesgo && filters.nivelRiesgo !== "TODOS") {
+    params.push(filters.nivelRiesgo);
+    where.push(`UPPER(COALESCE(a.nivel_riesgo, 'BAJO')) = $${params.length}`);
+  }
+  if (filters.resultado && filters.resultado !== "TODOS") {
+    params.push(filters.resultado);
+    where.push(`UPPER(COALESCE(a.resultado, 'EXITO')) = $${params.length}`);
+  }
+  if (filters.usuario) {
+    params.push(`%${filters.usuario}%`);
+    where.push(`COALESCE(a.usuario, '') ILIKE $${params.length}`);
+  }
+  if (filters.actorId) {
+    params.push(filters.actorId);
+    const idx = params.length;
+    where.push(`(
+      a.actor_id = $${idx}
+      OR EXISTS (
+        SELECT 1
+        FROM usuarios_sistema au
+        WHERE au.id_usuario = $${idx}
+          AND (
+            LOWER(TRIM(COALESCE(a.usuario, ''))) = LOWER(TRIM(COALESCE(au.username, '')))
+            OR LOWER(TRIM(COALESCE(a.usuario, ''))) = LOWER(TRIM(COALESCE(au.nombre_completo, '')))
+          )
+      )
+    )`);
+  }
+  if (filters.evento) {
+    params.push(`%${filters.evento}%`);
+    where.push(`UPPER(COALESCE(a.evento, a.accion, '')) LIKE $${params.length}`);
+  }
+  if (filters.entidadTipo) {
+    params.push(filters.entidadTipo);
+    where.push(`UPPER(COALESCE(a.entidad_tipo, '')) = $${params.length}`);
+  }
+  if (filters.entidadId) {
+    params.push(filters.entidadId);
+    where.push(`COALESCE(a.entidad_id, '') = $${params.length}`);
   }
 
   if (filters.soloSensibles) {
     where.push(`(
-      UPPER(COALESCE(accion, '')) LIKE '%DELETE%'
-      OR UPPER(COALESCE(accion, '')) LIKE '%ANULAR%'
-      OR UPPER(COALESCE(accion, '')) LIKE '%PASSWORD%'
-      OR UPPER(COALESCE(accion, '')) LIKE '%BACKUP%'
-      OR UPPER(COALESCE(accion, '')) LIKE '%CERR%'
-      OR UPPER(COALESCE(accion, '')) LIKE '%CORTE%'
-      OR UPPER(COALESCE(accion, '')) LIKE '%ELIMIN%'
+      UPPER(COALESCE(a.nivel_riesgo, '')) = 'ALTO'
+      OR UPPER(COALESCE(a.accion, '')) LIKE '%DELETE%'
+      OR UPPER(COALESCE(a.accion, '')) LIKE '%ANULAR%'
+      OR UPPER(COALESCE(a.accion, '')) LIKE '%PASSWORD%'
+      OR UPPER(COALESCE(a.accion, '')) LIKE '%BACKUP%'
+      OR UPPER(COALESCE(a.accion, '')) LIKE '%CERR%'
+      OR UPPER(COALESCE(a.accion, '')) LIKE '%CORTE%'
+      OR UPPER(COALESCE(a.accion, '')) LIKE '%ELIMIN%'
     )`);
   }
 
   if (filters.fechaDesde) {
     params.push(filters.fechaDesde);
-    where.push(`fecha >= $${params.length}::date`);
+    where.push(`a.fecha >= $${params.length}::date`);
   }
   if (filters.fechaHasta) {
     params.push(filters.fechaHasta);
-    where.push(`fecha < ($${params.length}::date + INTERVAL '1 day')`);
+    where.push(`a.fecha < ($${params.length}::date + INTERVAL '1 day')`);
   }
 
   return {
@@ -2271,13 +2364,15 @@ const buildAuditoriaWhereClause = (filters = {}) => {
     params
   };
 };
-const consultarAuditoria = async (db, filters = {}, { includeTotal = false, limit = null, offset = 0 } = {}) => {
+const consultarAuditoria = async (db, filters = {}, { includeTotal = false, limit = null, offset = 0, sistema = "AGUA" } = {}) => {
+  if (String(sistema || "AGUA").toUpperCase() === "LUZ") await ensureLuzAuditoriaV2Schema();
+  else await ensureAuditoriaV2Schema();
   const { whereSql, params } = buildAuditoriaWhereClause(filters);
   let total = null;
 
   if (includeTotal) {
     const totalRs = await db.query(
-      `SELECT COUNT(*)::bigint AS total FROM auditoria ${whereSql}`,
+      `SELECT COUNT(*)::bigint AS total FROM auditoria a ${whereSql}`,
       params
     );
     total = Number(totalRs.rows?.[0]?.total || 0);
@@ -2285,11 +2380,36 @@ const consultarAuditoria = async (db, filters = {}, { includeTotal = false, limi
 
   const rowParams = [...params];
   let sql = `
-    SELECT id_auditoria, fecha, usuario, accion, detalle
-    FROM auditoria
+    SELECT
+      a.id_auditoria,
+      a.fecha,
+      a.usuario,
+      a.accion,
+      a.detalle,
+      COALESCE(NULLIF(a.sistema, ''), $${rowParams.length + 1}::text) AS sistema,
+      a.actor_id,
+      a.actor_rol,
+      COALESCE(NULLIF(a.evento, ''), a.accion) AS evento,
+      COALESCE(NULLIF(a.categoria, ''), 'SISTEMA') AS categoria,
+      COALESCE(NULLIF(a.nivel_riesgo, ''), 'BAJO') AS nivel_riesgo,
+      COALESCE(NULLIF(a.resultado, ''), 'EXITO') AS resultado,
+      a.entidad_tipo,
+      a.entidad_id,
+      a.ip,
+      a.request_id,
+      a.datos_antes,
+      a.datos_despues,
+      COALESCE(a.metadata, '{}'::jsonb) AS metadata,
+      CASE WHEN ar.id_reversion IS NULL THEN 'N' ELSE 'S' END AS reversion_aplicada_sn,
+      ar.motivo AS reversion_motivo,
+      ar.usuario AS reversion_usuario,
+      ar.fecha AS reversion_fecha
+    FROM auditoria a
+    LEFT JOIN auditoria_reversiones ar ON ar.id_auditoria_origen = a.id_auditoria
     ${whereSql}
-    ORDER BY fecha DESC, id_auditoria DESC
+    ORDER BY a.fecha DESC, a.id_auditoria DESC
   `;
+  rowParams.push(String(sistema || "AGUA").toUpperCase());
   if (Number.isInteger(limit) && limit > 0) {
     rowParams.push(limit);
     sql += ` LIMIT $${rowParams.length}`;
@@ -2303,6 +2423,113 @@ const consultarAuditoria = async (db, filters = {}, { includeTotal = false, limi
   return {
     total,
     rows: rowsRs.rows
+  };
+};
+
+const consultarResumenAuditoria = async (db, filters = {}, sistema = "AGUA") => {
+  if (String(sistema || "AGUA").toUpperCase() === "LUZ") await ensureLuzAuditoriaV2Schema();
+  else await ensureAuditoriaV2Schema();
+  const { whereSql, params } = buildAuditoriaWhereClause(filters);
+  const rs = await db.query(`
+    SELECT
+      COUNT(*)::bigint AS total,
+      COUNT(*) FILTER (WHERE UPPER(COALESCE(a.nivel_riesgo, 'BAJO')) = 'ALTO')::bigint AS alto_riesgo,
+      COUNT(*) FILTER (WHERE UPPER(COALESCE(a.resultado, 'EXITO')) <> 'EXITO')::bigint AS no_exitosos,
+      COUNT(*) FILTER (WHERE ar.id_reversion IS NOT NULL)::bigint AS reversiones,
+      COUNT(*) FILTER (WHERE UPPER(COALESCE(a.evento, a.accion, '')) LIKE '%EXPORT%')::bigint AS exportaciones
+    FROM auditoria a
+    LEFT JOIN auditoria_reversiones ar ON ar.id_auditoria_origen = a.id_auditoria
+    ${whereSql}
+  `, params);
+  const row = rs.rows?.[0] || {};
+  return {
+    total: Number(row.total || 0),
+    alto_riesgo: Number(row.alto_riesgo || 0),
+    no_exitosos: Number(row.no_exitosos || 0),
+    reversiones: Number(row.reversiones || 0),
+    exportaciones: Number(row.exportaciones || 0)
+  };
+};
+const consultarUsuariosAuditoria = async (db) => {
+  const rs = await db.query(`
+    SELECT u.id_usuario, u.username, u.nombre_completo
+    FROM usuarios_sistema u
+    WHERE EXISTS (
+      SELECT 1
+      FROM auditoria a
+      WHERE a.actor_id = u.id_usuario
+        OR LOWER(TRIM(COALESCE(a.usuario, ''))) = LOWER(TRIM(COALESCE(u.username, '')))
+        OR LOWER(TRIM(COALESCE(a.usuario, ''))) = LOWER(TRIM(COALESCE(u.nombre_completo, '')))
+    )
+    ORDER BY u.username ASC, u.nombre_completo ASC
+    LIMIT 500
+  `);
+  return rs.rows.map((row) => ({
+    id_usuario: Number(row.id_usuario),
+    username: row.username,
+    nombre: row.nombre_completo
+  }));
+};
+
+const mergeAuditSummary = (summaries = []) => summaries.reduce((acc, current) => ({
+  total: acc.total + Number(current?.total || 0),
+  alto_riesgo: acc.alto_riesgo + Number(current?.alto_riesgo || 0),
+  no_exitosos: acc.no_exitosos + Number(current?.no_exitosos || 0),
+  reversiones: acc.reversiones + Number(current?.reversiones || 0),
+  exportaciones: acc.exportaciones + Number(current?.exportaciones || 0)
+}), { total: 0, alto_riesgo: 0, no_exitosos: 0, reversiones: 0, exportaciones: 0 });
+
+const consultarAuditoriaUnificada = async (filters = {}, { forExport = false } = {}) => {
+  const sources = [];
+  if (!filters.sistema || filters.sistema === "TODOS" || filters.sistema === "AGUA") {
+    sources.push({ sistema: "AGUA", db: pool });
+  }
+  if (!filters.sistema || filters.sistema === "TODOS" || filters.sistema === "LUZ") {
+    sources.push({ sistema: "LUZ", db: luzPool });
+  }
+  const requiredRows = forExport
+    ? AUDITORIA_EXPORT_MAX_ROWS
+    : Math.min(AUDITORIA_EXPORT_MAX_ROWS, Math.max(filters.pageSize, filters.offset + filters.pageSize));
+  const settled = await Promise.allSettled(sources.map(async (source) => {
+    const [data, summary] = await Promise.all([
+      consultarAuditoria(source.db, filters, {
+        includeTotal: true,
+        limit: requiredRows,
+        offset: 0,
+        sistema: source.sistema
+      }),
+      consultarResumenAuditoria(source.db, filters, source.sistema)
+    ]);
+    return { ...source, data, summary };
+  }));
+
+  const successful = settled.filter((item) => item.status === "fulfilled").map((item) => item.value);
+  const warnings = settled
+    .map((item, idx) => item.status === "rejected"
+      ? `${sources[idx]?.sistema || "SISTEMA"}: ${item.reason?.message || "auditoria no disponible"}`
+      : null)
+    .filter(Boolean);
+  if (successful.length === 0) {
+    throw new Error(warnings.join(" | ") || "No se pudo consultar auditoria.");
+  }
+
+  const merged = successful
+    .flatMap((item) => item.data.rows || [])
+    .sort((a, b) => {
+      const timeDiff = new Date(b.fecha || 0).getTime() - new Date(a.fecha || 0).getTime();
+      if (timeDiff !== 0) return timeDiff;
+      const systemDiff = String(a.sistema || "").localeCompare(String(b.sistema || ""));
+      if (systemDiff !== 0) return systemDiff;
+      return Number(b.id_auditoria || 0) - Number(a.id_auditoria || 0);
+    });
+  const rows = forExport
+    ? merged.slice(0, AUDITORIA_EXPORT_MAX_ROWS)
+    : merged.slice(filters.offset, filters.offset + filters.pageSize);
+  return {
+    rows,
+    total: successful.reduce((sum, item) => sum + Number(item.data.total || 0), 0),
+    resumen: mergeAuditSummary(successful.map((item) => item.summary)),
+    warnings
   };
 };
 const SQL_SN_POSITIVOS = "('S', '1', 'SI', 'TRUE', 'Y', 'YES')";
@@ -4826,10 +5053,28 @@ const authenticateToken = async (req, res, next) => {
       };
       return next();
     }
+    registrarAuditoria(null, "ACCESO_NO_AUTENTICADO", `ruta=${req.path}; motivo=TOKEN_AUSENTE`, "ANONIMO", {
+      evento: "ACCESO_NO_AUTENTICADO",
+      categoria: "SEGURIDAD",
+      nivelRiesgo: "ALTO",
+      resultado: "RECHAZADO",
+      ip: getRequestIp(req),
+      requestId: req.auditRequestId,
+      metadata: { ruta: req.path, metodo: req.method, motivo: "TOKEN_AUSENTE" }
+    }).catch(() => {});
     return res.status(401).json({ error: "No autorizado" });
   }
   const resolved = await resolveUserFromToken(token, "AGUA");
   if (!resolved.ok) {
+    registrarAuditoria(null, "ACCESO_NO_AUTENTICADO", `ruta=${req.path}; motivo=TOKEN_INVALIDO`, "ANONIMO", {
+      evento: "ACCESO_NO_AUTENTICADO",
+      categoria: "SEGURIDAD",
+      nivelRiesgo: "ALTO",
+      resultado: "RECHAZADO",
+      ip: getRequestIp(req),
+      requestId: req.auditRequestId,
+      metadata: { ruta: req.path, metodo: req.method, motivo: "TOKEN_INVALIDO" }
+    }).catch(() => {});
     return res.status(resolved.status || 401).json({ error: resolved.error || "No autorizado" });
   }
   req.user = resolved.user;
@@ -4987,6 +5232,23 @@ const resolveRequiredRole = (method, pathname) => {
 const authorizeByRole = (req, res, next) => {
   const requiredRole = resolveRequiredRole(req.method, req.path);
   if (!hasMinRole(req.user?.rol, requiredRole)) {
+    registrarAuditoria(
+      null,
+      "ACCESO_DENEGADO_ROL",
+      `ruta=${req.path}; metodo=${req.method}; rol=${req.user?.rol || "SIN_ROL"}; requiere=${requiredRole}`,
+      req.user?.username || req.user?.nombre || "SISTEMA",
+      {
+        evento: "ACCESO_DENEGADO_ROL",
+        categoria: "SEGURIDAD",
+        nivelRiesgo: "ALTO",
+        resultado: "RECHAZADO",
+        actorId: req.user?.id_usuario,
+        actorRol: req.user?.rol,
+        ip: getRequestIp(req),
+        requestId: req.auditRequestId,
+        metadata: { ruta: req.path, metodo: req.method, rol_requerido: requiredRole }
+      }
+    ).catch(() => {});
     return res.status(403).json({
       error: `Acceso denegado. Requiere ${ROLE_LABELS[requiredRole] || requiredRole}.`
     });
@@ -5106,15 +5368,211 @@ const realtimeHub = {
 };
 
 // --- AUDITORÍA ---
-const registrarAuditoria = async (client, accion, detalle, usuario = "SISTEMA") => {
+let auditoriaSchemaPromise = null;
+const ensureAuditoriaV2Schema = async () => {
+  if (!auditoriaSchemaPromise) {
+    auditoriaSchemaPromise = pool.query(`
+      ALTER TABLE auditoria
+        ADD COLUMN IF NOT EXISTS sistema VARCHAR(16) NOT NULL DEFAULT 'AGUA',
+        ADD COLUMN IF NOT EXISTS actor_id BIGINT NULL,
+        ADD COLUMN IF NOT EXISTS actor_rol VARCHAR(40) NULL,
+        ADD COLUMN IF NOT EXISTS evento VARCHAR(120) NULL,
+        ADD COLUMN IF NOT EXISTS categoria VARCHAR(40) NULL,
+        ADD COLUMN IF NOT EXISTS nivel_riesgo VARCHAR(16) NULL,
+        ADD COLUMN IF NOT EXISTS resultado VARCHAR(20) NOT NULL DEFAULT 'EXITO',
+        ADD COLUMN IF NOT EXISTS entidad_tipo VARCHAR(80) NULL,
+        ADD COLUMN IF NOT EXISTS entidad_id VARCHAR(120) NULL,
+        ADD COLUMN IF NOT EXISTS ip VARCHAR(80) NULL,
+        ADD COLUMN IF NOT EXISTS request_id VARCHAR(80) NULL,
+        ADD COLUMN IF NOT EXISTS datos_antes JSONB NULL,
+        ADD COLUMN IF NOT EXISTS datos_despues JSONB NULL,
+        ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+      UPDATE auditoria
+      SET evento = LEFT(
+        REGEXP_REPLACE(
+          REGEXP_REPLACE(UPPER(COALESCE(accion, 'EVENTO_SISTEMA')), '/[0-9]+', '/:ID', 'g'),
+          '[^A-Z0-9:_/-]+', '_', 'g'
+        ),
+        120
+      )
+      WHERE evento IS NULL OR TRIM(evento) = '';
+      UPDATE auditoria
+      SET categoria = CASE
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(AUTH|LOGIN|PASSWORD|ACCESO)' THEN 'SEGURIDAD'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(PAGO|COBRO|CAJA|CIERRE)' THEN 'CAJA'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(RECIBO|DEUDA)' THEN 'DEUDA'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(CONTRIBUYENTE|SUMINISTRO|PREDIO)' THEN 'PADRON'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(CAMPO|CORTE|ACTA)' THEN 'CAMPO'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(IMPORT|EXPORT|BACKUP)' THEN 'DATOS'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(USUARIO|CONFIG|TARIFA)' THEN 'ADMINISTRACION'
+        ELSE 'SISTEMA'
+      END
+      WHERE categoria IS NULL OR TRIM(categoria) = '';
+      UPDATE auditoria
+      SET nivel_riesgo = CASE
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(ELIMIN|DELETE|ANUL|PASSWORD|DESHECH|REINTEGR|BACKUP|IMPORT|ACCESO_DENEGADO)' THEN 'ALTO'
+        WHEN categoria IN ('CAJA', 'DEUDA', 'SEGURIDAD', 'ADMINISTRACION') THEN 'MEDIO'
+        ELSE 'BAJO'
+      END
+      WHERE nivel_riesgo IS NULL OR TRIM(nivel_riesgo) = '';
+
+      CREATE INDEX IF NOT EXISTS idx_auditoria_fecha_desc
+        ON auditoria (fecha DESC, id_auditoria DESC);
+      CREATE INDEX IF NOT EXISTS idx_auditoria_usuario_fecha
+        ON auditoria (usuario, fecha DESC);
+      CREATE INDEX IF NOT EXISTS idx_auditoria_evento_fecha
+        ON auditoria (evento, fecha DESC);
+      CREATE INDEX IF NOT EXISTS idx_auditoria_categoria_riesgo_fecha
+        ON auditoria (categoria, nivel_riesgo, fecha DESC);
+      CREATE INDEX IF NOT EXISTS idx_auditoria_entidad
+        ON auditoria (entidad_tipo, entidad_id, fecha DESC);
+      CREATE INDEX IF NOT EXISTS idx_auditoria_resultado_fecha
+        ON auditoria (resultado, fecha DESC);
+
+      CREATE TABLE IF NOT EXISTS auditoria_reversiones (
+        id_reversion BIGSERIAL PRIMARY KEY,
+        id_auditoria_origen BIGINT NOT NULL REFERENCES auditoria(id_auditoria),
+        id_auditoria_reversion BIGINT NULL REFERENCES auditoria(id_auditoria),
+        motivo VARCHAR(500) NOT NULL,
+        usuario VARCHAR(160) NOT NULL,
+        actor_id BIGINT NULL,
+        fecha TIMESTAMP NOT NULL DEFAULT NOW(),
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        CONSTRAINT uq_auditoria_reversion_origen UNIQUE (id_auditoria_origen)
+      );
+      CREATE INDEX IF NOT EXISTS idx_auditoria_reversiones_fecha
+        ON auditoria_reversiones (fecha DESC);
+    `).catch((err) => {
+      auditoriaSchemaPromise = null;
+      throw err;
+    });
+  }
+  await auditoriaSchemaPromise;
+};
+
+let luzAuditoriaSchemaPromise = null;
+const ensureLuzAuditoriaV2Schema = async () => {
+  if (!luzAuditoriaSchemaPromise) {
+    luzAuditoriaSchemaPromise = luzPool.query(`
+      ALTER TABLE auditoria
+        ADD COLUMN IF NOT EXISTS sistema VARCHAR(16) NOT NULL DEFAULT 'LUZ',
+        ADD COLUMN IF NOT EXISTS actor_id BIGINT NULL,
+        ADD COLUMN IF NOT EXISTS actor_rol VARCHAR(40) NULL,
+        ADD COLUMN IF NOT EXISTS evento VARCHAR(120) NULL,
+        ADD COLUMN IF NOT EXISTS categoria VARCHAR(40) NULL,
+        ADD COLUMN IF NOT EXISTS nivel_riesgo VARCHAR(16) NULL,
+        ADD COLUMN IF NOT EXISTS resultado VARCHAR(20) NOT NULL DEFAULT 'EXITO',
+        ADD COLUMN IF NOT EXISTS entidad_tipo VARCHAR(80) NULL,
+        ADD COLUMN IF NOT EXISTS entidad_id VARCHAR(120) NULL,
+        ADD COLUMN IF NOT EXISTS ip VARCHAR(80) NULL,
+        ADD COLUMN IF NOT EXISTS request_id VARCHAR(80) NULL,
+        ADD COLUMN IF NOT EXISTS datos_antes JSONB NULL,
+        ADD COLUMN IF NOT EXISTS datos_despues JSONB NULL,
+        ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+      UPDATE auditoria
+      SET evento = LEFT(REGEXP_REPLACE(UPPER(COALESCE(accion, 'EVENTO_SISTEMA')), '[^A-Z0-9_-]+', '_', 'g'), 120)
+      WHERE evento IS NULL OR TRIM(evento) = '';
+      UPDATE auditoria
+      SET categoria = CASE
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(AUTH|LOGIN|PASSWORD|ACCESO)' THEN 'SEGURIDAD'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(PAGO|COBRO|CAJA|CIERRE|ORDEN)' THEN 'CAJA'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(RECIBO|DEUDA)' THEN 'DEUDA'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(SUMINISTRO|PADRON)' THEN 'PADRON'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(CAMPO|CORTE|ACTA)' THEN 'CAMPO'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(IMPORT|EXPORT|BACKUP)' THEN 'DATOS'
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(USUARIO|CONFIG|TARIFA)' THEN 'ADMINISTRACION'
+        ELSE 'SISTEMA'
+      END
+      WHERE categoria IS NULL OR TRIM(categoria) = '';
+      UPDATE auditoria
+      SET nivel_riesgo = CASE
+        WHEN UPPER(COALESCE(evento, accion, '')) ~ '(ELIMIN|DELETE|ANUL|PASSWORD|DESHECH|REINTEGR|BACKUP|IMPORT|ACCESO_DENEGADO)' THEN 'ALTO'
+        WHEN categoria IN ('CAJA', 'DEUDA', 'SEGURIDAD', 'ADMINISTRACION') THEN 'MEDIO'
+        ELSE 'BAJO'
+      END
+      WHERE nivel_riesgo IS NULL OR TRIM(nivel_riesgo) = '';
+      CREATE INDEX IF NOT EXISTS idx_luz_auditoria_fecha_desc ON auditoria (fecha DESC, id_auditoria DESC);
+      CREATE INDEX IF NOT EXISTS idx_luz_auditoria_usuario_fecha ON auditoria (usuario, fecha DESC);
+      CREATE INDEX IF NOT EXISTS idx_luz_auditoria_evento_fecha ON auditoria (evento, fecha DESC);
+      CREATE INDEX IF NOT EXISTS idx_luz_auditoria_categoria_riesgo_fecha ON auditoria (categoria, nivel_riesgo, fecha DESC);
+      CREATE INDEX IF NOT EXISTS idx_luz_auditoria_entidad ON auditoria (entidad_tipo, entidad_id, fecha DESC);
+      CREATE INDEX IF NOT EXISTS idx_luz_auditoria_resultado_fecha ON auditoria (resultado, fecha DESC);
+      CREATE TABLE IF NOT EXISTS auditoria_reversiones (
+        id_reversion BIGSERIAL PRIMARY KEY,
+        id_auditoria_origen BIGINT NOT NULL REFERENCES auditoria(id_auditoria),
+        id_auditoria_reversion BIGINT NULL REFERENCES auditoria(id_auditoria),
+        motivo VARCHAR(500) NOT NULL,
+        usuario VARCHAR(160) NOT NULL,
+        actor_id BIGINT NULL,
+        fecha TIMESTAMP NOT NULL DEFAULT NOW(),
+        metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        CONSTRAINT uq_luz_auditoria_reversion_origen UNIQUE (id_auditoria_origen)
+      );
+      CREATE INDEX IF NOT EXISTS idx_luz_auditoria_reversiones_fecha ON auditoria_reversiones (fecha DESC);
+    `).catch((err) => {
+      luzAuditoriaSchemaPromise = null;
+      throw err;
+    });
+  }
+  await luzAuditoriaSchemaPromise;
+};
+
+const registrarAuditoria = async (client, accion, detalle, usuario = "SISTEMA", options = {}) => {
   const db = client || pool;
   try {
-    await db.query(
-      "INSERT INTO auditoria (usuario, accion, detalle) VALUES ($1, $2, $3)",
-      [usuario, accion, detalle]
-    );
+    await ensureAuditoriaV2Schema();
+    const evento = normalizeAuditEventCode(options.evento || accion);
+    const categoria = String(options.categoria || inferAuditCategory(evento, options.method)).trim().toUpperCase();
+    const nivelRiesgo = String(options.nivelRiesgo || inferAuditRisk(evento, categoria)).trim().toUpperCase();
+    const resultado = String(options.resultado || "EXITO").trim().toUpperCase();
+    const metadata = redactAuditPayload(options.metadata || {}, {
+      maxDepth: 6,
+      maxArrayItems: 100,
+      maxStringLength: 1000
+    });
+    const datosAntes = options.datosAntes === undefined
+      ? null
+      : redactAuditPayload(options.datosAntes, { maxDepth: 6, maxArrayItems: 100, maxStringLength: 1000 });
+    const datosDespues = options.datosDespues === undefined
+      ? null
+      : redactAuditPayload(options.datosDespues, { maxDepth: 6, maxArrayItems: 100, maxStringLength: 1000 });
+    const inserted = await db.query(`
+      INSERT INTO auditoria (
+        usuario, accion, detalle, sistema, actor_id, actor_rol, evento,
+        categoria, nivel_riesgo, resultado, entidad_tipo, entidad_id,
+        ip, request_id, datos_antes, datos_despues, metadata
+      )
+      VALUES (
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10, $11, $12,
+        $13, $14, $15::jsonb, $16::jsonb, $17::jsonb
+      )
+      RETURNING id_auditoria
+    `, [
+      String(usuario || "SISTEMA").trim() || "SISTEMA",
+      String(accion || evento).trim() || evento,
+      detalle === undefined || detalle === null ? null : String(detalle),
+      String(options.sistema || "AGUA").trim().toUpperCase(),
+      parsePositiveInt(options.actorId, 0) || null,
+      options.actorRol ? String(options.actorRol).trim().toUpperCase() : null,
+      evento,
+      categoria || "SISTEMA",
+      nivelRiesgo || "BAJO",
+      resultado || "EXITO",
+      options.entidadTipo ? String(options.entidadTipo).trim().toUpperCase() : null,
+      options.entidadId === undefined || options.entidadId === null ? null : String(options.entidadId).trim().slice(0, 120),
+      options.ip ? String(options.ip).trim().slice(0, 80) : null,
+      options.requestId ? String(options.requestId).trim().slice(0, 80) : null,
+      datosAntes === null ? null : JSON.stringify(datosAntes),
+      datosDespues === null ? null : JSON.stringify(datosDespues),
+      JSON.stringify(metadata || {})
+    ]);
+    return parsePositiveInt(inserted.rows?.[0]?.id_auditoria, 0) || null;
   } catch (err) {
     console.error("Error guardando auditoría:", err.message);
+    if (client || options.critical) throw err;
+    return null;
   }
 };
 
@@ -6627,6 +7085,14 @@ const corsOptionsDelegate = (req, callback) => {
 };
 app.use(cors(corsOptionsDelegate));
 app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use((req, res, next) => {
+  const incoming = String(req.headers["x-request-id"] || "").trim();
+  req.auditRequestId = (incoming && incoming.length <= 80)
+    ? incoming
+    : crypto.randomUUID();
+  res.setHeader("X-Request-Id", req.auditRequestId);
+  return next();
+});
 
 app.get("/favicon.ico", (req, res) => res.status(204).end());
 
@@ -6769,11 +7235,11 @@ const resumirBodyAuditoria = (body = {}) => {
   const resumen = {};
   const entries = Object.entries(body).slice(0, 12);
   for (const [key, value] of entries) {
-    if (AUDIT_REDACT_KEYS.has(key)) {
-      resumen[key] = "[REDACTED]";
-      continue;
-    }
-    resumen[key] = normalizarValorAuditoria(value);
+    resumen[key] = redactAuditPayload({ [key]: value }, {
+      maxDepth: 4,
+      maxArrayItems: 12,
+      maxStringLength: 150
+    })[key];
   }
   return resumen;
 };
@@ -6825,12 +7291,31 @@ app.use((req, res, next) => {
 
   res.on("finish", () => {
     if (req.skipAutoAudit) return;
-    if (res.statusCode < 200 || res.statusCode >= 400) return;
+    if (res.statusCode < 200) return;
 
     const usuario = obtenerUsuarioAuditoria(req);
     const accion = `${method} ${req.path}`;
     const detalle = construirDetalleAuditoria(req);
-    registrarAuditoria(null, accion, detalle, usuario).catch(() => {});
+    const entity = inferAuditEntity(req.path, req.params || {});
+    const resultado = res.statusCode >= 500
+      ? "ERROR"
+      : (res.statusCode >= 400 ? "RECHAZADO" : "EXITO");
+    registrarAuditoria(null, accion, detalle, usuario, {
+      actorId: req.user?.id_usuario,
+      actorRol: req.user?.rol,
+      method,
+      resultado,
+      entidadTipo: entity.entidad_tipo,
+      entidadId: entity.entidad_id,
+      ip: getRequestIp(req),
+      requestId: req.auditRequestId,
+      metadata: {
+        status_code: res.statusCode,
+        ruta: req.path,
+        params: req.params || {},
+        body: resumirBodyAuditoria(req.body)
+      }
+    }).catch(() => {});
   });
 
   return next();
@@ -17806,16 +18291,19 @@ app.get("/auditoria", authenticateToken, async (req, res) => {
     if (filters.error) {
       return res.status(400).json({ error: filters.error });
     }
-    const resultado = await consultarAuditoria(pool, filters, {
-      includeTotal: true,
-      limit: filters.pageSize,
-      offset: filters.offset
-    });
+    filters.sistema = "AGUA";
+    const [resultado, usuarios] = await Promise.all([
+      consultarAuditoriaUnificada(filters),
+      consultarUsuariosAuditoria(pool)
+    ]);
     return res.json({
       page: filters.page,
       page_size: filters.pageSize,
       total: Number(resultado.total || 0),
-      rows: resultado.rows
+      rows: resultado.rows,
+      resumen: resultado.resumen,
+      usuarios,
+      warnings: resultado.warnings
     });
   } catch (err) {
     console.error("Error listando auditoria:", err.message);
@@ -17830,14 +18318,20 @@ app.post("/auditoria/:id/deshacer", authenticateToken, requireAdmin, async (req,
     if (!idAuditoria) {
       return res.status(400).json({ error: "ID de auditoria invalido." });
     }
+    const motivoReversion = String(req.body?.motivo || "").replace(/\s+/g, " ").trim();
+    if (motivoReversion.length < 5 || motivoReversion.length > 500) {
+      return res.status(400).json({ error: "Indique un motivo de 5 a 500 caracteres para deshacer." });
+    }
 
+    await ensureAuditoriaV2Schema();
     await client.query("BEGIN");
     const auditRs = await client.query(`
-      SELECT id_auditoria, accion, detalle
-      FROM auditoria
-      WHERE id_auditoria = $1
+      SELECT a.id_auditoria, a.accion, a.detalle, ar.id_reversion
+      FROM auditoria a
+      LEFT JOIN auditoria_reversiones ar ON ar.id_auditoria_origen = a.id_auditoria
+      WHERE a.id_auditoria = $1
       LIMIT 1
-      FOR UPDATE
+      FOR UPDATE OF a
     `, [idAuditoria]);
     if (auditRs.rows.length === 0) {
       await client.query("ROLLBACK");
@@ -17845,6 +18339,10 @@ app.post("/auditoria/:id/deshacer", authenticateToken, requireAdmin, async (req,
     }
     const audit = auditRs.rows[0];
     const detail = parseStructuredAuditDetail(audit.detalle);
+    if (parsePositiveInt(audit.id_reversion, 0) > 0 || normalizeSN(detail?.undo_aplicado_sn, "N") === "S") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Este movimiento ya fue deshecho anteriormente." });
+    }
     const accionAudit = String(audit.accion || "").trim().toUpperCase();
     const undoType = String(
       detail?.undo_type
@@ -18003,12 +18501,44 @@ app.post("/auditoria/:id/deshacer", authenticateToken, requireAdmin, async (req,
       return res.status(400).json({ error: "Este registro de auditoria no admite deshacer." });
     }
 
-    await markAuditUndoApplied(
+    const usernameReversion = req.user?.username || req.user?.nombre || "SISTEMA";
+    const idAuditoriaReversion = await registrarAuditoria(
       client,
-      idAuditoria,
-      detail,
-      req.user?.username || req.user?.nombre || "SISTEMA"
+      "AUDITORIA_REVERSION_APLICADA",
+      buildStructuredAuditDetail({
+        auditoria_origen: idAuditoria,
+        motivo: motivoReversion,
+        tipo_reversion: undoType,
+        deshecho_por: usernameReversion
+      }),
+      usernameReversion,
+      {
+        evento: "AUDITORIA_REVERSION_APLICADA",
+        categoria: "SEGURIDAD",
+        nivelRiesgo: "ALTO",
+        resultado: "EXITO",
+        actorId: req.user?.id_usuario,
+        actorRol: req.user?.rol,
+        entidadTipo: "AUDITORIA",
+        entidadId: idAuditoria,
+        ip: getRequestIp(req),
+        requestId: req.auditRequestId,
+        metadata: {
+          auditoria_origen: idAuditoria,
+          motivo: motivoReversion,
+          tipo_reversion: undoType,
+          resultado_restauracion: restoreResult
+        },
+        critical: true
+      }
     );
+    await markAuditUndoApplied(client, idAuditoria, {
+      idAuditoriaReversion,
+      motivo: motivoReversion,
+      username: usernameReversion,
+      actorId: req.user?.id_usuario,
+      metadata: { tipo_reversion: undoType }
+    });
     await client.query("COMMIT");
     invalidateContribuyentesCache();
     if (parsePositiveInt(restoreResult?.id_contribuyente, 0) > 0) {
@@ -18041,28 +18571,31 @@ app.get("/exportar/auditoria", authenticateToken, requireAdmin, async (req, res)
     if (filters.error) {
       return res.status(400).json({ error: filters.error });
     }
+    filters.sistema = "AGUA";
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Auditoria");
     worksheet.columns = [
       { header: "ID", key: "id", width: 10 },
       { header: "FECHA", key: "fecha", width: 22 },
       { header: "USUARIO", key: "usuario", width: 20 },
+      { header: "ROL", key: "rol", width: 18 },
+      { header: "EVENTO", key: "evento", width: 34 },
+      { header: "CATEGORIA", key: "categoria", width: 20 },
       { header: "ACCION", key: "accion", width: 35 },
       { header: "DETALLE", key: "detalle", width: 80 }
     ];
     worksheet.getRow(1).font = { bold: true };
 
-    const logs = await consultarAuditoria(pool, filters, {
-      includeTotal: false,
-      limit: AUDITORIA_EXPORT_MAX_ROWS,
-      offset: 0
-    });
+    const logs = await consultarAuditoriaUnificada(filters, { forExport: true });
 
     logs.rows.forEach((l) => {
       worksheet.addRow({
         id: l.id_auditoria,
         fecha: l.fecha ? new Date(l.fecha).toLocaleString() : "",
         usuario: l.usuario || "",
+        rol: l.actor_rol || "",
+        evento: l.evento || l.accion || "",
+        categoria: l.categoria || "",
         accion: l.accion || "",
         detalle: l.detalle || ""
       });
