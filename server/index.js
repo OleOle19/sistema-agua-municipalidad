@@ -28,6 +28,7 @@ const {
   inferAuditCategory,
   inferAuditEntity,
   inferAuditRisk,
+  normalizeAuditActivityFilter,
   normalizeAuditEventCode,
   redactAuditPayload
 } = require("./audit-utils");
@@ -2200,18 +2201,13 @@ const formatAuditPeriodo = (anio, mes) => {
   if (!anioNum || mesNum < 1 || mesNum > 12) return "";
   return `${String(mesNum).padStart(2, "0")}/${String(anioNum).padStart(4, "0")}`;
 };
-const normalizeAuditMethodFilter = (value) => {
-  const raw = String(value || "").trim().toUpperCase();
-  if (["GET", "POST", "PUT", "PATCH", "DELETE", "SISTEMA"].includes(raw)) return raw;
-  return "TODOS";
-};
 const normalizeAuditEnumFilter = (value, allowed, fallback = "TODOS") => {
   const raw = String(value || "").trim().toUpperCase();
   return allowed.includes(raw) ? raw : fallback;
 };
 const readAuditoriaFilters = (query = {}, { forExport = false } = {}) => {
   const q = String(query?.q || "").replace(/\s+/g, " ").trim().slice(0, 200);
-  const method = normalizeAuditMethodFilter(query?.method ?? query?.tipo ?? query?.metodo);
+  const method = normalizeAuditActivityFilter(query?.method ?? query?.tipo ?? query?.metodo);
   const sistema = normalizeAuditEnumFilter(query?.sistema, ["TODOS", "AGUA", "LUZ"]);
   const categoria = normalizeAuditEnumFilter(
     query?.categoria,
@@ -2289,7 +2285,12 @@ const buildAuditoriaWhereClause = (filters = {}) => {
   }
 
   if (filters.method && filters.method !== "TODOS") {
-    if (filters.method === "SISTEMA") {
+    if (filters.method === "COMPENSACION") {
+      where.push(`(
+        UPPER(COALESCE(a.evento, '')) LIKE '%COMPENSACION%'
+        OR COALESCE(a.detalle, '') ~* '(^|;[[:space:]]*)tipo_pago=COMPENSACION(;|$)'
+      )`);
+    } else if (filters.method === "SISTEMA") {
       where.push(`COALESCE(a.accion, '') !~* '^(GET|POST|PUT|PATCH|DELETE)\\b'`);
     } else {
       params.push(`^${filters.method}\\b`);

@@ -137,6 +137,7 @@ const formatArrayHint = (value) => {
 
 const METHOD_FILTER_OPTIONS = [
   { value: "TODOS", label: "Tipo: TODOS" },
+  { value: "COMPENSACION", label: "Tipo: Compensaciones" },
   { value: "GET", label: "Tipo: Consultas" },
   { value: "POST", label: "Tipo: Registros" },
   { value: "PUT", label: "Tipo: Ediciones" },
@@ -226,7 +227,7 @@ const formatDetalleRecibosValue = (valueText) => {
       const parts = [];
       if (row?.periodo) parts.push(String(row.periodo));
       if (Number(row?.id_recibo) > 0) parts.push(`Recibo ${row.id_recibo}`);
-      if (String(row?.tipo_pago || "").trim().toUpperCase() === "COMPENSACION") parts.push("Compensacion");
+      if (String(row?.tipo_pago || "").trim().toUpperCase() === "COMPENSACION") parts.push("Compensación");
       if (row?.monto_cobrado !== undefined) parts.push(`Cobro ${formatMoney(row.monto_cobrado)}`);
       if (row?.saldo_pendiente !== undefined) parts.push(`Saldo ${formatMoney(row.saldo_pendiente)}`);
       if (row?.estado) parts.push(`Estado ${row.estado}`);
@@ -298,7 +299,7 @@ const formatValueForDisplay = (label, valueText, isJson) => {
 
   if (key === "tipo_pago") {
     const normalized = String(valueText || "").trim().toUpperCase();
-    if (normalized === "COMPENSACION") return "Compensacion";
+    if (normalized === "COMPENSACION") return "Compensación";
     if (normalized === "CAJA") return "Caja";
   }
 
@@ -586,7 +587,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo =
         <div className={modalContentClass} style={modalContentStyle}>
           <div className={headerClass}>
             <div>
-              <h5 className="modal-title"><FaShieldAlt className="me-2" /> Auditoria Municipal</h5>
+              <h5 className="modal-title"><FaShieldAlt className="me-2" /> Auditoría Municipal</h5>
               <div className="small opacity-75">Movimientos y cambios realizados en el sistema de agua</div>
             </div>
             <button type="button" className={closeBtnClass} onClick={cerrarModal} aria-label="Cerrar auditoria" />
@@ -621,7 +622,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo =
                   <button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => cargarLogs()} disabled={cargando}><FaSyncAlt className="me-1" /> Recargar</button>
                 </div>
               </div>
-              <div className="small mt-2 opacity-75">Mostrando {rangoInicio}-{rangoFin} de {totalLogs} · Pagina {pagina} de {totalPaginas}</div>
+              <div className="small mt-2 opacity-75">Mostrando {rangoInicio}-{rangoFin} de {totalLogs} · Página {pagina} de {totalPaginas}</div>
             </div>
 
             <div className="row g-0">
@@ -664,7 +665,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo =
             </div>
           </div>
           <div className={`modal-footer ${darkMode ? "border-secondary" : ""} d-flex justify-content-between gap-2 flex-wrap`}>
-            <div className="d-flex align-items-center gap-2"><button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => setPagina((current) => Math.max(1, current - 1))} disabled={cargando || pagina <= 1}><FaChevronLeft /></button><span className="small opacity-75">Pagina {pagina} de {totalPaginas}</span><button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => setPagina((current) => Math.min(totalPaginas, current + 1))} disabled={cargando || pagina >= totalPaginas}><FaChevronRight /></button></div>
+            <div className="d-flex align-items-center gap-2"><button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => setPagina((current) => Math.max(1, current - 1))} disabled={cargando || pagina <= 1}><FaChevronLeft /></button><span className="small opacity-75">Página {pagina} de {totalPaginas}</span><button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => setPagina((current) => Math.min(totalPaginas, current + 1))} disabled={cargando || pagina >= totalPaginas}><FaChevronRight /></button></div>
             <div className="d-flex gap-2"><button type="button" className="btn btn-success" onClick={descargarExcel} disabled={exportando}><FaFileExcel className="me-2" />{exportando ? "Exportando..." : "Exportar Excel"}</button><button type="button" className={`btn ${darkMode ? "btn-secondary" : "btn-dark"}`} onClick={cerrarModal}>Cerrar</button></div>
           </div>
         </div>

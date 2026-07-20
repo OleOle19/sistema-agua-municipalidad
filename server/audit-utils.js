@@ -87,6 +87,13 @@ const normalizeAuditEventCode = (value, fallback = "EVENTO_SISTEMA") => {
     .slice(0, 120) || fallback;
 };
 
+const normalizeAuditActivityFilter = (value) => {
+  const raw = String(value || "").trim().toUpperCase();
+  return ["GET", "POST", "PUT", "PATCH", "DELETE", "SISTEMA", "COMPENSACION"].includes(raw)
+    ? raw
+    : "TODOS";
+};
+
 const inferAuditCategory = (eventCode, method = "") => {
   const event = normalizeAuditEventCode(eventCode);
   const httpMethod = String(method || "").trim().toUpperCase();
@@ -152,6 +159,7 @@ module.exports = {
   inferAuditCategory,
   inferAuditEntity,
   inferAuditRisk,
+  normalizeAuditActivityFilter,
   normalizeAuditEventCode,
   redactAuditPayload,
   shouldRedactAuditKey

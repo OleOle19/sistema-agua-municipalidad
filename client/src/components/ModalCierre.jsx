@@ -828,57 +828,61 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
               </div>
             </div>
 
-            <div className="border rounded p-3 mb-3 no-print">
-              <div className="d-flex justify-content-between align-items-center mb-2">
-                <div className="fw-bold">Alertas de riesgo (últimas 24 h)</div>
-                <div className={`badge ${alertasRiesgo?.severidad === "ALTA" ? "bg-danger" : alertasRiesgo?.severidad === "MEDIA" ? "bg-warning text-dark" : "bg-success"}`}>
-                  {alertasRiesgo?.severidad || "NORMAL"}
-                </div>
-              </div>
-              {cargandoAlertas && <div className="small text-muted mb-2">Actualizando alertas...</div>}
-              <div className="row g-2 mb-2">
-                <div className="col-md-3"><div className="border rounded p-2 small">Total alertas: <strong>{alertasResumen.total_alertas || 0}</strong></div></div>
-                <div className="col-md-3"><div className="border rounded p-2 small">Anulaciones frecuentes: <strong>{alertasResumen.anulaciones_frecuentes || 0}</strong></div></div>
-                <div className="col-md-3"><div className="border rounded p-2 small">Reemisiones recibo: <strong>{alertasResumen.reemisiones_recibo || 0}</strong></div></div>
-                <div className="col-md-3"><div className="border rounded p-2 small">Cobros fuera horario: <strong>{alertasResumen.cobros_fuera_horario || 0}</strong></div></div>
-                <div className="col-md-3"><div className="border rounded p-2 small">Cierres con desviación: <strong>{alertasResumen.cierres_desviacion || 0}</strong></div></div>
-              </div>
-              {(alertasResumen.total_alertas || 0) > 0 && (
-                <div className="small">
-                  {(alertasDetalle?.anulaciones_frecuentes || []).slice(0, 3).map((a, idx) => (
-                    <div key={`anul-${idx}`}>- Anulaciones altas: {a.username} ({a.total_anulaciones})</div>
-                  ))}
-                  {(alertasDetalle?.reemisiones_recibo || []).slice(0, 3).map((a, idx) => (
-                    <div key={`ree-${idx}`}>- Reemisión de recibo: {a.total_ordenes} órdenes</div>
-                  ))}
-                  {(alertasDetalle?.cobros_fuera_horario || []).slice(0, 3).map((a, idx) => (
-                    <div key={`off-${idx}`}>- Cobro fuera horario: orden {a.id_orden} ({a.username})</div>
-                  ))}
-                  {(alertasDetalle?.cierres_desviacion || []).slice(0, 3).map((a, idx) => (
-                    <div key={`cierre-${idx}`}>
-                      - Cierre con desviación: {formatFechaLocal(a.fecha_referencia)} {a.creado_en ? `(${formatFechaHoraLocal(a.creado_en)})` : ""} (S/. {formatMoney(a.desviacion)})
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {!isProyeccion && resumenMetodosPago.length > 0 && (
-              <div className="border rounded p-3 mb-3 no-print">
-                <div className="fw-bold mb-2">Resumen por medio de pago</div>
-                <div className="row g-2">
-                  {resumenMetodosPago.map((row) => (
-                    <div className="col-12 col-sm-6 col-lg-3" key={`metodo-card-${row.metodo_pago}`}>
-                      <div className="border rounded p-2 h-100">
-                        <div className="small text-muted">{row.label || getMetodoPagoReporteLabel(row.metodo_pago)}</div>
-                        <div className="fw-bold">S/. {formatMoney(row.total || 0)}</div>
-                        <div className="small text-muted">{Number(row.cantidad || 0)} movimiento(s)</div>
+            <div className={`border rounded px-3 py-2 mb-3 no-print ${darkMode ? "border-secondary" : ""}`}>
+              <div className="row g-2 align-items-start">
+                <div className={!isProyeccion && resumenMetodosPago.length > 0 ? "col-lg-8" : "col-12"}>
+                  <div className="d-flex justify-content-between align-items-center gap-2 mb-1">
+                    <div className="small fw-bold">Alertas de riesgo · últimas 24 h</div>
+                    <span className={`badge ${alertasRiesgo?.severidad === "ALTA" ? "bg-danger" : alertasRiesgo?.severidad === "MEDIA" ? "bg-warning text-dark" : "bg-success"}`}>
+                      {cargandoAlertas ? "ACTUALIZANDO" : (alertasRiesgo?.severidad || "NORMAL")}
+                    </span>
+                  </div>
+                  <div className="d-flex flex-wrap gap-1 small">
+                    <span className="border rounded px-2 py-1">Total <strong>{alertasResumen.total_alertas || 0}</strong></span>
+                    <span className="border rounded px-2 py-1">Anulaciones <strong>{alertasResumen.anulaciones_frecuentes || 0}</strong></span>
+                    <span className="border rounded px-2 py-1">Reemisiones <strong>{alertasResumen.reemisiones_recibo || 0}</strong></span>
+                    <span className="border rounded px-2 py-1">Fuera de horario <strong>{alertasResumen.cobros_fuera_horario || 0}</strong></span>
+                    <span className="border rounded px-2 py-1">Desviaciones <strong>{alertasResumen.cierres_desviacion || 0}</strong></span>
+                  </div>
+                  {(alertasResumen.total_alertas || 0) > 0 && (
+                    <details className="small mt-1">
+                      <summary className="text-primary" style={{ cursor: "pointer" }}>Ver detalle de alertas</summary>
+                      <div className="pt-1">
+                        {(alertasDetalle?.anulaciones_frecuentes || []).slice(0, 3).map((a, idx) => (
+                          <div key={`anul-${idx}`}>- Anulaciones altas: {a.username} ({a.total_anulaciones})</div>
+                        ))}
+                        {(alertasDetalle?.reemisiones_recibo || []).slice(0, 3).map((a, idx) => (
+                          <div key={`ree-${idx}`}>- Reemisión de recibo: {a.total_ordenes} órdenes</div>
+                        ))}
+                        {(alertasDetalle?.cobros_fuera_horario || []).slice(0, 3).map((a, idx) => (
+                          <div key={`off-${idx}`}>- Cobro fuera de horario: orden {a.id_orden} ({a.username})</div>
+                        ))}
+                        {(alertasDetalle?.cierres_desviacion || []).slice(0, 3).map((a, idx) => (
+                          <div key={`cierre-${idx}`}>
+                            - Cierre con desviación: {formatFechaLocal(a.fecha_referencia)} {a.creado_en ? `(${formatFechaHoraLocal(a.creado_en)})` : ""} (S/. {formatMoney(a.desviacion)})
+                          </div>
+                        ))}
                       </div>
-                    </div>
-                  ))}
+                    </details>
+                  )}
                 </div>
+
+                {!isProyeccion && resumenMetodosPago.length > 0 && (
+                  <div className="col-lg-4">
+                    <div className="small fw-bold mb-1">Medios de pago</div>
+                    <div className="d-flex flex-wrap gap-1">
+                      {resumenMetodosPago.map((row) => (
+                        <div className="border rounded px-2 py-1 small" key={`metodo-card-${row.metodo_pago}`}>
+                          <span className="text-muted me-1">{row.label || getMetodoPagoReporteLabel(row.metodo_pago)}</span>
+                          <strong>S/. {formatMoney(row.total || 0)}</strong>
+                          <span className="text-muted ms-1">· {Number(row.cantidad || 0)} mov.</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
+            </div>
 
             <div className="row g-3 mb-3 no-print">
               <div className="col-12 col-lg-4">

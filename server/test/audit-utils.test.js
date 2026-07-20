@@ -5,6 +5,7 @@ const {
   inferAuditCategory,
   inferAuditEntity,
   inferAuditRisk,
+  normalizeAuditActivityFilter,
   normalizeAuditEventCode,
   redactAuditPayload,
   shouldRedactAuditKey
@@ -48,6 +49,12 @@ test("normalizeAuditEventCode elimina identificadores variables de las rutas", (
     "PATCH_API_USUARIOS_ID"
   );
   assert.equal(normalizeAuditEventCode("Pago aplicado"), "PAGO_APLICADO");
+});
+
+test("normalizeAuditActivityFilter admite compensaciones y descarta valores desconocidos", () => {
+  assert.equal(normalizeAuditActivityFilter(" compensacion "), "COMPENSACION");
+  assert.equal(normalizeAuditActivityFilter("POST"), "POST");
+  assert.equal(normalizeAuditActivityFilter("otro"), "TODOS");
 });
 
 test("clasifica eventos con categoria y riesgo consistentes", () => {
