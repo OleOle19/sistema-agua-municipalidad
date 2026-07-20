@@ -85,7 +85,7 @@ const MOTIVOS_CAMBIO_RAZON_SOCIAL = [
   { value: "OTRO", label: "Otro motivo" }
 ];
 
-const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null }) => {
+const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, onFlash = null }) => {
   const idContribuyente = Number(usuario?.id_contribuyente || 0);
   const [formData, setFormData] = useState({
     nombre_completo: "",
@@ -303,29 +303,29 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
     }
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
-  const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-warning"}`;
-  const inputClass = `form-control ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const selectClass = `form-select ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
+  const modalStyle = {};
+  const headerClass = "modal-header bg-warning";
+  const inputClass = "form-control";
+  const selectClass = "form-select";
   const sectorNormalizado = String(formData.sec_nombre || "").trim().toLowerCase();
   const sectorActualExiste = sectores.some(
     (s) => String(s?.sec_nombre || "").trim().toLowerCase() === sectorNormalizado
   );
   const cambioRazonSocial = String(formData.nombre_completo || "").trim().toUpperCase() !== String(nombreOriginal || "").trim().toUpperCase();
-  const placeholderHintClass = darkMode ? "text-secondary" : "text-muted";
+  const placeholderHintClass = "text-muted";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
       <div className="modal-dialog modal-lg">
         <div className="modal-content" style={modalStyle}>
           <div className={headerClass}>
-            <h5 className={`modal-title ${darkMode ? "" : "text-dark"}`}>Editar Datos del Contribuyente</h5>
-            <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
+            <h5 className="modal-title text-dark">Editar Datos del Contribuyente</h5>
+            <button type="button" className="btn-close" onClick={cerrarModal}></button>
           </div>
           <div className="modal-body">
             {cargando ? <p>Cargando...</p> : (
               <form onSubmit={handleSubmit}>
-                <h6 className={`border-bottom pb-2 mb-3 ${darkMode ? "border-secondary" : "text-primary"}`}>Informacion Personal</h6>
+                <h6 className="border-bottom pb-2 mb-3 text-primary">Informacion Personal</h6>
                 <div className="row g-3 mb-3">
                   <div className="col-md-3"><label className="form-label small fw-bold">ID Contribuyente</label><input type="text" className={inputClass} value={idContribuyente} readOnly disabled /></div>
                   <div className="col-md-3">
@@ -346,7 +346,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
                   {cambioRazonSocial && (
                     <>
                       <div className="col-md-12">
-                        <div className={`border rounded p-2 ${darkMode ? "border-secondary" : "border-warning"}`}>
+                        <div className="border border-warning rounded p-2">
                           <div className="small fw-bold mb-2">Motivo de cambio de razon social</div>
                           <select
                             className={selectClass}
@@ -392,13 +392,13 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
                   <div className="col-md-6">
                     <label className="form-label small fw-bold">Estado de Conexion</label>
                     <select className={selectClass} name="estado_conexion" value={formData.estado_conexion} onChange={handleChange}>
-                      <option value="CON_CONEXION">Con conexion</option>
-                      <option value="SIN_CONEXION">Sin conexion</option>
+                      <option value="CON_CONEXION">Con conexión</option>
+                      <option value="SIN_CONEXION">Sin conexión</option>
                       <option value="CORTADO">Cortado</option>
                     </select>
                   </div>
                   <div className="col-md-12">
-                    <div className={`border rounded p-2 ${darkMode ? "border-secondary" : "border-info"}`}>
+                    <div className="border border-info rounded p-2">
                       <div className="small fw-bold mb-2">Servicios activos del predio</div>
                       <div className="d-flex flex-wrap gap-3 mb-2">
                         <label className="form-check-label d-flex align-items-center gap-2">
@@ -474,7 +474,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
                         </label>
                       </div>
                       {formData.programar_tarifa && (
-                        <div className={`border rounded p-2 mt-3 ${darkMode ? "border-secondary" : "border-warning"}`}>
+                        <div className="border border-warning rounded p-2 mt-3">
                           <div className="small fw-bold mb-2">Nueva tarifa desde</div>
                           <div className="row g-2">
                             <div className="col-md-3">
@@ -521,7 +521,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
                   </div>
                 </div>
 
-                <h6 className={`border-bottom pb-2 mb-3 ${darkMode ? "border-secondary" : "text-primary"}`}>Direccion del Predio</h6>
+                <h6 className="border-bottom pb-2 mb-3 text-primary">Dirección del Predio</h6>
                 <div className="row g-3">
                   <div className="col-md-6">
                     <label className="form-label small fw-bold">Calle / Jiron / Avenida</label>
@@ -537,7 +537,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash
                   <div className="col-md-2"><label className="form-label small fw-bold">Lt.</label><input type="text" className={inputClass} name="lote" value={formData.lote} onChange={handleChange} /></div>
                 </div>
 
-                <div className={`modal-footer px-0 pb-0 mt-3 ${darkMode ? "border-secondary" : ""}`}>
+                <div className="modal-footer px-0 pb-0 mt-3">
                   <button type="button" className="btn btn-secondary" onClick={cerrarModal}>Cancelar</button>
                   <button type="submit" className="btn btn-primary fw-bold">Guardar Cambios</button>
                 </div>

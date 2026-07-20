@@ -426,7 +426,7 @@ const getUndoPrompt = (undoType = "", accion = "") => {
   return "Se intentara deshacer este movimiento. Continuar?";
 };
 
-const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo = false }) => {
+const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false }) => {
   const [logs, setLogs] = useState([]);
   const [totalLogs, setTotalLogs] = useState(0);
   const [usuariosDisponibles, setUsuariosDisponibles] = useState([]);
@@ -571,15 +571,15 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo =
     }
   };
 
-  const modalContentClass = `modal-content ${darkMode ? "text-white" : ""}`;
-  const modalContentStyle = darkMode ? { backgroundColor: "#2b3035", border: "1px solid #495057" } : {};
-  const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-secondary text-white"}`;
-  const closeBtnClass = `btn-close ${darkMode ? "btn-close-white" : ""}`;
-  const tableClass = `table table-sm align-middle mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
-  const filtroInputClass = `form-control form-control-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const filtroSelectClass = `form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const filtroGroupTextClass = `input-group-text ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const panelClass = `border rounded-3 ${darkMode ? "border-secondary bg-dark" : "bg-light"}`;
+  const modalContentClass = "modal-content";
+  const modalContentStyle = {};
+  const headerClass = "modal-header bg-secondary text-white";
+  const closeBtnClass = "btn-close btn-close-white";
+  const tableClass = "table table-sm align-middle table-hover mb-0";
+  const filtroInputClass = "form-control form-control-sm";
+  const filtroSelectClass = "form-select form-select-sm";
+  const filtroGroupTextClass = "input-group-text";
+  const panelClass = "border rounded-3 bg-light";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
@@ -593,7 +593,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo =
             <button type="button" className={closeBtnClass} onClick={cerrarModal} aria-label="Cerrar auditoria" />
           </div>
           <div className="modal-body p-0">
-            <div className={`p-3 border-bottom ${darkMode ? "border-secondary" : ""}`}>
+            <div className="p-3 border-bottom">
               {error && <div className="alert alert-danger py-2 mb-2">{error}</div>}
               {mensaje && <div className="alert alert-success py-2 mb-2">{mensaje}</div>}
               {warnings.length > 0 && <div className="alert alert-warning py-2 mb-2">Vista parcial: {warnings.join(" · ")}</div>}
@@ -601,13 +601,13 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo =
                 <div className="col-xl-5 col-lg-6">
                   <div className="input-group input-group-sm">
                     <span className={filtroGroupTextClass}><FaSearch /></span>
-                    <input className={filtroInputClass} placeholder="Buscar evento, usuario o detalle..." value={filtroTexto} onChange={(e) => resetPage(setFiltroTexto, e.target.value)} />
+                    <input className={filtroInputClass} aria-label="Buscar en auditoría" placeholder="Buscar evento, usuario o detalle..." value={filtroTexto} onChange={(e) => resetPage(setFiltroTexto, e.target.value)} />
                   </div>
                 </div>
-                <div className="col-xl-2 col-md-3"><select className={filtroSelectClass} value={filtroCategoria} onChange={(e) => resetPage(setFiltroCategoria, e.target.value)}>{CATEGORY_FILTER_OPTIONS.map((v) => <option key={v} value={v}>Area: {v === "SISTEMA" ? "GENERAL" : v}</option>)}</select></div>
-                <div className="col-xl-2 col-md-3"><select className={filtroSelectClass} value={filtroMetodo} onChange={(e) => resetPage(setFiltroMetodo, e.target.value)}>{METHOD_FILTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+                <div className="col-xl-2 col-md-3"><select className={filtroSelectClass} aria-label="Filtrar por área" value={filtroCategoria} onChange={(e) => resetPage(setFiltroCategoria, e.target.value)}>{CATEGORY_FILTER_OPTIONS.map((v) => <option key={v} value={v}>Área: {v === "SISTEMA" ? "GENERAL" : v}</option>)}</select></div>
+                <div className="col-xl-2 col-md-3"><select className={filtroSelectClass} aria-label="Filtrar por tipo" value={filtroMetodo} onChange={(e) => resetPage(setFiltroMetodo, e.target.value)}>{METHOD_FILTER_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
                 <div className="col-xl-3 col-md-4">
-                  <select className={filtroSelectClass} value={filtroUsuarioId} onChange={(e) => resetPage(setFiltroUsuarioId, e.target.value)}>
+                  <select className={filtroSelectClass} aria-label="Filtrar por usuario" value={filtroUsuarioId} onChange={(e) => resetPage(setFiltroUsuarioId, e.target.value)}>
                     <option value="">Usuario: TODOS</option>
                     {usuariosDisponibles.map((usuario) => (
                       <option key={usuario.id_usuario} value={usuario.id_usuario}>
@@ -616,10 +616,10 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo =
                     ))}
                   </select>
                 </div>
-                <div className="col-xl-2 col-md-3"><div className="input-group input-group-sm"><span className={filtroGroupTextClass}>Desde</span><input type="date" className={filtroInputClass} value={fechaDesde} onChange={(e) => resetPage(setFechaDesde, e.target.value)} /></div></div>
-                <div className="col-xl-2 col-md-3"><div className="input-group input-group-sm"><span className={filtroGroupTextClass}>Hasta</span><input type="date" className={filtroInputClass} value={fechaHasta} onChange={(e) => resetPage(setFechaHasta, e.target.value)} /></div></div>
+                <div className="col-xl-2 col-md-3"><div className="input-group input-group-sm"><span className={filtroGroupTextClass}>Desde</span><input type="date" className={filtroInputClass} aria-label="Fecha inicial" value={fechaDesde} onChange={(e) => resetPage(setFechaDesde, e.target.value)} /></div></div>
+                <div className="col-xl-2 col-md-3"><div className="input-group input-group-sm"><span className={filtroGroupTextClass}>Hasta</span><input type="date" className={filtroInputClass} aria-label="Fecha final" value={fechaHasta} onChange={(e) => resetPage(setFechaHasta, e.target.value)} /></div></div>
                 <div className="col-xl-1 col-md-3 d-flex align-items-center justify-content-xl-end">
-                  <button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => cargarLogs()} disabled={cargando}><FaSyncAlt className="me-1" /> Recargar</button>
+                  <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => cargarLogs()} disabled={cargando}><FaSyncAlt className="me-1" /> Recargar</button>
                 </div>
               </div>
               <div className="small mt-2 opacity-75">Mostrando {rangoInicio}-{rangoFin} de {totalLogs} · Página {pagina} de {totalPaginas}</div>
@@ -629,14 +629,14 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo =
               <div className={seleccionado ? "col-xl-8" : "col-12"}>
                 <div className="table-responsive" style={{ maxHeight: "55vh" }}>
                   <table className={tableClass} style={{ minWidth: "720px" }}>
-                    <thead className={`${darkMode ? "" : "table-light"} sticky-top`}><tr><th>Fecha</th><th>Usuario</th><th>Evento</th><th></th></tr></thead>
+                    <thead className="table-light sticky-top"><tr><th>Fecha</th><th>Usuario</th><th>Evento</th><th></th></tr></thead>
                     <tbody>
                       {cargando ? <tr><td colSpan="4" className="text-center p-4">Cargando bitacora...</td></tr> : logs.length === 0 ? <tr><td colSpan="4" className="text-center p-4">No hay registros para estos filtros.</td></tr> : logs.map((log) => (
                         <tr key={log.id_auditoria} className={seleccionado?.id_auditoria === log.id_auditoria ? "table-active" : ""}>
                           <td className="text-nowrap small">{formatFecha(log.fecha)}</td>
                           <td><div className="fw-semibold">{log.usuario || "SISTEMA"}</div>{log.actor_rol && <div className="small opacity-75">{log.actor_rol}</div>}</td>
                           <td><div className="fw-semibold small">{toFriendlyAction(log.evento || log.accion)}</div><div className="small opacity-75">{log.categoria || "SISTEMA"}</div></td>
-                          <td><button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-primary"}`} onClick={() => { setSeleccionado(log); setReversionPendiente(null); setMotivoReversion(""); }}>Ver detalle</button></td>
+                          <td><button type="button" className="btn btn-sm btn-outline-primary" onClick={() => { setSeleccionado(log); setReversionPendiente(null); setMotivoReversion(""); }}>Ver detalle</button></td>
                         </tr>
                       ))}
                     </tbody>
@@ -645,7 +645,7 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo =
               </div>
 
               {seleccionado && (
-                <aside className={`col-xl-4 border-start ${darkMode ? "border-secondary" : ""}`}>
+                <aside className="col-xl-4 border-start">
                   <div className="p-3" style={{ maxHeight: "55vh", overflowY: "auto" }}>
                     <div className="d-flex justify-content-between gap-2 mb-3"><div><div className="fw-bold">Detalle del movimiento</div><div className="small opacity-75">ID {seleccionado.id_auditoria}</div></div><button type="button" className={closeBtnClass} onClick={() => setSeleccionado(null)} aria-label="Cerrar detalle" /></div>
                     <div className={`${panelClass} p-2 mb-2 small`}><div className="fw-semibold">{toFriendlyAction(seleccionado.evento || seleccionado.accion)}</div><div>{formatFecha(seleccionado.fecha)} · {seleccionado.usuario || "SISTEMA"}</div>{seleccionado.request_id && <div className="text-break opacity-75">Solicitud: {seleccionado.request_id}</div>}</div>
@@ -664,9 +664,9 @@ const ModalAuditoria = ({ cerrarModal, darkMode, onUndoApplied = null, canUndo =
               )}
             </div>
           </div>
-          <div className={`modal-footer ${darkMode ? "border-secondary" : ""} d-flex justify-content-between gap-2 flex-wrap`}>
-            <div className="d-flex align-items-center gap-2"><button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => setPagina((current) => Math.max(1, current - 1))} disabled={cargando || pagina <= 1}><FaChevronLeft /></button><span className="small opacity-75">Página {pagina} de {totalPaginas}</span><button type="button" className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`} onClick={() => setPagina((current) => Math.min(totalPaginas, current + 1))} disabled={cargando || pagina >= totalPaginas}><FaChevronRight /></button></div>
-            <div className="d-flex gap-2"><button type="button" className="btn btn-success" onClick={descargarExcel} disabled={exportando}><FaFileExcel className="me-2" />{exportando ? "Exportando..." : "Exportar Excel"}</button><button type="button" className={`btn ${darkMode ? "btn-secondary" : "btn-dark"}`} onClick={cerrarModal}>Cerrar</button></div>
+          <div className="modal-footer d-flex justify-content-between gap-2 flex-wrap">
+            <div className="d-flex align-items-center gap-2"><button type="button" className="btn btn-sm app-icon-button btn-outline-secondary" aria-label="Página anterior" onClick={() => setPagina((current) => Math.max(1, current - 1))} disabled={cargando || pagina <= 1}><FaChevronLeft /></button><span className="small opacity-75">Página {pagina} de {totalPaginas}</span><button type="button" className="btn btn-sm app-icon-button btn-outline-secondary" aria-label="Página siguiente" onClick={() => setPagina((current) => Math.min(totalPaginas, current + 1))} disabled={cargando || pagina >= totalPaginas}><FaChevronRight /></button></div>
+            <div className="d-flex gap-2"><button type="button" className="btn btn-success" onClick={descargarExcel} disabled={exportando}><FaFileExcel className="me-2" />{exportando ? "Exportando..." : "Exportar Excel"}</button><button type="button" className="btn btn-dark" onClick={cerrarModal}>Cerrar</button></div>
           </div>
         </div>
       </div>

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import api from "../api";
 import { FaLayerGroup, FaBuilding, FaUsers } from "react-icons/fa";
 import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
+import { confirmAction } from "../utils/confirmAction";
 
 const getPeriodoActual = () => {
   const now = new Date();
@@ -20,7 +21,7 @@ const validarPeriodoRecibo = (anioInput, mesInput) => {
   return { ok: true, anio, mes };
 };
 
-const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkMode, onFlash = null }) => {
+const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], onFlash = null }) => {
   const [modo, setModo] = useState(idsSeleccionados.length > 0 ? "seleccion" : "todos");
   const [calles, setCalles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -94,7 +95,7 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
     if (totalServicios <= 0) return showFlash("warning", "Debe seleccionar al menos un servicio.");
     const periodo = validarPeriodoRecibo(form.anio, form.mes);
     if (!periodo.ok) return showFlash("warning", periodo.error);
-    if (!confirm(`Esta seguro de generar deuda masiva en modo: ${modo.toUpperCase()}?`)) return;
+    if (!await confirmAction(`¿Generar deuda masiva en modo ${modo.toUpperCase()}?`, { title: "Generar deuda masiva" })) return;
 
     setLoading(true);
     try {
@@ -123,22 +124,22 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
     }
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
-  const inputClass = `form-control form-control-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const selectClass = `form-select ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const btnOutlineClass = (active) => active ? "btn-primary" : (darkMode ? "btn-outline-light" : "btn-outline-secondary");
+  const modalStyle = {};
+  const inputClass = "form-control form-control-sm";
+  const selectClass = "form-select";
+  const btnOutlineClass = (active) => active ? "btn-primary" : "btn-outline-secondary";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
       <div className="modal-dialog">
         <div className="modal-content" style={modalStyle}>
-          <div className={`modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-primary text-white"}`}>
+          <div className="modal-header bg-primary text-white">
             <h5 className="modal-title">Generacion Masiva de Deuda</h5>
-            <button className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
+            <button className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
           <div className="modal-body">
             <form onSubmit={handleSubmit}>
-              <div className={`d-flex justify-content-around mb-4 border-bottom pb-3 ${darkMode ? "border-secondary" : ""}`}>
+              <div className="d-flex justify-content-around mb-4 border-bottom pb-3">
                 <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "seleccion")}`} onClick={() => setModo("seleccion")} disabled={idsSeleccionados.length === 0}>
                   <FaUsers className="mb-1 d-block mx-auto" /> Seleccion ({idsSeleccionados.length})
                 </button>
@@ -173,7 +174,7 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], darkM
                 </div>
               </div>
 
-              <div className={`row g-2 mb-3 border p-2 rounded ${darkMode ? "bg-dark border-secondary" : "bg-light"}`}>
+              <div className="row g-2 mb-3 border p-2 rounded bg-light">
                 <div className="col-12 small fw-bold text-center text-primary">Tarifa a Aplicar</div>
                 <div className="col-3">
                   <div className="form-check">

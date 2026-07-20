@@ -56,7 +56,6 @@ const ModalPago = ({
   cerrarModal,
   alGuardar,
   onImprimirAnexo,
-  darkMode,
   realtimeTick = 0,
   onFlash = null
 }) => {
@@ -266,8 +265,6 @@ const ModalPago = ({
     const items = itemsSeleccionadosParaOrden;
 
     if (items.length === 0) return showFlash("warning", "Seleccione al menos un recibo con monto válido.");
-    if (!window.confirm(`Emitir orden por S/. ${totalOrden.toFixed(2)}?`)) return;
-
     setCargando(true);
     try {
       const res = await api.post("/caja/ordenes-cobro", {
@@ -297,8 +294,6 @@ const ModalPago = ({
     if (metodoConfig.requiereReferencia && !referenciaPago) {
       return showFlash("warning", `Ingrese numero de operacion o referencia para ${metodoConfig.label}.`);
     }
-    if (!window.confirm(`Cobrar orden #${ordenSeleccionada.id_orden} por S/. ${totalCobroCaja.toFixed(2)} con ${metodoConfig.label}?`)) return;
-
     setCargando(true);
     try {
       const res = await api.post(`/caja/ordenes-cobro/${ordenSeleccionada.id_orden}/cobrar`, {
@@ -412,8 +407,8 @@ const ModalPago = ({
     };
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
-  const listClass = darkMode ? "list-group-item bg-dark text-white border-secondary" : "list-group-item";
+  const modalStyle = {};
+  const listClass = "list-group-item";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -478,7 +473,7 @@ const ModalPago = ({
                     <div className="small fw-bold mb-2">Medio de pago</div>
                     <div className="row g-2 align-items-end">
                       <div className="col-sm-6 col-lg-3">
-                        <label className="form-label form-label-sm mb-1">Metodo</label>
+                        <label className="form-label form-label-sm mb-1">Método</label>
                         <select
                           className="form-select form-select-sm"
                           value={metodoPagoCaja}
@@ -508,7 +503,7 @@ const ModalPago = ({
                         />
                       </div>
                       <div className="col-sm-6 col-lg-3">
-                        <label className="form-label form-label-sm mb-1">Confirmacion</label>
+                        <label className="form-label form-label-sm mb-1">Confirmación</label>
                         <select
                           className="form-select form-select-sm"
                           value={estadoConfirmacionPagoCaja}
@@ -521,7 +516,7 @@ const ModalPago = ({
                         </select>
                       </div>
                       <div className="col-sm-6 col-lg-3">
-                        <label className="form-label form-label-sm mb-1">Observacion</label>
+                        <label className="form-label form-label-sm mb-1">Observación</label>
                         <input
                           type="text"
                           className="form-control form-control-sm"

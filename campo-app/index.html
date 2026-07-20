@@ -17,20 +17,20 @@
     <main class="layout">
       <header class="hero">
         <h1 id="heroTitle">App Campo</h1>
-        <p id="heroSubtitle">Registro de cambios desde brigada hacia la bandeja de revision del administrador.</p>
+        <p id="heroSubtitle">Registro de cambios desde brigada hacia la bandeja de revisión del administrador.</p>
       </header>
 
       <section class="card">
-        <h2>Submodulo de campo</h2>
-        <div class="module-switch" role="tablist" aria-label="Selector de submodulo">
-          <button id="moduleAguaBtn" type="button" class="secondary module-switch-btn is-active" role="tab" aria-selected="true">Agua</button>
-          <button id="moduleLuzBtn" type="button" class="secondary module-switch-btn" role="tab" aria-selected="false">Luz</button>
+        <h2>Submódulo de campo</h2>
+        <div class="module-switch" role="tablist" aria-label="Selector de submódulo">
+          <button id="moduleAguaBtn" type="button" class="secondary module-switch-btn is-active" role="tab" aria-selected="true" aria-controls="appSection">Agua</button>
+          <button id="moduleLuzBtn" type="button" class="secondary module-switch-btn" role="tab" aria-selected="false" aria-controls="appSection">Luz</button>
         </div>
-        <p id="moduleDescription" class="muted module-description">Agua operativo: busqueda, registro en campo y cola offline.</p>
+        <p id="moduleDescription" class="muted module-description">Agua operativo: búsqueda, registro en campo y cola offline.</p>
       </section>
 
       <section id="apiConfigCard" class="card hidden">
-        <h2>Configuracion API</h2>
+        <h2>Configuración API</h2>
         <div class="row">
           <label for="apiBaseUrl">URL API</label>
           <input id="apiBaseUrl" type="text" placeholder="http://localhost:5000" />
@@ -48,7 +48,7 @@
             <input id="username" name="username" type="text" autocomplete="username" required />
           </div>
           <div class="row">
-            <label for="password">Contrasena</label>
+            <label for="password">Contraseña</label>
             <input id="password" name="password" type="password" autocomplete="current-password" required />
           </div>
           <div class="actions">
@@ -75,7 +75,7 @@
           <div class="offline-guide">
             <strong>Modo recomendado:</strong>
             <ol>
-              <li>Antes de salir: iniciar sesion y tocar "Sincronizar offline".</li>
+              <li>Antes de salir: iniciar sesión y tocar "Sincronizar offline".</li>
               <li>En campo: registrar solicitudes sin internet.</li>
               <li>Al volver a red: tocar "Enviar pendientes".</li>
             </ol>
@@ -112,9 +112,9 @@
 
         <div class="filters agua-only">
           <div class="row">
-            <label for="searchInput">Buscar contribuyente (nombre, DNI, codigo o direccion)</label>
+            <label for="searchInput">Buscar contribuyente (nombre, DNI, código o dirección)</label>
             <div class="search-field">
-              <input id="searchInput" type="search" placeholder="Escribe nombre, DNI o direccion..." />
+              <input id="searchInput" type="search" placeholder="Escribe nombre, DNI o dirección..." />
               <button id="clearSearchBtn" class="secondary" type="button">Limpiar</button>
             </div>
             <div class="search-hint">Tip: escribe al menos 2 letras o filtra por calle.</div>
@@ -140,7 +140,7 @@
             <label for="tipoSolicitud">Tipo de solicitud</label>
             <select id="tipoSolicitud" required>
               <option value="ACTUALIZACION">Actualizar ficha actual</option>
-              <option value="ALTA_DIRECCION_ALTERNA">Agregar direccion adicional</option>
+              <option value="ALTA_DIRECCION_ALTERNA">Agregar dirección adicional</option>
               <option value="ALTA_PREDIO">Registrar predio nuevo (no encontrado)</option>
             </select>
             <div id="tipoSolicitudHint" class="muted">Actualiza datos del registro principal del contribuyente.</div>
@@ -157,14 +157,14 @@
           </div>
 
           <div class="row">
-            <label for="direccionVerificada">Direccion verificada</label>
+            <label for="direccionVerificada">Dirección verificada</label>
             <input id="direccionVerificada" type="text" maxlength="250" placeholder="Opcional si tomas foto o dejas referencia" />
           </div>
 
           <div class="row hidden" id="referenciaDireccionRow">
             <label for="referenciaDireccion">Referencia de ubicacion (opcional)</label>
             <input id="referenciaDireccion" type="text" maxlength="250" placeholder="Ej: Frente a la escuela, a 1 cuadra de la plaza..." />
-            <div class="muted">Si no conoces la direccion exacta, agrega una referencia o toma foto.</div>
+            <div class="muted">Si no conoces la dirección exacta, agrega una referencia o toma foto.</div>
           </div>
 
           <div class="row">
@@ -188,7 +188,7 @@
           </div>
 
           <div class="row">
-            <label for="fotoPredio">Foto de fachada (opcional; requerida si no hay direccion/referencia)</label>
+            <label for="fotoPredio">Foto de fachada (opcional; requerida si no hay dirección/referencia)</label>
             <div class="photo-actions">
               <button id="openCameraBtn" type="button">Tomar foto</button>
               <button id="openFileBtn" class="secondary" type="button">Subir foto</button>
@@ -240,7 +240,7 @@
           </div>
 
           <div class="row">
-            <label for="estadoConexionNuevo">Estado de conexion</label>
+            <label for="estadoConexionNuevo">Estado de conexión</label>
             <select id="estadoConexionNuevo" required>
               <option value="CON_CONEXION">CON CONEXION</option>
               <option value="SIN_CONEXION">SIN CONEXION</option>
@@ -320,7 +320,7 @@
         </section>
       </section>
 
-      <section id="statusSection" class="status hidden"></section>
+      <section id="statusSection" class="status hidden" role="status" aria-live="polite" aria-atomic="true"></section>
     </main>
 
     <script src="./app.js"></script>

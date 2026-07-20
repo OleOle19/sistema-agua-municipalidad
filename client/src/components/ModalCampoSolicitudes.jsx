@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import api from "../api";
 import { FaCheck, FaChevronLeft, FaChevronRight, FaClipboardCheck, FaFileDownload, FaSyncAlt, FaTimes } from "react-icons/fa";
+import { confirmAction } from "../utils/confirmAction";
 
 const ESTADO_LABELS = {
   PENDIENTE: "Pendiente",
@@ -154,23 +155,17 @@ const getSeguimientoTipo = (visitadoSN, hasObservacion) => {
   return "";
 };
 
-const getSeguimientoTone = (tipo, darkMode) => {
+const getSeguimientoTone = (tipo) => {
   if (!tipo) return null;
-  const palette = darkMode
-    ? {
-      NO_VISITADO: { bg: "#4a2a1b", fg: "#ffe4d6", accent: "#fb923c", line: "#fdba74" },
-      OBSERVACION: { bg: "#123245", fg: "#d9f0ff", accent: "#38bdf8", line: "#7dd3fc" },
-      NO_VISITADO_Y_OBSERVACION: { bg: "#4a3a16", fg: "#fff0c2", accent: "#f59e0b", line: "#fcd34d" }
-    }
-    : {
+  const palette = {
       NO_VISITADO: { bg: "#ffe3d1", fg: "#1f2937", accent: "#c2410c", line: "#9a3412" },
       OBSERVACION: { bg: "#dff4ff", fg: "#0f172a", accent: "#0369a1", line: "#075985" },
       NO_VISITADO_Y_OBSERVACION: { bg: "#fff0c9", fg: "#1f2937", accent: "#b45309", line: "#92400e" }
-    };
+  };
   return palette[tipo] || null;
 };
 
-const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) => {
+const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
   const [filtroEstado, setFiltroEstado] = useState("PENDIENTE");
   const [busquedaContribuyente, setBusquedaContribuyente] = useState("");
   const [filtroCalle, setFiltroCalle] = useState("TODAS");
@@ -242,7 +237,10 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
       const puedeAplicarAutomatico = Boolean(solicitud?.autoApplySafe);
       let aplicarCambiosSN = "N";
       if (puedeAplicarAutomatico) {
-        const aplicarAhora = window.confirm("Solicitud con cambios claros. Aceptar = aprobar y aplicar automatico. Cancelar = aprobar sin aplicar para revisar manualmente.");
+        const aplicarAhora = await confirmAction(
+          "La solicitud tiene cambios claros. Puede aplicarlos automáticamente ahora o aprobarla sin aplicar para revisarla manualmente.",
+          { title: "Aprobar solicitud", confirmLabel: "Aplicar ahora", cancelLabel: "Aprobar sin aplicar" }
+        );
         aplicarCambiosSN = aplicarAhora ? "S" : "N";
       } else {
         window.alert("Esta solicitud quedara aprobada sin aplicacion automatica. Primero revisa ficha y haz cambios manuales si hace falta.");
@@ -489,12 +487,12 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
     return list.sort((a, b) => factor * (Number(a.sortValue || 0) - Number(b.sortValue || 0)));
   }, [rowsPaginados, organizarPor, ordenGrupo, ordenItems]);
 
-  const modalContentClass = `modal-content ${darkMode ? "text-white" : ""}`;
-  const modalContentStyle = darkMode ? { backgroundColor: "#2b3035", border: "1px solid #495057" } : {};
-  const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-primary text-white"}`;
-  const closeBtnClass = `btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`;
-  const tableClass = `table mb-0 ${darkMode ? "table-dark table-hover" : "table-hover"}`;
-  const inputClass = `form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
+  const modalContentClass = "modal-content";
+  const modalContentStyle = {};
+  const headerClass = "modal-header bg-primary text-white";
+  const closeBtnClass = "btn-close btn-close-white";
+  const tableClass = "table table-hover mb-0";
+  const inputClass = "form-select form-select-sm";
   const exportarSolicitudesExcel = async () => {
     try {
       setError("");
@@ -561,7 +559,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
           </div>
 
           <div className="modal-body p-0">
-            <div className={`p-3 border-bottom d-flex flex-wrap align-items-center gap-2 ${darkMode ? "border-secondary" : ""}`}>
+            <div className="p-3 border-bottom d-flex flex-wrap align-items-center gap-2">
               <select
                 className={inputClass}
                 style={{ maxWidth: "180px" }}
@@ -606,7 +604,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
               </select>
               <input
                 type="text"
-                className={`form-control form-control-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
+                className="form-control form-control-sm"
                 style={{ maxWidth: "240px" }}
                 placeholder="Buscar contribuyente..."
                 value={busquedaContribuyente}
@@ -641,7 +639,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
 
             <div className="table-responsive" style={{ maxHeight: "65vh" }}>
               <table className={tableClass}>
-                <thead className={darkMode ? "" : "table-light"}>
+                <thead className="table-light">
                   <tr>
                     <th>Fecha</th>
                     <th>Contribuyente</th>
@@ -658,7 +656,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
                     <tr><td colSpan="6" className="text-center py-3">No hay solicitudes para este filtro.</td></tr>
                   ) : groupedRows.flatMap((group) => {
                     const groupHeader = (
-                      <tr key={`group-${group.key}`} className={darkMode ? "table-secondary" : "table-light"}>
+                      <tr key={`group-${group.key}`} className="table-light">
                         <td colSpan="6" className="small fw-semibold">
                           {organizarPor === "CALLE" ? "Calle" : "Fecha"}: {group.label} <span className="opacity-75 ms-2">({group.items.length} solicitudes)</span>
                         </td>
@@ -670,7 +668,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
                       const disabled = procesandoId === s.id_solicitud;
                       const isAltaPredio = tipoSolicitud === "ALTA_PREDIO";
                       const seguimientoTipo = getSeguimientoTipo(visitadoSN, hasObservacion);
-                      const tone = seguimientoPendiente ? getSeguimientoTone(seguimientoTipo, darkMode) : null;
+                      const tone = seguimientoPendiente ? getSeguimientoTone(seguimientoTipo) : null;
                       const rowStyle = tone ? { backgroundColor: tone.bg, color: tone.fg } : undefined;
                       const firstCellStyle = tone ? { borderLeft: `6px solid ${tone.accent}` } : undefined;
                       const badgeStyle = tone ? { backgroundColor: tone.accent, color: "#fff" } : undefined;
@@ -828,11 +826,11 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
             </div>
           </div>
 
-          <div className={`modal-footer ${darkMode ? "border-secondary" : ""} d-flex justify-content-between gap-2 flex-wrap`}>
+          <div className="modal-footer d-flex justify-content-between gap-2 flex-wrap">
             <div className="d-flex align-items-center gap-2">
               <button
                 type="button"
-                className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`}
+                className="btn btn-sm btn-outline-secondary"
                 onClick={() => setPagina((current) => Math.max(1, current - 1))}
                 disabled={cargando || pagina <= 1}
               >
@@ -841,14 +839,14 @@ const ModalCampoSolicitudes = ({ cerrarModal, darkMode, onAplicado, onFlash }) =
               <span className="small opacity-75">Pagina {pagina} de {totalPaginas}</span>
               <button
                 type="button"
-                className={`btn btn-sm ${darkMode ? "btn-outline-light" : "btn-outline-secondary"}`}
+                className="btn btn-sm btn-outline-secondary"
                 onClick={() => setPagina((current) => Math.min(totalPaginas, current + 1))}
                 disabled={cargando || pagina >= totalPaginas}
               >
                 <FaChevronRight />
               </button>
             </div>
-            <button type="button" className={`btn ${darkMode ? "btn-secondary" : "btn-dark"}`} onClick={cerrarModal}>Cerrar</button>
+            <button type="button" className="btn btn-dark" onClick={cerrarModal}>Cerrar</button>
           </div>
         </div>
       </div>

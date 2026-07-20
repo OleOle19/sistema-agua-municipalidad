@@ -14,6 +14,8 @@ export default function LandingWaterCanvas({ src = "", className = "" }) {
 
     let app = null;
     let disposed = false;
+    let idleHandle = null;
+    let timeoutHandle = null;
 
     const startLiquidBackground = async () => {
       try {
@@ -38,10 +40,18 @@ export default function LandingWaterCanvas({ src = "", className = "" }) {
       }
     };
 
-    startLiquidBackground();
+    if (typeof window.requestIdleCallback === "function") {
+      idleHandle = window.requestIdleCallback(startLiquidBackground, { timeout: 1500 });
+    } else {
+      timeoutHandle = window.setTimeout(startLiquidBackground, 250);
+    }
 
     return () => {
       disposed = true;
+      if (idleHandle !== null && typeof window.cancelIdleCallback === "function") {
+        window.cancelIdleCallback(idleHandle);
+      }
+      if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
       app?.dispose?.();
     };
   }, [src]);

@@ -55,7 +55,7 @@ const DEFAULT_CONFIG = {
   updated_at: ""
 };
 
-export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlash }) {
+export default function ModalFondoInicio({ cerrarModal, onFlash }) {
   const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -176,14 +176,14 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
       <div className="modal-dialog modal-lg modal-dialog-centered">
-        <div className={`modal-content ${darkMode ? "bg-dark text-white border-secondary" : ""}`}>
+        <div className="modal-content">
           <div className="modal-header">
             <h5 className="modal-title">Fondo del Inicio</h5>
             <button type="button" className="btn-close" onClick={cerrarModal} aria-label="Cerrar"></button>
           </div>
 
           <div className="modal-body">
-            <p className={`small mb-3 ${darkMode ? "text-light" : "text-muted"}`}>
+            <p className="small text-muted mb-3">
               Suba una imagen o un video para el selector principal. Si sube un video, se reproducira en bucle para todos los usuarios.
             </p>
 
@@ -204,9 +204,7 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
                     className="rounded border overflow-hidden"
                     style={{
                       minHeight: "240px",
-                      background: darkMode
-                        ? "linear-gradient(135deg, #0b1220, #10253a)"
-                        : "linear-gradient(135deg, #d9e8f5, #f7fafc)"
+                      background: "linear-gradient(135deg, #d9e8f5, #f7fafc)"
                     }}
                   >
                     {previewUrl ? (
@@ -231,7 +229,7 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
                         />
                       )
                     ) : (
-                      <div className={`d-flex align-items-center justify-content-center h-100 py-5 ${darkMode ? "text-light" : "text-muted"}`}>
+                      <div className="d-flex align-items-center justify-content-center h-100 py-5 text-muted">
                         Usando fondo predeterminado del sistema
                       </div>
                     )}
@@ -247,12 +245,12 @@ export default function ModalFondoInicio({ cerrarModal, darkMode = false, onFlas
                     onChange={handleFileChange}
                     disabled={saving}
                   />
-                  <div className={`form-text ${darkMode ? "text-light" : ""}`}>
+                  <div className="form-text">
                     Formatos permitidos: {SUPPORTED_BACKGROUND_LABEL}. Tamano maximo: {MAX_FILE_MB} MB.
                   </div>
                 </div>
 
-                <div className={`small ${darkMode ? "text-light" : "text-muted"}`}>
+                <div className="small text-muted">
                   Estado actual: {config.using_default ? "Predeterminado" : `Personalizado (${previewMediaType === "video" ? "video en bucle" : "imagen"})`}
                 </div>
               </>

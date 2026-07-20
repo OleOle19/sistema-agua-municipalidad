@@ -25,7 +25,7 @@ const TIPOS_IMPORTACION = {
   }
 };
 
-const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
+const ModalImportar = ({ cerrarModal, alTerminar }) => {
   const [tipo, setTipo] = useState("padron");
   const [archivo, setArchivo] = useState(null);
   const [cargando, setCargando] = useState(false);
@@ -96,10 +96,10 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
     }
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
-  const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-success text-white"}`;
-  const inputClass = `form-control ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const tabClass = (key) => `btn btn-sm ${tipo === key ? "btn-primary" : (darkMode ? "btn-outline-light" : "btn-outline-secondary")}`;
+  const modalStyle = {};
+  const headerClass = "modal-header bg-success text-white";
+  const inputClass = "form-control";
+  const tabClass = (key) => `btn btn-sm ${tipo === key ? "btn-primary" : "btn-outline-secondary"}`;
   const alertClass = mensaje.startsWith("Error") ? "alert-danger" : "alert-success";
   const resumenItems = Object.entries(resumenRechazos || {}).filter(([, val]) => Number(val) > 0);
   const rechazosFiltrados = filtroRechazo === "todos"
@@ -116,7 +116,7 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
         <div className="modal-content" style={modalStyle}>
           <div className={headerClass}>
             <h5 className="modal-title">Importacion de Datos</h5>
-            <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`} onClick={cerrarModal}></button>
+            <button type="button" className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
           <div className="modal-body">
             <div className="d-flex gap-2 mb-3">
@@ -164,7 +164,7 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
               </button>
             </div>
 
-            <div className={`alert small ${darkMode ? "alert-dark border-secondary" : "alert-info"}`}>
+            <div className="alert alert-info small">
               <strong>{conf.titulo}:</strong>
               <ul className="mb-0 ps-3 mt-1">
                 {conf.ayuda.map((item, idx) => (
@@ -174,7 +174,7 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
             </div>
 
             {tipo === "historial" && (
-              <div className={`alert small ${darkMode ? "alert-secondary border-warning text-light" : "alert-warning"}`}>
+              <div className="alert alert-warning small">
                 <strong>Reemplazo de pagos antiguos:</strong> si el Excel trae un mismo contribuyente y periodo ya existente, el importador reemplaza pagos de ese periodo y actualiza el recibo. Igual haz respaldo antes de una carga historica grande, sobre todo si vas a rehacer meses completos.
               </div>
             )}
@@ -199,7 +199,7 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
               )}
 
               {totalRechazados > 0 && (
-                <div className={`border rounded p-2 mb-3 small ${darkMode ? "border-warning text-light" : "border-warning"}`}>
+                <div className="border border-warning rounded p-2 mb-3 small">
                   <div className="fw-bold mb-1">Registros no importados: {totalRechazados}</div>
                   {resumenItems.length > 0 && (
                     <div className="mb-2">
@@ -223,7 +223,7 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
                     </div>
                   )}
                   <div className="table-responsive" style={{ maxHeight: "420px" }}>
-                    <table className={`table table-sm mb-0 ${darkMode ? "table-dark" : "table-striped"}`}>
+                    <table className="table table-sm table-striped mb-0">
                       <thead>
                         <tr>
                           <th>Linea</th>
@@ -265,7 +265,7 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
               )}
 
               {totalOmitidosSinRechazo > 0 && (
-                <div className={`border rounded p-2 mb-3 small ${darkMode ? "border-info text-light" : "border-info"}`}>
+                <div className="border border-info rounded p-2 mb-3 small">
                   <div className="fw-bold mb-1">Registros omitidos sin rechazo: {totalOmitidosSinRechazo}</div>
                   {resumenOmitidosItems.length > 0 && (
                     <div className="mb-2">
@@ -289,7 +289,7 @@ const ModalImportar = ({ cerrarModal, alTerminar, darkMode }) => {
                     </div>
                   )}
                   <div className="table-responsive" style={{ maxHeight: "260px" }}>
-                    <table className={`table table-sm mb-0 ${darkMode ? "table-dark" : "table-striped"}`}>
+                    <table className="table table-sm table-striped mb-0">
                       <thead>
                         <tr>
                           <th>Linea</th>

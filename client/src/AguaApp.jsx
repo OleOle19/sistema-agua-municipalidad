@@ -17,6 +17,7 @@ import FlashNotice from "./components/FlashNotice";
 import { buildReporteEstadoConexionPdf } from "./utils/simplePdf";
 import { formatDireccionDisplay } from "./utils/direccionDisplay";
 import { ESTADOS_CONEXION, ESTADO_CONEXION_LABELS, normalizeEstadoConexion } from "./utils/estadoConexion";
+import { confirmAction } from "./utils/confirmAction";
 
 const LazyRegistroForm = lazy(() => import("./components/RegistroForm"));
 const LazyModalCierre = lazy(() => import("./components/ModalCierre"));
@@ -85,17 +86,17 @@ const normalizeSearchText = (value) => String(value || "")
   .replace(/\s+/g, " ")
   .trim();
 
-const LazyPanelFallback = ({ darkMode, label = "Cargando..." }) => (
-  <div className={`p-4 text-center ${darkMode ? "text-white" : "text-muted"}`}>
+const LazyPanelFallback = ({ label = "Cargando..." }) => (
+  <div className="p-4 text-center text-muted">
     <div className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
     <span>{label}</span>
   </div>
 );
 
-const LazyModalFallback = ({ darkMode, label = "Cargando..." }) => (
+const LazyModalFallback = ({ label = "Cargando..." }) => (
   <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
     <div className="modal-dialog">
-      <div className={`modal-content ${darkMode ? "bg-dark text-white border-secondary" : ""}`}>
+      <div className="modal-content">
         <div className="modal-body py-4 text-center">
           <div className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
           <span>{label}</span>
@@ -140,7 +141,7 @@ import {
   FaPrint, FaTrashAlt, FaSearch, FaUserEdit, FaUserTimes, 
   FaSort, FaCut, FaShieldAlt, FaFileExcel, FaSignOutAlt, 
   FaUserShield, FaDatabase, FaPlug, FaLink, FaSyncAlt,
-  FaCloudUploadAlt, FaClipboardCheck, FaImage
+  FaCloudUploadAlt, FaClipboardCheck, FaImage, FaBars, FaTimes
 } from "react-icons/fa";
 
 // --- SE ELIMINO EL TRUCO CSS GLOBAL ---
@@ -151,7 +152,7 @@ const Sidebar = memo(({
   setMostrarModalPago, setMostrarModalCierre, setMostrarModalAuditoria, 
   setMostrarModalUsuarios, 
   usuarioActivo, onLogout, 
-  darkMode, descargarPadron,
+  descargarPadron,
   setMostrarImportar,
   setMostrarModalExportaciones,
   setMostrarModalFondoInicio,
@@ -163,7 +164,9 @@ const Sidebar = memo(({
   resumenConteoEfectivo,
   onRegistrarConteoEfectivo,
   showLegacyCajaMenu,
-  onFlash
+  onFlash,
+  mobileOpen = false,
+  onRequestClose
 }) => {
   const isSoloCobrosCajero = permisos.role === "CAJERO";
   const showReportesSection = !isSoloCobrosCajero && (
@@ -175,15 +178,29 @@ const Sidebar = memo(({
   const showConteoYCierreMenu = false;
 
   return (
-  <div className={`d-flex flex-column flex-shrink-0 p-2 text-white ${darkMode ? 'bg-black' : 'bg-dark'}`} style={{ width: "240px", height: "100vh", maxHeight: "100vh", transition: '0.3s' }}>
-    <a href="/" className="d-flex align-items-center mb-2 me-md-auto text-white text-decoration-none flex-shrink-0 gap-2">
+  <aside
+    className={`agua-sidebar d-flex flex-column flex-shrink-0 p-2 text-white bg-dark ${mobileOpen ? "is-open" : ""}`}
+    aria-label="Navegación del sistema de agua"
+    onClickCapture={(event) => {
+      if (event.target.closest("button, a")) onRequestClose?.();
+    }}
+  >
+    <div className="d-flex align-items-start gap-2">
+      <a href="/" className="agua-sidebar__brand d-flex align-items-center mb-2 me-auto text-white text-decoration-none gap-2">
       <img
         src="/logo.png"
         alt="Logo Municipalidad"
         style={{ width: "32px", height: "32px", objectFit: "contain", flexShrink: 0 }}
       />
-      <span className="fs-4 fw-bold" style={{ lineHeight: 1.2 }}>Municipalidad - Pueblo Nuevo</span>
-    </a>
+      <span className="agua-sidebar__brand-title fw-bold">
+        <span>Municipalidad</span>
+        <span>Pueblo Nuevo</span>
+      </span>
+      </a>
+      <button type="button" className="btn btn-sm btn-outline-light agua-sidebar__close" onClick={onRequestClose} aria-label="Cerrar menú">
+        <FaTimes />
+      </button>
+    </div>
     <hr className="my-2 flex-shrink-0"/>
     
     <ul className="nav nav-pills flex-column flex-grow-1" style={{ overflowY: "auto", overflowX: "hidden", minHeight: 0, paddingRight: "2px" }}>
@@ -207,7 +224,7 @@ const Sidebar = memo(({
           <li className="nav-item mt-2 text-white-50 text-uppercase small fw-bold">Caja</li>
           <li>
             <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={() => usuarioSeleccionado ? setMostrarModalPago(true) : onFlash?.("warning", "Seleccione usuario.")}>
-              <FaMoneyBillWave/> <span>Gestion Cobros (F7)</span>
+              <FaMoneyBillWave/> <span>Gestión Cobros (F7)</span>
               {Number(resumenPendientesCaja?.total_ordenes || 0) > 0 && (
                 <span className="badge bg-danger ms-auto">{Number(resumenPendientesCaja?.total_ordenes || 0)}</span>
               )}
@@ -248,7 +265,7 @@ const Sidebar = memo(({
           )}
           {permisos.canExportPadron && (
             <li>
-              <button className="nav-link py-2 text-success w-100 text-start d-flex align-items-center gap-2" onClick={descargarPadron}>
+              <button className="nav-link py-2 text-municipal-success w-100 text-start d-flex align-items-center gap-2" onClick={descargarPadron}>
                 <FaFileExcel/> <span>Descargar Excel</span>
               </button>
             </li>
@@ -256,14 +273,14 @@ const Sidebar = memo(({
           {permisos.canImpresionMensual && (
             <li>
               <button className="nav-link py-2 text-white w-100 text-start d-flex align-items-center gap-2" onClick={abrirModalImpresionMensual}>
-                <FaPrint/> <span>Impresion Mensual</span>
+                <FaPrint/> <span>Impresión Mensual</span>
               </button>
             </li>
           )}
           {permisos.canReimpresionRecibo && (
             <li>
               <button className="nav-link py-2 text-warning w-100 text-start d-flex align-items-center gap-2" onClick={abrirModalReimpresion}>
-                <FaPrint/> <span>Reimpresion Recibo</span>
+                <FaPrint/> <span>Reimpresión Recibo</span>
               </button>
             </li>
           )}
@@ -271,13 +288,13 @@ const Sidebar = memo(({
       )}
       
       {permisos.canAuditoria && (
-        <li className="nav-item mt-2 border-top pt-2"><button className="nav-link py-2 text-white-50 w-100 text-start small d-flex align-items-center gap-2" onClick={() => setMostrarModalAuditoria(true)}><FaShieldAlt/> <span>Auditoria</span></button></li>
+        <li className="nav-item mt-2 border-top pt-2"><button className="nav-link py-2 text-white-50 w-100 text-start small d-flex align-items-center gap-2" onClick={() => setMostrarModalAuditoria(true)}><FaShieldAlt/> <span>Auditoría</span></button></li>
       )}
 
       {permisos.canManageUsers && (
         <li className="nav-item mt-1">
           <button className="nav-link py-2 text-warning w-100 text-start small d-flex align-items-center gap-2" onClick={() => setMostrarModalUsuarios(true)}>
-            <FaUserShield/> <span>Gestion Usuarios</span>
+            <FaUserShield/> <span>Gestión Usuarios</span>
           </button>
         </li>
       )}
@@ -290,15 +307,15 @@ const Sidebar = memo(({
       )}
       {permisos.canSuperAdmin && (
         <li className="nav-item mt-1">
-          <button className="nav-link py-2 text-primary w-100 text-start small d-flex align-items-center gap-2" onClick={() => setMostrarModalFondoInicio(true)}>
+          <button className="nav-link py-2 text-municipal-primary w-100 text-start small d-flex align-items-center gap-2" onClick={() => setMostrarModalFondoInicio(true)}>
             <FaImage/> <span>Fondo de Inicio</span>
           </button>
         </li>
       )}
       {permisos.canSuperAdmin && (
         <li className="nav-item mt-1">
-          <button className="nav-link py-2 text-success w-100 text-start small d-flex align-items-center gap-2" onClick={() => setMostrarImportar(true)}>
-            <FaCloudUploadAlt/> <span>Importar Padron</span>
+          <button className="nav-link py-2 text-municipal-success w-100 text-start small d-flex align-items-center gap-2" onClick={() => setMostrarImportar(true)}>
+            <FaCloudUploadAlt/> <span>Importar Padrón</span>
           </button>
         </li>
       )}
@@ -314,9 +331,9 @@ const Sidebar = memo(({
     <div className="mt-2 pt-2 border-top flex-shrink-0">
       <div className="small text-white-50 mb-1 text-truncate">Usuario: <strong className="text-white">{usuarioActivo?.nombre || 'Invitado'}</strong></div>
       <div className="small text-info mb-2 text-truncate">{permisos.roleLabel}</div>
-      <button className="btn btn-outline-danger btn-sm w-100 d-flex align-items-center justify-content-center gap-2" onClick={onLogout}><FaSignOutAlt /> Cerrar Sesion</button>
+      <button className="btn btn-outline-danger btn-sm w-100 d-flex align-items-center justify-content-center gap-2" onClick={onLogout}><FaSignOutAlt /> Cerrar sesión</button>
     </div>
-  </div>
+  </aside>
   );
 });
 
@@ -324,7 +341,7 @@ const Sidebar = memo(({
 const Toolbar = memo(({ 
   busqueda, setBusqueda, usuarioSeleccionado, setMostrarModalDeuda, 
   setMostrarModalEliminar, setMostrarModalEditarUsuario, eliminarUsuarioCompleto, 
-  abrirModalActaCorte, generandoActaCorte, darkMode,
+  abrirModalActaCorte, generandoActaCorte,
   selectedIds, setMostrarModalDeudaMasiva, permisos, filtroEstadoConexion, setFiltroEstadoConexion,
   abrirModalCorteConexion, registrandoCorteConexion, reconectarSeleccionado, abrirReporteEstadoConexion
 }) => {
@@ -333,17 +350,18 @@ const Toolbar = memo(({
   const puedeReconectar = Boolean(usuarioSeleccionado)
     && (estadoSeleccionado === ESTADOS_CONEXION.SIN_CONEXION || estadoSeleccionado === ESTADOS_CONEXION.CORTADO);
   return (
-  <div className={`${darkMode ? 'bg-secondary border-secondary text-white' : 'bg-light border-bottom'} p-2 d-flex gap-2 align-items-center sticky-top shadow-sm`} style={{ flexWrap: "nowrap", overflowX: "hidden" }} onClick={(e) => e.stopPropagation()}>
+  <div className="agua-toolbar bg-light border-bottom p-2 d-flex gap-2 align-items-center sticky-top shadow-sm" onClick={(e) => e.stopPropagation()}>
     
-    <div className="input-group input-group-sm flex-shrink-0" style={{width: '220px'}}>
+    <div className="input-group input-group-sm agua-toolbar__search">
       <span className="input-group-text border-end-0"><FaSearch className="text-muted"/></span>
-      <input type="text" className="form-control border-start-0 ps-0" placeholder="Buscar..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)} autoFocus />
+      <input type="search" className="form-control border-start-0 ps-0" aria-label="Buscar contribuyente" placeholder="Buscar contribuyente..." value={busqueda} onChange={(e) => setBusqueda(e.target.value)} autoFocus />
     </div>
 
-    <div className="input-group input-group-sm flex-shrink-0" style={{ width: "190px" }}>
+    <div className="input-group input-group-sm agua-toolbar__state">
       <span className="input-group-text">Estado</span>
       <select
-        className={`form-select ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
+        className="form-select"
+        aria-label="Filtrar por estado de conexión"
         value={filtroEstadoConexion}
         onChange={(e) => setFiltroEstadoConexion(e.target.value)}
       >
@@ -356,7 +374,7 @@ const Toolbar = memo(({
     
     <div className="vr mx-1"></div>
     
-    <div className="d-flex gap-2 flex-shrink-0">
+    <div className="agua-toolbar__actions d-flex gap-2 flex-wrap">
         {permisos.canManageOps && (
         <div className="btn-group shadow-sm">
         {selectedIds && selectedIds.size > 1 ? (
@@ -369,34 +387,34 @@ const Toolbar = memo(({
             </button>
         )}
         {permisos.canDeleteRecibos && (
-          <button className={`btn btn-sm d-flex align-items-center justify-content-center ${darkMode ? 'btn-outline-light' : 'btn-outline-danger bg-white'}`} disabled={!usuarioSeleccionado} onClick={() => setMostrarModalEliminar(true)}><FaTrashAlt/></button>
+          <button className="btn btn-sm app-icon-button d-flex align-items-center justify-content-center btn-outline-danger bg-white" disabled={!usuarioSeleccionado} onClick={() => setMostrarModalEliminar(true)} aria-label="Eliminar deuda seleccionada" title="Eliminar deuda"><FaTrashAlt/></button>
         )}
         </div>
         )}
 
         {permisos.canManageOps && (
         <div className="btn-group shadow-sm">
-        <button className={`btn btn-sm border d-flex align-items-center justify-content-center ${darkMode ? 'btn-dark' : 'btn-light'}`} disabled={!usuarioSeleccionado} onClick={() => setMostrarModalEditarUsuario(true)}><FaUserEdit/></button>
+        <button className="btn btn-sm app-icon-button border d-flex align-items-center justify-content-center btn-light" disabled={!usuarioSeleccionado} onClick={() => setMostrarModalEditarUsuario(true)} aria-label="Editar contribuyente" title="Editar contribuyente"><FaUserEdit/></button>
         {permisos.canSuperAdmin && (
-          <button className={`btn btn-sm border d-flex align-items-center justify-content-center ${darkMode ? 'btn-dark' : 'btn-light'}`} disabled={!usuarioSeleccionado} onClick={eliminarUsuarioCompleto}><FaUserTimes/></button>
+          <button className="btn btn-sm app-icon-button border d-flex align-items-center justify-content-center btn-light" disabled={!usuarioSeleccionado} onClick={eliminarUsuarioCompleto} aria-label="Eliminar contribuyente" title="Eliminar contribuyente"><FaUserTimes/></button>
         )}
         </div>
         )}
 
         {permisos.canCambiarEstadoConexion && (
           <>
-            <button className="btn btn-outline-danger btn-sm shadow-sm d-flex align-items-center justify-content-center" disabled={registrandoCorteConexion} onClick={abrirModalCorteConexion} title="Registrar Corte con Evidencia"><FaPlug/></button>
-            <button className="btn btn-outline-success btn-sm shadow-sm d-flex align-items-center justify-content-center" disabled={!puedeReconectar} onClick={reconectarSeleccionado} title="Reconectar Servicio"><FaLink/></button>
+            <button className="btn btn-outline-danger btn-sm app-icon-button shadow-sm d-flex align-items-center justify-content-center" disabled={registrandoCorteConexion} onClick={abrirModalCorteConexion} title="Registrar corte con evidencia" aria-label="Registrar corte con evidencia"><FaPlug/></button>
+            <button className="btn btn-outline-success btn-sm app-icon-button shadow-sm d-flex align-items-center justify-content-center" disabled={!puedeReconectar} onClick={reconectarSeleccionado} title="Reconectar servicio" aria-label="Reconectar servicio"><FaLink/></button>
           </>
         )}
         {permisos.canGenerarActaCorte && (
-          <button className="btn btn-warning btn-sm shadow-sm d-flex align-items-center justify-content-center" disabled={generandoActaCorte} onClick={abrirModalActaCorte} title="Acta de Corte"><FaFileInvoiceDollar/></button>
+          <button className="btn btn-warning btn-sm app-icon-button shadow-sm d-flex align-items-center justify-content-center" disabled={generandoActaCorte} onClick={abrirModalActaCorte} title="Generar acta de corte" aria-label="Generar acta de corte"><FaFileInvoiceDollar/></button>
         )}
         {permisos.canReporteCortes && (
           <div className="btn-group shadow-sm">
-            <button className="btn btn-danger btn-sm d-flex align-items-center justify-content-center" onClick={() => abrirReporteEstadoConexion(ESTADOS_CONEXION.CORTADO)} title="Reporte Cortados"><FaCut/></button>
-            <button className="btn btn-success btn-sm d-flex align-items-center justify-content-center" onClick={() => abrirReporteEstadoConexion(ESTADOS_CONEXION.CON_CONEXION)} title="Reporte Con Conexion"><FaPlug/></button>
-            <button className="btn btn-secondary btn-sm d-flex align-items-center justify-content-center" onClick={() => abrirReporteEstadoConexion(ESTADOS_CONEXION.SIN_CONEXION)} title="Reporte Sin Conexion"><FaLink/></button>
+            <button className="btn btn-danger btn-sm app-icon-button d-flex align-items-center justify-content-center" onClick={() => abrirReporteEstadoConexion(ESTADOS_CONEXION.CORTADO)} title="Reporte de cortados" aria-label="Abrir reporte de cortados"><FaCut/></button>
+            <button className="btn btn-success btn-sm app-icon-button d-flex align-items-center justify-content-center" onClick={() => abrirReporteEstadoConexion(ESTADOS_CONEXION.CON_CONEXION)} title="Reporte con conexión" aria-label="Abrir reporte con conexión"><FaPlug/></button>
+            <button className="btn btn-secondary btn-sm app-icon-button d-flex align-items-center justify-content-center" onClick={() => abrirReporteEstadoConexion(ESTADOS_CONEXION.SIN_CONEXION)} title="Reporte sin conexión" aria-label="Abrir reporte sin conexión"><FaLink/></button>
           </div>
         )}
     </div>
@@ -449,12 +467,16 @@ const readStoredUser = () => {
   };
 };
 
-const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, onDoubleClick, rowHeight }) => (
+const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, onDoubleClick, onKeyDown, selected, focusable, rowHeight }) => (
   <tr
     data-id={c.id_contribuyente}
     onMouseDown={onMouseDown}
     onClick={onClick}
     onDoubleClick={onDoubleClick}
+    onKeyDown={onKeyDown}
+    tabIndex={focusable ? 0 : -1}
+    aria-selected={selected}
+    aria-label={`${c.codigo_municipal || ""} ${c.nombre_completo || ""}. Presione Enter para abrir el detalle.`}
     className={className}
     style={{ cursor: "pointer", height: rowHeight }}
   >
@@ -495,7 +517,6 @@ const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, onDoubleCli
 
 const ModalArbitriosDetalle = ({
   cerrarModal,
-  darkMode,
   usuarioSeleccionado,
   historialYear,
   yearsForSelect,
@@ -507,16 +528,16 @@ const ModalArbitriosDetalle = ({
   <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
     <div className="modal-dialog modal-xl modal-dialog-scrollable">
       <div className="modal-content">
-        <div className={`modal-header ${darkMode ? "bg-dark text-white" : "bg-primary text-white"}`}>
+        <div className="modal-header bg-primary text-white">
           <h5 className="modal-title">Arbitrios municipales - detalle</h5>
-          <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
+          <button type="button" className="btn-close btn-close-white" onClick={cerrarModal}></button>
         </div>
         <div className="modal-body">
           <div className="d-flex justify-content-between align-items-center mb-3 no-print">
             <div className="fw-semibold">{usuarioSeleccionado?.nombre_completo || "-"}</div>
             <div className="d-flex gap-2 align-items-center">
               <select
-                className={`form-select form-select-sm ${darkMode ? "bg-dark text-white border-secondary" : ""}`}
+                className="form-select form-select-sm"
                 style={{ width: "110px" }}
                 value={historialYear}
                 onChange={onYearChange}
@@ -544,7 +565,7 @@ const ModalArbitriosDetalle = ({
               <span className="badge border text-body-secondary" style={HISTORIAL_ROW_STYLES.pagado}>Mes pagado</span>
             </div>
             <div className="table-responsive border rounded">
-              <table className={`table table-sm table-bordered mb-0 ${darkMode ? "table-dark" : ""}`}>
+              <table className="table table-sm table-bordered mb-0">
                 <thead className="text-center">
                   <tr>
                     {["Mes", "Agua", "Desague", "Limpieza", "Admin", "Extra"].map((title) => (
@@ -639,10 +660,10 @@ function AguaApp({ onBackToSelector = null }) {
   const lastHoverIdRef = useRef(null);
   const historialCacheRef = useRef(new Map());
   const [flash, setFlash] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const rowHeight = 32;
   const overscan = 24;
 
-  const darkMode = false;
   const [refreshDashboard, setRefreshDashboard] = useState(0);
   const [resumenPendientesCaja, setResumenPendientesCaja] = useState({
     total_ordenes: 0,
@@ -1394,7 +1415,7 @@ const anexoCajaPageStyle = `
       if (h.type === "year") {
         return (
           <tr key={`year-${h.anio}`}>
-            <td colSpan="8" className={`text-start fw-bold ${darkMode ? "bg-dark text-white" : "bg-light"}`} style={{ paddingLeft: "12px" }}>
+            <td colSpan="8" className="text-start fw-bold bg-light" style={{ paddingLeft: "12px" }}>
               Año {h.anio}
             </td>
           </tr>
@@ -1404,9 +1425,7 @@ const anexoCajaPageStyle = `
         deuda: h.deuda_mes,
         abono: h.abono_mes
       });
-      const rowStyle = darkMode && rowTone !== "idle"
-        ? undefined
-        : HISTORIAL_ROW_STYLES[rowTone];
+      const rowStyle = HISTORIAL_ROW_STYLES[rowTone];
       const deudaVisual = Number(h.deuda_mes || 0);
       const deudaClassName = "fw-bold text-danger";
       const movimientoBadge = getHistorialMovimientoBadge(h);
@@ -1419,12 +1438,6 @@ const anexoCajaPageStyle = `
       return (
         <tr
           key={`${h.anio}-${h.mes}-${i}`}
-          className={darkMode && rowTone !== "idle"
-            ? {
-              deuda: "table-danger",
-              pagado: "table-success"
-            }[rowTone]
-            : undefined}
           style={rowStyle}
         >
           <td className="fw-bold text-start ps-3">
@@ -1448,7 +1461,7 @@ const anexoCajaPageStyle = `
         </tr>
       );
     });
-  }, [usuarioSeleccionado, historialTabla, darkMode, formatMonto]);
+  }, [usuarioSeleccionado, historialTabla, formatMonto]);
 
   const recargarTodo = async (options = {}) => {
     const optimisticContribuyente = options?.optimisticContribuyente || null;
@@ -1563,8 +1576,8 @@ const anexoCajaPageStyle = `
     return () => ro.disconnect();
   }, []);
 
-  const handleLogout = () => {
-    if (window.confirm("Cerrar sesion?")) {
+  const handleLogout = async () => {
+    if (await confirmAction("¿Desea cerrar la sesión actual?", { title: "Cerrar sesión", confirmLabel: "Cerrar sesión" })) {
       localStorage.removeItem(AGUA_TOKEN_KEY);
       localStorage.removeItem(LEGACY_TOKEN_KEY);
       setUsuarioSistema(null);
@@ -1646,7 +1659,7 @@ const anexoCajaPageStyle = `
       showFlash("warning", "Debe ingresar un motivo.");
       return;
     }
-    if (!window.confirm(`Confirma ${accion} a ${usuarioSeleccionado.nombre_completo}?`)) return;
+    if (!await confirmAction(`¿Confirma ${accion} a ${usuarioSeleccionado.nombre_completo}?`)) return;
 
     try {
       const res = await api.post(`/contribuyentes/${usuarioSeleccionado.id_contribuyente}/estado-conexion`, {
@@ -1673,7 +1686,10 @@ const anexoCajaPageStyle = `
       showFlash("warning", "Solo Nivel 1 puede eliminar contribuyentes.");
       return;
     }
-    if(!window.confirm(`PELIGRO: Eliminar a ${usuarioSeleccionado.nombre_completo}?`)) return;
+    if (!await confirmAction(
+      `Se eliminará a ${usuarioSeleccionado.nombre_completo}. Esta acción no se puede deshacer.`,
+      { title: "Eliminar contribuyente", confirmLabel: "Eliminar", variant: "danger" }
+    )) return;
     try {
       await api.delete(`/contribuyentes/${usuarioSeleccionado.id_contribuyente}`);
       showFlash("success", "Contribuyente eliminado correctamente.");
@@ -1709,7 +1725,7 @@ const anexoCajaPageStyle = `
       showFlash("warning", "Solo Nivel 1 puede generar copias de seguridad.");
       return;
     }
-    if (!confirm("Generar y descargar copia de seguridad completa?")) return;
+    if (!await confirmAction("¿Generar y descargar una copia de seguridad completa?", { title: "Copia de seguridad" })) return;
     try {
       const response = await api.get("/admin/backup", { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -2000,6 +2016,31 @@ const anexoCajaPageStyle = `
     setMostrarModalArbitrios(true);
   }, [contribuyenteById, cargarHistorial]);
 
+  const handleRowKeyDown = useCallback((e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const rows = Array.from(e.currentTarget.closest("tbody")?.querySelectorAll("tr[data-id]") || []);
+      const index = rows.indexOf(e.currentTarget);
+      const nextIndex = e.key === "ArrowDown" ? Math.min(rows.length - 1, index + 1) : Math.max(0, index - 1);
+      rows[nextIndex]?.focus();
+      return;
+    }
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const id = Number(e.currentTarget.dataset.id);
+    if (Number.isNaN(id)) return;
+    const usuario = contribuyenteById.get(id);
+    if (!usuario) return;
+    setUsuarioSeleccionado(usuario);
+    setSelectedIds(new Set([id]));
+    if (e.key === "Enter") {
+      setHistorialYear("all");
+      cargarHistorial(usuario.id_contribuyente, "all", true);
+      setMostrarModalArbitrios(true);
+    }
+  }, [contribuyenteById, cargarHistorial]);
+
   const exportarArbitriosExcel = useCallback(async () => {
     const idContribuyente = Number(usuarioSeleccionado?.id_contribuyente || 0);
     if (!idContribuyente) return;
@@ -2072,15 +2113,15 @@ const anexoCajaPageStyle = `
   
   const ThOrdenable = ({ label, campo }) => {
     const isActive = orden.columna === campo;
-    // CAMBIO: Paleta de colores mejorada para contraste en Dark Mode
-    const bgColor = darkMode ? (isActive ? "#495057" : "#343a40") : (isActive ? "#cff4fc" : "#e2e3e5"); 
-    const textColor = darkMode ? "#fff" : "#000";
-    const borderColor = darkMode ? "#495057" : "#dee2e6";
+    const bgColor = isActive ? "#cff4fc" : "#e2e3e5";
+    const textColor = "#000";
+    const borderColor = "#dee2e6";
 
     return (
-      <th 
+      <th
+        scope="col"
+        aria-sort={isActive ? (orden.direccion === "asc" ? "ascending" : "descending") : "none"}
         style={{
-          cursor: 'pointer', 
           userSelect: 'none', 
           position: 'sticky', 
           top: '0', 
@@ -2088,21 +2129,23 @@ const anexoCajaPageStyle = `
           backgroundColor: bgColor,
           color: textColor,
           boxShadow: `inset 0 -1px 0 ${borderColor}` // Borde interno del color correcto
-        }} 
-        onClick={() => handleSort(campo)}
-      > 
-        <div className="d-flex justify-content-between align-items-center">
-          {label} {isActive && <FaSort size={12}/>}
-        </div> 
-      </th> 
+        }}
+      >
+        <button
+          type="button"
+          className="btn btn-sm border-0 rounded-0 w-100 h-100 d-flex justify-content-between align-items-center fw-bold app-sort-button"
+          onClick={() => handleSort(campo)}
+          aria-label={`Ordenar por ${label}`}
+        >
+          {label} {isActive && <FaSort size={12} aria-hidden="true" />}
+        </button>
+      </th>
     );
   };
 
-  const bgMain = darkMode ? 'bg-dark text-white' : 'bg-light text-dark';
-  // CAMBIO: Color de tarjeta mas oscuro para contraste (#2b3035) y borde sutil
-  const bgCard = darkMode ? 'text-white' : 'bg-white border text-dark';
-  const cardStyle = darkMode ? { backgroundColor: "#2b3035", borderTop: "1px solid #495057", borderRight: "1px solid #495057", borderBottom: "1px solid #495057", borderLeft: "1px solid #495057" } : {};
-  const tableClass = darkMode ? 'table table-dark table-hover mb-0 table-sm small' : 'table table-hover table-bordered mb-0 table-sm small';
+  const bgMain = "bg-light text-dark";
+  const bgCard = "bg-white border text-dark";
+  const tableClass = "table table-hover table-bordered mb-0 table-sm small";
   const realtimeBadge = useMemo(() => ({ label: "Actualizacion: Manual", className: "bg-secondary" }), []);
 
   if (!usuarioSistema) {
@@ -2127,7 +2170,7 @@ const anexoCajaPageStyle = `
           <div className="card-body">
             <h5 className="card-title mb-2">Usuario de brigada detectado</h5>
             <p className="text-muted mb-3">
-              Este panel es para administracion. Para brigada, ingrese desde Inicio al módulo App Campo.
+              Este panel es para administración. Para brigada, ingrese desde Inicio al módulo App Campo.
             </p>
             <div className="d-flex gap-2">
               {typeof onBackToSelector === "function" && (
@@ -2136,7 +2179,7 @@ const anexoCajaPageStyle = `
                 </button>
               )}
               <button className="btn btn-outline-secondary" onClick={handleLogout}>
-                Cerrar sesion
+                Cerrar sesión
               </button>
             </div>
           </div>
@@ -2146,15 +2189,22 @@ const anexoCajaPageStyle = `
   }
 
   return (
-    <div className={`d-flex ${bgMain}`} style={{ height: "100vh", overflow: "hidden" }}>
+    <div className={`municipal-app-shell agua-app-shell d-flex ${bgMain}`}>
       <FlashNotice flash={flash} onClose={() => setFlash(null)} />
+      {sidebarOpen && (
+        <button
+          type="button"
+          className="agua-sidebar-backdrop"
+          onClick={() => setSidebarOpen(false)}
+          aria-label="Cerrar menú de navegación"
+        />
+      )}
       
       <Sidebar 
         setMostrarRegistro={setMostrarRegistro} mostrarRegistro={mostrarRegistro} usuarioSeleccionado={usuarioSeleccionado}
         setMostrarModalPago={setMostrarModalPago} setMostrarModalCierre={setMostrarModalCierre}
         setMostrarModalAuditoria={setMostrarModalAuditoria} setMostrarModalUsuarios={setMostrarModalUsuarios}
         usuarioActivo={usuarioSistema} onLogout={handleLogout}
-        darkMode={darkMode}
         descargarPadron={descargarPadron}
         setMostrarImportar={setMostrarImportar}
         setMostrarModalExportaciones={setMostrarModalExportaciones}
@@ -2168,12 +2218,19 @@ const anexoCajaPageStyle = `
         onRegistrarConteoEfectivo={registrarConteoEfectivoCaja}
         showLegacyCajaMenu={SHOW_LEGACY_CAJA_MENU}
         onFlash={showFlash}
+        mobileOpen={sidebarOpen}
+        onRequestClose={() => setSidebarOpen(false)}
       />
       
-      <div className={`flex-grow-1 d-flex flex-column ${bgMain}`} style={{ overflow: "hidden" }}>
-        <header className="bg-primary text-white p-3 shadow-sm flex-shrink-0 d-flex justify-content-between align-items-center">
-          <h5 className="m-0">Área de Administración Tributaria - Agua</h5>
+      <div className={`agua-main flex-grow-1 d-flex flex-column ${bgMain}`}>
+        <header className="app-module-header app-module-header--agua text-white p-3 shadow-sm flex-shrink-0 d-flex justify-content-between align-items-center gap-2">
           <div className="d-flex align-items-center gap-2">
+            <button type="button" className="btn btn-sm btn-outline-light agua-mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Abrir menú">
+              <FaBars />
+            </button>
+            <h5 className="m-0">Área de Administración Tributaria - Agua</h5>
+          </div>
+          <div className="app-module-header__actions d-flex align-items-center gap-2 flex-wrap">
             <span className={`badge ${realtimeBadge.className}`}>{realtimeBadge.label}</span>
             <button
               className="btn btn-sm btn-outline-light d-flex align-items-center gap-2"
@@ -2190,11 +2247,10 @@ const anexoCajaPageStyle = `
           </div>
         </header>
 
-        {/* CAMBIO: Se pasa darkMode a RegistroForm */}
         {mostrarRegistro && permisos.canManageContribuyentes ? (
           <div className="p-4 overflow-auto">
-            <Suspense fallback={<LazyPanelFallback darkMode={darkMode} label="Cargando formulario de registro..." />}>
-              <LazyRegistroForm onGuardar={() => { recargarTodo(); setMostrarRegistro(false); }} darkMode={darkMode} canDeleteCalles={permisos.canDeleteCalles} onFlash={showFlash} />
+            <Suspense fallback={<LazyPanelFallback label="Cargando formulario de registro..." />}>
+              <LazyRegistroForm onGuardar={() => { recargarTodo(); setMostrarRegistro(false); }} canDeleteCalles={permisos.canDeleteCalles} onFlash={showFlash} />
             </Suspense>
           </div>
         ) : (
@@ -2210,7 +2266,6 @@ const anexoCajaPageStyle = `
                 eliminarUsuarioCompleto={eliminarUsuarioCompleto} 
                 abrirModalActaCorte={abrirModalActaCorte}
                 generandoActaCorte={generandoActaCorte}
-                darkMode={darkMode} 
                 selectedIds={selectedIds}
                 setMostrarModalDeudaMasiva={setMostrarModalDeudaMasiva}
                 permisos={permisos}
@@ -2226,13 +2281,12 @@ const anexoCajaPageStyle = `
             <div className="mx-3 my-3 flex-shrink-0">
               <DashboardStats
                 triggerUpdate={refreshDashboard}
-                darkMode={darkMode}
                 totalsOverride={dashboardTotals}
               />
             </div>
             
             {/* TABLA PRINCIPAL */}
-            <div className={`flex-grow-1 mx-3 mb-3 shadow-sm d-flex flex-column ${bgCard}`} style={{ flexBasis: "45%", overflow: "hidden", ...cardStyle }}>
+            <div className={`flex-grow-1 mx-3 mb-3 shadow-sm d-flex flex-column ${bgCard}`} style={{ flexBasis: "45%", overflow: "hidden" }}>
               <div className="bg-dark text-white p-2 small fw-bold flex-shrink-0 d-flex justify-content-between align-items-center">
                 <span>RELACION DE CONTRIBUYENTES</span>
                 <div className="d-flex align-items-center gap-3">
@@ -2271,7 +2325,7 @@ const anexoCajaPageStyle = `
                             <td colSpan="7" style={{ height: virtualRange.topSpacerHeight, padding: 0, border: "none" }}></td>
                           </tr>
                         )}
-                        {visibleContribuyentes.map((c) => (
+                        {visibleContribuyentes.map((c, visibleIndex) => (
                           <ContribuyenteRow
                             key={c.id_contribuyente}
                             c={c}
@@ -2279,6 +2333,9 @@ const anexoCajaPageStyle = `
                             onMouseDown={handleRowMouseDown}
                             onClick={handleRowClick}
                             onDoubleClick={handleRowDoubleClick}
+                            onKeyDown={handleRowKeyDown}
+                            selected={selectedIds.has(c.id_contribuyente)}
+                            focusable={selectedIds.has(c.id_contribuyente) || (selectedIds.size === 0 && visibleIndex === 0)}
                             rowHeight={rowHeight}
                           />
                         ))}
@@ -2298,15 +2355,13 @@ const anexoCajaPageStyle = `
         )}
       </div>
 
-      {/* CAMBIO: Se pasa el prop darkMode a TODOS los modales */}
-      {mostrarModalDeuda && usuarioSeleccionado && (<ModalDeuda usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalDeuda(false)} alGuardar={recargarTodo} darkMode={darkMode} onFlash={showFlash} />)}
+      {mostrarModalDeuda && usuarioSeleccionado && (<ModalDeuda usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalDeuda(false)} alGuardar={recargarTodo} onFlash={showFlash} />)}
       {SHOW_LEGACY_CAJA_MENU && mostrarModalPago && usuarioSeleccionado && (
         <ModalPago
           usuario={{...usuarioSeleccionado, recibos: historial}} // Pasamos el historial actual como recibos
           usuarioSistema={usuarioSistema}
           cerrarModal={() => setMostrarModalPago(false)}
           alGuardar={recargarTodo}
-          darkMode={darkMode}
           onImprimirAnexo={(datos) => setDatosAnexoCajaImprimir(datos)}
           onFlash={showFlash}
         />
@@ -2314,7 +2369,6 @@ const anexoCajaPageStyle = `
       {mostrarModalArbitrios && usuarioSeleccionado && (
         <ModalArbitriosDetalle
           cerrarModal={() => setMostrarModalArbitrios(false)}
-          darkMode={darkMode}
           usuarioSeleccionado={usuarioSeleccionado}
           historialYear={historialYear}
           yearsForSelect={yearsForSelect}
@@ -2324,67 +2378,62 @@ const anexoCajaPageStyle = `
           exportandoExcel={exportandoArbitriosExcel}
         />
       )}
-      {mostrarModalEliminar && usuarioSeleccionado && (<ModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} darkMode={darkMode} onFlash={showFlash} />)}
+      {mostrarModalEliminar && usuarioSeleccionado && (<ModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} onFlash={showFlash} />)}
       {mostrarModalCierre && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando reporte de cobranzas..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando reporte de cobranzas..." />}>
           <LazyModalCierre
             cerrarModal={() => setMostrarModalCierre(false)}
-            darkMode={darkMode}
             origen="ventanilla"
             usuarioSistema={usuarioSistema}
             onFlash={showFlash}
           />
         </Suspense>
       )}
-      {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} darkMode={darkMode} onFlash={showFlash} />)}
+      {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} onFlash={showFlash} />)}
       {mostrarModalAuditoria && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando auditoria..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando auditoria..." />}>
           <LazyModalAuditoria
             cerrarModal={() => setMostrarModalAuditoria(false)}
-            darkMode={darkMode}
             canUndo={permisos.canSuperAdmin}
             onUndoApplied={() => cargarContribuyentes(0, { forceFresh: true })}
           />
         </Suspense>
       )}
       {mostrarModalUsuarios && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando gestion de usuarios..." />}>
-          <LazyModalUsuarios cerrarModal={() => setMostrarModalUsuarios(false)} usuarioActivo={usuarioSistema} darkMode={darkMode} onFlash={showFlash} />
+        <Suspense fallback={<LazyModalFallback label="Cargando gestion de usuarios..." />}>
+          <LazyModalUsuarios cerrarModal={() => setMostrarModalUsuarios(false)} usuarioActivo={usuarioSistema} onFlash={showFlash} />
         </Suspense>
       )}
       {mostrarModalCampo && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando bandeja de campo..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando bandeja de campo..." />}>
           <LazyModalCampoSolicitudes
             cerrarModal={() => setMostrarModalCampo(false)}
-            darkMode={darkMode}
             onAplicado={recargarTodo}
             onFlash={showFlash}
           />
         </Suspense>
       )}
       {mostrarModalFondoInicio && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando configuracion del fondo..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando configuracion del fondo..." />}>
           <LazyModalFondoInicio
             cerrarModal={() => setMostrarModalFondoInicio(false)}
-            darkMode={darkMode}
             onFlash={showFlash}
           />
         </Suspense>
       )}
       {mostrarModalCorteConexion && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando corte y reconexion..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando corte y reconexion..." />}>
           <LazyModalCorteConexion
             cerrarModal={() => setMostrarModalCorteConexion(false)}
             contribuyentes={contribuyentes}
             loading={registrandoCorteConexion}
             onConfirmar={registrarCorteConEvidencia}
-            darkMode={darkMode}
             onFlash={showFlash}
           />
         </Suspense>
       )}
       {mostrarModalReporteCortes && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando reporte de cortes..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando reporte de cortes..." />}>
           <LazyModalReporteCortes
             cerrarModal={() => setMostrarModalReporteCortes(false)}
             contribuyentes={contribuyentes}
@@ -2420,13 +2469,12 @@ const anexoCajaPageStyle = `
               setMostrarModalReporteCortes(false);
             }}
             estadoObjetivo={reporteEstadoConexion}
-            darkMode={darkMode}
             onFlash={showFlash}
           />
         </Suspense>
       )}
       {mostrarModalActaCorte && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando actas de corte..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando actas de corte..." />}>
           <LazyModalActaCorteSelector
             cerrarModal={() => setMostrarModalActaCorte(false)}
             contribuyentes={contribuyentes}
@@ -2436,16 +2484,14 @@ const anexoCajaPageStyle = `
               setMostrarModalActaCorte(false);
               imprimirActaCorte(ids);
             }}
-            darkMode={darkMode}
             onFlash={showFlash}
           />
         </Suspense>
       )}
       {mostrarModalExportaciones && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando exportaciones..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando exportaciones..." />}>
           <LazyModalExportaciones
             cerrarModal={() => setMostrarModalExportaciones(false)}
-            darkMode={darkMode}
             onBackup={descargarBackup}
             onFlash={showFlash}
           />
@@ -2454,7 +2500,7 @@ const anexoCajaPageStyle = `
       
       {/* Modales Masivos */}
       {mostrarModalMasivo && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando impresion masiva..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando impresion masiva..." />}>
           <LazyModalImpresionMasiva
             cerrarModal={() => setMostrarModalMasivo(false)}
             alConfirmar={(datos) => { setDatosMasivos(datos); }}
@@ -2464,23 +2510,21 @@ const anexoCajaPageStyle = `
                 : Array.from(selectedIds)
             }
             modoOperacion={modalImpresionModo}
-            darkMode={darkMode}
             onFlash={showFlash}
           />
         </Suspense>
       )}
       {mostrarImportar && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando importacion..." />}>
-          <LazyModalImportar cerrarModal={() => setMostrarImportar(false)} alTerminar={recargarTodo} darkMode={darkMode} />
+        <Suspense fallback={<LazyModalFallback label="Cargando importacion..." />}>
+          <LazyModalImportar cerrarModal={() => setMostrarImportar(false)} alTerminar={recargarTodo} />
         </Suspense>
       )}
       {mostrarModalDeudaMasiva && (
-        <Suspense fallback={<LazyModalFallback darkMode={darkMode} label="Cargando deuda masiva..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando deuda masiva..." />}>
           <LazyModalDeudaMasiva 
               cerrarModal={() => setMostrarModalDeudaMasiva(false)} 
               alGuardar={recargarTodo} 
               idsSeleccionados={Array.from(selectedIds)} 
-              darkMode={darkMode}
               onFlash={showFlash}
           />
         </Suspense>

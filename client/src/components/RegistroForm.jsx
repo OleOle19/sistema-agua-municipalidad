@@ -3,7 +3,7 @@ import api from "../api";
 import ModalCalles from "./ModalCalles";
 import { FaSave } from "react-icons/fa";
 
-const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false, onFlash = null }) => {
+const RegistroForm = ({ onGuardar, canDeleteCalles = false, onFlash = null }) => {
   const [formData, setFormData] = useState({
     codigo_municipal: "",
     dni_ruc: "",
@@ -21,12 +21,12 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false, onFlash = 
   const [mostrarModalCalles, setMostrarModalCalles] = useState(false);
   const [adjuntos, setAdjuntos] = useState([]);
 
-  const cardClass = `card shadow-sm ${darkMode ? "text-white border-secondary" : "bg-light"}`;
-  const cardStyle = darkMode ? { backgroundColor: "#2b3035" } : {};
-  const headerClass = `card-header ${darkMode ? "bg-dark text-white border-secondary" : "bg-primary text-white"}`;
-  const inputClass = `form-control ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const selectClass = `form-select ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const labelClass = `form-label fw-bold small ${darkMode ? "text-white" : "text-dark"}`;
+  const cardClass = "card shadow-sm bg-light";
+  const cardStyle = {};
+  const headerClass = "card-header bg-primary text-white";
+  const inputClass = "form-control";
+  const selectClass = "form-select";
+  const labelClass = "form-label fw-bold small text-dark";
   const showFlash = (type, text) => {
     if (typeof onFlash === "function") onFlash(type, text);
   };
@@ -129,14 +129,14 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false, onFlash = 
       <div className={headerClass}>
         <div className="d-flex justify-content-between align-items-center">
           <h5 className="mb-0 d-flex align-items-center"><FaSave className="me-2" /> Nuevo Registro de Contribuyente</h5>
-          <button className="btn btn-sm btn-outline-light" onClick={() => setMostrarModalCalles(true)}>+ Gestionar Calles</button>
+          <button type="button" className="btn btn-sm btn-outline-light" onClick={() => setMostrarModalCalles(true)}>+ Gestionar Calles</button>
         </div>
       </div>
       <div className="card-body p-4">
-        {mostrarModalCalles && <ModalCalles cerrarModal={() => { setMostrarModalCalles(false); cargarCalles(); }} darkMode={darkMode} canDeleteCalles={canDeleteCalles} onFlash={showFlash} />}
+        {mostrarModalCalles && <ModalCalles cerrarModal={() => { setMostrarModalCalles(false); cargarCalles(); }} canDeleteCalles={canDeleteCalles} onFlash={showFlash} />}
 
         <form onSubmit={handleSubmit}>
-          <h6 className={`border-bottom pb-2 mb-3 ${darkMode ? "border-secondary" : "text-primary"}`}>1. Datos Personales</h6>
+          <h6 className="border-bottom pb-2 mb-3 text-primary">1. Datos Personales</h6>
           <div className="row g-3 mb-3">
             <div className="col-md-3">
               <label className={labelClass}>DNI / RUC</label>
@@ -182,7 +182,7 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false, onFlash = 
             </div>
           </div>
 
-          <h6 className={`border-bottom pb-2 mb-3 ${darkMode ? "border-secondary" : "text-primary"}`}>2. Dirección del Predio</h6>
+          <h6 className="border-bottom pb-2 mb-3 text-primary">2. Dirección del Predio</h6>
           <div className="row g-3 mb-4">
             <div className="col-md-6">
               <label className={labelClass}>Calle</label>
@@ -200,7 +200,7 @@ const RegistroForm = ({ onGuardar, darkMode, canDeleteCalles = false, onFlash = 
             <div className="col-md-2"><label className={labelClass}>Lt.</label><input type="text" className={inputClass} name="lote" value={formData.lote} onChange={handleChange} /></div>
           </div>
 
-          <h6 className={`border-bottom pb-2 mb-3 ${darkMode ? "border-secondary" : "text-primary"}`}>3. Adjuntos del Contribuyente</h6>
+          <h6 className="border-bottom pb-2 mb-3 text-primary">3. Adjuntos del Contribuyente</h6>
           <div className="mb-3">
             <label className={labelClass}>Documentos / fotos (opcional)</label>
             <input

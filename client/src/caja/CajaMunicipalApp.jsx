@@ -3,6 +3,7 @@ import { useReactToPrint } from "react-to-print";
 import { FaBolt, FaCashRegister, FaChevronLeft, FaChevronRight, FaSignOutAlt, FaSyncAlt, FaTint } from "react-icons/fa";
 import api from "../api";
 import LoginPage from "../components/LoginPage";
+import FlashNotice from "../components/FlashNotice";
 import ReciboAnexoCaja from "../components/ReciboAnexoCaja";
 import cajaLuzApi from "./apiCajaLuz";
 import ReciboLuz from "../luz/ReciboLuz";
@@ -713,6 +714,16 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const timer = setTimeout(() => setFlash(null), 5000);
     return () => clearTimeout(timer);
   }, [flash]);
+
+  useEffect(() => {
+    const originalAlert = window.alert;
+    window.alert = (message) => {
+      showFlash("warning", String(message || "").trim() || "Aviso del sistema.");
+    };
+    return () => {
+      window.alert = originalAlert;
+    };
+  }, [showFlash]);
 
   const handleApiError = useCallback((err, fallback) => {
     const status = Number(err?.response?.status || 0);
@@ -1562,8 +1573,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash("warning", "Debe indicar un motivo para anular el pago.");
       return;
     }
-    const confirmado = window.confirm(`Anular todos los pagos activos del periodo ${periodo} para volver a registrarlo correctamente?`);
-    if (!confirmado) return;
     const idContribuyente = Number(
       selectedContribuyenteAgua?.id_contribuyente
       || row?.id_contribuyente
@@ -1779,12 +1788,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash("warning", "Seleccione al menos un mes con monto válido para cobrar.");
       return;
     }
-    const confirm = window.confirm(
-      esCompensacion
-        ? `Registrar compensacion por ${formatMoney(totalCobroDirectoAgua)} con fecha ${fechaPago} y dejarla fuera del reporte de caja?`
-        : `Registrar cobro por ${formatMoney(totalCobroDirectoAgua)} con ${metodoConfig.label} y abrir impresion?`
-    );
-    if (!confirm) return;
     setCobrandoDirectoAgua(true);
     try {
       const res = await api.post("/pagos", {
@@ -1906,9 +1909,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash("warning", "Seleccione al menos un mes con monto válido para cobrar en luz.");
       return;
     }
-
-    const confirmado = window.confirm(`Registrar cobro de luz por ${formatMoney(totalCobroDirectoLuz)} con ${metodoConfig.label} y abrir impresion?`);
-    if (!confirmado) return;
 
     setCobrandoDirectoLuz(true);
     try {
@@ -2209,8 +2209,9 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }
 
   return (
-    <div className="d-flex flex-column min-vh-100 bg-light">
-      <header className="bg-warning-subtle border-bottom p-3 d-flex justify-content-between align-items-center gap-2">
+    <div className="municipal-module-page d-flex flex-column min-vh-100 bg-light">
+      <FlashNotice flash={flash} onClose={() => setFlash(null)} />
+      <header className="app-module-header app-module-header--caja border-bottom p-3 d-flex justify-content-between align-items-center gap-2">
         <div>
           <h5 className="m-0 d-flex align-items-center gap-2">
             <FaCashRegister className="text-primary" />
@@ -2220,27 +2221,21 @@ function CajaMunicipalApp({ onBackToSelector }) {
             Usuario: <strong>{usuarioSistema?.nombre || usuarioSistema?.username}</strong> | {permisos.roleLabel}
           </div>
         </div>
-        <div className="d-flex align-items-center gap-2">
+        <div className="app-module-header__actions d-flex align-items-center gap-2 flex-wrap">
           <img src="/logo.png" alt="Logo municipal" style={{ width: "42px", height: "42px", objectFit: "contain" }} className="rounded border bg-white p-1" />
           {typeof onBackToSelector === "function" && (
             <button className="btn btn-outline-secondary btn-sm" onClick={onBackToSelector}>
-              Cambiar modulo
+              Cambiar módulo
             </button>
           )}
           <button className="btn btn-outline-danger btn-sm d-flex align-items-center gap-2" onClick={logout}>
             <FaSignOutAlt />
-            Cerrar sesion
+            Cerrar sesión
           </button>
         </div>
       </header>
 
       <div className="container-fluid py-3 flex-grow-1">
-        {flash && (
-          <div className={`alert alert-${flash.type === "danger" ? "danger" : flash.type === "warning" ? "warning" : "success"} py-2`}>
-            {flash.text}
-          </div>
-        )}
-
         <ul className="nav nav-tabs">
           <li className="nav-item">
             <button className={`nav-link ${tab === "agua" ? "active" : ""}`} onClick={() => setTab("agua")}>
@@ -2619,7 +2614,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   </table>
                 </div>
                 <div className="mt-3">
-                  <label className="form-label form-label-sm mb-1">Observacion de cierre</label>
+                  <label className="form-label form-label-sm mb-1">Observación de cierre</label>
                   <textarea
                     className="form-control form-control-sm"
                     rows={2}
@@ -2737,7 +2732,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                     <div className="alert alert-warning py-2 small mb-2">
                       La compensacion cancelara la deuda y quedara en auditoria, pero no entrara al reporte de caja.
                     </div>
-                    <label className="form-label form-label-sm mb-1">Motivo de la compensacion</label>
+                    <label className="form-label form-label-sm mb-1">Motivo de la compensación</label>
                     <textarea
                       className="form-control form-control-sm"
                       rows={2}
@@ -3101,7 +3096,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   <div className="fw-semibold small mb-2">Medio de pago</div>
                   <div className="row g-2 align-items-end">
                     <div className="col-sm-4">
-                      <label className="form-label form-label-sm mb-1">Metodo</label>
+                      <label className="form-label form-label-sm mb-1">Método</label>
                       <select
                         className="form-select form-select-sm"
                         value={metodoPagoLuz}
@@ -3131,7 +3126,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       />
                     </div>
                     <div className="col-sm-4">
-                      <label className="form-label form-label-sm mb-1">Confirmacion</label>
+                      <label className="form-label form-label-sm mb-1">Confirmación</label>
                       <select
                         className="form-select form-select-sm"
                         value={estadoConfirmacionPagoLuz}
@@ -3318,7 +3313,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
         <Suspense fallback={<LazyModalFallback label="Cargando reporte de caja..." />}>
           <ModalCierre
             cerrarModal={() => setMostrarReporteCajaAgua(false)}
-            darkMode={false}
             origen="caja"
             usuarioSistema={usuarioSistema}
           />

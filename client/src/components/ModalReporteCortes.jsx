@@ -118,7 +118,6 @@ const ModalReporteCortes = ({
   contribuyentes = [],
   selectedIds = [],
   onImprimir,
-  darkMode,
   estadoObjetivo = ESTADOS_CONEXION.CORTADO,
   canUseProyeccionFutura = true
 }) => {
@@ -478,9 +477,9 @@ const ModalReporteCortes = ({
     }
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
-  const inputClass = darkMode ? "form-select bg-dark text-white border-secondary" : "form-select";
-  const cardClass = darkMode ? "border border-secondary rounded p-2 bg-dark text-white" : "border rounded p-2";
+  const modalStyle = {};
+  const inputClass = "form-select";
+  const cardClass = "border rounded p-2";
   const fechaActual = currentDateValue();
   const mesActual = currentMonthValue();
   const anioActual = currentYearValue();
@@ -491,7 +490,7 @@ const ModalReporteCortes = ({
         <div className="modal-content" style={modalStyle}>
           <div className="modal-header">
             <h5 className="modal-title"><FaCut className="me-2" /> {meta.titulo}</h5>
-            <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
+            <button type="button" className="btn-close" onClick={cerrarModal}></button>
           </div>
 
           <div className="modal-body">
@@ -714,7 +713,7 @@ const ModalReporteCortes = ({
             </div>
 
             <div className="table-responsive" style={{ maxHeight: "240px" }}>
-              <table className={`table table-sm ${darkMode ? "table-dark" : "table-striped"}`}>
+              <table className="table table-sm table-striped">
                 <thead>
                   <tr>
                     <th>#</th>

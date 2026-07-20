@@ -82,7 +82,7 @@ const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) =>
             <th>Cod. Mun.</th>
             <th>Contribuyente</th>
             <th>DNI</th>
-            <th>Direccion</th>
+            <th>Dirección</th>
             <th>Meses Deuda</th>
             <th>Deuda Total</th>
             <th>Abono Total</th>

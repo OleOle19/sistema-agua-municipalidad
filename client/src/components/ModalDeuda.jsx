@@ -23,7 +23,7 @@ const validarPeriodoRecibo = (anioInput, mesInput) => {
   return { ok: true, anio, mes };
 };
 
-const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null }) => {
+const ModalDeuda = ({ usuario, cerrarModal, alGuardar, onFlash = null }) => {
   const periodoInicial = getPeriodoActual();
   const [anio, setAnio] = useState(periodoInicial.anio);
   const [mes, setMes] = useState(periodoInicial.mes);
@@ -125,10 +125,10 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null 
     }
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
-  const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-primary text-white"}`;
-  const inputClass = `form-control ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const selectClass = `form-select ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
+  const modalStyle = {};
+  const headerClass = "modal-header bg-primary text-white";
+  const inputClass = "form-control";
+  const selectClass = "form-select";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -136,7 +136,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null 
         <div className="modal-content" style={modalStyle}>
           <div className={headerClass}>
             <h5 className="modal-title">Registrar Deuda Individual</h5>
-            <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
+            <button type="button" className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
           <div className="modal-body">
             <p className="mb-3">
@@ -159,7 +159,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null 
               </div>
             </div>
 
-            <div className={`mt-3 border rounded p-2 ${darkMode ? "bg-dark border-secondary" : "bg-light"}`}>
+            <div className="mt-3 border rounded p-2 bg-light">
               <div className="small fw-bold text-center text-primary">Servicios a Cobrar</div>
 
               <div className="d-flex align-items-center justify-content-between mt-2 gap-2">
@@ -205,7 +205,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null 
               <div className="text-end fw-bold mt-2">Total a cobrar: S/ {totalServicios.toFixed(2)}</div>
             </div>
           </div>
-          <div className={`modal-footer ${darkMode ? "border-secondary" : ""}`}>
+          <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={cerrarModal}>Cancelar</button>
             <button type="button" className="btn btn-success" onClick={guardarDeuda} disabled={cargando}>
               {cargando ? "Procesando..." : "Generar Recibo"}

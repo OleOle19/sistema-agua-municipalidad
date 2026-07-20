@@ -225,20 +225,20 @@
     }
     if (el.moduleDescription) {
       el.moduleDescription.textContent = aguaActive
-        ? "Agua operativo: busqueda, registro en campo y cola offline."
+        ? "Agua operativo: búsqueda, registro en campo y cola offline."
         : "Luz operativo: corroboracion de ID y visitas mensuales de lectura.";
     }
     if (el.heroTitle) el.heroTitle.textContent = "App Campo - " + currentModuleLabel();
     if (el.heroSubtitle) {
       el.heroSubtitle.textContent = aguaActive
-        ? "Registro de cambios desde brigada hacia la bandeja de revision del administrador."
+        ? "Registro de cambios desde brigada hacia la bandeja de revisión del administrador."
         : "Brigada luz: corroboracion de ID y registro mensual de lectura en campo.";
     }
     if (el.authTitle) el.authTitle.textContent = "Ingreso de brigada - " + currentModuleLabel();
     if (el.toolbarTitle) {
       el.toolbarTitle.textContent = aguaActive
         ? "Reporte brigada - orden de cortes (Agua)"
-        : "Reporte brigada - modulo Luz";
+        : "Reporte brigada - módulo Luz";
     }
     if (Array.isArray(el.aguaOnlyNodes)) {
       el.aguaOnlyNodes.forEach((node) => {
@@ -351,7 +351,7 @@
     if (!el.tipoSolicitudHint) return;
     if (el.referenciaDireccionRow) el.referenciaDireccionRow.classList.toggle("hidden", !isAltaPredioMode());
     if (isAltaDireccionMode()) {
-      el.tipoSolicitudHint.textContent = "Registra una direccion secundaria del mismo contribuyente (no reemplaza la direccion principal).";
+      el.tipoSolicitudHint.textContent = "Registra una dirección secundaria del mismo contribuyente (no reemplaza la dirección principal).";
       return;
     }
     if (isAltaPredioMode()) {
@@ -502,9 +502,9 @@
     if (!raw) return "";
     if (raw === "NO_VISITADO") return "No visitado";
     if (raw === "NO_VERIFICADO") return "No verificado";
-    if (raw === "OBSERVACION") return "Con observacion";
-    if (raw === "NO_VISITADO_Y_OBSERVACION") return "No visitado + observacion";
-    if (raw.includes("NO_VERIFICADO") && raw.includes("OBSERVACION")) return "No verificado + observacion";
+    if (raw === "OBSERVACION") return "Con observación";
+    if (raw === "NO_VISITADO_Y_OBSERVACION") return "No visitado + observación";
+    if (raw.includes("NO_VERIFICADO") && raw.includes("OBSERVACION")) return "No verificado + observación";
     if (raw.includes("NO_VERIFICADO") && raw.includes("NO_VISITADO")) return "No visitado + no verificado";
     return raw;
   }
@@ -571,7 +571,7 @@
   function renderSeguimiento() {
     if (!el.seguimientoList) return;
     if (!isAguaModule()) {
-      el.seguimientoList.innerHTML = '<p class="muted">Seguimiento de agua no aplica en submodulo Luz.</p>';
+      el.seguimientoList.innerHTML = '<p class="muted">Seguimiento de agua no aplica en submódulo Luz.</p>';
       return;
     }
     const rows = Array.isArray(state.seguimientoRows) ? state.seguimientoRows : [];
@@ -580,11 +580,11 @@
       return;
     }
     if (!state.token) {
-      el.seguimientoList.innerHTML = '<p class="muted">Inicia sesion para ver seguimiento.</p>';
+      el.seguimientoList.innerHTML = '<p class="muted">Inicia sesión para ver seguimiento.</p>';
       return;
     }
     if (!state.online) {
-      el.seguimientoList.innerHTML = '<p class="muted">Sin internet. El seguimiento requiere conexion.</p>';
+      el.seguimientoList.innerHTML = '<p class="muted">Sin internet. El seguimiento requiere conexión.</p>';
       return;
     }
     if (!rows.length) {
@@ -668,7 +668,7 @@
   async function openSeguimientoFoto(idSolicitud) {
     if (!isAguaModule()) return;
     if (!idSolicitud) return;
-    if (!state.token) { setStatus("Debes iniciar sesion.", "warning"); return; }
+    if (!state.token) { setStatus("Debes iniciar sesión.", "warning"); return; }
     if (!state.online) { setStatus("Sin internet.", "warning"); return; }
     try {
       const data = await api(`/campo/seguimiento/${Number(idSolicitud)}/foto`, { headers: authHeaders() });
@@ -864,7 +864,7 @@
     el.authSection.classList.toggle("hidden", logged);
     el.appSection.classList.toggle("hidden", !logged);
     if (logged) {
-      el.userInfo.textContent = (state.user.nombre || "Sin nombre") + " | " + (state.user.rol || "SIN_ROL") + " | Submodulo: " + currentModuleLabel();
+      el.userInfo.textContent = (state.user.nombre || "Sin nombre") + " | " + (state.user.rol || "SIN_ROL") + " | Submódulo: " + currentModuleLabel();
     }
     if (!logged) {
       state.selectedId = 0;
@@ -887,7 +887,7 @@
       renderLuzZoneFilter();
       resetLuzForm();
       parkLuzFormHidden();
-      if (el.queueList) el.queueList.innerHTML = '<p class="muted">Inicia sesion para ver pendientes.</p>';
+      if (el.queueList) el.queueList.innerHTML = '<p class="muted">Inicia sesión para ver pendientes.</p>';
     }
     renderHealthPanel();
     updateOperationalLock();
@@ -898,7 +898,7 @@
       if (el.offlineInfo) {
         el.offlineInfo.textContent =
           "Conexion: " + (state.online ? "Online" : "Offline") +
-          " | Submodulo Luz operativo | Registro: corroboracion de ID + visita mensual.";
+          " | Submódulo Luz operativo | Registro: corroboración de ID + visita mensual.";
       }
       renderHealthPanel();
       updateOperationalLock();
@@ -1227,7 +1227,7 @@
       const d = document.createElement("div");
       d.className = "muted";
       d.textContent = q.length >= 1
-        ? "Sin resultados para esa busqueda."
+        ? "Sin resultados para esa búsqueda."
         : "Escribe ID contribuyente, nombre o zona para buscar.";
       el.luzSearchResults.appendChild(d);
       if (el.luzSelectedInfo) el.luzSelectedInfo.textContent = "";
@@ -1295,11 +1295,11 @@
   function renderQueue() {
     if (!el.queueList) return;
     if (!isAguaModule()) {
-      el.queueList.innerHTML = '<p class="muted">Cola offline de agua no aplica en submodulo Luz.</p>';
+      el.queueList.innerHTML = '<p class="muted">Cola offline de agua no aplica en submódulo Luz.</p>';
       return;
     }
     if (!(state.user && state.token)) {
-      el.queueList.innerHTML = '<p class="muted">Inicia sesion para ver pendientes.</p>';
+      el.queueList.innerHTML = '<p class="muted">Inicia sesión para ver pendientes.</p>';
       return;
     }
     if (!state.queueItems.length) {
@@ -1386,7 +1386,7 @@
       const item = document.createElement("article");
       item.className = "result-item" + (isSelected ? " is-selected" : "");
       const t = document.createElement("strong"); t.textContent = (c.codigo_municipal || "SIN-CODIGO") + " - " + (c.nombre_completo || "Sin nombre");
-      const d = document.createElement("div"); d.className = "meta"; d.textContent = c.direccion_completa || c.nombre_calle || "Sin direccion";
+      const d = document.createElement("div"); d.className = "meta"; d.textContent = c.direccion_completa || c.nombre_calle || "Sin dirección";
       const direccionAlterna = String(c.direccion_alterna || "").trim();
       const dAlt = document.createElement("div");
       dAlt.className = "meta";
@@ -1488,7 +1488,7 @@
       footer.className = "results-footer";
       const meta = document.createElement("div");
       meta.className = "meta";
-      const truncMsg = state.searchTruncated ? " Se alcanzo el limite de busqueda; refine para ver mas." : "";
+      const truncMsg = state.searchTruncated ? " Se alcanzó el límite de búsqueda; refine para ver más." : "";
       meta.textContent = "Mostrando " + shown + " de " + total + "." + truncMsg;
       footer.appendChild(meta);
       if (total > shown) {
@@ -1565,7 +1565,7 @@
         state.searchTruncated = false;
         renderResults();
         closeForm();
-        setStatus("Submodulo Luz requiere internet para buscar y registrar visitas.", "warning", 4500);
+        setStatus("El submódulo Luz requiere internet para buscar y registrar visitas.", "warning", 4500);
         return;
       }
       try {
@@ -1679,10 +1679,10 @@
 
   async function syncSnapshot(silent) {
     if (!isAguaModule()) {
-      if (!silent) setStatus("Snapshot offline disponible solo para submodulo Agua.", "warning", 4500);
+      if (!silent) setStatus("Snapshot offline disponible sólo para el submódulo Agua.", "warning", 4500);
       return;
     }
-    if (!state.token) { if (!silent) setStatus("Debes iniciar sesion para sincronizar snapshot.", "warning"); return; }
+    if (!state.token) { if (!silent) setStatus("Debes iniciar sesión para sincronizar snapshot.", "warning"); return; }
     if (!state.online) { if (!silent) setStatus("Sin internet.", "warning"); return; }
     el.syncOfflineBtn.disabled = true;
     try {
@@ -1757,7 +1757,7 @@
 
   async function sendSolicitud(payload) {
     if (!isAguaModule()) {
-      throw new Error("Submodulo Luz aun no tiene endpoint de solicitudes de campo.");
+      throw new Error("El submódulo Luz aún no tiene endpoint de solicitudes de campo.");
     }
     return api("/campo/solicitudes", {
       method: "POST",
@@ -1827,11 +1827,11 @@
   }
   async function submitLuzVisita() {
     if (!(state.user && state.token)) {
-      setStatus("Debes iniciar sesion.", "warning");
+      setStatus("Debes iniciar sesión.", "warning");
       return;
     }
     if (!state.online) {
-      setStatus("Submodulo Luz requiere internet para registrar visitas.", "warning", 4500);
+      setStatus("El submódulo Luz requiere internet para registrar visitas.", "warning", 4500);
       return;
     }
     const s = selectedLuzSuministro();
@@ -1903,10 +1903,10 @@
       return;
     }
     if (!isAguaModule()) {
-      setStatus("Formulario de solicitudes solo activo en submodulo Agua por ahora.", "warning", 5000);
+      setStatus("El formulario de solicitudes sólo está activo en el submódulo Agua por ahora.", "warning", 5000);
       return;
     }
-    if (!(state.user && state.token)) { setStatus("Debes iniciar sesion.", "warning"); return; }
+    if (!(state.user && state.token)) { setStatus("Debes iniciar sesión.", "warning"); return; }
     if (requiresFreshSnapshotForOfflineWork()) {
       setStatus("Operacion bloqueada offline: sincroniza snapshot reciente antes de registrar.", "warning", 5000);
       return;
@@ -1932,7 +1932,7 @@
 
     if (tipoSolicitud === TIPOS_SOLICITUD.ALTA_PREDIO || tipoSolicitud === TIPOS_SOLICITUD.ALTA_PREDIO_TEMPORAL) {
       if (!direccionVerificada && !referenciaDireccion && !fotoFachada) {
-        setStatus("Ingresa una direccion o referencia, o toma una foto del predio.", "warning", 5000);
+        setStatus("Ingresa una dirección o referencia, o toma una foto del predio.", "warning", 5000);
         if (el.referenciaDireccion) el.referenciaDireccion.focus();
         return;
       }
@@ -1974,7 +1974,7 @@
       const ref = {
         id_contribuyente: 0,
         codigo_municipal: "PREDIO-NUEVO",
-        nombre_completo: direccionVerificada || referenciaDireccion || "Predio sin direccion"
+        nombre_completo: direccionVerificada || referenciaDireccion || "Predio sin dirección"
       };
           await enqueue(payloadPredio, ref, false, "offline");
           setStatus("Sin internet. Predio guardado en cola offline.", "warning", 5000);
@@ -1984,7 +1984,7 @@
           const ref = {
             id_contribuyente: 0,
             codigo_municipal: "PREDIO-NUEVO",
-            nombre_completo: direccionVerificada || referenciaDireccion || "Predio sin direccion"
+            nombre_completo: direccionVerificada || referenciaDireccion || "Predio sin dirección"
           };
           await enqueue(payloadPredio, ref, false, err.message || "pendiente");
           setStatus("No se pudo enviar. Predio guardado en cola offline.", "warning", 6000);
@@ -2020,7 +2020,7 @@
 
     const key = makeIdempotencyKey("solicitud", c.id_contribuyente);
     if (tipoSolicitud === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA && !direccionVerificada) {
-      setStatus("Para direccion adicional debes registrar una direccion nueva.", "warning", 5000);
+      setStatus("Para dirección adicional debes registrar una dirección nueva.", "warning", 5000);
       return;
     }
     const payload = {
@@ -2085,12 +2085,12 @@
 
   async function syncQueue(manual) {
     if (!isAguaModule()) {
-      if (manual) setStatus("Cola offline disponible solo para submodulo Agua.", "warning", 4500);
+      if (manual) setStatus("La cola offline está disponible sólo para el submódulo Agua.", "warning", 4500);
       return;
     }
     if (state.syncing) return;
     if (!state.online) { if (manual) setStatus("Sin internet.", "warning"); return; }
-    if (!state.token) { if (manual) setStatus("Debes iniciar sesion.", "warning"); return; }
+    if (!state.token) { if (manual) setStatus("Debes iniciar sesión.", "warning"); return; }
     state.syncing = true;
     state.lastQueueSyncAt = new Date().toISOString();
     state.lastQueueSyncError = "";
@@ -2128,7 +2128,7 @@
               last_attempt_at: new Date().toISOString(),
               last_error: err.message || "reintento_diferido"
             }));
-            stoppedReason = err.message || "conexion interrumpida";
+            stoppedReason = err.message || "conexión interrumpida";
             break;
           }
           await idbPut(STORE_QUEUE, Object.assign({}, item, {
@@ -2208,7 +2208,7 @@
       }
       setStatus("Sesion iniciada.", "success", 2000);
     } catch (err) {
-      setStatus(err.message || "No se pudo iniciar sesion.", "error", 5000);
+      setStatus(err.message || "No se pudo iniciar sesión.", "error", 5000);
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -2219,7 +2219,7 @@
     const pending = currentUserId > 0 ? await queueByUser(currentUserId) : [];
     if (pending.length > 0) {
       const confirmed = window.confirm(
-        `Hay ${pending.length} solicitud(es) sin enviar. Al cerrar sesion se borraran del telefono junto con el padron offline. ¿Deseas continuar?`
+        `Hay ${pending.length} solicitud(es) sin enviar. Al cerrar sesión se borrarán del teléfono junto con el padrón offline. ¿Deseas continuar?`
       );
       if (!confirmed) return;
     }

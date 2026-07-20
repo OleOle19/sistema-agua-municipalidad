@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import api from "../api";
 import { FaTrashAlt, FaEdit, FaSave, FaTimes, FaPlus } from "react-icons/fa";
+import { confirmAction } from "../utils/confirmAction";
 
-const ModalCalles = ({ cerrarModal, darkMode, canDeleteCalles = false, onFlash = null }) => {
+const ModalCalles = ({ cerrarModal, canDeleteCalles = false, onFlash = null }) => {
   const [calles, setCalles] = useState([]);
   const [nuevaCalle, setNuevaCalle] = useState({ nombre: "", zona_barrio: "" });
   const [calleEditando, setCalleEditando] = useState(null);
@@ -52,7 +53,10 @@ const ModalCalles = ({ cerrarModal, darkMode, canDeleteCalles = false, onFlash =
   };
 
   const eliminarCalle = async (id) => {
-    if (!window.confirm("Seguro de borrar esta calle?")) return;
+    if (!await confirmAction(
+      "Se eliminará esta calle. Esta acción no se puede deshacer.",
+      { title: "Eliminar calle", confirmLabel: "Eliminar", variant: "danger" }
+    )) return;
     try {
       await api.delete(`/calles/${id}`);
       cargarCalles();
@@ -75,23 +79,23 @@ const ModalCalles = ({ cerrarModal, darkMode, canDeleteCalles = false, onFlash =
     }
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
-  const inputClass = `form-control ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const listGroupItemClass = `list-group-item d-flex justify-content-between align-items-center ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
+  const modalStyle = {};
+  const inputClass = "form-control";
+  const listGroupItemClass = "list-group-item d-flex justify-content-between align-items-center";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
       <div className="modal-dialog">
         <div className="modal-content" style={modalStyle}>
-          <div className={`modal-header ${darkMode ? "bg-dark border-secondary" : "bg-light"}`}>
-            <h5 className="modal-title">Gestion de Calles</h5>
-            <button className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
+          <div className="modal-header bg-light">
+            <h5 className="modal-title">Gestión de Calles</h5>
+            <button type="button" className="btn-close" onClick={cerrarModal} aria-label="Cerrar gestión de calles"></button>
           </div>
           <div className="modal-body">
             <div className="input-group mb-3">
               <input type="text" className={inputClass} placeholder="Nombre Calle" value={nuevaCalle.nombre} onChange={(e) => setNuevaCalle({ ...nuevaCalle, nombre: e.target.value })} />
               <input type="text" className={inputClass} placeholder="Zona/Barrio" value={nuevaCalle.zona_barrio} onChange={(e) => setNuevaCalle({ ...nuevaCalle, zona_barrio: e.target.value })} />
-              <button className="btn btn-primary" onClick={agregarCalle}><FaPlus /></button>
+              <button type="button" className="btn btn-primary app-icon-button" onClick={agregarCalle} aria-label="Agregar calle" title="Agregar calle"><FaPlus /></button>
             </div>
 
             <div className="list-group list-group-flush" style={{ maxHeight: "400px", overflowY: "auto" }}>
@@ -99,18 +103,18 @@ const ModalCalles = ({ cerrarModal, darkMode, canDeleteCalles = false, onFlash =
                 <div key={c.id_calle} className={listGroupItemClass}>
                   {calleEditando && calleEditando.id_calle === c.id_calle ? (
                     <div className="d-flex gap-2 w-100">
-                      <input type="text" className={`form-control form-control-sm ${darkMode ? "bg-secondary text-white border-secondary" : ""}`} value={calleEditando.nombre} onChange={(e) => setCalleEditando({ ...calleEditando, nombre: e.target.value })} />
-                      <input type="text" className={`form-control form-control-sm ${darkMode ? "bg-secondary text-white border-secondary" : ""}`} value={calleEditando.zona_barrio} onChange={(e) => setCalleEditando({ ...calleEditando, zona_barrio: e.target.value })} />
-                      <button className="btn btn-sm btn-success" onClick={guardarEdicion}><FaSave /></button>
-                      <button className="btn btn-sm btn-secondary" onClick={() => setCalleEditando(null)}><FaTimes /></button>
+                      <input type="text" className="form-control form-control-sm" value={calleEditando.nombre} onChange={(e) => setCalleEditando({ ...calleEditando, nombre: e.target.value })} />
+                      <input type="text" className="form-control form-control-sm" value={calleEditando.zona_barrio} onChange={(e) => setCalleEditando({ ...calleEditando, zona_barrio: e.target.value })} />
+                      <button type="button" className="btn btn-sm btn-success app-icon-button" onClick={guardarEdicion} aria-label="Guardar cambios" title="Guardar cambios"><FaSave /></button>
+                      <button type="button" className="btn btn-sm btn-secondary app-icon-button" onClick={() => setCalleEditando(null)} aria-label="Cancelar edición" title="Cancelar"><FaTimes /></button>
                     </div>
                   ) : (
                     <>
                       <span>{c.nombre} {c.zona_barrio && c.zona_barrio.trim() !== "" ? ` (${c.zona_barrio})` : ""}</span>
                       <div>
-                        <button className="btn btn-sm text-primary me-2" onClick={() => activarEdicion(c)}><FaEdit /></button>
+                        <button type="button" className="btn btn-sm text-primary me-2 app-icon-button" onClick={() => activarEdicion(c)} aria-label={`Editar calle ${c.nombre}`} title="Editar calle"><FaEdit /></button>
                         {canDeleteCalles && (
-                          <button className="btn btn-sm text-danger" onClick={() => eliminarCalle(c.id_calle)}><FaTrashAlt /></button>
+                          <button type="button" className="btn btn-sm text-danger app-icon-button" onClick={() => eliminarCalle(c.id_calle)} aria-label={`Eliminar calle ${c.nombre}`} title="Eliminar calle"><FaTrashAlt /></button>
                         )}
                       </div>
                     </>

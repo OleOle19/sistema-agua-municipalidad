@@ -23,8 +23,7 @@ const ModalCorteConexion = ({
   cerrarModal,
   contribuyentes = [],
   loading = false,
-  onConfirmar,
-  darkMode
+  onConfirmar
 }) => {
   const [busqueda, setBusqueda] = useState("");
   const [idSeleccionado, setIdSeleccionado] = useState(null);
@@ -122,9 +121,9 @@ const ModalCorteConexion = ({
     });
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
-  const inputClass = darkMode ? "form-control bg-dark text-white border-secondary" : "form-control";
-  const textareaClass = darkMode ? "form-control bg-dark text-white border-secondary" : "form-control";
+  const modalStyle = {};
+  const inputClass = "form-control";
+  const textareaClass = "form-control";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -132,7 +131,7 @@ const ModalCorteConexion = ({
         <div className="modal-content" style={modalStyle}>
           <div className="modal-header">
             <h5 className="modal-title"><FaPlug className="me-2" /> Registrar Corte con Evidencia</h5>
-            <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal} />
+            <button type="button" className="btn-close" onClick={cerrarModal} />
           </div>
 
           <div className="modal-body">
@@ -149,19 +148,19 @@ const ModalCorteConexion = ({
             </div>
 
             <div className="table-responsive border rounded mb-3" style={{ maxHeight: "260px" }}>
-              <table className={`table table-sm mb-0 ${darkMode ? "table-dark" : "table-hover"}`}>
+              <table className="table table-sm table-hover mb-0">
                 <thead>
                   <tr>
                     <th>Codigo</th>
                     <th>Contribuyente</th>
                     <th>DNI</th>
-                    <th>Direccion</th>
+                    <th>Dirección</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtrados.length === 0 ? (
                     <tr>
-                      <td colSpan="4" className="text-center py-3">No hay contribuyentes con conexion para este filtro.</td>
+                      <td colSpan="4" className="text-center py-3">No hay contribuyentes con conexión para este filtro.</td>
                     </tr>
                   ) : (
                     filtrados.map((item) => {

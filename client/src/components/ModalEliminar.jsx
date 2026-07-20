@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import api from "../api";
 import { FaTrashAlt, FaExclamationTriangle } from "react-icons/fa";
+import { confirmAction } from "../utils/confirmAction";
 
-const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = null }) => {
+const ModalEliminar = ({ usuario, cerrarModal, alGuardar, onFlash = null }) => {
   const [deudas, setDeudas] = useState([]);
 
   const showFlash = useCallback((type, text) => {
@@ -22,7 +23,10 @@ const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = nu
   }, [showFlash, usuario]);
 
   const eliminarDeuda = async (id_recibo, mes, anio) => {
-    if (!window.confirm(`¿Está seguro? Se borrará la deuda de ${mes}/${anio}.`)) return;
+    if (!await confirmAction(
+      `Se borrará la deuda de ${mes}/${anio}. Esta acción no se puede deshacer.`,
+      { title: "Eliminar deuda", confirmLabel: "Eliminar", variant: "danger" }
+    )) return;
     try {
       await api.delete(`/recibos/${id_recibo}`);
       setDeudas((prev) => prev.filter((recibo) => Number(recibo.id_recibo) !== Number(id_recibo)));
@@ -37,9 +41,9 @@ const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = nu
 
   const deudasPendientes = deudas.filter((recibo) => recibo.estado === "PENDIENTE");
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
-  const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-danger text-white"}`;
-  const listGroupItemClass = `list-group-item d-flex justify-content-between align-items-center ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
+  const modalStyle = {};
+  const headerClass = "modal-header bg-danger text-white";
+  const listGroupItemClass = "list-group-item d-flex justify-content-between align-items-center";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -47,10 +51,10 @@ const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = nu
         <div className="modal-content" style={modalStyle}>
           <div className={headerClass}>
             <h5 className="modal-title"><FaTrashAlt className="me-2" /> Eliminar Deudas / Usuario</h5>
-            <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
+            <button type="button" className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
           <div className="modal-body">
-            <div className={`alert d-flex align-items-center ${darkMode ? "alert-dark border-secondary" : "alert-warning"}`}>
+            <div className="alert alert-warning d-flex align-items-center">
               <FaExclamationTriangle className="me-3 fs-4" />
               <small>Solo se pueden eliminar recibos PENDIENTES.</small>
             </div>
@@ -75,7 +79,7 @@ const ModalEliminar = ({ usuario, cerrarModal, alGuardar, darkMode, onFlash = nu
               </ul>
             )}
           </div>
-          <div className={`modal-footer ${darkMode ? "border-secondary" : ""}`}>
+          <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={cerrarModal}>Cancelar</button>
           </div>
         </div>

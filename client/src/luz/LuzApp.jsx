@@ -22,6 +22,7 @@ import luzApi from "./apiLuz";
 import ReciboLuz from "./ReciboLuz";
 import RecibosLuzLote from "./RecibosLuzLote";
 import UsuariosLuzPanel from "./UsuariosLuzPanel";
+import { confirmAction } from "../utils/confirmAction";
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -888,7 +889,10 @@ function LuzApp({ onBackToSelector }) {
 
   const eliminarSuministro = async () => {
     if (!permisos.canBorrarPadron || !suministroSeleccionado) return;
-    const ok = window.confirm(`Eliminar suministro ID ${suministroSeleccionado.nro_medidor} de ${suministroSeleccionado.nombre_usuario}?`);
+    const ok = await confirmAction(
+      `Se eliminará el suministro ID ${suministroSeleccionado.nro_medidor} de ${suministroSeleccionado.nombre_usuario}.`,
+      { title: "Eliminar suministro", confirmLabel: "Eliminar", variant: "danger" }
+    );
     if (!ok) return;
     try {
       const res = await luzApi.delete(`/suministros/${suministroSeleccionado.id_suministro}`);
@@ -1164,9 +1168,9 @@ function LuzApp({ onBackToSelector }) {
   }
 
   return (
-    <div className="d-flex flex-column min-vh-100 bg-light">
+    <div className="municipal-module-page d-flex flex-column min-vh-100 bg-light">
       <FlashNotice flash={flash} onClose={() => setFlash(null)} />
-      <header className="bg-warning-subtle border-bottom p-3 d-flex justify-content-between align-items-center gap-2">
+      <header className="app-module-header app-module-header--luz border-bottom p-3 d-flex justify-content-between align-items-center gap-2">
         <div>
           <h5 className="m-0 d-flex align-items-center gap-2">
             <FaBolt className="text-warning" />
@@ -1176,7 +1180,7 @@ function LuzApp({ onBackToSelector }) {
             Usuario: <strong>{usuarioSistema?.nombre || usuarioSistema?.username}</strong> | {permisos.roleLabel}
           </div>
         </div>
-        <div className="d-flex align-items-center gap-2">
+        <div className="app-module-header__actions d-flex align-items-center gap-2 flex-wrap">
           <img
             src="/logo.png"
             alt="Logo municipal"
@@ -1185,12 +1189,12 @@ function LuzApp({ onBackToSelector }) {
           />
           {typeof onBackToSelector === "function" && (
             <button className="btn btn-outline-secondary btn-sm" onClick={onBackToSelector}>
-              Cambiar modulo
+              Cambiar módulo
             </button>
           )}
           <button className="btn btn-outline-danger btn-sm d-flex align-items-center gap-2" onClick={logout}>
             <FaSignOutAlt />
-            Cerrar sesion
+            Cerrar sesión
           </button>
         </div>
       </header>
@@ -1200,7 +1204,7 @@ function LuzApp({ onBackToSelector }) {
           <li className="nav-item">
             <button className={`nav-link ${tab === "padron" ? "active" : ""}`} onClick={() => setTab("padron")}>
               <FaList className="me-1" />
-              Padron
+              Padrón
             </button>
           </li>
           <li className="nav-item">
@@ -1234,7 +1238,7 @@ function LuzApp({ onBackToSelector }) {
           <li className="nav-item">
             <button className={`nav-link ${tab === "auditoria" ? "active" : ""}`} onClick={() => setTab("auditoria")}>
               <FaHistory className="me-1" />
-              Auditoria
+              Auditoría
             </button>
           </li>
           {permisos.canManageUsers && (
@@ -1416,7 +1420,7 @@ function LuzApp({ onBackToSelector }) {
                           />
                         </div>
                         <div className="mb-2">
-                          <label className="form-label">Direccion</label>
+                          <label className="form-label">Dirección</label>
                           <input
                             className="form-control"
                             value={suministroForm.direccion}
@@ -1484,7 +1488,7 @@ function LuzApp({ onBackToSelector }) {
                     <div className="card-header fw-semibold">Registro mensual de lectura</div>
                     <div className="card-body">
                       {!suministroSeleccionado ? (
-                        <div className="text-muted small">Seleccione un suministro en Padron para registrar lectura mensual.</div>
+                        <div className="text-muted small">Seleccione un suministro en Padrón para registrar lectura mensual.</div>
                       ) : (
                         <>
                           <div className="small mb-3">
@@ -1553,7 +1557,7 @@ function LuzApp({ onBackToSelector }) {
                                 />
                               </div>
                               <div className="col-4">
-                                <label className="form-label">Emision</label>
+                                <label className="form-label">Emisión</label>
                                 <input
                                   type="date"
                                   className="form-control"
@@ -1582,7 +1586,7 @@ function LuzApp({ onBackToSelector }) {
                               </div>
                             </div>
                             <div className="mt-2">
-                              <label className="form-label">Observacion</label>
+                              <label className="form-label">Observación</label>
                               <textarea
                                 rows="2"
                                 className="form-control"
@@ -1878,7 +1882,7 @@ function LuzApp({ onBackToSelector }) {
                     <div className="card-body">
                       <form onSubmit={guardarFechas}>
                         <div className="mb-2">
-                          <label className="form-label">Dias para vencimiento</label>
+                          <label className="form-label">Días para vencimiento</label>
                           <input
                             type="number"
                             min="0"
@@ -1889,7 +1893,7 @@ function LuzApp({ onBackToSelector }) {
                           />
                         </div>
                         <div className="mb-3">
-                          <label className="form-label">Dias para corte</label>
+                          <label className="form-label">Días para corte</label>
                           <input
                             type="number"
                             min="0"

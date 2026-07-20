@@ -4,7 +4,7 @@ import api from "../api";
 
 const ModalComparacionesLegacy = lazy(() => import("./ModalComparacionesLegacy"));
 
-const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
+const ModalExportaciones = ({ cerrarModal, onBackup }) => {
   const [exportando, setExportando] = useState("");
   const [mostrarComparaciones, setMostrarComparaciones] = useState(false);
   const [adjuntosSistema, setAdjuntosSistema] = useState([]);
@@ -106,14 +106,14 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
     }
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
-  const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-primary text-white"}`;
-  const closeBtnClass = `btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`;
-  const bodyCardClass = darkMode ? "border-secondary bg-dark text-white" : "";
+  const modalStyle = {};
+  const headerClass = "modal-header bg-primary text-white";
+  const closeBtnClass = "btn-close btn-close-white";
+  const bodyCardClass = "";
   const lazyModalFallback = (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.55)" }}>
       <div className="modal-dialog">
-        <div className={`modal-content ${darkMode ? "bg-dark text-white border-secondary" : ""}`}>
+        <div className="modal-content">
           <div className="modal-body py-4 text-center">
             <div className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></div>
             <span>Cargando comparador...</span>
@@ -257,7 +257,7 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
 
               {mostrarAdjuntos && (
                 <div className="table-responsive mt-3" style={{ maxHeight: "260px" }}>
-                  <table className={`table table-sm mb-0 ${darkMode ? "table-dark" : "table-striped"}`}>
+                  <table className="table table-sm table-striped mb-0">
                     <thead>
                       <tr>
                         <th>Fecha</th>
@@ -314,8 +314,8 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
             </div>
           </div>
 
-          <div className={`modal-footer ${darkMode ? "border-secondary" : ""}`}>
-            <button type="button" className={`btn ${darkMode ? "btn-secondary" : "btn-dark"}`} onClick={cerrarModal}>
+          <div className="modal-footer">
+            <button type="button" className="btn btn-dark" onClick={cerrarModal}>
               Cerrar
             </button>
           </div>
@@ -325,7 +325,6 @@ const ModalExportaciones = ({ cerrarModal, darkMode, onBackup }) => {
         <Suspense fallback={lazyModalFallback}>
           <ModalComparacionesLegacy
             cerrarModal={() => setMostrarComparaciones(false)}
-            darkMode={darkMode}
           />
         </Suspense>
       )}

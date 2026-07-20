@@ -71,7 +71,7 @@ const getSeccionParamByVista = (vista, subVista) => {
   return "DEUDA,RECAUDACION";
 };
 
-const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
+const ModalComparacionesLegacy = ({ cerrarModal }) => {
   const [tab, setTab] = useState("nueva");
   const [modoCarga, setModoCarga] = useState("exportes");
   const [archivoLegacy, setArchivoLegacy] = useState(null);
@@ -99,12 +99,12 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
   const [detalleVista, setDetalleVista] = useState(DETALLE_VISTA.USUARIOS);
   const [detalleVistaFinanzas, setDetalleVistaFinanzas] = useState(DETALLE_FINANZAS_SUB.PAGOS);
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
-  const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-primary text-white"}`;
-  const inputClass = `form-control ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const selectClass = `form-select ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const tableClass = `table table-sm ${darkMode ? "table-dark table-hover" : "table-striped"}`;
-  const cardClass = `border rounded p-2 ${darkMode ? "border-secondary" : ""}`;
+  const modalStyle = {};
+  const headerClass = "modal-header bg-primary text-white";
+  const inputClass = "form-control";
+  const selectClass = "form-select";
+  const tableClass = "table table-sm table-striped";
+  const cardClass = "border rounded p-2";
 
   const totalPagesHistorial = Math.max(1, Math.ceil(Number(historialTotal || 0) / 20));
   const totalPagesDetalle = Math.max(1, Math.ceil(Number(detalleTotal || 0) / 200));
@@ -257,7 +257,7 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
       <div className="row g-2 mb-3">
         <div className="col-md-5">
           <div className={cardClass}>
-            <div className="fw-bold mb-1">Usuarios (Padron)</div>
+            <div className="fw-bold mb-1">Usuarios (Padrón)</div>
             <div className="small">Filas legacy: <strong>{Number(meta?.total_padron_legacy || 0)}</strong></div>
             <div className="small">Cambios registros: <strong>{Number(padron?.cambios_registros || 0)}</strong></div>
             <div className="small">Solo antigua: <strong>{Number(padron?.solo_antigua || 0)}</strong></div>
@@ -269,7 +269,7 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
             <div className="fw-bold mb-2">Finanzas</div>
             <div className="row g-2">
               <div className="col-md-4">
-                <div className={`rounded p-2 ${darkMode ? "bg-dark-subtle text-dark" : "bg-light"}`}>
+                <div className="rounded bg-light p-2">
                   <div className="small fw-semibold">Pagos (Recaudacion)</div>
                   <div className="small">Filas legacy: <strong>{Number(meta?.total_pagos_legacy || 0)}</strong></div>
                   <div className="small">Diario delta: <strong>{Number(recaudacion?.diario?.registros_con_delta || 0)}</strong></div>
@@ -277,7 +277,7 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
                 </div>
               </div>
               <div className="col-md-4">
-                <div className={`rounded p-2 ${darkMode ? "bg-dark-subtle text-dark" : "bg-light"}`}>
+                <div className="rounded bg-light p-2">
                   <div className="small fw-semibold">Deudas</div>
                   <div className="small">Filas legacy: <strong>{Number(meta?.total_deudas_legacy || 0)}</strong></div>
                   <div className="small">Delta global: <strong>S/. {formatNum(deuda?.delta_global)}</strong></div>
@@ -285,7 +285,7 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
                 </div>
               </div>
               <div className="col-md-4">
-                <div className={`rounded p-2 ${darkMode ? "bg-dark-subtle text-dark" : "bg-light"}`}>
+                <div className="rounded bg-light p-2">
                   <div className="small fw-semibold">Historial</div>
                   <div className="small">Rango: <strong>{meta?.fecha_desde || "-"} a {meta?.fecha_hasta || "-"}</strong></div>
                   <div className="small">Total detalles: <strong>{Number(meta?.total_detalles || 0)}</strong></div>
@@ -296,7 +296,7 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
         </div>
       </div>
     );
-  }, [corridaSeleccionada, cardClass, darkMode]);
+  }, [corridaSeleccionada, cardClass]);
 
   const detalleOrdenado = useMemo(() => {
     return [...detalle].sort((a, b) => {
@@ -318,7 +318,7 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
         <div className="modal-content" style={modalStyle}>
           <div className={headerClass}>
             <h5 className="modal-title"><FaTable className="me-2" /> Comparacion Base Antigua vs Actual</h5>
-            <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`} onClick={cerrarModal}></button>
+            <button type="button" className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
 
           <div className="modal-body">
@@ -415,7 +415,7 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
                         <th>Fecha</th>
                         <th>Archivo</th>
                         <th>Estado</th>
-                        <th>Padron cambios</th>
+                        <th>Padrón cambios</th>
                         <th>Detalles</th>
                         <th></th>
                       </tr>
@@ -596,8 +596,8 @@ const ModalComparacionesLegacy = ({ cerrarModal, darkMode }) => {
             )}
           </div>
 
-          <div className={`modal-footer ${darkMode ? "border-secondary" : ""}`}>
-            <button type="button" className={`btn ${darkMode ? "btn-secondary" : "btn-dark"}`} onClick={cerrarModal}>Cerrar</button>
+          <div className="modal-footer">
+            <button type="button" className="btn btn-dark" onClick={cerrarModal}>Cerrar</button>
           </div>
         </div>
       </div>

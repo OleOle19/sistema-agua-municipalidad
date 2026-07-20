@@ -87,10 +87,10 @@ const ModuleErrorScreen = ({ title }) => (
       <div className="card-body p-4 text-center">
         <div className="fw-bold text-danger mb-2">{title}</div>
         <p className="text-muted mb-3">
-          Ocurrio un error al cargar este modulo. Puede recargar la pagina para volver a intentarlo.
+          Ocurrió un error al cargar este módulo. Puede recargar la página para volver a intentarlo.
         </p>
         <button type="button" className="btn btn-danger" onClick={() => window.location.reload()}>
-          Recargar pagina
+          Recargar página
         </button>
       </div>
     </div>
@@ -113,7 +113,7 @@ class ModuleErrorBoundary extends Component {
 
   render() {
     if (this.state.hasError) {
-      return <ModuleErrorScreen title={this.props.title || "Error cargando el modulo"} />;
+      return <ModuleErrorScreen title={this.props.title || "Error cargando el módulo"} />;
     }
     return this.props.children;
   }
@@ -131,7 +131,7 @@ function App() {
       const value = String(target || "").trim().toLowerCase();
       if (!["agua", "luz", "caja"].includes(value)) return;
       if (value === "caja" && !cajaPermitida) {
-        setSelectorAviso("El modulo Caja Municipal requiere un perfil de Administrador, Ventanilla o Cajero.");
+        setSelectorAviso("El módulo Caja Municipal requiere un perfil de Administrador, Ventanilla o Cajero.");
         return;
       }
       clearAllModuleSessions();
@@ -226,7 +226,7 @@ function App() {
                     <span className="fs-2 text-warning module-entry__icon"><FaBolt /></span>
                     <div className="module-entry__content">
                       <div className="fw-bold fs-5 module-entry__title">Sistema de Luz</div>
-                      <div className="small module-entry__desc">Suministros, lecturas, recibos y auditoria.</div>
+                      <div className="small module-entry__desc">Suministros, lecturas, recibos y auditoría.</div>
                     </div>
                   </div>
                 </button>
@@ -261,7 +261,7 @@ function App() {
                     <span className="fs-2 text-info module-entry__icon"><FaMobileAlt /></span>
                     <div className="module-entry__content">
                       <div className="fw-bold fs-5 module-entry__title">App Campo</div>
-                      <div className="small module-entry__desc">Brigada Agua y Luz. Corroboracion y visitas.</div>
+                      <div className="small module-entry__desc">Brigada Agua y Luz. Corroboración y visitas.</div>
                     </div>
                   </div>
                 </a>

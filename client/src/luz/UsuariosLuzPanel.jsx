@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FaPlus, FaSave, FaTrashAlt, FaUserShield } from "react-icons/fa";
 import luzApi from "./apiLuz";
+import { confirmAction } from "../utils/confirmAction";
 
 const ROLE_OPTIONS = [
   { value: "ADMIN", label: "Nivel 1 - Admin principal" },
@@ -167,7 +168,10 @@ function UsuariosLuzPanel({ visible, usuarioActivo, canManageUsers, onFlash }) {
       showFlash("warning", "Usuario no encontrado.");
       return;
     }
-    if (!window.confirm(`Eliminar usuario ${target.username}? Esta accion no se puede deshacer.`)) {
+    if (!await confirmAction(
+      `Se eliminará el usuario ${target.username}. Esta acción no se puede deshacer.`,
+      { title: "Eliminar usuario", confirmLabel: "Eliminar", variant: "danger" }
+    )) {
       return;
     }
 

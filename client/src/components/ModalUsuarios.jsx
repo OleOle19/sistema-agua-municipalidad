@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "../api";
 import { FaSave, FaTrashAlt, FaUserShield } from "react-icons/fa";
+import { confirmAction } from "../utils/confirmAction";
 
 const ROLE_OPTIONS = [
   { value: "ADMIN", label: "Nivel 1 - Admin principal" },
@@ -126,7 +127,10 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
       showFlash("warning", "Usuario no encontrado.");
       return;
     }
-    if (!window.confirm(`Se eliminara el usuario "${target.username}". Esta accion no se puede deshacer. Continuar?`)) {
+    if (!await confirmAction(
+      `Se eliminará el usuario "${target.username}". Esta acción no se puede deshacer.`,
+      { title: "Eliminar usuario", confirmLabel: "Eliminar", variant: "danger" }
+    )) {
       return;
     }
 

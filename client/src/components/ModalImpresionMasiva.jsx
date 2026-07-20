@@ -24,12 +24,10 @@ const formatPeriodoLabel = (anio, mes) => {
   return `${month?.label || String(mes || "-")} ${String(anio || "-")}`;
 };
 const normalizePeriodoEstado = (value) => String(value || "").trim().toUpperCase();
-const getPeriodoEstadoMeta = (estado, darkMode = false) => {
+const getPeriodoEstadoMeta = (estado) => {
   const normalized = normalizePeriodoEstado(estado);
   if (normalized === "PAGADO") {
-    return darkMode
-      ? { title: "Pagado", highlight: "#166534", text: "#dcfce7" }
-      : { title: "Pagado", highlight: "#bbf7d0", text: "#166534" };
+    return { title: "Pagado", highlight: "#bbf7d0", text: "#166534" };
   }
   return null;
 };
@@ -67,7 +65,6 @@ const ModalImpresionMasiva = ({
   alConfirmar,
   idsSeleccionados = [],
   modoOperacion = "mensual",
-  darkMode,
   onFlash = null
 }) => {
   const [calles, setCalles] = useState([]);
@@ -283,11 +280,11 @@ const ModalImpresionMasiva = ({
     }
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff", border: "1px solid #495057" } : {};
-  const headerClass = `modal-header ${darkMode ? "bg-dark border-secondary text-white" : "bg-dark text-white"}`;
-  const inputClass = `form-control ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const selectClass = `form-select ${darkMode ? "bg-dark text-white border-secondary" : ""}`;
-  const btnOutlineClass = (active) => active ? "btn-primary" : (darkMode ? "btn-outline-light" : "btn-outline-secondary");
+  const modalStyle = {};
+  const headerClass = "modal-header bg-dark text-white";
+  const inputClass = "form-control";
+  const selectClass = "form-select";
+  const btnOutlineClass = (active) => active ? "btn-primary" : "btn-outline-secondary";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -298,12 +295,12 @@ const ModalImpresionMasiva = ({
               <FaPrint className="me-2"/>
               {soloSeleccion ? "Reimpresión de Recibos" : "Impresión Mensual"}
             </h5>
-            <button className={`btn-close ${darkMode ? "btn-close-white" : "btn-close-white"}`} onClick={cerrarModal}></button>
+            <button className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
           <div className="modal-body">
             <form onSubmit={handleSubmit}>
               {!soloSeleccion && (
-                <div className={`d-flex justify-content-around mb-4 border-bottom pb-3 ${darkMode ? "border-secondary" : ""}`}>
+                <div className="d-flex justify-content-around mb-4 border-bottom pb-3">
                   <button type="button" className={`btn btn-sm ${btnOutlineClass(modo === "seleccion")}`} onClick={() => setModo("seleccion")} disabled={idsSeleccionados.length === 0}>
                     <FaUsers className="mb-1 d-block mx-auto"/> Selección
                   </button>
@@ -317,7 +314,7 @@ const ModalImpresionMasiva = ({
               )}
 
               {soloSeleccion && (
-                <div className={`alert alert-info ${darkMode ? "bg-dark text-white border-secondary" : ""}`}>
+                <div className="alert alert-info">
                   Reimpresión para el contribuyente seleccionado en pantalla.
                   <div className="form-check form-switch mt-2 mb-0">
                     <input
@@ -356,11 +353,11 @@ const ModalImpresionMasiva = ({
               <div className="row mb-3">
                 <div className="col-12 mb-2">
                   <label className="form-label fw-bold">Meses</label>
-                  <div className={`border rounded p-2 ${darkMode ? "border-secondary" : ""}`} style={{ maxHeight: "160px", overflowY: "auto" }}>
+                  <div className="border rounded p-2" style={{ maxHeight: "160px", overflowY: "auto" }}>
                     <div className="d-flex flex-wrap gap-2">
                       {opcionesMeses.map((m) => {
                         const periodoHistorial = historialPeriodosMap.get(`${anioSeleccionado}-${m.value}`) || null;
-                        const estadoMeta = getPeriodoEstadoMeta(periodoHistorial?.estado, darkMode);
+                        const estadoMeta = getPeriodoEstadoMeta(periodoHistorial?.estado);
                         const checked = (seleccion.meses || []).includes(m.value);
                         return (
                           <label
@@ -372,12 +369,8 @@ const ModalImpresionMasiva = ({
                               gap: "0.4rem",
                               padding: "0.15rem 0.25rem",
                               borderRadius: "0.45rem",
-                              backgroundColor: checked
-                                ? (darkMode ? "rgba(29, 78, 216, 0.14)" : "rgba(59, 130, 246, 0.10)")
-                                : "transparent",
-                              color: checked
-                                ? (darkMode ? "#eff6ff" : "#1e3a8a")
-                                : "inherit",
+                              backgroundColor: checked ? "rgba(59, 130, 246, 0.10)" : "transparent",
+                              color: checked ? "#1e3a8a" : "inherit",
                               cursor: "pointer",
                               minWidth: "70px"
                             }}

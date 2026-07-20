@@ -221,7 +221,7 @@ const addIsoDays = (isoDateRaw, deltaDays) => {
 const toMonthValue = (isoDate) => String(isoDate || "").slice(0, 7);
 const toYearValue = (isoDate) => String(isoDate || "").slice(0, 4);
 
-const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSistema = null }) => {
+const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null }) => {
   const [reporteTipo, setReporteTipo] = useState("diario");
   const [fechaConsulta, setFechaConsulta] = useState(todayIso());
   const [fechaDesdeRango, setFechaDesdeRango] = useState(todayIso());
@@ -681,7 +681,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
     setFechaConsulta(value);
   }, [reporteTipo]);
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : { backgroundColor: "#fff" };
+  const modalStyle = { backgroundColor: "#fff" };
   const tituloModal = "Reporte";
   const colorTotal = "text-primary";
 
@@ -828,7 +828,7 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
               </div>
             </div>
 
-            <div className={`border rounded px-3 py-2 mb-3 no-print ${darkMode ? "border-secondary" : ""}`}>
+            <div className="border rounded px-3 py-2 mb-3 no-print">
               <div className="row g-2 align-items-start">
                 <div className={!isProyeccion && resumenMetodosPago.length > 0 ? "col-lg-8" : "col-12"}>
                   <div className="d-flex justify-content-between align-items-center gap-2 mb-1">
@@ -1073,59 +1073,43 @@ const ModalCierre = ({ cerrarModal, darkMode, origen = "ventanilla", usuarioSist
                         <td colSpan={10} className="text-center py-3 border">No hay movimientos para el rango consultado.</td>
                       </tr>
                     ) : (
-                      gruposReporte.map((grupoFecha) => (
-                        <tr key={`fecha-${grupoFecha.fecha}`}>
-                          <td colSpan={10} className="p-0 border-0">
-                            <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
-                              <tbody>
-                                <tr>
-                                  <td colSpan={10} className="fw-bold border-top border-dark border-bottom">
-                                    Fecha {formatFechaCorta(grupoFecha.fecha)}
-                                  </td>
-                                </tr>
-                                {grupoFecha.contribuyentes.map((contrib, idxContrib) => (
-                                  <tr key={`contrib-${grupoFecha.fecha}-${idxContrib}`}>
-                                    <td colSpan={10} className="p-0 border-0">
-                                      <table className="table table-sm mb-0" style={{ fontSize: "12px" }}>
-                                        <tbody>
-                                          <tr>
-                                            <td colSpan={10} className="fw-semibold border-bottom">
-                                              {String(contrib.nombre_completo || "-").toUpperCase()}
-                                              <div className="small fw-normal text-muted">
-                                                Cód.: {contrib.codigo_municipal || "-"} | Contribuyente ID: {contrib.id_contribuyente || "-"} | Predio ID: {contrib.id_predio || "-"} | Dirección: {contrib.direccion_completa || "-"}
-                                              </div>
-                                            </td>
-                                          </tr>
-                                          {contrib.items.map((item) => (
-                                            <tr key={`item-${item.id_pago}`}>
-                                              <td style={{ width: "34%" }}>
-                                                <span className="small text-muted">
-                                                  Cobro: {String(item?.hora || "").slice(0, 5) || "--:--"} | {getMetodoPagoReporteLabel(item?.metodo_pago)}
-                                                  {item?.referencia_operacion ? ` | Ref: ${item.referencia_operacion}` : ""}
-                                                  {String(item?.estado_confirmacion || "").toUpperCase() !== "CONFIRMADO" ? ` | ${item.estado_confirmacion}` : ""}
-                                                </span>
-                                              </td>
-                                              <td className="text-center" style={{ width: "14%" }}>{item.numero_recibo || item.codigo_impresion || "-"}</td>
-                                              <td className="text-center" style={{ width: "7%" }}>{item.anio || "-"}</td>
-                                              <td className="text-center" style={{ width: "6%" }}>{String(item.mes || "").padStart(2, "0")}</td>
-                                              <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_agua || 0)}</td>
-                                              <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_desague || 0)}</td>
-                                              <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_limpieza || 0)}</td>
-                                              <td className="text-end" style={{ width: "7%" }}>{formatMontoReporte(item.monto_gastos || 0)}</td>
-                                              <td className="text-end" style={{ width: "7%" }}>{formatMontoReporte(item.monto_extra || 0)}</td>
-                                              <td className="text-end fw-bold" style={{ width: "8%" }}>{formatMontoReporte(item.monto_pagado || 0)}</td>
-                                            </tr>
-                                          ))}
-                                        </tbody>
-                                      </table>
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
+                      gruposReporte.flatMap((grupoFecha) => [
+                        <tr key={`fecha-${grupoFecha.fecha}`} className="table-light">
+                          <td colSpan={10} className="fw-bold border-top border-dark border-bottom">
+                            Fecha {formatFechaCorta(grupoFecha.fecha)}
                           </td>
-                        </tr>
-                      ))
+                        </tr>,
+                        ...grupoFecha.contribuyentes.flatMap((contrib, idxContrib) => [
+                          <tr key={`contrib-${grupoFecha.fecha}-${idxContrib}`}>
+                            <td colSpan={10} className="fw-semibold border-bottom bg-body-tertiary">
+                              {String(contrib.nombre_completo || "-").toUpperCase()}
+                              <div className="small fw-normal text-muted">
+                                Cód.: {contrib.codigo_municipal || "-"} | Contribuyente ID: {contrib.id_contribuyente || "-"} | Predio ID: {contrib.id_predio || "-"} | Dirección: {contrib.direccion_completa || "-"}
+                              </div>
+                            </td>
+                          </tr>,
+                          ...contrib.items.map((item) => (
+                            <tr key={`item-${item.id_pago}`}>
+                              <td style={{ width: "34%" }}>
+                                <span className="small text-muted">
+                                  Cobro: {String(item?.hora || "").slice(0, 5) || "--:--"} | {getMetodoPagoReporteLabel(item?.metodo_pago)}
+                                  {item?.referencia_operacion ? ` | Ref: ${item.referencia_operacion}` : ""}
+                                  {String(item?.estado_confirmacion || "").toUpperCase() !== "CONFIRMADO" ? ` | ${item.estado_confirmacion}` : ""}
+                                </span>
+                              </td>
+                              <td className="text-center" style={{ width: "14%" }}>{item.numero_recibo || item.codigo_impresion || "-"}</td>
+                              <td className="text-center" style={{ width: "7%" }}>{item.anio || "-"}</td>
+                              <td className="text-center" style={{ width: "6%" }}>{String(item.mes || "").padStart(2, "0")}</td>
+                              <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_agua || 0)}</td>
+                              <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_desague || 0)}</td>
+                              <td className="text-end" style={{ width: "8%" }}>{formatMontoReporte(item.monto_limpieza || 0)}</td>
+                              <td className="text-end" style={{ width: "7%" }}>{formatMontoReporte(item.monto_gastos || 0)}</td>
+                              <td className="text-end" style={{ width: "7%" }}>{formatMontoReporte(item.monto_extra || 0)}</td>
+                              <td className="text-end fw-bold" style={{ width: "8%" }}>{formatMontoReporte(item.monto_pagado || 0)}</td>
+                            </tr>
+                          ))
+                        ])
+                      ])
                     )}
                   </tbody>
                   <tfoot>

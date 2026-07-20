@@ -17,7 +17,6 @@ const ModalActaCorteSelector = ({
   contribuyentes = [],
   selectedIds = [],
   onConfirmar,
-  darkMode,
   loading = false
 }) => {
   const [modo, setModo] = useState("manual");
@@ -98,9 +97,9 @@ const ModalActaCorteSelector = ({
     onConfirmar?.(ids, criterioDescripcion);
   };
 
-  const modalStyle = darkMode ? { backgroundColor: "#2b3035", color: "#fff" } : {};
-  const inputClass = darkMode ? "form-select bg-dark text-white border-secondary" : "form-select";
-  const cardClass = darkMode ? "border border-secondary rounded p-2 bg-dark text-white" : "border rounded p-2";
+  const modalStyle = {};
+  const inputClass = "form-select";
+  const cardClass = "border rounded p-2";
 
   return (
     <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.5)" }}>
@@ -108,7 +107,7 @@ const ModalActaCorteSelector = ({
         <div className="modal-content" style={modalStyle}>
           <div className="modal-header">
             <h5 className="modal-title"><FaFileInvoiceDollar className="me-2" /> Seleccionar Deudores (3+ meses) para Acta</h5>
-            <button type="button" className={`btn-close ${darkMode ? "btn-close-white" : ""}`} onClick={cerrarModal}></button>
+            <button type="button" className="btn-close" onClick={cerrarModal}></button>
           </div>
 
           <div className="modal-body">
@@ -196,7 +195,7 @@ const ModalActaCorteSelector = ({
             )}
 
             <div className="alert alert-warning mt-3 mb-2">
-              <div><strong>Regla fija:</strong> acta de corte solo para contribuyentes con conexion activa y 3 o mas meses de deuda.</div>
+              <div><strong>Regla fija:</strong> acta de corte sólo para contribuyentes con conexión activa y 3 o más meses de deuda.</div>
               <div><strong>Criterio:</strong> {criterioDescripcion}</div>
               <div><strong>Orden:</strong> Calle y numero ascendente</div>
               <div><strong>Contribuyentes seleccionados (con conexión, 3+ meses):</strong> {seleccion.length}</div>
@@ -204,13 +203,13 @@ const ModalActaCorteSelector = ({
             </div>
 
             <div className="table-responsive" style={{ maxHeight: "240px" }}>
-              <table className={`table table-sm ${darkMode ? "table-dark" : "table-striped"}`}>
+              <table className="table table-sm table-striped">
                 <thead>
                   <tr>
                     <th>#</th>
                     <th>Codigo</th>
                     <th>Contribuyente</th>
-                    <th>Direccion</th>
+                    <th>Dirección</th>
                     <th>Sector</th>
                     <th className="text-center">Meses</th>
                     <th className="text-end">Deuda</th>
