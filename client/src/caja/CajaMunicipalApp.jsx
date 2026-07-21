@@ -17,10 +17,11 @@ const AGUA_TOKEN_KEY = "token_agua";
 
 const ROLE_LABELS = {
   ADMIN: "Nivel 1 - Admin principal",
-  ADMIN_SEC: "Nivel 2 - Ventanilla",
-  CAJERO: "Nivel 3 - Operador de caja",
-  CONSULTA: "Nivel 4 - Consulta",
-  BRIGADA: "Nivel 5 - Brigada"
+  ADMIN_AUX: "Nivel 2 - Admin secundario",
+  ADMIN_SEC: "Nivel 3 - Ventanilla",
+  CAJERO: "Nivel 4 - Operador de caja",
+  CONSULTA: "Nivel 5 - Consulta",
+  BRIGADA: "Nivel 6 - Brigada"
 };
 const COBRO_AGUA_MODOS = {
   CAJA: "CAJA",
@@ -121,6 +122,7 @@ const LazyModalFallback = ({ label = "Cargando..." }) => (
 const normalizeRole = (role) => {
   const raw = String(role || "").trim().toUpperCase();
   if (["ADMIN", "SUPERADMIN", "ADMIN_PRINCIPAL", "NIVEL_1"].includes(raw)) return "ADMIN";
+  if (["ADMIN_AUX", "ADMINISTRADOR_SECUNDARIO", "SUBADMIN"].includes(raw)) return "ADMIN_AUX";
   if (["ADMIN_SEC", "ADMIN_SECUNDARIO", "JEFE_CAJA", "NIVEL_2"].includes(raw)) return "ADMIN_SEC";
   if (["CAJERO", "OPERADOR_CAJA", "OPERADOR", "NIVEL_3"].includes(raw)) return "CAJERO";
   if (["BRIGADA", "BRIGADISTA", "CAMPO", "NIVEL_5"].includes(raw)) return "BRIGADA";
@@ -159,11 +161,18 @@ const readStoredAguaUser = () => {
     localStorage.removeItem("token");
     return null;
   }
+  const role = normalizeRole(payload.rol);
+  const tokenModule = String(payload.modulo || "").trim().toUpperCase();
+  if ((tokenModule && tokenModule !== "CAJA") || !canEnterCajaModuleByRole(role)) {
+    localStorage.removeItem(AGUA_TOKEN_KEY);
+    localStorage.removeItem("token");
+    return null;
+  }
   return {
     id_usuario: payload.id_usuario,
     username: payload.username,
     nombre: payload.nombre,
-    rol: normalizeRole(payload.rol)
+    rol: role
   };
 };
 
@@ -2166,6 +2175,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       <LoginPage
         apiClient={api}
         tokenStorageKey={AGUA_TOKEN_KEY}
+        moduleKey="CAJA"
         titulo="Caja Municipal Unificada"
         subtitulo="Cobranza de Agua y Luz"
         loginPath="/auth/login"
@@ -2174,7 +2184,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
         onLoginSuccess={(datos) => {
           const nextUser = datos ? { ...datos, rol: normalizeRole(datos.rol) } : null;
           if (!nextUser || !canEnterCajaModuleByRole(nextUser.rol)) {
-            alert("Acceso denegado. Caja Municipal requiere una cuenta ADMIN, ADMIN_SEC o CAJERO.");
+            alert("Acceso denegado. Caja Municipal está disponible para administrador principal, Ventanilla y cajeros.");
             return;
           }
           setUsuarioSistema(nextUser);

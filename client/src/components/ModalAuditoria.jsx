@@ -413,6 +413,9 @@ const isUndoableAuditAction = (log = {}, detalleRows = []) => {
   if (undoType) return true;
   return String(log?.accion || "").trim().toUpperCase() === "CAMPO_SOLICITUD_APROBADA";
 };
+const isCajaUndoType = (undoType = "") => ["PAGO_ANULADO", "ORDEN_COBRO_ANULADA"].includes(
+  String(undoType || "").trim().toUpperCase()
+);
 const getUndoPrompt = (undoType = "", accion = "") => {
   const type = String(undoType || "").trim().toUpperCase();
   if (type === "CONTRIBUYENTE_EDITADO") return "Se intentara deshacer esta edicion de contribuyente. Continuar?";
@@ -426,7 +429,7 @@ const getUndoPrompt = (undoType = "", accion = "") => {
   return "Se intentara deshacer este movimiento. Continuar?";
 };
 
-const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false }) => {
+const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false, canUndoCaja = false }) => {
   const [logs, setLogs] = useState([]);
   const [totalLogs, setTotalLogs] = useState(0);
   const [usuariosDisponibles, setUsuariosDisponibles] = useState([]);
@@ -654,7 +657,7 @@ const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false }) 
                     {seleccionado.datos_antes && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Antes</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(seleccionado.datos_antes, null, 2)}</pre></div>}
                     {seleccionado.datos_despues && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Despues</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(seleccionado.datos_despues, null, 2)}</pre></div>}
                     {seleccionado.reversion_aplicada_sn === "S" && <div className="alert alert-info py-2 small">Movimiento revertido{seleccionado.reversion_motivo ? `: ${seleccionado.reversion_motivo}` : "."}</div>}
-                    {canUndo && isUndoableAuditAction(seleccionado, detalleSeleccionado) && (
+                    {canUndo && (canUndoCaja || !isCajaUndoType(undoTypeSeleccionado)) && isUndoableAuditAction(seleccionado, detalleSeleccionado) && (
                       <div className="border border-danger rounded-3 p-2 mt-3">
                         {!reversionPendiente ? <button type="button" className="btn btn-outline-danger btn-sm w-100" onClick={() => { setReversionPendiente(seleccionado); setMotivoReversion(""); }}><FaUndo className="me-1" /> Deshacer movimiento</button> : <><div className="small fw-semibold mb-1">{getUndoPrompt(undoTypeSeleccionado, seleccionado.accion)}</div><textarea className={filtroInputClass} rows="3" maxLength="500" placeholder="Motivo obligatorio de la reversion" value={motivoReversion} onChange={(e) => setMotivoReversion(e.target.value)} /><div className="d-flex gap-2 mt-2"><button type="button" className="btn btn-danger btn-sm" disabled={deshaciendoId > 0 || motivoReversion.trim().length < 5} onClick={confirmarReversion}>{deshaciendoId > 0 ? "Deshaciendo..." : "Confirmar"}</button><button type="button" className="btn btn-outline-secondary btn-sm" disabled={deshaciendoId > 0} onClick={() => { setReversionPendiente(null); setMotivoReversion(""); }}>Cancelar</button></div></>}
                       </div>

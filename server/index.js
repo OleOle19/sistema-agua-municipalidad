@@ -35,6 +35,8 @@ const {
 const { resolveAutoDebtPeriod, buildRemainingYearPeriods, buildForwardPeriods } = require("./automation-utils");
 const { getMigrationState } = require("./migration-health");
 const { LUZ_LEGACY_ACCEPTED_CHECKSUMS } = require("./migration-policy");
+const { decryptPassword, encryptPassword } = require("./password-vault");
+const { canAccessModule, isCajaDeniedForRole, isCajaUndoDeniedForRole, normalizeModule } = require("./role-policy");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
 
 // --- HELPERS DE DIRECCIÓN ---
@@ -4938,6 +4940,7 @@ const SECURITY_STRICT_STARTUP = Object.prototype.hasOwnProperty.call(process.env
   : NODE_ENV === "production";
 const JWT_SECRET_DEFAULT = "cambia_esto_en_produccion";
 const JWT_SECRET = process.env.JWT_SECRET || JWT_SECRET_DEFAULT;
+const PASSWORD_VAULT_SECRET = process.env.PASSWORD_VAULT_SECRET || JWT_SECRET;
 const JWT_EXPIRES_IN_RAW = process.env.JWT_EXPIRES_IN || "30d";
 const AUTH_OPTIONAL_DEV = process.env.AUTH_OPTIONAL_DEV === "1";
 const serverHostForSecurity = String(process.env.SERVER_HOST || "").trim().toLowerCase();
@@ -4962,24 +4965,27 @@ const JWT_EXPIRES_IN = normalizeJwtExpiresIn(JWT_EXPIRES_IN_RAW, "30d");
 const isBcryptHash = (value) => typeof value === "string" && value.startsWith("$2");
 
 const ROLE_LEVELS = {
-  BRIGADA: 1,    // Nivel 5: brigada de campo
-  CONSULTA: 2,   // Nivel 4: solo lectura
-  CAJERO: 3,     // Nivel 3: operaciones de caja
-  ADMIN_SEC: 4,  // Nivel 2: supervisor de caja / operaciones
-  ADMIN: 5       // Nivel 1: admin principal
+  BRIGADA: 1,    // Nivel 6: brigada de campo
+  CONSULTA: 2,   // Nivel 5: solo lectura
+  CAJERO: 3,     // Nivel 4: operaciones de caja
+  ADMIN_SEC: 4,  // Ventanilla
+  ADMIN_AUX: 5,  // Admin secundario sin Caja
+  ADMIN: 6       // Admin principal
 };
 
 const ROLE_LABELS = {
   ADMIN: "Nivel 1 - Admin principal",
-  ADMIN_SEC: "Nivel 2 - Ventanilla",
-  CAJERO: "Nivel 3 - Operador de caja",
-  CONSULTA: "Nivel 4 - Consulta",
-  BRIGADA: "Nivel 5 - Brigada de campo"
+  ADMIN_AUX: "Nivel 2 - Admin secundario",
+  ADMIN_SEC: "Nivel 3 - Ventanilla",
+  CAJERO: "Nivel 4 - Operador de caja",
+  CONSULTA: "Nivel 5 - Consulta",
+  BRIGADA: "Nivel 6 - Brigada de campo"
 };
 
 const normalizeRole = (role) => {
   const raw = String(role || "").trim().toUpperCase();
   if (["ADMIN", "SUPERADMIN", "ADMIN_PRINCIPAL", "NIVEL_1"].includes(raw)) return "ADMIN";
+  if (["ADMIN_AUX", "ADMINISTRADOR_SECUNDARIO", "SUBADMIN"].includes(raw)) return "ADMIN_AUX";
   if (["ADMIN_SEC", "ADMIN_SECUNDARIO", "JEFE_CAJA", "NIVEL_2"].includes(raw)) return "ADMIN_SEC";
   if (["CAJERO", "OPERADOR_CAJA", "OPERADOR", "NIVEL_3"].includes(raw)) return "CAJERO";
   if (["BRIGADA", "BRIGADISTA", "CAMPO", "NIVEL_5"].includes(raw)) return "BRIGADA";
@@ -4991,6 +4997,7 @@ const isKnownRoleValue = (role) => {
   const raw = String(role || "").trim().toUpperCase();
   return [
     "ADMIN", "SUPERADMIN", "ADMIN_PRINCIPAL", "NIVEL_1",
+    "ADMIN_AUX", "ADMINISTRADOR_SECUNDARIO", "SUBADMIN",
     "ADMIN_SEC", "ADMIN_SECUNDARIO", "JEFE_CAJA", "NIVEL_2",
     "CAJERO", "OPERADOR_CAJA", "OPERADOR", "NIVEL_3",
     "BRIGADA", "BRIGADISTA", "CAMPO", "NIVEL_5",
@@ -5001,13 +5008,14 @@ const isKnownRoleValue = (role) => {
 const roleLevel = (role) => ROLE_LEVELS[normalizeRole(role)] || 0;
 const hasMinRole = (currentRole, requiredRole) => roleLevel(currentRole) >= roleLevel(requiredRole);
 
-const issueToken = (user, sistema = "AGUA") => jwt.sign(
+const issueToken = (user, sistema = "AGUA", modulo = sistema) => jwt.sign(
   {
     id_usuario: user.id_usuario,
     username: user.username,
     rol: normalizeRole(user.rol),
     nombre: user.nombre_completo,
-    sistema: String(sistema || "AGUA").toUpperCase()
+    sistema: String(sistema || "AGUA").toUpperCase(),
+    modulo: normalizeModule(modulo) || "AGUA"
   },
   JWT_SECRET,
   { expiresIn: JWT_EXPIRES_IN }
@@ -5040,7 +5048,8 @@ const resolveUserFromToken = async (token, expectedSystem = "AGUA") => {
         nombre: dbUser.nombre_completo,
         rol: normalizeRole(dbUser.rol),
         estado: dbUser.estado,
-        sistema: expected
+        sistema: expected,
+        modulo: normalizeModule(payload?.modulo) || expected
       }
     };
   } catch {
@@ -5160,41 +5169,42 @@ const ACCESS_RULES = [
   { methods: ["POST"], pattern: /^\/campo\/solicitudes\/\d+\/aprobar$/, minRole: "ADMIN_SEC" },
   { methods: ["POST"], pattern: /^\/campo\/solicitudes\/\d+\/rechazar$/, minRole: "ADMIN_SEC" },
 
-  { methods: ["GET"], pattern: /^\/admin\/usuarios$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/admin\/usuarios$/, minRole: "ADMIN_AUX" },
+  { methods: ["GET"], pattern: /^\/admin\/usuarios\/\d+\/password$/, minRole: "ADMIN" },
   { methods: ["PUT"], pattern: /^\/admin\/usuarios\/\d+$/, minRole: "ADMIN" },
   { methods: ["DELETE"], pattern: /^\/admin\/usuarios\/\d+$/, minRole: "ADMIN" },
-  { methods: ["GET"], pattern: /^\/admin\/backup$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/admin\/backup$/, minRole: "ADMIN_AUX" },
   { methods: ["GET"], pattern: /^\/admin\/adjuntos-sistema$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/admin\/pagos-anulados$/, minRole: "ADMIN" },
   { methods: ["GET"], pattern: /^\/admin\/campo-remoto\/estado$/, minRole: "ADMIN_SEC" },
 
-  { methods: ["POST"], pattern: /^\/importar\/padron$/, minRole: "ADMIN" },
-  { methods: ["POST"], pattern: /^\/importar\/historial$/, minRole: "ADMIN" },
+  { methods: ["POST"], pattern: /^\/importar\/padron$/, minRole: "ADMIN_AUX" },
+  { methods: ["POST"], pattern: /^\/importar\/historial$/, minRole: "ADMIN_AUX" },
   { methods: ["POST"], pattern: /^\/importar\/verificacion-campo$/, minRole: "ADMIN_SEC" },
 
-  { methods: ["GET"], pattern: /^\/exportar\/usuarios-completo$/, minRole: "ADMIN" },
-  { methods: ["GET"], pattern: /^\/exportar\/finanzas-completo(?:\.txt)?$/, minRole: "ADMIN" },
-  { methods: ["POST"], pattern: /^\/comparaciones\/legacy\/run$/, minRole: "ADMIN" },
-  { methods: ["GET"], pattern: /^\/comparaciones\/legacy$/, minRole: "ADMIN" },
-  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/plantilla$/, minRole: "ADMIN" },
-  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/\d+\/resumen$/, minRole: "ADMIN" },
-  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/\d+\/detalle$/, minRole: "ADMIN" },
-  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/\d+\/exportar$/, minRole: "ADMIN" },
+  { methods: ["GET"], pattern: /^\/exportar\/usuarios-completo$/, minRole: "ADMIN_AUX" },
+  { methods: ["GET"], pattern: /^\/exportar\/finanzas-completo(?:\.txt)?$/, minRole: "ADMIN_AUX" },
+  { methods: ["POST"], pattern: /^\/comparaciones\/legacy\/run$/, minRole: "ADMIN_AUX" },
+  { methods: ["GET"], pattern: /^\/comparaciones\/legacy$/, minRole: "ADMIN_AUX" },
+  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/plantilla$/, minRole: "ADMIN_AUX" },
+  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/\d+\/resumen$/, minRole: "ADMIN_AUX" },
+  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/\d+\/detalle$/, minRole: "ADMIN_AUX" },
+  { methods: ["GET"], pattern: /^\/comparaciones\/legacy\/\d+\/exportar$/, minRole: "ADMIN_AUX" },
 
   { methods: ["GET"], pattern: /^\/auditoria$/, minRole: "ADMIN_SEC" },
-  { methods: ["POST"], pattern: /^\/auditoria\/\d+\/deshacer$/, minRole: "ADMIN" },
+  { methods: ["POST"], pattern: /^\/auditoria\/\d+\/deshacer$/, minRole: "ADMIN_AUX" },
   { methods: ["GET"], pattern: /^\/exportar\/auditoria$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/exportar\/padron$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/exportar\/verificacion-campo$/, minRole: "ADMIN_SEC" },
   { methods: ["GET"], pattern: /^\/exportar\/arbitrios\/\d+$/, minRole: "CONSULTA" },
 
   { methods: ["POST", "PUT"], pattern: /^\/calles(\/|$)/, minRole: "ADMIN_SEC" },
-  { methods: ["DELETE"], pattern: /^\/calles(\/|$)/, minRole: "ADMIN" },
+  { methods: ["DELETE"], pattern: /^\/calles(\/|$)/, minRole: "ADMIN_AUX" },
   { methods: ["POST", "PUT"], pattern: /^\/contribuyentes(\/|$)/, minRole: "ADMIN_SEC" },
-  { methods: ["DELETE"], pattern: /^\/contribuyentes\/\d+$/, minRole: "ADMIN" },
+  { methods: ["DELETE"], pattern: /^\/contribuyentes\/\d+$/, minRole: "ADMIN_AUX" },
   { methods: ["POST"], pattern: /^\/recibos$/, minRole: "ADMIN_SEC" },
   { methods: ["POST"], pattern: /^\/recibos\/generar-masivo$/, minRole: "ADMIN_SEC" },
-  { methods: ["DELETE"], pattern: /^\/recibos\/\d+$/, minRole: "ADMIN" },
+  { methods: ["DELETE"], pattern: /^\/recibos\/\d+$/, minRole: "ADMIN_AUX" },
   { methods: ["POST"], pattern: /^\/actas-corte\/generar$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/actas-corte\/generar-lote$/, minRole: "CAJERO" },
   { methods: ["POST"], pattern: /^\/caja\/ordenes-cobro$/, minRole: "ADMIN_SEC" },
@@ -5241,6 +5251,26 @@ const resolveRequiredRole = (method, pathname) => {
 };
 
 const authorizeByRole = (req, res, next) => {
+  if (isCajaDeniedForRole(req.user?.rol, req.method, req.path)) {
+    registrarAuditoria(
+      null,
+      "ACCESO_CAJA_DENEGADO_ADMIN_AUX",
+      `ruta=${req.path}; metodo=${req.method}; rol=${req.user?.rol || "SIN_ROL"}`,
+      req.user?.username || req.user?.nombre || "SISTEMA",
+      {
+        evento: "ACCESO_CAJA_DENEGADO_ADMIN_AUX",
+        categoria: "SEGURIDAD",
+        nivelRiesgo: "ALTO",
+        resultado: "RECHAZADO",
+        actorId: req.user?.id_usuario,
+        actorRol: req.user?.rol,
+        ip: getRequestIp(req),
+        requestId: req.auditRequestId,
+        metadata: { ruta: req.path, metodo: req.method }
+      }
+    ).catch(() => {});
+    return res.status(403).json({ error: "El administrador secundario no tiene acceso a Caja." });
+  }
   const requiredRole = resolveRequiredRole(req.method, req.path);
   if (!hasMinRole(req.user?.rol, requiredRole)) {
     registrarAuditoria(
@@ -5286,6 +5316,13 @@ const getShortLivedCacheValue = (cacheStore, cacheKey) => {
     return null;
   }
   return cached.data ?? null;
+};
+
+const requireManagementAdmin = (req, res, next) => {
+  if (!hasMinRole(req.user?.rol, "ADMIN_AUX")) {
+    return res.status(403).json({ error: "Acceso denegado" });
+  }
+  return next();
 };
 const setShortLivedCacheValue = (cacheStore, cacheKey, data, ttlMs) => {
   cacheStore.set(cacheKey, {
@@ -12631,8 +12668,8 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     const incluirAdelantados = normalizeSN(req.query?.incluir_adelantados, "N") === "S";
     const incluirFuturosExistentes = normalizeSN(req.query?.incluir_futuros_existentes, "N") === "S";
     const solicitaOverridePermisosFuturos = normalizeSN(req.query?.solo_futuros_habilitados, "S") === "N";
-    if (solicitaOverridePermisosFuturos && !hasMinRole(req.user?.rol, "ADMIN")) {
-      return res.status(403).json({ error: "Solo administrador puede listar periodos futuros sin permiso previo de Caja." });
+    if (solicitaOverridePermisosFuturos && !hasMinRole(req.user?.rol, "ADMIN_AUX")) {
+      return res.status(403).json({ error: "Solo un administrador puede listar periodos futuros sin permiso previo de Caja." });
     }
     const aplicarFiltroPermisosFuturos = !solicitaOverridePermisosFuturos;
     const adelantadoMeses = Math.min(24, Math.max(1, parsePositiveInt(req.query?.adelantado_meses, 12)));
@@ -18314,7 +18351,7 @@ app.get("/auditoria", authenticateToken, async (req, res) => {
   }
 });
 
-app.post("/auditoria/:id/deshacer", authenticateToken, requireAdmin, async (req, res) => {
+app.post("/auditoria/:id/deshacer", authenticateToken, requireManagementAdmin, async (req, res) => {
   const client = await pool.connect();
   try {
     const idAuditoria = parsePositiveInt(req.params?.id, 0);
@@ -18351,6 +18388,10 @@ app.post("/auditoria/:id/deshacer", authenticateToken, requireAdmin, async (req,
       detail?.undo_type
       || (accionAudit === "CAMPO_SOLICITUD_APROBADA" ? AUDIT_UNDO_TYPES.CAMPO_SOLICITUD_APROBADA : "")
     ).trim().toUpperCase();
+    if (isCajaUndoDeniedForRole(req.user?.rol, undoType)) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "El administrador secundario no puede revertir operaciones de Caja." });
+    }
     let restoreResult = null;
     let mensaje = "Movimiento deshecho correctamente.";
 
@@ -18793,7 +18834,7 @@ app.get("/exportar/verificacion-campo", authenticateToken, requireAdmin, async (
   }
 });
 
-app.get("/exportar/usuarios-completo", authenticateToken, requireSuperAdmin, async (req, res) => {
+app.get("/exportar/usuarios-completo", authenticateToken, requireManagementAdmin, async (req, res) => {
   try {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Hoja1");
@@ -19021,7 +19062,7 @@ app.get("/exportar/usuarios-completo", authenticateToken, requireSuperAdmin, asy
   }
 });
 
-app.get("/exportar/finanzas-completo", authenticateToken, requireSuperAdmin, async (req, res) => {
+app.get("/exportar/finanzas-completo", authenticateToken, requireManagementAdmin, async (req, res) => {
   const CHUNK_SIZE = 1500;
   const headerFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF111827" } };
   const headerFont = { name: "Aptos Narrow", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
@@ -19262,7 +19303,7 @@ app.get("/exportar/finanzas-completo", authenticateToken, requireSuperAdmin, asy
   }
 });
 
-app.get("/exportar/finanzas-completo.txt", authenticateToken, requireSuperAdmin, async (req, res) => {
+app.get("/exportar/finanzas-completo.txt", authenticateToken, requireManagementAdmin, async (req, res) => {
   const CHUNK_SIZE = 2000;
   const EPS_TXT = 0.001;
   const writeToResponse = async (chunk) => {
@@ -19377,8 +19418,8 @@ app.post("/auth/registro", async (req, res) => {
     if (existe.rows.length > 0) return res.status(400).json({ error: "Usuario ya existe" });
     const passwordHash = await bcrypt.hash(password, 10);
     await pool.query(
-      "INSERT INTO usuarios_sistema (username, password, nombre_completo, rol, estado) VALUES ($1, $2, $3, 'BRIGADA', 'PENDIENTE')",
-      [username, passwordHash, nombre_completo]
+      "INSERT INTO usuarios_sistema (username, password, password_ciphertext, nombre_completo, rol, estado) VALUES ($1, $2, $3, $4, 'BRIGADA', 'PENDIENTE')",
+      [username, passwordHash, encryptPassword(password, PASSWORD_VAULT_SECRET), nombre_completo]
     );
     res.json({ mensaje: "Solicitud enviada." });
   } catch (err) { res.status(500).send("Error registro"); }
@@ -19389,8 +19430,12 @@ const handleLogin = async (req, res) => {
     cleanupLoginSecurityMaps();
     const usernameInput = normalizeLimitedText(req.body?.username, 120);
     const password = String(req.body?.password || "");
+    const moduloSolicitado = normalizeModule(req.body?.modulo || "AGUA");
     if (!usernameInput || !password) {
       return res.status(400).json({ error: "Usuario y contraseña son obligatorios." });
+    }
+    if (!["AGUA", "CAJA", "CAMPO"].includes(moduloSolicitado)) {
+      return res.status(400).json({ error: "Módulo de inicio de sesión inválido." });
     }
 
     const usernameKey = normalizeLoginUsername(usernameInput);
@@ -19427,7 +19472,7 @@ const handleLogin = async (req, res) => {
     }
 
     const user = await pool.query(
-      "SELECT id_usuario, username, nombre_completo, rol, estado, password FROM usuarios_sistema WHERE username = $1 LIMIT 1",
+      "SELECT id_usuario, username, nombre_completo, rol, estado, password, password_ciphertext FROM usuarios_sistema WHERE username = $1 LIMIT 1",
       [usernameInput]
     );
     if (user.rows.length === 0) {
@@ -19440,13 +19485,19 @@ const handleLogin = async (req, res) => {
     let passwordOk = false;
     if (isBcryptHash(storedPassword)) {
       passwordOk = await bcrypt.compare(password, storedPassword);
+      if (passwordOk && !datos.password_ciphertext) {
+        await pool.query(
+          "UPDATE usuarios_sistema SET password_ciphertext = $1 WHERE id_usuario = $2",
+          [encryptPassword(password, PASSWORD_VAULT_SECRET), datos.id_usuario]
+        );
+      }
     } else {
       passwordOk = storedPassword === password;
       if (passwordOk) {
         const newHash = await bcrypt.hash(password, 10);
         await pool.query(
-          "UPDATE usuarios_sistema SET password = $1 WHERE id_usuario = $2",
-          [newHash, datos.id_usuario]
+          "UPDATE usuarios_sistema SET password = $1, password_ciphertext = $2 WHERE id_usuario = $3",
+          [newHash, encryptPassword(password, PASSWORD_VAULT_SECRET), datos.id_usuario]
         );
       }
     }
@@ -19460,13 +19511,37 @@ const handleLogin = async (req, res) => {
       return res.status(403).json({ error: "Cuenta no activa." });
     }
 
+    const rolNormalizado = normalizeRole(datos.rol);
+    if (!canAccessModule(rolNormalizado, moduloSolicitado)) {
+      clearLoginFailure(usernameKey);
+      await registrarAuditoria(
+        null,
+        "AUTH_MODULO_DENEGADO",
+        `modulo=${moduloSolicitado}; rol=${rolNormalizado}`,
+        datos.username || "SISTEMA",
+        {
+          evento: "AUTH_MODULO_DENEGADO",
+          categoria: "SEGURIDAD",
+          nivelRiesgo: "MEDIO",
+          resultado: "RECHAZADO",
+          actorId: datos.id_usuario,
+          actorRol: rolNormalizado,
+          ip: getRequestIp(req),
+          requestId: req.auditRequestId,
+          metadata: { modulo: moduloSolicitado, rol: rolNormalizado }
+        }
+      );
+      return res.status(403).json({ error: "Este usuario no tiene acceso al módulo seleccionado." });
+    }
+
     clearLoginFailure(usernameKey);
-    const token = issueToken(datos);
+    const token = issueToken(datos, "AGUA", moduloSolicitado);
     return res.json({
       token,
       id_usuario: datos.id_usuario,
       nombre: datos.nombre_completo,
-      rol: normalizeRole(datos.rol)
+      rol: rolNormalizado,
+      modulo: moduloSolicitado
     });
   } catch (err) {
     return res.status(500).send("Error login");
@@ -19513,8 +19588,8 @@ app.post("/auth/cambiar-password", async (req, res) => {
 
     const newHash = await bcrypt.hash(passwordNuevo, 10);
     await pool.query(
-      "UPDATE usuarios_sistema SET password = $1 WHERE id_usuario = $2",
-      [newHash, Number(datos.id_usuario)]
+      "UPDATE usuarios_sistema SET password = $1, password_ciphertext = $2 WHERE id_usuario = $3",
+      [newHash, encryptPassword(passwordNuevo, PASSWORD_VAULT_SECRET), Number(datos.id_usuario)]
     );
 
     const ip = getRequestIp(req);
@@ -19540,21 +19615,67 @@ const shapeAdminUser = (user) => {
     nombre_completo: user.nombre_completo,
     rol,
     rol_label: ROLE_LABELS[rol] || rol,
-    estado: String(user.estado || "").trim().toUpperCase() || "PENDIENTE"
+    estado: String(user.estado || "").trim().toUpperCase() || "PENDIENTE",
+    password_disponible: Boolean(user.password_disponible ?? user.password_ciphertext)
   };
 };
 
-app.get("/admin/usuarios", authenticateToken, requireSuperAdmin, async (req, res) => {
+app.get("/admin/usuarios", authenticateToken, requireManagementAdmin, async (req, res) => {
   try {
     const usuarios = await pool.query(
-      "SELECT id_usuario, username, nombre_completo, rol, estado FROM usuarios_sistema ORDER BY estado DESC, username ASC"
+      "SELECT id_usuario, username, nombre_completo, rol, estado, (password_ciphertext IS NOT NULL) AS password_disponible FROM usuarios_sistema ORDER BY estado DESC, username ASC"
     );
     const rows = usuarios.rows.map(shapeAdminUser);
     res.json(rows);
   } catch (err) { res.status(500).send("Error"); }
 });
 
+app.get("/admin/usuarios/:id/password", authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const targetId = Number(req.params?.id);
+    if (!Number.isInteger(targetId) || targetId <= 0) {
+      return res.status(400).json({ error: "ID inválido" });
+    }
+    const result = await pool.query(
+      "SELECT id_usuario, username, password_ciphertext FROM usuarios_sistema WHERE id_usuario = $1",
+      [targetId]
+    );
+    const target = result.rows[0];
+    if (!target) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    const password = target.password_ciphertext
+      ? decryptPassword(target.password_ciphertext, PASSWORD_VAULT_SECRET)
+      : null;
+    res.set("Cache-Control", "no-store");
+    await registrarAuditoria(
+      null,
+      "ADMIN_PASSWORD_CONSULTADA",
+      `id_usuario=${targetId}; username=${target.username}; disponible=${Boolean(password)}`,
+      req.user?.username || req.user?.nombre || "SISTEMA",
+      {
+        evento: "ADMIN_PASSWORD_CONSULTADA",
+        categoria: "SEGURIDAD",
+        nivelRiesgo: "ALTO",
+        actorId: req.user?.id_usuario,
+        actorRol: req.user?.rol,
+        entidadTipo: "USUARIO_SISTEMA",
+        entidadId: targetId,
+        ip: getRequestIp(req),
+        requestId: req.auditRequestId,
+        metadata: { target_username: target.username, disponible: Boolean(password) },
+        critical: true
+      }
+    );
+    return res.json({ password, disponible: Boolean(password) });
+  } catch (err) {
+    console.error("Error consultando credencial cifrada:", err.message);
+    return res.status(500).json({ error: "No se pudo consultar la contraseña." });
+  }
+});
+
 app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req, res) => {
+  const client = await pool.connect();
+  let txStarted = false;
   try {
     const { id } = req.params;
     const targetId = Number(id);
@@ -19568,6 +19689,15 @@ app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req,
     let paramIndex = 1;
     let nuevoRol = null;
     let nuevoEstado = null;
+    let passwordCambiada = false;
+
+    const current = await client.query(
+      "SELECT id_usuario, username, nombre_completo, rol, estado FROM usuarios_sistema WHERE id_usuario = $1",
+      [targetId]
+    );
+    const targetActual = current.rows[0];
+    if (!targetActual) return res.status(404).json({ error: "Usuario no encontrado" });
+    const actorRole = normalizeRole(req.user?.rol);
 
     if (Object.prototype.hasOwnProperty.call(req.body || {}, "rol")) {
       if (!isKnownRoleValue(req.body.rol)) {
@@ -19595,6 +19725,9 @@ app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req,
       const nuevoPasswordHash = await bcrypt.hash(nuevaPassword, 10);
       updateParts.push(`password = $${paramIndex++}`);
       params.push(nuevoPasswordHash);
+      updateParts.push(`password_ciphertext = $${paramIndex++}`);
+      params.push(encryptPassword(nuevaPassword, PASSWORD_VAULT_SECRET));
+      passwordCambiada = true;
     }
 
     if (updateParts.length === 0) {
@@ -19605,23 +19738,55 @@ app.put("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req,
       if (nuevoEstado && nuevoEstado !== "ACTIVO") {
         return res.status(400).json({ error: "No puedes bloquearte a ti mismo" });
       }
-      if (nuevoRol && nuevoRol !== "ADMIN") {
+      if (actorRole === "ADMIN" && nuevoRol && nuevoRol !== "ADMIN") {
         return res.status(400).json({ error: "No puedes quitarte el nivel 1 a ti mismo" });
       }
     }
 
     params.push(targetId);
-    const updated = await pool.query(
+    await client.query("BEGIN");
+    txStarted = true;
+    const updated = await client.query(
       `UPDATE usuarios_sistema
        SET ${updateParts.join(", ")}
        WHERE id_usuario = $${paramIndex}
        RETURNING id_usuario, username, nombre_completo, rol, estado`,
       params
     );
-    if (updated.rows.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
     const usuario = shapeAdminUser(updated.rows[0]);
+    if (passwordCambiada) {
+      await registrarAuditoria(
+        client,
+        "ADMIN_PASSWORD_CAMBIADA",
+        `id_usuario=${targetId}; username=${targetActual.username}; via=GESTION_USUARIOS`,
+        req.user?.username || req.user?.nombre || "SISTEMA",
+        {
+          evento: "ADMIN_PASSWORD_CAMBIADA",
+          categoria: "SEGURIDAD",
+          nivelRiesgo: "ALTO",
+          actorId: req.user?.id_usuario,
+          actorRol: req.user?.rol,
+          entidadTipo: "USUARIO_SISTEMA",
+          entidadId: targetId,
+          ip: getRequestIp(req),
+          requestId: req.auditRequestId,
+          metadata: { target_username: targetActual.username },
+          critical: true
+        }
+      );
+    }
+    await client.query("COMMIT");
+    txStarted = false;
     res.json({ mensaje: "Usuario actualizado", usuario });
-  } catch (err) { res.status(500).send("Error"); }
+  } catch (err) {
+    if (txStarted) {
+      try { await client.query("ROLLBACK"); } catch {}
+    }
+    console.error("Error actualizando usuario del sistema:", err.message);
+    res.status(500).json({ error: "No se pudo actualizar el usuario." });
+  } finally {
+    client.release();
+  }
 });
 
 app.delete("/admin/usuarios/:id", authenticateToken, requireSuperAdmin, async (req, res) => {
@@ -21699,7 +21864,7 @@ const buildReimpresionSeleccionRows = async (client, {
   return rows;
 };
 
-app.post("/admin/ui/landing-background", authenticateToken, requireSuperAdmin, uploadLandingBackgroundSingle("background"), async (req, res) => {
+app.post("/admin/ui/landing-background", authenticateToken, requireManagementAdmin, uploadLandingBackgroundSingle("background"), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: "Debe adjuntar una imagen o video para el fondo." });
@@ -21732,7 +21897,7 @@ app.post("/admin/ui/landing-background", authenticateToken, requireSuperAdmin, u
   }
 });
 
-app.delete("/admin/ui/landing-background", authenticateToken, requireSuperAdmin, async (req, res) => {
+app.delete("/admin/ui/landing-background", authenticateToken, requireManagementAdmin, async (req, res) => {
   try {
     cleanupLandingBackgroundFiles("");
     writeLandingUiSettings({ background_filename: "", background_media_type: "", updated_at: "" });
@@ -21747,7 +21912,7 @@ app.delete("/admin/ui/landing-background", authenticateToken, requireSuperAdmin,
   }
 });
 
-app.get("/admin/backup", authenticateToken, requireSuperAdmin, async (req, res) => {
+app.get("/admin/backup", authenticateToken, requireManagementAdmin, async (req, res) => {
   let backupConfig;
   try {
     backupConfig = getBackupConfig();
@@ -21801,7 +21966,7 @@ app.get("/admin/backup", authenticateToken, requireSuperAdmin, async (req, res) 
   reader.pipe(res);
 });
 
-app.post("/admin/backup-completo", authenticateToken, requireSuperAdmin, async (req, res) => {
+app.post("/admin/backup-completo", authenticateToken, requireManagementAdmin, async (req, res) => {
   try {
     const backupDir = getAutoBackupDir();
     fs.mkdirSync(backupDir, { recursive: true });
@@ -22005,7 +22170,7 @@ app.post("/recibos/masivos", async (req, res) => {
 // ==========================================
 // IMPORTACIÓN MAESTRA (XML, EXCEL, CSV)
 // ==========================================
-app.post("/importar/padron", authenticateToken, requireSuperAdmin, uploadImportSingle("archivo"), async (req, res) => {
+app.post("/importar/padron", authenticateToken, requireManagementAdmin, uploadImportSingle("archivo"), async (req, res) => {
   const client = await pool.connect();
   const rechazos = [];
   const resumenRechazos = {
@@ -22512,7 +22677,7 @@ app.post("/importar/verificacion-campo", authenticateToken, requireAdmin, upload
   }
 });
 
-app.post("/importar/historial", authenticateToken, requireSuperAdmin, uploadImportSingle("archivo"), async (req, res) => {
+app.post("/importar/historial", authenticateToken, requireManagementAdmin, uploadImportSingle("archivo"), async (req, res) => {
   if (importacionHistorialEnCurso) {
     return res.status(409).json({ error: "Ya hay una importación de historial en curso." });
   }

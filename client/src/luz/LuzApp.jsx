@@ -84,11 +84,17 @@ const readStoredLuzUser = () => {
     localStorage.removeItem(LUZ_TOKEN_KEY);
     return null;
   }
+  const role = normalizeRole(payload.rol);
+  const tokenModule = String(payload.modulo || "LUZ").trim().toUpperCase();
+  if (tokenModule !== "LUZ" || !["ADMIN", "ADMIN_SEC", "CONSULTA"].includes(role)) {
+    localStorage.removeItem(LUZ_TOKEN_KEY);
+    return null;
+  }
   return {
     id_usuario: payload.id_usuario,
     username: payload.username,
     nombre: payload.nombre,
-    rol: normalizeRole(payload.rol),
+    rol: role,
     sistema: "LUZ"
   };
 };
@@ -1154,6 +1160,7 @@ function LuzApp({ onBackToSelector }) {
       <LoginPage
         apiClient={luzApi}
         tokenStorageKey={LUZ_TOKEN_KEY}
+        moduleKey="LUZ"
         titulo="Sistema Luz Municipal"
         subtitulo="Municipalidad Distrital de Pueblo Nuevo"
         loginPath="/auth/login"

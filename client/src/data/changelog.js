@@ -1,5 +1,19 @@
 const CHANGELOG_ENTRIES = [
   {
+    date: "21 de julio de 2026",
+    title: "Jerarquía administrativa",
+    changes: [
+      "Se agregó el nivel de administrador secundario.",
+      "El administrador secundario no tiene acceso a Caja.",
+      "El administrador secundario consulta usuarios y reportes de cobranzas.",
+      "Ventanilla conserva sus funciones y acceso a Caja.",
+      "El administrador principal puede consultar y cambiar contraseñas.",
+      "Las consultas y cambios de contraseña quedan auditados.",
+      "Cada rol inicia sesión solo en los módulos que le corresponden.",
+      "Las acciones se ejecutan sin ventanas de confirmación."
+    ]
+  },
+  {
     date: "20 de julio de 2026",
     title: "Interfaz, reportes y auditoría",
     changes: [

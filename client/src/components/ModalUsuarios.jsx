@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import api from "../api";
-import { FaSave, FaTrashAlt, FaUserShield } from "react-icons/fa";
-import { confirmAction } from "../utils/confirmAction";
+import { FaEye, FaEyeSlash, FaSave, FaTrashAlt, FaUserShield } from "react-icons/fa";
 
 const ROLE_OPTIONS = [
   { value: "ADMIN", label: "Nivel 1 - Admin principal" },
-  { value: "ADMIN_SEC", label: "Nivel 2 - Ventanilla" },
-  { value: "CAJERO", label: "Nivel 3 - Operador de caja" },
-  { value: "CONSULTA", label: "Nivel 4 - Consulta" },
-  { value: "BRIGADA", label: "Nivel 5 - Brigada de campo" }
+  { value: "ADMIN_AUX", label: "Nivel 2 - Admin secundario" },
+  { value: "ADMIN_SEC", label: "Nivel 3 - Ventanilla" },
+  { value: "CAJERO", label: "Nivel 4 - Operador de caja" },
+  { value: "CONSULTA", label: "Nivel 5 - Consulta" },
+  { value: "BRIGADA", label: "Nivel 6 - Brigada de campo" }
 ];
 
 const STATUS_OPTIONS = [
@@ -36,6 +36,10 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
   const [guardandoId, setGuardandoId] = useState(null);
   const [usuarioEliminarId, setUsuarioEliminarId] = useState("");
   const [eliminandoId, setEliminandoId] = useState(null);
+  const [credenciales, setCredenciales] = useState({});
+  const [credencialesVisibles, setCredencialesVisibles] = useState({});
+  const [consultandoPasswordId, setConsultandoPasswordId] = useState(null);
+  const esAdminPrincipal = String(usuarioActivo?.rol || "").trim().toUpperCase() === "ADMIN";
 
   const showFlash = (type, text) => {
     if (typeof onFlash === "function") onFlash(type, text);
@@ -55,6 +59,8 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
         };
       });
       setEdiciones(draft);
+      setCredenciales({});
+      setCredencialesVisibles({});
     } catch (error) {
       showFlash("danger", error?.response?.data?.error || "Error al cargar usuarios");
     }
@@ -87,10 +93,10 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
     const mismoRol = (cambios.rol || "") === (u.rol || "");
     const mismoEstado = (cambios.estado || "") === (u.estado || "");
     const nuevaPassword = String(cambios.password || "");
-    const quiereCambiarPassword = nuevaPassword.length > 0;
+    const quiereCambiarPassword = esAdminPrincipal && nuevaPassword.length > 0;
 
     if (quiereCambiarPassword && nuevaPassword.length < MIN_PASSWORD_LEN) {
-      return showFlash("warning", `La nueva contrasena debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
+      return showFlash("warning", `La nueva contraseña debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
     }
 
     const payload = {};
@@ -105,7 +111,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
       await api.put(`/admin/usuarios/${u.id_usuario}`, payload);
       await cargarUsuarios();
       if (quiereCambiarPassword) {
-        showFlash("success", `Contrasena actualizada para "${u.username}".`);
+        showFlash("success", `Contraseña actualizada para "${u.username}".`);
       } else {
         showFlash("success", `Usuario "${u.username}" actualizado.`);
       }
@@ -113,6 +119,29 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
       showFlash("danger", error?.response?.data?.error || "Error al actualizar usuario");
     } finally {
       setGuardandoId(null);
+    }
+  };
+
+  const consultarPassword = async (u) => {
+    if (!esAdminPrincipal || !u?.id_usuario) return;
+    const id = Number(u.id_usuario);
+    if (Object.prototype.hasOwnProperty.call(credenciales, id)) {
+      setCredencialesVisibles((prev) => ({ ...prev, [id]: !prev[id] }));
+      return;
+    }
+    try {
+      setConsultandoPasswordId(id);
+      const res = await api.get(`/admin/usuarios/${id}/password`);
+      const password = res.data?.disponible ? String(res.data?.password || "") : "";
+      setCredenciales((prev) => ({ ...prev, [id]: password }));
+      setCredencialesVisibles((prev) => ({ ...prev, [id]: Boolean(password) }));
+      if (!password) {
+        showFlash("info", `La contraseña anterior de "${u.username}" no es recuperable. Asigne una nueva para habilitar su consulta.`);
+      }
+    } catch (error) {
+      showFlash("danger", error?.response?.data?.error || "No se pudo consultar la contraseña");
+    } finally {
+      setConsultandoPasswordId(null);
     }
   };
 
@@ -127,13 +156,6 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
       showFlash("warning", "Usuario no encontrado.");
       return;
     }
-    if (!await confirmAction(
-      `Se eliminará el usuario "${target.username}". Esta acción no se puede deshacer.`,
-      { title: "Eliminar usuario", confirmLabel: "Eliminar", variant: "danger" }
-    )) {
-      return;
-    }
-
     try {
       setEliminandoId(id);
       await api.delete(`/admin/usuarios/${id}`);
@@ -147,7 +169,6 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
     }
   };
 
-  const esAdminPrincipal = String(usuarioActivo?.rol || "").trim().toUpperCase() === "ADMIN";
   const opcionesEliminar = usuarios.filter((u) => u.id_usuario !== usuarioActivo?.id_usuario);
 
   return (
@@ -155,12 +176,14 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
       <div className="modal-dialog modal-xl">
         <div className="modal-content">
           <div className="modal-header bg-dark text-white">
-            <h5 className="modal-title"><FaUserShield className="me-2" /> Separacion de poderes - Usuarios</h5>
+            <h5 className="modal-title"><FaUserShield className="me-2" /> Gestión de usuarios</h5>
             <button type="button" className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
           <div className="modal-body bg-light">
             <div className="alert alert-info small mb-3">
-              Usuario actual: <strong>{usuarioActivo?.nombre || "-"}</strong>. Solo el Nivel 1 puede cambiar rol, estado y contrasena.
+              Usuario actual: <strong>{usuarioActivo?.nombre || "-"}</strong>. {esAdminPrincipal
+                ? "Puede modificar usuarios y consultar o cambiar contraseñas. Estas acciones quedan registradas en Auditoría."
+                : "Modo de consulta: puede revisar los usuarios, pero no modificarlos ni eliminarlos."}
             </div>
 
             <div className="table-responsive bg-white border rounded">
@@ -170,67 +193,97 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
                     <th>Usuario</th>
                     <th>Nombre</th>
                     <th>Rol actual</th>
-                    <th>Nuevo rol</th>
                     <th>Estado actual</th>
-                    <th>Nuevo estado</th>
-                    <th>Credencial</th>
-                    <th>Nueva contrasena</th>
-                    <th>Accion</th>
+                    {esAdminPrincipal && <th>Nuevo rol</th>}
+                    {esAdminPrincipal && <th>Nuevo estado</th>}
+                    {esAdminPrincipal && <th>Credencial</th>}
+                    {esAdminPrincipal && <th>Nueva contraseña</th>}
+                    {esAdminPrincipal && <th>Acción</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {usuarios.map((u) => {
                     const edit = ediciones[u.id_usuario] || { rol: u.rol, estado: u.estado, password: "" };
+                    const targetEsPrincipal = String(u.rol || "").toUpperCase() === "ADMIN";
+                    const puedeEditar = esAdminPrincipal;
+                    const passwordConsultada = Object.prototype.hasOwnProperty.call(credenciales, Number(u.id_usuario));
+                    const passwordActual = credenciales[Number(u.id_usuario)] || "";
                     const tieneCambios = (
-                      edit.rol !== u.rol ||
-                      edit.estado !== u.estado ||
-                      String(edit.password || "").length > 0
+                      puedeEditar && (
+                        edit.rol !== u.rol ||
+                        edit.estado !== u.estado ||
+                        (esAdminPrincipal && String(edit.password || "").length > 0)
+                      )
                     );
                     return (
                       <tr key={u.id_usuario}>
                         <td className="fw-bold">{u.username}</td>
                         <td>{u.nombre_completo}</td>
                         <td><span className="badge bg-primary">{getRolLabel(u.rol)}</span></td>
-                        <td>
+                        <td className="text-center">{badgeEstado(u.estado)}</td>
+                        {esAdminPrincipal && <td>
                           <select
                             className="form-select form-select-sm"
                             value={edit.rol}
                             onChange={(e) => actualizarCampo(u.id_usuario, "rol", e.target.value)}
-                            disabled={guardandoId === u.id_usuario}
+                            disabled={!puedeEditar || guardandoId === u.id_usuario}
                           >
-                            {ROLE_OPTIONS.map((op) => (
+                            {ROLE_OPTIONS.filter((op) => esAdminPrincipal || targetEsPrincipal || op.value !== "ADMIN").map((op) => (
                               <option key={op.value} value={op.value}>{op.label}</option>
                             ))}
                           </select>
-                        </td>
-                        <td className="text-center">{badgeEstado(u.estado)}</td>
-                        <td>
+                        </td>}
+                        {esAdminPrincipal && <td>
                           <select
                             className="form-select form-select-sm"
                             value={edit.estado}
                             onChange={(e) => actualizarCampo(u.id_usuario, "estado", e.target.value)}
-                            disabled={guardandoId === u.id_usuario}
+                            disabled={!puedeEditar || guardandoId === u.id_usuario}
                           >
                             {STATUS_OPTIONS.map((op) => (
                               <option key={op.value} value={op.value}>{op.label}</option>
                             ))}
                           </select>
-                        </td>
-                        <td style={{ minWidth: "170px" }}>
-                          <span className="text-muted small">Resguardada por seguridad</span>
-                        </td>
-                        <td style={{ minWidth: "220px" }}>
+                        </td>}
+                        {esAdminPrincipal && <td style={{ minWidth: "170px" }}>
+                          <div className="d-flex align-items-center gap-1">
+                              {passwordConsultada && passwordActual ? (
+                                <input
+                                  type={credencialesVisibles[u.id_usuario] ? "text" : "password"}
+                                  className="form-control form-control-sm"
+                                  value={passwordActual}
+                                  readOnly
+                                  aria-label={`Contraseña actual de ${u.username}`}
+                                />
+                              ) : (
+                                <span className="text-muted small flex-grow-1">
+                                  {u.password_disponible ? "Cifrada" : "No recuperable"}
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-outline-secondary"
+                                onClick={() => consultarPassword(u)}
+                                disabled={consultandoPasswordId === u.id_usuario || (passwordConsultada && !passwordActual)}
+                                aria-label={`${credencialesVisibles[u.id_usuario] ? "Ocultar" : "Ver"} contraseña de ${u.username}`}
+                                title={credencialesVisibles[u.id_usuario] ? "Ocultar contraseña" : "Ver contraseña"}
+                              >
+                                {credencialesVisibles[u.id_usuario] ? <FaEyeSlash /> : <FaEye />}
+                              </button>
+                          </div>
+                        </td>}
+                        {esAdminPrincipal && <td style={{ minWidth: "220px" }}>
                           <input
                             type="password"
                             className="form-control form-control-sm"
                             value={edit.password || ""}
                             onChange={(e) => actualizarCampo(u.id_usuario, "password", e.target.value)}
-                            placeholder={`Minimo ${MIN_PASSWORD_LEN} caracteres`}
+                            placeholder={`Mínimo ${MIN_PASSWORD_LEN} caracteres`}
                             autoComplete="new-password"
-                            disabled={guardandoId === u.id_usuario}
+                            disabled={!esAdminPrincipal || guardandoId === u.id_usuario}
                           />
-                        </td>
-                        <td className="text-center">
+                        </td>}
+                        {esAdminPrincipal && <td className="text-center">
                           <button
                             className="btn btn-sm btn-outline-success d-inline-flex align-items-center gap-1"
                             onClick={() => guardarUsuario(u)}
@@ -239,7 +292,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
                           >
                             <FaSave /> Guardar
                           </button>
-                        </td>
+                        </td>}
                       </tr>
                     );
                   })}
@@ -247,11 +300,10 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
               </table>
             </div>
 
-            {esAdminPrincipal && (
-              <div className="border rounded bg-white mt-3 p-3">
-                <div className="fw-bold text-danger mb-2">Eliminar usuario (solo Admin Principal)</div>
+            {esAdminPrincipal && <div className="border rounded bg-white mt-3 p-3">
+                <div className="fw-bold text-danger mb-2">Eliminar usuario</div>
                 <div className="small text-muted mb-2">
-                  El usuario eliminado ya no podra iniciar sesion en el sistema.
+                  El usuario eliminado ya no podrá iniciar sesión.
                 </div>
                 <div className="d-flex flex-wrap gap-2 align-items-center">
                   <select
@@ -278,8 +330,7 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
                     {eliminandoId !== null ? "Eliminando..." : "Eliminar usuario"}
                   </button>
                 </div>
-              </div>
-            )}
+            </div>}
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-secondary" onClick={cerrarModal}>Cerrar</button>

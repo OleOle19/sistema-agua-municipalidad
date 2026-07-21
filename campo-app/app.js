@@ -2008,16 +2008,6 @@
 
     const c = selectedContrib();
     if (!c) { setStatus("Selecciona un contribuyente.", "warning"); return; }
-    const dup = duplicateSummary(c.id_contribuyente);
-    if (dup.has) {
-      const latestTxt = dup.latestAt ? fmtAgo(dup.latestAt) : "sin fecha";
-      const confirmMsg =
-        "Ya existe actividad reciente para este contribuyente (cola: " + dup.queued +
-        ", enviados: " + dup.recent + ", ultimo: " + latestTxt + ").\n\n" +
-        "Deseas registrar otra solicitud?";
-      if (!window.confirm(confirmMsg)) return;
-    }
-
     const key = makeIdempotencyKey("solicitud", c.id_contribuyente);
     if (tipoSolicitud === TIPOS_SOLICITUD.ALTA_DIRECCION_ALTERNA && !direccionVerificada) {
       setStatus("Para dirección adicional debes registrar una dirección nueva.", "warning", 5000);
@@ -2163,7 +2153,7 @@
     const btn = el.loginForm.querySelector("button[type='submit']");
     if (btn) btn.disabled = true;
     try {
-      const data = await api(moduleLoginPath(), { method: "POST", headers: { "Content-Type": "application/json" }, body: { username: username, password: password } });
+      const data = await api(moduleLoginPath(), { method: "POST", headers: { "Content-Type": "application/json" }, body: { username: username, password: password, modulo: "CAMPO" } });
       if (!hasMinRole(data && data.rol, "BRIGADA")) { setStatus("El usuario no tiene permisos para campo.", "error", 5000); return; }
       const token = String((data && data.token) || "").trim();
       const idUsuario = Number(data && data.id_usuario);
@@ -2215,14 +2205,6 @@
   }
 
   async function logout() {
-    const currentUserId = Number(state.user && state.user.id_usuario || 0);
-    const pending = currentUserId > 0 ? await queueByUser(currentUserId) : [];
-    if (pending.length > 0) {
-      const confirmed = window.confirm(
-        `Hay ${pending.length} solicitud(es) sin enviar. Al cerrar sesión se borrarán del teléfono junto con el padrón offline. ¿Deseas continuar?`
-      );
-      if (!confirmed) return;
-    }
     await clearOfflineData();
     state.token = ""; state.user = null;
     state.calles = [];

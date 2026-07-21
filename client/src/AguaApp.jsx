@@ -38,20 +38,23 @@ const ROLE_ORDER = {
   CONSULTA: 2,
   CAJERO: 3,
   ADMIN_SEC: 4,
-  ADMIN: 5
+  ADMIN_AUX: 5,
+  ADMIN: 6
 };
 
 const ROLE_LABELS = {
   ADMIN: "Nivel 1 - Admin principal",
-  ADMIN_SEC: "Nivel 2 - Ventanilla",
-  CAJERO: "Nivel 3 - Operador de caja",
-  CONSULTA: "Nivel 4 - Consulta",
-  BRIGADA: "Nivel 5 - Brigada de campo"
+  ADMIN_AUX: "Nivel 2 - Admin secundario",
+  ADMIN_SEC: "Nivel 3 - Ventanilla",
+  CAJERO: "Nivel 4 - Operador de caja",
+  CONSULTA: "Nivel 5 - Consulta",
+  BRIGADA: "Nivel 6 - Brigada de campo"
 };
 
 const normalizeRole = (role) => {
   const raw = String(role || "").trim().toUpperCase();
   if (["ADMIN", "SUPERADMIN", "ADMIN_PRINCIPAL", "NIVEL_1"].includes(raw)) return "ADMIN";
+  if (["ADMIN_AUX", "ADMINISTRADOR_SECUNDARIO", "SUBADMIN"].includes(raw)) return "ADMIN_AUX";
   if (["ADMIN_SEC", "ADMIN_SECUNDARIO", "JEFE_CAJA", "NIVEL_2"].includes(raw)) return "ADMIN_SEC";
   if (["CAJERO", "OPERADOR_CAJA", "OPERADOR", "NIVEL_3"].includes(raw)) return "CAJERO";
   if (["BRIGADA", "BRIGADISTA", "CAMPO", "NIVEL_5"].includes(raw)) return "BRIGADA";
@@ -459,11 +462,18 @@ const readStoredUser = () => {
     localStorage.removeItem(LEGACY_TOKEN_KEY);
     return null;
   }
+  const role = normalizeRole(payload.rol);
+  const tokenModule = String(payload.modulo || "AGUA").trim().toUpperCase();
+  if (tokenModule !== "AGUA" || !["ADMIN", "ADMIN_AUX", "ADMIN_SEC", "CONSULTA"].includes(role)) {
+    localStorage.removeItem(AGUA_TOKEN_KEY);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+    return null;
+  }
   return {
     id_usuario: payload.id_usuario,
     username: payload.username,
     nombre: payload.nombre,
-    rol: normalizeRole(payload.rol)
+    rol: role
   };
 };
 
@@ -684,24 +694,24 @@ function AguaApp({ onBackToSelector = null }) {
   const rolActual = normalizeRole(usuarioSistema?.rol);
   const permisos = useMemo(() => ({
     role: rolActual,
-    roleLabel: ROLE_LABELS[rolActual] || "Nivel 4 - Consulta",
-    canCaja: hasMinRole(rolActual, "CAJERO"),
+    roleLabel: ROLE_LABELS[rolActual] || "Nivel 5 - Consulta",
+    canCaja: rolActual === "ADMIN" || rolActual === "ADMIN_SEC" || rolActual === "CAJERO",
     canConteoEfectivo: rolActual === "ADMIN" || rolActual === "CAJERO",
     canManageOps: hasMinRole(rolActual, "ADMIN_SEC"),
     canManageContribuyentes: hasMinRole(rolActual, "ADMIN_SEC"),
-    canReportesCaja: hasMinRole(rolActual, "ADMIN_SEC"),
+    canReportesCaja: rolActual === "ADMIN" || rolActual === "ADMIN_AUX" || rolActual === "ADMIN_SEC" || rolActual === "CAJERO",
     canExportPadron: hasMinRole(rolActual, "ADMIN_SEC"),
     canAuditoria: hasMinRole(rolActual, "ADMIN_SEC"),
-    canManageUsers: hasMinRole(rolActual, "ADMIN"),
-    canSuperAdmin: hasMinRole(rolActual, "ADMIN"),
-    canDeleteRecibos: hasMinRole(rolActual, "ADMIN"),
-    canDeleteCalles: hasMinRole(rolActual, "ADMIN"),
+    canManageUsers: hasMinRole(rolActual, "ADMIN_AUX"),
+    canSuperAdmin: hasMinRole(rolActual, "ADMIN_AUX"),
+    canDeleteRecibos: hasMinRole(rolActual, "ADMIN_AUX"),
+    canDeleteCalles: hasMinRole(rolActual, "ADMIN_AUX"),
     canCambiarEstadoConexion: hasMinRole(rolActual, "ADMIN_SEC"),
     canGenerarActaCorte: hasMinRole(rolActual, "ADMIN_SEC"),
-    canImpresionMensual: hasMinRole(rolActual, "ADMIN"),
+    canImpresionMensual: hasMinRole(rolActual, "ADMIN_AUX"),
     canReimpresionRecibo: hasMinRole(rolActual, "ADMIN_SEC"),
     canReporteCortes: hasMinRole(rolActual, "ADMIN_SEC"),
-    canGestionCampo: hasMinRole(rolActual, "ADMIN")
+    canGestionCampo: hasMinRole(rolActual, "ADMIN_AUX")
   }), [rolActual]);
   const masivoRef = useRef(null);
   const isPrintingMasivoRef = useRef(false);
@@ -1683,7 +1693,7 @@ const anexoCajaPageStyle = `
   const eliminarUsuarioCompleto = async () => {
     if(!usuarioSeleccionado) return;
     if (!permisos.canSuperAdmin) {
-      showFlash("warning", "Solo Nivel 1 puede eliminar contribuyentes.");
+      showFlash("warning", "Esta acción requiere un perfil administrador.");
       return;
     }
     if (!await confirmAction(
@@ -1722,7 +1732,7 @@ const anexoCajaPageStyle = `
 
   const descargarBackup = async () => {
     if (!permisos.canSuperAdmin) {
-      showFlash("warning", "Solo Nivel 1 puede generar copias de seguridad.");
+      showFlash("warning", "Esta acción requiere un perfil administrador.");
       return;
     }
     if (!await confirmAction("¿Generar y descargar una copia de seguridad completa?", { title: "Copia de seguridad" })) return;
@@ -2152,6 +2162,7 @@ const anexoCajaPageStyle = `
     return (
       <LoginPage
         tokenStorageKey={AGUA_TOKEN_KEY}
+        moduleKey="AGUA"
         titulo="Sistema Agua Potable"
         subtitulo="Municipalidad Distrital de Pueblo Nuevo"
         onBackToSelector={onBackToSelector}
@@ -2395,6 +2406,7 @@ const anexoCajaPageStyle = `
           <LazyModalAuditoria
             cerrarModal={() => setMostrarModalAuditoria(false)}
             canUndo={permisos.canSuperAdmin}
+            canUndoCaja={rolActual === "ADMIN"}
             onUndoApplied={() => cargarContribuyentes(0, { forceFresh: true })}
           />
         </Suspense>

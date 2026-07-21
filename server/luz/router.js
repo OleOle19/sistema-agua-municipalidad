@@ -15,6 +15,7 @@ const {
   normalizeAuditEventCode,
   redactAuditPayload
 } = require("../audit-utils");
+const { canAccessModule, normalizeModule } = require("../role-policy");
 
 const router = express.Router();
 const LUZ_IMPORT_MAX_FILE_BYTES = Math.max(
@@ -178,6 +179,7 @@ const USER_STATUS_ALLOWED = new Set(["PENDIENTE", "ACTIVO", "BLOQUEADO"]);
 const normalizeRole = (role) => {
   const raw = String(role || "").trim().toUpperCase();
   if (["ADMIN", "SUPERADMIN", "ADMIN_PRINCIPAL", "NIVEL_1"].includes(raw)) return "ADMIN";
+  if (["ADMIN_AUX", "ADMINISTRADOR_SECUNDARIO", "SUBADMIN"].includes(raw)) return "ADMIN_AUX";
   if (["ADMIN_SEC", "ADMIN_SECUNDARIO", "JEFE_CAJA", "NIVEL_2"].includes(raw)) return "ADMIN_SEC";
   if (["CAJERO", "OPERADOR_CAJA", "OPERADOR", "NIVEL_3"].includes(raw)) return "CAJERO";
   if (["BRIGADA", "BRIGADISTA", "CAMPO", "NIVEL_5"].includes(raw)) return "BRIGADA";
@@ -448,13 +450,14 @@ const getPeriodoAnterior = (anio, mes) => {
   return { anio: anioNum, mes: mesNum - 1 };
 };
 
-const issueLuzToken = (user) => jwt.sign(
+const issueLuzToken = (user, modulo = "LUZ") => jwt.sign(
   {
     id_usuario: user.id_usuario,
     username: user.username,
     rol: normalizeRole(user.rol),
     nombre: user.nombre_completo,
-    sistema: "LUZ"
+    sistema: "LUZ",
+    modulo: normalizeModule(modulo) || "LUZ"
   },
   JWT_SECRET,
   { expiresIn: JWT_EXPIRES_IN }
@@ -520,6 +523,26 @@ const authenticateLuzToken = async (req, res, next) => {
     return res.status(resolved.status || 401).json({ error: resolved.error || "No autorizado" });
   }
   req.user = resolved.user;
+  if (normalizeRole(req.user?.rol) === "ADMIN_AUX") {
+    req.skipAutoAudit = true;
+    registrarAuditoria(
+      null,
+      req.user?.username || req.user?.nombre || "SISTEMA",
+      "ACCESO_CAJA_DENEGADO_ADMIN_AUX",
+      `ruta=${req.path}; metodo=${req.method}; rol=ADMIN_AUX`,
+      {
+        categoria: "SEGURIDAD",
+        nivelRiesgo: "ALTO",
+        resultado: "RECHAZADO",
+        actorId: req.user?.id_usuario,
+        actorRol: req.user?.rol,
+        ip: getRequestIp(req),
+        requestId: req.auditRequestId,
+        metadata: { ruta: req.path, metodo: req.method }
+      }
+    ).catch(() => {});
+    return res.status(403).json({ error: "El administrador secundario no tiene acceso a Caja." });
+  }
   return next();
 };
 const resolveCajaUserFromAnySystemToken = async (token) => {
@@ -1547,8 +1570,12 @@ router.post("/auth/login", async (req, res) => {
     cleanupLoginSecurityMaps();
     const username = normalizeText(req.body?.username, 120);
     const password = String(req.body?.password || "");
+    const moduloSolicitado = normalizeModule(req.body?.modulo || "LUZ");
     if (!username || !password) {
       return res.status(400).json({ error: "Usuario y contraseña son obligatorios." });
+    }
+    if (!["LUZ", "CAMPO"].includes(moduloSolicitado)) {
+      return res.status(400).json({ error: "Módulo de inicio de sesión inválido." });
     }
     const usernameKey = normalizeLoginUsername(username);
     const ipKey = getRequestIp(req);
@@ -1615,6 +1642,22 @@ router.post("/auth/login", async (req, res) => {
       registerLoginFailure(usernameKey);
       return res.status(403).json({ error: "Cuenta no activa." });
     }
+    const rolNormalizado = normalizeRole(user.rol);
+    if (!canAccessModule(rolNormalizado, moduloSolicitado)) {
+      clearLoginFailure(usernameKey);
+      await registrarAuditoria(null, user.username, "AUTH_MODULO_DENEGADO", `modulo=${moduloSolicitado}; rol=${rolNormalizado}`, {
+        evento: "AUTH_MODULO_DENEGADO",
+        categoria: "SEGURIDAD",
+        nivelRiesgo: "MEDIO",
+        resultado: "RECHAZADO",
+        actorId: user.id_usuario,
+        actorRol: rolNormalizado,
+        ip: getRequestIp(req),
+        requestId: req.auditRequestId,
+        metadata: { sistema: "LUZ", modulo: moduloSolicitado, rol: rolNormalizado }
+      });
+      return res.status(403).json({ error: "Este usuario no tiene acceso al módulo seleccionado." });
+    }
     clearLoginFailure(usernameKey);
     await registrarAuditoria(null, user.username, "AUTH_LOGIN", `ip=${getRequestIp(req)}`, {
       evento: "AUTH_LOGIN",
@@ -1627,13 +1670,14 @@ router.post("/auth/login", async (req, res) => {
       requestId: req.auditRequestId,
       metadata: { sistema: "LUZ" }
     });
-    const token = issueLuzToken(user);
+    const token = issueLuzToken(user, moduloSolicitado);
     return res.json({
       token,
       id_usuario: Number(user.id_usuario),
       nombre: user.nombre_completo,
-      rol: normalizeRole(user.rol),
-      sistema: "LUZ"
+      rol: rolNormalizado,
+      sistema: "LUZ",
+      modulo: moduloSolicitado
     });
   } catch (err) {
     console.error("[LUZ] Error login:", err.message);

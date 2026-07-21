@@ -9,6 +9,7 @@ const LoginPage = ({
   onLoginSuccess,
   apiClient = api,
   tokenStorageKey = "token",
+  moduleKey = "AGUA",
   titulo = "Sistema Agua Potable",
   subtitulo = "Municipalidad Distrital de Pueblo Nuevo",
   loginPath = "/auth/login",
@@ -59,7 +60,8 @@ const LoginPage = ({
       if (modo === "LOGIN") {
         const res = await apiClient.post(loginPath, {
           username: form.username,
-          password: form.password
+          password: form.password,
+          modulo: moduleKey
         });
         if (res.data?.token) {
           localStorage.setItem(tokenStorageKey, res.data.token);

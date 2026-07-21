@@ -1,4 +1,4 @@
-import { Component, Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { Component, Suspense, lazy, useMemo, useState } from "react";
 import { FaTint, FaBolt, FaCashRegister, FaMobileAlt } from "react-icons/fa";
 import { API_BASE_URL } from "./api";
 import MunicipalBackdrop from "./components/MunicipalBackdrop";
@@ -27,42 +27,6 @@ const clearAllModuleSessions = () => {
 };
 
 const getCampoAppUrl = () => `${API_BASE_URL}/campo-app/`;
-
-const normalizeRole = (role) => {
-  const raw = String(role || "").trim().toUpperCase();
-  if (["ADMIN", "SUPERADMIN", "ADMIN_PRINCIPAL", "NIVEL_1"].includes(raw)) return "ADMIN";
-  if (["CAJERO", "OPERADOR_CAJA", "OPERADOR", "NIVEL_3"].includes(raw)) return "CAJERO";
-  if (["ADMIN_SEC", "ADMIN_SECUNDARIO", "JEFE_CAJA", "NIVEL_2"].includes(raw)) return "ADMIN_SEC";
-  if (["BRIGADA", "BRIGADISTA", "CAMPO", "NIVEL_5"].includes(raw)) return "BRIGADA";
-  return "CONSULTA";
-};
-
-const canEnterCajaModuleByRole = (role) => {
-  const normalized = normalizeRole(role);
-  return normalized === "ADMIN" || normalized === "ADMIN_SEC" || normalized === "CAJERO";
-};
-
-const parseJwtPayload = (token) => {
-  const parts = String(token || "").split(".");
-  if (parts.length < 2) return null;
-  try {
-    let base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const pad = base64.length % 4;
-    if (pad) base64 += "=".repeat(4 - pad);
-    return JSON.parse(atob(base64));
-  } catch {
-    return null;
-  }
-};
-
-const readStoredRole = () => {
-  const token = localStorage.getItem(AGUA_TOKEN_KEY) || localStorage.getItem("token");
-  if (!token) return "";
-  const payload = parseJwtPayload(token);
-  if (!payload) return "";
-  if (payload.exp && Date.now() / 1000 > payload.exp) return "";
-  return normalizeRole(payload.rol);
-};
 
 const readStoredModule = () => {
   const raw = String(localStorage.getItem(MODULE_STORAGE_KEY) || "").trim().toLowerCase();
@@ -123,17 +87,10 @@ function App() {
   const [modulo, setModulo] = useState(readStoredModule);
   const [selectorAviso, setSelectorAviso] = useState("");
   const campoAppUrl = useMemo(() => getCampoAppUrl(), []);
-  const rolActual = readStoredRole();
-  const cajaPermitida = !rolActual || canEnterCajaModuleByRole(rolActual);
-
   const actions = useMemo(() => ({
     seleccionar: (target) => {
       const value = String(target || "").trim().toLowerCase();
       if (!["agua", "luz", "caja"].includes(value)) return;
-      if (value === "caja" && !cajaPermitida) {
-        setSelectorAviso("El módulo Caja Municipal requiere un perfil de Administrador, Ventanilla o Cajero.");
-        return;
-      }
       clearAllModuleSessions();
       setSelectorAviso("");
       localStorage.setItem(MODULE_STORAGE_KEY, value);
@@ -145,17 +102,7 @@ function App() {
       setModulo("");
       setSelectorAviso("");
     }
-  }), [cajaPermitida]);
-
-  useEffect(() => {
-    if (modulo !== "caja" || cajaPermitida) return;
-    const timeoutId = window.setTimeout(() => {
-      localStorage.removeItem(MODULE_STORAGE_KEY);
-      setSelectorAviso("Acceso denegado a Caja Municipal para este perfil.");
-      setModulo("");
-    }, 0);
-    return () => window.clearTimeout(timeoutId);
-  }, [cajaPermitida, modulo]);
+  }), []);
 
   if (modulo === "agua") {
     return (
@@ -236,16 +183,13 @@ function App() {
                 <button
                   className="btn btn-outline-success w-100 h-100 text-start p-4 module-entry module-entry--caja"
                   onClick={() => actions.seleccionar("caja")}
-                  disabled={!cajaPermitida}
                 >
                   <div className="d-flex align-items-center gap-3">
                     <span className="fs-2 text-success module-entry__icon"><FaCashRegister /></span>
                     <div className="module-entry__content">
                       <div className="fw-bold fs-5 module-entry__title">Caja Municipal</div>
                       <div className="small module-entry__desc">
-                        {cajaPermitida
-                          ? "Cobranza unificada de Agua y Luz."
-                          : "Disponible para cuentas ADMIN, ADMIN_SEC o CAJERO."}
+                        Cobranza unificada de Agua y Luz.
                       </div>
                     </div>
                   </div>
