@@ -391,7 +391,12 @@ const INTERNAL_AUDIT_LABELS = new Set([
   "undo_snapshot_b64",
   "undo_aplicado_sn",
   "undo_aplicado_por",
-  "undo_aplicado_en"
+  "undo_aplicado_en",
+  "tipo_pago",
+  "tipo de pago",
+  "estado_confirmacion",
+  "estado confirmacion",
+  "ip"
 ]);
 const getUndoTypeFromRows = (rows = []) => {
   const match = (Array.isArray(rows) ? rows : []).find(
@@ -406,6 +411,20 @@ const isUndoAlreadyApplied = (rows = []) => {
   return String(match?.text || "").trim().toUpperCase() === "S";
 };
 const isInternalAuditLabel = (label) => INTERNAL_AUDIT_LABELS.has(String(label || "").trim().toLowerCase());
+const sanitizeAuditValueForDisplay = (value) => {
+  if (Array.isArray(value)) return value.map((item) => sanitizeAuditValueForDisplay(item));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !isInternalAuditLabel(key))
+      .map(([key, item]) => [key, sanitizeAuditValueForDisplay(item)])
+  );
+};
+const hasVisibleAuditData = (value) => (
+  value
+  && typeof value === "object"
+  && Object.keys(value).length > 0
+);
 const isUndoableAuditAction = (log = {}, detalleRows = []) => {
   if (String(log?.reversion_aplicada_sn || "").trim().toUpperCase() === "S") return false;
   if (isUndoAlreadyApplied(detalleRows)) return false;
@@ -522,6 +541,18 @@ const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false, ca
   const rangoFin = totalLogs > 0 ? Math.min(((pagina - 1) * AUDITORIA_PAGE_SIZE) + logs.length, totalLogs) : 0;
   const detalleSeleccionado = useMemo(() => parseDetalle(seleccionado?.detalle), [seleccionado]);
   const detalleVisible = useMemo(() => detalleSeleccionado.filter((item) => !isInternalAuditLabel(item.label)), [detalleSeleccionado]);
+  const metadataVisible = useMemo(
+    () => sanitizeAuditValueForDisplay(seleccionado?.metadata),
+    [seleccionado?.metadata]
+  );
+  const datosAntesVisibles = useMemo(
+    () => sanitizeAuditValueForDisplay(seleccionado?.datos_antes),
+    [seleccionado?.datos_antes]
+  );
+  const datosDespuesVisibles = useMemo(
+    () => sanitizeAuditValueForDisplay(seleccionado?.datos_despues),
+    [seleccionado?.datos_despues]
+  );
   const undoTypeSeleccionado = getUndoTypeFromRows(detalleSeleccionado);
 
   const descargarExcel = async () => {
@@ -653,9 +684,9 @@ const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false, ca
                     <div className="d-flex justify-content-between gap-2 mb-3"><div><div className="fw-bold">Detalle del movimiento</div><div className="small opacity-75">ID {seleccionado.id_auditoria}</div></div><button type="button" className={closeBtnClass} onClick={() => setSeleccionado(null)} aria-label="Cerrar detalle" /></div>
                     <div className={`${panelClass} p-2 mb-2 small`}><div className="fw-semibold">{toFriendlyAction(seleccionado.evento || seleccionado.accion)}</div><div>{formatFecha(seleccionado.fecha)} · {seleccionado.usuario || "SISTEMA"}</div>{seleccionado.request_id && <div className="text-break opacity-75">Solicitud: {seleccionado.request_id}</div>}</div>
                     {detalleVisible.map((item, idx) => <div key={`${seleccionado.id_auditoria}-detail-${idx}`} className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">{prettyLabel(item.label)}</div><div className="small" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{formatValueForDisplay(item.label, item.text, item.isJson)}</div></div>)}
-                    {seleccionado.metadata && Object.keys(seleccionado.metadata).length > 0 && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Metadata estructurada</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{JSON.stringify(seleccionado.metadata, null, 2)}</pre></div>}
-                    {seleccionado.datos_antes && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Antes</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(seleccionado.datos_antes, null, 2)}</pre></div>}
-                    {seleccionado.datos_despues && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Despues</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(seleccionado.datos_despues, null, 2)}</pre></div>}
+                    {hasVisibleAuditData(metadataVisible) && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Metadata estructurada</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{JSON.stringify(metadataVisible, null, 2)}</pre></div>}
+                    {hasVisibleAuditData(datosAntesVisibles) && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Antes</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(datosAntesVisibles, null, 2)}</pre></div>}
+                    {hasVisibleAuditData(datosDespuesVisibles) && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Despues</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap" }}>{JSON.stringify(datosDespuesVisibles, null, 2)}</pre></div>}
                     {seleccionado.reversion_aplicada_sn === "S" && <div className="alert alert-info py-2 small">Movimiento revertido{seleccionado.reversion_motivo ? `: ${seleccionado.reversion_motivo}` : "."}</div>}
                     {canUndo && (canUndoCaja || !isCajaUndoType(undoTypeSeleccionado)) && isUndoableAuditAction(seleccionado, detalleSeleccionado) && (
                       <div className="border border-danger rounded-3 p-2 mt-3">

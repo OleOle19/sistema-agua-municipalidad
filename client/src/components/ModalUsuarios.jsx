@@ -136,7 +136,11 @@ const ModalUsuarios = ({ cerrarModal, usuarioActivo, onFlash = null }) => {
       setCredenciales((prev) => ({ ...prev, [id]: password }));
       setCredencialesVisibles((prev) => ({ ...prev, [id]: Boolean(password) }));
       if (!password) {
-        showFlash("info", `La contraseña anterior de "${u.username}" no es recuperable. Asigne una nueva para habilitar su consulta.`);
+        showFlash(
+          "info",
+          `La contraseña de "${u.username}" solo existe como hash y no se puede reconstruir. `
+          + "Pida al usuario iniciar sesión una vez o asigne una nueva; desde entonces podrá consultarla."
+        );
       }
     } catch (error) {
       showFlash("danger", error?.response?.data?.error || "No se pudo consultar la contraseña");

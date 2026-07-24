@@ -504,6 +504,7 @@ const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, onDoubleCli
       const ordenesPendientes = Number(c._pendienteOrdenesNum ?? c.pendiente_caja_ordenes) || 0;
       const deudaVisible = Number(c._deudaVisibleNum ?? c.deuda_anio) || 0;
       const abonoVisible = Number(c._abonoVisibleNum ?? c.abono_anio) || 0;
+      const financialPending = c._financialLoaded === false;
       const marcaPendienteCaja = pendienteCaja > 0.001;
       const titlePendienteCaja = marcaPendienteCaja
         ? `Incluye S/. ${pendienteCaja.toFixed(2)} reservado en ${ordenesPendientes || 1} orden(es) pendiente(s) de caja.`
@@ -521,9 +522,9 @@ const ContribuyenteRow = memo(({ c, className, onMouseDown, onClick, onDoubleCli
         {estadoLabel}{verificadoCampo ? "" : " *"}
       </span>
     </td>
-    <td className="text-center fw-bold">{c.meses_deuda > 0 ? c.meses_deuda : "-"}</td>
-    <td className="text-end fw-bold" title={titlePendienteCaja}>S/. {deudaVisible.toFixed(2)}{marcaPendienteCaja ? " *" : ""}</td>
-    <td className="text-end fw-bold text-success" title={titlePendienteCaja}>S/. {abonoVisible.toFixed(2)}{marcaPendienteCaja ? " *" : ""}</td>
+    <td className="text-center fw-bold">{financialPending ? <span className="text-muted" title="Actualizando saldos">…</span> : (c.meses_deuda > 0 ? c.meses_deuda : "-")}</td>
+    <td className="text-end fw-bold" title={financialPending ? "Actualizando saldos" : titlePendienteCaja}>{financialPending ? <span className="text-muted">…</span> : <>S/. {deudaVisible.toFixed(2)}{marcaPendienteCaja ? " *" : ""}</>}</td>
+    <td className="text-end fw-bold text-success" title={financialPending ? "Actualizando saldos" : titlePendienteCaja}>{financialPending ? <span className="text-muted">…</span> : <>S/. {abonoVisible.toFixed(2)}{marcaPendienteCaja ? " *" : ""}</>}</td>
         </>
       );
     })()}
@@ -615,6 +616,8 @@ const areSetsEqual = (a, b) => {
 function AguaApp({ onBackToSelector = null }) {
   const [usuarioSistema, setUsuarioSistema] = useState(readStoredUser);
   const [contribuyentes, setContribuyentes] = useState([]);
+  const [resumenFinancieroCargando, setResumenFinancieroCargando] = useState(false);
+  const [resumenFinancieroListo, setResumenFinancieroListo] = useState(false);
   const [usuarioSeleccionado, setUsuarioSeleccionado] = useState(null);
   const [historial, setHistorial] = useState([]);
   const [historialYear, setHistorialYear] = useState("all");
@@ -668,6 +671,7 @@ function AguaApp({ onBackToSelector = null }) {
   const suppressClearRef = useRef(false);
   const selectedIdsRef = useRef(new Set());
   const usuarioSeleccionadoRef = useRef(null);
+  const contribuyentesRequestRef = useRef(0);
   const [tableViewportHeight, setTableViewportHeight] = useState(0);
   const [tableScrollRow, setTableScrollRow] = useState(0);
   const pendingScrollTopRef = useRef(0);
@@ -1213,34 +1217,149 @@ const anexoCajaPageStyle = `
 
   const cargarContribuyentes = async (retry = 0, options = {}) => {
     const forceFresh = options?.forceFresh === true;
-    try {
-      const res = await api.get("/contribuyentes", {
-        params: forceFresh ? { _ts: Date.now() } : undefined,
-        headers: forceFresh
-          ? {
-            "Cache-Control": "no-cache",
-            Pragma: "no-cache"
+    const requestId = contribuyentesRequestRef.current + 1;
+    contribuyentesRequestRef.current = requestId;
+    const requestConfig = {
+      params: forceFresh ? { fresh: 1, _ts: Date.now() } : undefined,
+      headers: forceFresh
+        ? {
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache"
+        }
+        : undefined
+    };
+    const wrapRequest = (promise) => promise.then(
+      (response) => ({ ok: true, response }),
+      (error) => ({ ok: false, error })
+    );
+    const basicRequest = wrapRequest(api.get("/contribuyentes/listado-basico", requestConfig));
+    const financialRequest = wrapRequest(api.get("/contribuyentes/resumen-financiero", requestConfig));
+    setResumenFinancieroCargando(true);
+
+    const mergeBasicRows = (rows) => {
+      setContribuyentes((previousRows) => {
+        const previousById = new Map(previousRows.map((row) => [Number(row.id_contribuyente), row]));
+        return rows.map((row) => {
+          const previous = previousById.get(Number(row.id_contribuyente));
+          if (previous?._financialLoaded) {
+            return {
+              ...row,
+              deuda_anio: previous.deuda_anio,
+              abono_anio: previous.abono_anio,
+              meses_deuda: previous.meses_deuda,
+              pendiente_caja_monto: previous.pendiente_caja_monto,
+              pendiente_caja_ordenes: previous.pendiente_caja_ordenes,
+              _financialLoaded: true
+            };
           }
-          : undefined
+          return {
+            ...row,
+            deuda_anio: null,
+            abono_anio: null,
+            meses_deuda: null,
+            pendiente_caja_monto: null,
+            pendiente_caja_ordenes: null,
+            _financialLoaded: false
+          };
+        });
       });
-      const rows = Array.isArray(res.data) ? res.data : [];
-      setContribuyentes(rows);
       const selectedId = Number(usuarioSeleccionadoRef.current?.id_contribuyente || 0);
       if (selectedId > 0) {
         const usuarioActualizado = rows.find((row) => Number(row?.id_contribuyente || 0) === selectedId) || null;
         if (usuarioActualizado) {
-          setUsuarioSeleccionado(usuarioActualizado);
+          setUsuarioSeleccionado((previous) => (
+            previous?._financialLoaded
+              ? {
+                ...usuarioActualizado,
+                deuda_anio: previous.deuda_anio,
+                abono_anio: previous.abono_anio,
+                meses_deuda: previous.meses_deuda,
+                pendiente_caja_monto: previous.pendiente_caja_monto,
+                pendiente_caja_ordenes: previous.pendiente_caja_ordenes,
+                _financialLoaded: true
+              }
+              : { ...usuarioActualizado, _financialLoaded: false }
+          ));
         }
       }
-    } catch (error) {
+    };
+
+    const basicResult = await basicRequest;
+    if (requestId !== contribuyentesRequestRef.current) return;
+    if (!basicResult.ok) {
+      const error = basicResult.error;
       const mensaje = String(error?.message || "");
       const esTimeout = error?.code === "ECONNABORTED" || mensaje.toLowerCase().includes("timeout");
       if (esTimeout && retry < 1) {
         setTimeout(() => cargarContribuyentes(retry + 1, options), 1200);
         return;
       }
-      console.error("Error datos:", error.response?.status, error.response?.data || error.message);
+      try {
+        const legacy = await api.get("/contribuyentes", requestConfig);
+        if (requestId !== contribuyentesRequestRef.current) return;
+        const rows = (Array.isArray(legacy.data) ? legacy.data : []).map((row) => ({
+          ...row,
+          _financialLoaded: true
+        }));
+        setContribuyentes(rows);
+        const selectedId = Number(usuarioSeleccionadoRef.current?.id_contribuyente || 0);
+        if (selectedId > 0) {
+          const selectedRow = rows.find((row) => Number(row.id_contribuyente) === selectedId);
+          if (selectedRow) setUsuarioSeleccionado(selectedRow);
+        }
+        setResumenFinancieroListo(true);
+        setResumenFinancieroCargando(false);
+        return;
+      } catch (legacyError) {
+        console.error(
+          "Error datos:",
+          legacyError.response?.status,
+          legacyError.response?.data || legacyError.message
+        );
+        setResumenFinancieroCargando(false);
+        showFlash("danger", "No se pudo cargar la relación de contribuyentes.");
+        return;
+      }
     }
+
+    const basicRows = Array.isArray(basicResult.response?.data) ? basicResult.response.data : [];
+    mergeBasicRows(basicRows);
+
+    const financialResult = await financialRequest;
+    if (requestId !== contribuyentesRequestRef.current) return;
+    if (!financialResult.ok) {
+      console.error(
+        "Error resumen financiero:",
+        financialResult.error?.response?.status,
+        financialResult.error?.response?.data || financialResult.error?.message
+      );
+      setResumenFinancieroCargando(false);
+      showFlash("warning", "La relación ya está disponible, pero los saldos no pudieron actualizarse.");
+      return;
+    }
+
+    const financialRows = Array.isArray(financialResult.response?.data)
+      ? financialResult.response.data
+      : [];
+    const financialById = new Map(
+      financialRows.map((row) => [Number(row?.id_contribuyente || 0), row])
+    );
+    const mergeFinancial = (row) => {
+      const summary = financialById.get(Number(row?.id_contribuyente || 0)) || {};
+      return {
+        ...row,
+        deuda_anio: summary.deuda_anio || 0,
+        abono_anio: summary.abono_anio || 0,
+        meses_deuda: summary.meses_deuda || 0,
+        pendiente_caja_monto: summary.pendiente_caja_monto || 0,
+        pendiente_caja_ordenes: summary.pendiente_caja_ordenes || 0,
+        _financialLoaded: true
+      };
+    };
+    setContribuyentes((previousRows) => previousRows.map(mergeFinancial));
+    setUsuarioSeleccionado((previous) => (previous ? mergeFinancial(previous) : previous));
+    setResumenFinancieroListo(true);
+    setResumenFinancieroCargando(false);
   };
   const cargarResumenPendientesCaja = useCallback(async () => {
     try {
@@ -1893,9 +2012,9 @@ const anexoCajaPageStyle = `
     ), 0);
     return {
       total_usuarios: totalUsuarios,
-      total_morosos: totalMorosos
+      total_morosos: resumenFinancieroListo ? totalMorosos : null
     };
-  }, [datosProcesados]);
+  }, [datosProcesados, resumenFinancieroListo]);
   const indexById = useMemo(() => {
     const map = new Map();
     datosProcesados.forEach((c, idx) => map.set(c.id_contribuyente, idx));
@@ -2308,6 +2427,9 @@ const anexoCajaPageStyle = `
               <div className="bg-dark text-white p-2 small fw-bold flex-shrink-0 d-flex justify-content-between align-items-center">
                 <span>RELACION DE CONTRIBUYENTES</span>
                 <div className="d-flex align-items-center gap-3">
+                  {resumenFinancieroCargando && (
+                    <span className="text-white-50 fw-normal" role="status">Actualizando saldos…</span>
+                  )}
                   <span className="text-warning fw-normal">* no verificado en campo</span>
                   <span className="text-info fw-normal">* deuda/abono actualizado con cobros directos de caja</span>
                 </div>
@@ -2335,7 +2457,11 @@ const anexoCajaPageStyle = `
                   </thead>
                   <tbody>
                     {datosProcesados.length === 0 ? (
-                      <tr><td colSpan="7" className="text-center p-3 opacity-50">No se encontraron resultados</td></tr>
+                      <tr>
+                        <td colSpan="7" className="text-center p-3 opacity-50">
+                          {resumenFinancieroCargando ? "Cargando relación de contribuyentes…" : "No se encontraron resultados"}
+                        </td>
+                      </tr>
                     ) : (
                       <>
                         {virtualRange.topSpacerHeight > 0 && (

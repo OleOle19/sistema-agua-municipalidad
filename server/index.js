@@ -3302,12 +3302,14 @@ const buildUsaTarifaActualDeudaVigenteSql = ({
     predioAlias,
     buildPeriodoNumSql(`${reciboAlias}.anio`, `${reciboAlias}.mes`)
   );
-  return `(
-    (${tarifaActualSql}) > 0
-    AND
-    ABS(COALESCE(${reciboAlias}.total_pagar, 0) - (${tarifaActualSql})) > 0.001
-    AND COALESCE(${pagosAlias}.total_pagado, 0) < COALESCE(${reciboAlias}.total_pagar, 0) - 0.001
-  )`;
+  return `(CASE
+    WHEN COALESCE(${pagosAlias}.total_pagado, 0) < COALESCE(${reciboAlias}.total_pagar, 0) - 0.001
+    THEN (
+      (${tarifaActualSql}) > 0
+      AND ABS(COALESCE(${reciboAlias}.total_pagar, 0) - (${tarifaActualSql})) > 0.001
+    )
+    ELSE FALSE
+  END)`;
 };
 const clampArray = (rows, max = 200) => {
   if (!Array.isArray(rows)) return [];
@@ -5304,12 +5306,18 @@ let importacionHistorialEnCurso = false;
 let autoDeudaEnCurso = false;
 let ultimoPeriodoAutoDeuda = null;
 const comparacionesLegacyLocks = new Set();
-const CONTRIBUYENTES_CACHE_TTL_MS = Number(process.env.CONTRIBUYENTES_CACHE_TTL_MS || 20000);
+const CONTRIBUYENTES_CACHE_TTL_MS = Number(process.env.CONTRIBUYENTES_CACHE_TTL_MS || 60000);
+const CONTRIBUYENTES_BASIC_CACHE_TTL_MS = Number(process.env.CONTRIBUYENTES_BASIC_CACHE_TTL_MS || 300000);
 const REPORTE_CAJA_CACHE_TTL_MS = Number(process.env.REPORTE_CAJA_CACHE_TTL_MS || 15000);
 const DASHBOARD_CACHE_TTL_MS = Number(process.env.DASHBOARD_CACHE_TTL_MS || 15000);
-let contribuyentesCache = { expiresAt: 0, data: null };
+let contribuyentesBasicCache = { expiresAt: 0, data: null };
+let contribuyentesFinancialCache = { expiresAt: 0, data: null };
+let contribuyentesBasicInFlight = null;
+let contribuyentesFinancialInFlight = null;
+let contribuyentesCacheGeneration = 0;
 let reportesCajaCache = new Map();
 let dashboardCache = { expiresAt: 0, data: null, day: null };
+let recaudadoHoyCache = { expiresAt: 0, total: null, day: null };
 
 const getShortLivedCacheValue = (cacheStore, cacheKey) => {
   const cached = cacheStore.get(cacheKey);
@@ -5360,9 +5368,14 @@ const invalidateReportesCajaCache = () => {
 };
 
 const invalidateContribuyentesCache = () => {
-  contribuyentesCache = { expiresAt: 0, data: null };
+  contribuyentesCacheGeneration += 1;
+  contribuyentesBasicCache = { expiresAt: 0, data: null };
+  contribuyentesFinancialCache = { expiresAt: 0, data: null };
+  contribuyentesBasicInFlight = null;
+  contribuyentesFinancialInFlight = null;
   invalidateReportesCajaCache();
   dashboardCache = { expiresAt: 0, data: null, day: null };
+  recaudadoHoyCache = { expiresAt: 0, total: null, day: null };
 };
 
 const REALTIME_CHANNELS = new Set(["caja", "deuda"]);
@@ -10865,159 +10878,298 @@ app.get("/caja/contribuyentes/buscar", async (req, res) => {
   }
 });
 
+const buildContribuyentesBasicQuery = () => `
+  WITH predio_principal AS MATERIALIZED (
+    SELECT DISTINCT ON (p.id_contribuyente)
+      p.id_contribuyente,
+      p.id_predio,
+      p.id_calle,
+      p.numero_casa,
+      p.manzana,
+      p.lote,
+      p.referencia_direccion,
+      p.tarifa_agua,
+      p.tarifa_desague,
+      p.tarifa_limpieza,
+      p.tarifa_admin,
+      p.tarifa_extra
+    FROM predios p
+    ORDER BY p.id_contribuyente, p.id_predio
+  )
+  SELECT
+    c.id_contribuyente,
+    c.codigo_municipal,
+    c.sec_cod,
+    c.sec_nombre,
+    c.dni_ruc,
+    c.nombre_completo,
+    c.telefono,
+    COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
+    COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion_fuente)), ''), 'INFERIDO') AS estado_conexion_fuente,
+    COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion_verificado_sn)), ''), 'N') AS estado_conexion_verificado_sn,
+    c.estado_conexion_fecha_verificacion,
+    c.estado_conexion_motivo_ultimo,
+    p.id_predio,
+    ${buildDireccionSql("ca", "p")} AS direccion_completa,
+    p.id_calle,
+    p.numero_casa,
+    p.manzana,
+    p.lote,
+    p.tarifa_agua,
+    p.tarifa_desague,
+    p.tarifa_limpieza,
+    p.tarifa_admin,
+    p.tarifa_extra,
+    'N' AS verificar_caja_sn,
+    NULL::timestamp AS verificar_caja_desde,
+    NULL::text AS verificar_caja_observacion
+  FROM contribuyentes c
+  LEFT JOIN predio_principal p ON p.id_contribuyente = c.id_contribuyente
+  LEFT JOIN calles ca ON p.id_calle = ca.id_calle
+`;
+
+const buildContribuyentesFinancialQuery = () => {
+  const totalPagarReferenciaContribSql = buildTotalPagarDeudaVigenteSql({
+    reciboAlias: "ro",
+    predioAlias: "p3",
+    pagosAlias: "pp"
+  });
+  return `
+    WITH predio_principal AS MATERIALIZED (
+      SELECT DISTINCT ON (p.id_contribuyente)
+        p.id_contribuyente,
+        p.id_predio
+      FROM predios p
+      ORDER BY p.id_contribuyente, p.id_predio
+    ),
+    recibos_objetivo AS MATERIALIZED (
+      SELECT r.id_recibo, r.id_predio, r.total_pagar, r.anio, r.mes
+      FROM recibos r
+      JOIN predio_principal principal ON principal.id_predio = r.id_predio
+      WHERE (r.anio, r.mes) <= ($1::int, $2::int)
+    ),
+    pagos_por_recibo AS MATERIALIZED (
+      SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
+      FROM pagos p
+      JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
+      WHERE ${buildPagoContableValidoSql("p")}
+      GROUP BY p.id_recibo
+    ),
+    ordenes_pendientes_detalle AS MATERIALIZED (
+      SELECT
+        oc.id_orden,
+        (elem->>'id_recibo')::int AS id_recibo,
+        GREATEST(COALESCE((elem->>'monto_autorizado')::numeric, 0), 0) AS monto_autorizado
+      FROM ordenes_cobro oc
+      CROSS JOIN LATERAL jsonb_array_elements(COALESCE(oc.recibos_json, '[]'::jsonb)) elem
+      WHERE oc.estado = 'PENDIENTE'
+        AND (elem->>'id_recibo') ~ '^[0-9]+$'
+    ),
+    ordenes_pendientes_recibo AS MATERIALIZED (
+      SELECT
+        opd.id_recibo,
+        SUM(opd.monto_autorizado) AS monto_pendiente
+      FROM ordenes_pendientes_detalle opd
+      GROUP BY opd.id_recibo
+    ),
+    ordenes_pendientes_predio AS MATERIALIZED (
+      SELECT
+        ro.id_predio,
+        COUNT(DISTINCT opd.id_orden) AS ordenes_pendientes
+      FROM recibos_objetivo ro
+      JOIN ordenes_pendientes_detalle opd ON opd.id_recibo = ro.id_recibo
+      GROUP BY ro.id_predio
+    ),
+    recibos_importes AS MATERIALIZED (
+      SELECT
+        ro.id_recibo,
+        ro.id_predio,
+        ${totalPagarReferenciaContribSql} AS total_referencia,
+        COALESCE(pp.total_pagado, 0) AS total_pagado,
+        COALESCE(opr.monto_pendiente, 0) AS monto_pendiente
+      FROM recibos_objetivo ro
+      LEFT JOIN predios p3 ON p3.id_predio = ro.id_predio
+      LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
+      LEFT JOIN ordenes_pendientes_recibo opr ON opr.id_recibo = ro.id_recibo
+    ),
+    recibos_saldos AS MATERIALIZED (
+      SELECT
+        id_predio,
+        GREATEST(total_referencia - total_pagado, 0) AS deuda,
+        total_pagado AS abono,
+        LEAST(
+          GREATEST(total_referencia - total_pagado, 0),
+          monto_pendiente
+        ) AS monto_pendiente_caja
+      FROM recibos_importes
+    ),
+    resumen_predio AS MATERIALIZED (
+      SELECT
+        id_predio,
+        SUM(deuda) AS deuda_total,
+        SUM(abono) AS abono_total,
+        COUNT(*) FILTER (WHERE deuda > 0) AS meses_deuda_total,
+        SUM(monto_pendiente_caja) AS monto_pendiente_caja
+      FROM recibos_saldos
+      GROUP BY id_predio
+    )
+    SELECT
+      principal.id_contribuyente,
+      COALESCE(rp.deuda_total, 0) AS deuda_anio,
+      COALESCE(rp.abono_total, 0) AS abono_anio,
+      COALESCE(rp.meses_deuda_total, 0) AS meses_deuda,
+      COALESCE(rp.monto_pendiente_caja, 0) AS pendiente_caja_monto,
+      COALESCE(opr.ordenes_pendientes, 0) AS pendiente_caja_ordenes
+    FROM predio_principal principal
+    LEFT JOIN resumen_predio rp ON rp.id_predio = principal.id_predio
+    LEFT JOIN ordenes_pendientes_predio opr ON opr.id_predio = principal.id_predio
+  `;
+};
+
+const startContribuyentesBasicLoad = () => {
+  const generation = contribuyentesCacheGeneration;
+  if (contribuyentesBasicInFlight?.generation === generation) {
+    return contribuyentesBasicInFlight.promise;
+  }
+  const startedAt = Date.now();
+  const promise = pool.query(buildContribuyentesBasicQuery())
+    .then((result) => {
+      if (generation === contribuyentesCacheGeneration) {
+        contribuyentesBasicCache = {
+          expiresAt: Date.now() + CONTRIBUYENTES_BASIC_CACHE_TTL_MS,
+          data: result.rows
+        };
+      }
+      logPerfEvent("contribuyentes.basico", {
+        duracion_ms: Date.now() - startedAt,
+        filas: result.rows.length
+      });
+      return result.rows;
+    })
+    .finally(() => {
+      if (contribuyentesBasicInFlight?.promise === promise) {
+        contribuyentesBasicInFlight = null;
+      }
+    });
+  contribuyentesBasicInFlight = { generation, promise };
+  return promise;
+};
+
+const getContribuyentesBasicRows = ({ forceFresh = false } = {}) => {
+  const now = Date.now();
+  if (!forceFresh && contribuyentesBasicCache.data) {
+    if (now >= contribuyentesBasicCache.expiresAt && !contribuyentesBasicInFlight) {
+      startContribuyentesBasicLoad().catch((err) => {
+        console.error("[PERF][contribuyentes.basico] No se pudo actualizar cache:", err.message);
+      });
+    }
+    return Promise.resolve(contribuyentesBasicCache.data);
+  }
+  return startContribuyentesBasicLoad();
+};
+
+const startContribuyentesFinancialLoad = () => {
+  const generation = contribuyentesCacheGeneration;
+  if (contribuyentesFinancialInFlight?.generation === generation) {
+    return contribuyentesFinancialInFlight.promise;
+  }
+  const periodoCerrado = getUltimoPeriodoCerrado({
+    anio: getCurrentYear(),
+    mes: getCurrentMonth()
+  });
+  const startedAt = Date.now();
+  const promise = pool.query(
+    buildContribuyentesFinancialQuery(),
+    [periodoCerrado.anio, periodoCerrado.mes]
+  )
+    .then((result) => {
+      if (generation === contribuyentesCacheGeneration) {
+        contribuyentesFinancialCache = {
+          expiresAt: Date.now() + CONTRIBUYENTES_CACHE_TTL_MS,
+          data: result.rows
+        };
+      }
+      logPerfEvent("contribuyentes.financiero", {
+        duracion_ms: Date.now() - startedAt,
+        filas: result.rows.length,
+        periodo: `${periodoCerrado.anio}-${String(periodoCerrado.mes).padStart(2, "0")}`
+      });
+      return result.rows;
+    })
+    .finally(() => {
+      if (contribuyentesFinancialInFlight?.promise === promise) {
+        contribuyentesFinancialInFlight = null;
+      }
+    });
+  contribuyentesFinancialInFlight = { generation, promise };
+  return promise;
+};
+
+const getContribuyentesFinancialRows = ({ forceFresh = false } = {}) => {
+  const now = Date.now();
+  if (
+    !forceFresh
+    && contribuyentesFinancialCache.data
+    && now < contribuyentesFinancialCache.expiresAt
+  ) {
+    return Promise.resolve(contribuyentesFinancialCache.data);
+  }
+  return startContribuyentesFinancialLoad();
+};
+
+const mergeContribuyentesReadModel = (basicRows, financialRows) => {
+  const financialById = new Map(
+    (Array.isArray(financialRows) ? financialRows : [])
+      .map((row) => [Number(row?.id_contribuyente || 0), row])
+      .filter(([id]) => id > 0)
+  );
+  return (Array.isArray(basicRows) ? basicRows : []).map((row) => ({
+    ...row,
+    deuda_anio: financialById.get(Number(row.id_contribuyente))?.deuda_anio || 0,
+    abono_anio: financialById.get(Number(row.id_contribuyente))?.abono_anio || 0,
+    meses_deuda: financialById.get(Number(row.id_contribuyente))?.meses_deuda || 0,
+    pendiente_caja_monto: financialById.get(Number(row.id_contribuyente))?.pendiente_caja_monto || 0,
+    pendiente_caja_ordenes: financialById.get(Number(row.id_contribuyente))?.pendiente_caja_ordenes || 0
+  }));
+};
+
+const readForceFresh = (req) => String(req.query?.fresh || "").trim() === "1";
+
+app.get("/contribuyentes/listado-basico", async (req, res) => {
+  try {
+    const rows = await getContribuyentesBasicRows({ forceFresh: readForceFresh(req) });
+    res.set("Cache-Control", "no-store");
+    return res.json(rows);
+  } catch (err) {
+    console.error("Error listando datos básicos de contribuyentes:", err);
+    return res.status(500).json({ error: "No se pudo cargar la relación de contribuyentes." });
+  }
+});
+
+app.get("/contribuyentes/resumen-financiero", async (req, res) => {
+  try {
+    const rows = await getContribuyentesFinancialRows({ forceFresh: readForceFresh(req) });
+    res.set("Cache-Control", "no-store");
+    return res.json(rows);
+  } catch (err) {
+    console.error("Error calculando resumen financiero de contribuyentes:", err);
+    return res.status(500).json({ error: "No se pudo actualizar el resumen financiero." });
+  }
+});
+
 app.get("/contribuyentes", async (req, res) => {
   try {
-    const now = Date.now();
-    if (contribuyentesCache.data && now < contribuyentesCache.expiresAt) {
-      res.set("Cache-Control", "no-store");
-      return res.json(contribuyentesCache.data);
-    }
-
-    const periodoVisible = {
-      anio: getCurrentYear(),
-      mes: getCurrentMonth()
-    };
-    const periodoCerrado = getUltimoPeriodoCerrado(periodoVisible);
-    const anioExigible = periodoCerrado.anio;
-    const mesExigible = periodoCerrado.mes;
-    const totalPagarReferenciaContribSql = buildTotalPagarDeudaVigenteSql({
-      reciboAlias: "ro",
-      predioAlias: "p3",
-      pagosAlias: "pp"
-    });
-
-    // Consulta optimizada: agregamos deuda/abono/meses por predio una sola vez
-    const query = `
-      WITH recibos_objetivo AS (
-        SELECT r.id_recibo, r.id_predio, r.total_pagar, r.anio, r.mes
-        FROM recibos r
-        WHERE (r.anio, r.mes) <= ($1::int, $2::int)
-      ),
-      pagos_por_recibo AS (
-        SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
-        FROM pagos p
-        JOIN recibos_objetivo ro ON ro.id_recibo = p.id_recibo
-        WHERE ${buildPagoContableValidoSql("p")}
-        GROUP BY p.id_recibo
-      ),
-      ordenes_pendientes_detalle AS (
-        SELECT
-          oc.id_orden,
-          (elem->>'id_recibo')::int AS id_recibo,
-          GREATEST(COALESCE((elem->>'monto_autorizado')::numeric, 0), 0) AS monto_autorizado
-        FROM ordenes_cobro oc
-        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(oc.recibos_json, '[]'::jsonb)) elem
-        WHERE oc.estado = 'PENDIENTE'
-          AND (elem->>'id_recibo') ~ '^[0-9]+$'
-      ),
-      ordenes_pendientes_recibo AS (
-        SELECT
-          opd.id_recibo,
-          SUM(opd.monto_autorizado) AS monto_pendiente
-        FROM ordenes_pendientes_detalle opd
-        GROUP BY opd.id_recibo
-      ),
-      ordenes_pendientes_predio AS (
-        SELECT
-          ro.id_predio,
-          COUNT(DISTINCT opd.id_orden) AS ordenes_pendientes
-        FROM recibos_objetivo ro
-        JOIN ordenes_pendientes_detalle opd ON opd.id_recibo = ro.id_recibo
-        GROUP BY ro.id_predio
-      ),
-      resumen_predio AS (
-        SELECT
-          ro.id_predio,
-          SUM(GREATEST(${totalPagarReferenciaContribSql} - COALESCE(pp.total_pagado, 0), 0)) AS deuda_total,
-          SUM(COALESCE(pp.total_pagado, 0)) AS abono_total,
-          COUNT(*) FILTER (WHERE (${totalPagarReferenciaContribSql} - COALESCE(pp.total_pagado, 0)) > 0) AS meses_deuda_total,
-          SUM(
-            LEAST(
-              GREATEST(${totalPagarReferenciaContribSql} - COALESCE(pp.total_pagado, 0), 0),
-              COALESCE(opr.monto_pendiente, 0)
-            )
-          ) AS monto_pendiente_caja
-        FROM recibos_objetivo ro
-        LEFT JOIN predios p3 ON p3.id_predio = ro.id_predio
-        LEFT JOIN pagos_por_recibo pp ON pp.id_recibo = ro.id_recibo
-        LEFT JOIN ordenes_pendientes_recibo opr ON opr.id_recibo = ro.id_recibo
-        GROUP BY ro.id_predio
-      ),
-      predio_principal AS (
-        SELECT
-          base.id_contribuyente,
-          base.id_predio,
-          base.id_calle,
-          base.numero_casa,
-          base.manzana,
-          base.lote,
-          base.referencia_direccion,
-          base.tarifa_agua,
-          base.tarifa_desague,
-          base.tarifa_limpieza,
-          base.tarifa_admin,
-          base.tarifa_extra
-        FROM (
-          SELECT
-            p.id_contribuyente,
-            p.id_predio,
-            p.id_calle,
-            p.numero_casa,
-            p.manzana,
-            p.lote,
-            p.referencia_direccion,
-            p.tarifa_agua,
-            p.tarifa_desague,
-            p.tarifa_limpieza,
-            p.tarifa_admin,
-            p.tarifa_extra,
-            ROW_NUMBER() OVER (PARTITION BY p.id_contribuyente ORDER BY p.id_predio ASC) AS rn
-          FROM predios p
-        ) base
-        WHERE base.rn = 1
-      )
-      SELECT c.id_contribuyente, c.codigo_municipal, c.sec_cod, c.sec_nombre, c.dni_ruc, c.nombre_completo, c.telefono,
-             COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
-             COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion_fuente)), ''), 'INFERIDO') AS estado_conexion_fuente,
-             COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion_verificado_sn)), ''), 'N') AS estado_conexion_verificado_sn,
-             c.estado_conexion_fecha_verificacion,
-             c.estado_conexion_motivo_ultimo,
-             p.id_predio, 
-             ${buildDireccionSql("ca", "p")} as direccion_completa,
-             p.id_calle, p.numero_casa, p.manzana, p.lote,
-             p.tarifa_agua, p.tarifa_desague, p.tarifa_limpieza, p.tarifa_admin, p.tarifa_extra,
-             
-             COALESCE(rp.deuda_total, 0) as deuda_anio,
-             COALESCE(rp.abono_total, 0) as abono_anio,
-             COALESCE(rp.meses_deuda_total, 0) as meses_deuda,
-             COALESCE(rp.monto_pendiente_caja, 0) as pendiente_caja_monto,
-             COALESCE(opr.ordenes_pendientes, 0) as pendiente_caja_ordenes,
-             'N' AS verificar_caja_sn,
-             NULL::timestamp AS verificar_caja_desde,
-             NULL::text AS verificar_caja_observacion
-      FROM contribuyentes c
-      LEFT JOIN predio_principal p ON p.id_contribuyente = c.id_contribuyente
-      LEFT JOIN calles ca ON p.id_calle = ca.id_calle
-      LEFT JOIN resumen_predio rp ON rp.id_predio = p.id_predio
-      LEFT JOIN ordenes_pendientes_predio opr ON opr.id_predio = p.id_predio
-      LEFT JOIN LATERAL (
-        SELECT
-          s.creado_en AS seguimiento_desde
-        FROM campo_solicitudes s
-        WHERE s.id_contribuyente = c.id_contribuyente
-          AND s.estado_solicitud <> 'RECHAZADO'
-        ORDER BY s.creado_en DESC
-        LIMIT 1
-      ) cs ON TRUE
-    `;
-    const todos = await pool.query(query, [anioExigible, mesExigible]);
-    contribuyentesCache = {
-      expiresAt: Date.now() + CONTRIBUYENTES_CACHE_TTL_MS,
-      data: todos.rows
-    };
+    const forceFresh = readForceFresh(req);
+    const [basicRows, financialRows] = await Promise.all([
+      getContribuyentesBasicRows({ forceFresh }),
+      getContribuyentesFinancialRows({ forceFresh })
+    ]);
     res.set("Cache-Control", "no-store");
-    res.json(todos.rows);
-  } catch (err) { res.status(500).send("Error del servidor"); }
+    return res.json(mergeContribuyentesReadModel(basicRows, financialRows));
+  } catch (err) {
+    console.error("Error listando contribuyentes:", err);
+    return res.status(500).json({ error: "Error del servidor" });
+  }
 });
 
 app.get("/contribuyentes/detalle/:id", async (req, res) => {
@@ -18281,6 +18433,43 @@ app.delete("/recibos/:id", async (req, res) => {
 // ==========================================
 // DASHBOARD Y EXCEL
 // ==========================================
+app.get("/dashboard/recaudado-hoy", async (req, res) => {
+  try {
+    const hoy = toISODate();
+    if (
+      recaudadoHoyCache.total !== null
+      && recaudadoHoyCache.day === hoy
+      && Date.now() < recaudadoHoyCache.expiresAt
+    ) {
+      res.set("Cache-Control", "private, max-age=8");
+      return res.json({ recaudado_hoy: recaudadoHoyCache.total });
+    }
+    const startedAt = Date.now();
+    const recaudacion = await pool.query(`
+      SELECT COALESCE(SUM(p.monto_pagado), 0) AS total
+      FROM pagos p
+      WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+        AND p.fecha_pago >= $1::date
+        AND p.fecha_pago < ($1::date + INTERVAL '1 day')
+    `, [hoy]);
+    const total = recaudacion.rows[0]?.total || 0;
+    recaudadoHoyCache = {
+      expiresAt: Date.now() + DASHBOARD_CACHE_TTL_MS,
+      total,
+      day: hoy
+    };
+    logPerfEvent("dashboard.recaudado_hoy", {
+      duracion_ms: Date.now() - startedAt,
+      fecha: hoy
+    });
+    res.set("Cache-Control", "private, max-age=8");
+    return res.json({ recaudado_hoy: total });
+  } catch (err) {
+    console.error("Error consultando recaudación de hoy:", err);
+    return res.status(500).json({ error: "Error dashboard" });
+  }
+});
+
 app.get("/dashboard/resumen", async (req, res) => {
   try {
     const hoy = toISODate();
@@ -19628,7 +19817,21 @@ const shapeAdminUser = (user) => {
 app.get("/admin/usuarios", authenticateToken, requireManagementAdmin, async (req, res) => {
   try {
     const usuarios = await pool.query(
-      "SELECT id_usuario, username, nombre_completo, rol, estado, (password_ciphertext IS NOT NULL) AS password_disponible FROM usuarios_sistema ORDER BY estado DESC, username ASC"
+      `SELECT
+         id_usuario,
+         username,
+         nombre_completo,
+         rol,
+         estado,
+         (
+           password_ciphertext IS NOT NULL
+           OR (
+             COALESCE(password, '') <> ''
+             AND password NOT LIKE '$2%'
+           )
+         ) AS password_disponible
+       FROM usuarios_sistema
+       ORDER BY estado DESC, username ASC`
     );
     const rows = usuarios.rows.map(shapeAdminUser);
     res.json(rows);
@@ -19642,15 +19845,28 @@ app.get("/admin/usuarios/:id/password", authenticateToken, requireSuperAdmin, as
       return res.status(400).json({ error: "ID inválido" });
     }
     const result = await pool.query(
-      "SELECT id_usuario, username, password_ciphertext FROM usuarios_sistema WHERE id_usuario = $1",
+      "SELECT id_usuario, username, password, password_ciphertext FROM usuarios_sistema WHERE id_usuario = $1",
       [targetId]
     );
     const target = result.rows[0];
     if (!target) return res.status(404).json({ error: "Usuario no encontrado" });
 
-    const password = target.password_ciphertext
+    let password = target.password_ciphertext
       ? decryptPassword(target.password_ciphertext, PASSWORD_VAULT_SECRET)
       : null;
+    let credencialHeredadaMigrada = false;
+    const storedPassword = String(target.password || "");
+    if (!password && storedPassword && !isBcryptHash(storedPassword)) {
+      password = storedPassword;
+      const passwordHash = await bcrypt.hash(password, 10);
+      await pool.query(
+        `UPDATE usuarios_sistema
+         SET password = $1, password_ciphertext = $2
+         WHERE id_usuario = $3`,
+        [passwordHash, encryptPassword(password, PASSWORD_VAULT_SECRET), targetId]
+      );
+      credencialHeredadaMigrada = true;
+    }
     res.set("Cache-Control", "no-store");
     await registrarAuditoria(
       null,
@@ -19667,7 +19883,11 @@ app.get("/admin/usuarios/:id/password", authenticateToken, requireSuperAdmin, as
         entidadId: targetId,
         ip: getRequestIp(req),
         requestId: req.auditRequestId,
-        metadata: { target_username: target.username, disponible: Boolean(password) },
+        metadata: {
+          target_username: target.username,
+          disponible: Boolean(password),
+          credencial_heredada_migrada: credencialHeredadaMigrada
+        },
         critical: true
       }
     );
