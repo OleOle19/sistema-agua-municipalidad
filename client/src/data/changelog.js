@@ -7,7 +7,9 @@ const CHANGELOG_ENTRIES = [
       "La barra principal conserva su tamaño al seleccionar contribuyentes.",
       "La relación de contribuyentes aparece antes mientras los saldos se actualizan.",
       "Las credenciales antiguas disponibles se migran al consultarlas.",
-      "El detalle de Auditoría muestra solo la información operativa necesaria."
+      "El detalle de Auditoría muestra solo la información operativa necesaria.",
+      "Los arbitrios pendientes respetan la distribución configurada entre servicios, administración y extras.",
+      "El formulario de edición permanece estable mientras actualiza sus datos."
     ]
   },
   {

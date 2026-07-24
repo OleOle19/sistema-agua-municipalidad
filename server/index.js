@@ -3296,17 +3296,27 @@ const buildTotalPagarDeudaVigenteSql = ({
 const buildUsaTarifaActualDeudaVigenteSql = ({
   reciboAlias = "r",
   predioAlias = "p2",
-  pagosAlias = "p"
+  pagosAlias = "p",
+  compararComponentes = false
 } = {}) => {
   const tarifaActualSql = buildTarifaActualReciboSql(
     predioAlias,
     buildPeriodoNumSql(`${reciboAlias}.anio`, `${reciboAlias}.mes`)
   );
+  const componentesCambiaronSql = compararComponentes
+    ? buildTarifaActualComponentesChangedSql({
+      reciboAlias,
+      predioAlias
+    })
+    : "FALSE";
   return `(CASE
     WHEN COALESCE(${pagosAlias}.total_pagado, 0) < COALESCE(${reciboAlias}.total_pagar, 0) - 0.001
     THEN (
       (${tarifaActualSql}) > 0
-      AND ABS(COALESCE(${reciboAlias}.total_pagar, 0) - (${tarifaActualSql})) > 0.001
+      AND (
+        ABS(COALESCE(${reciboAlias}.total_pagar, 0) - (${tarifaActualSql})) > 0.001
+        OR ${componentesCambiaronSql}
+      )
     )
     ELSE FALSE
   END)`;
@@ -10266,7 +10276,8 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
   const usaTarifaActualDetalleSql = buildUsaTarifaActualDeudaVigenteSql({
     reciboAlias: "r",
     predioAlias: "p",
-    pagosAlias: "pp"
+    pagosAlias: "pp",
+    compararComponentes: true
   });
   const tarifaActualComponentesDetalleSql = buildTarifaActualComponentesSql("p", buildPeriodoNumSql("r.anio", "r.mes"));
   const tarifaAdminActualDetalleSql = buildTarifaActualAdminBaseSql("p", buildPeriodoNumSql("r.anio", "r.mes"));
@@ -12876,7 +12887,8 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
     const usaTarifaActualPendSql = buildUsaTarifaActualDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p"
+      pagosAlias: "p",
+      compararComponentes: true
     });
     const tarifaActualComponentesPendSql = buildTarifaActualComponentesSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
     const tarifaAdminActualPendSql = buildTarifaActualAdminBaseSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
@@ -16425,7 +16437,8 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
     const usaTarifaActualHistorialSql = buildUsaTarifaActualDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p"
+      pagosAlias: "p",
+      compararComponentes: true
     });
     const tarifaActualComponentesHistorialSql = buildTarifaActualComponentesSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
     const tarifaAdminActualHistorialSql = buildTarifaActualAdminBaseSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
@@ -16604,7 +16617,8 @@ app.get("/exportar/arbitrios/:id_contribuyente", async (req, res) => {
     const usaTarifaActualExportSql = buildUsaTarifaActualDeudaVigenteSql({
       reciboAlias: "r",
       predioAlias: "p2",
-      pagosAlias: "p"
+      pagosAlias: "p",
+      compararComponentes: true
     });
     const tarifaActualComponentesExportSql = buildTarifaActualComponentesSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
     const tarifaAdminActualExportSql = buildTarifaActualAdminBaseSql("p2", buildPeriodoNumSql("r.anio", "r.mes"));
@@ -21721,7 +21735,8 @@ const queryRecibosMasivosRows = async (client, {
   const usaTarifaActualMasivosSql = buildUsaTarifaActualDeudaVigenteSql({
     reciboAlias: "r",
     predioAlias: "p",
-    pagosAlias: "pp"
+    pagosAlias: "pp",
+    compararComponentes: true
   });
   const tarifaActualComponentesMasivosSql = buildTarifaActualComponentesSql("p", buildPeriodoNumSql("r.anio", "r.mes"));
   const query = `

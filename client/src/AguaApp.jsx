@@ -631,6 +631,9 @@ function AguaApp({ onBackToSelector = null }) {
   const [mostrarModalEliminar, setMostrarModalEliminar] = useState(false);
   const [mostrarModalCierre, setMostrarModalCierre] = useState(false);
   const [mostrarModalEditarUsuario, setMostrarModalEditarUsuario] = useState(false);
+  const cerrarModalEditarUsuario = useCallback(() => {
+    setMostrarModalEditarUsuario(false);
+  }, []);
   const [mostrarModalAuditoria, setMostrarModalAuditoria] = useState(false);
   const [mostrarModalUsuarios, setMostrarModalUsuarios] = useState(false);
   const [mostrarModalMasivo, setMostrarModalMasivo] = useState(false);
@@ -2534,7 +2537,7 @@ const anexoCajaPageStyle = `
           />
         </Suspense>
       )}
-      {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEditarUsuario(false)} alGuardar={recargarTodo} onFlash={showFlash} />)}
+      {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={cerrarModalEditarUsuario} alGuardar={recargarTodo} onFlash={showFlash} />)}
       {mostrarModalAuditoria && (
         <Suspense fallback={<LazyModalFallback label="Cargando auditoria..." />}>
           <LazyModalAuditoria
