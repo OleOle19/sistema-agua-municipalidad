@@ -191,9 +191,11 @@ const Sidebar = memo(({
     <div className="d-flex align-items-start gap-2">
       <a href="/" className="agua-sidebar__brand d-flex align-items-center mb-2 me-auto text-white text-decoration-none gap-2">
       <img
-        src="/logo.png"
+        src="/logo-ui.png"
         alt="Logo Municipalidad"
-        style={{ width: "32px", height: "32px", objectFit: "contain", flexShrink: 0 }}
+        width="32"
+        height="32"
+        className="agua-sidebar__logo"
       />
       <span className="agua-sidebar__brand-title fw-bold">
         <span>Municipalidad</span>
@@ -334,7 +336,7 @@ const Sidebar = memo(({
     <div className="mt-2 pt-2 border-top flex-shrink-0">
       <div className="small text-white-50 mb-1 text-truncate">Usuario: <strong className="text-white">{usuarioActivo?.nombre || 'Invitado'}</strong></div>
       <div className="small text-info mb-2 text-truncate">{permisos.roleLabel}</div>
-      <button className="btn btn-outline-danger btn-sm w-100 d-flex align-items-center justify-content-center gap-2" onClick={onLogout}><FaSignOutAlt /> Cerrar sesión</button>
+      <button className="btn btn-sm w-100 d-flex align-items-center justify-content-center gap-2 agua-sidebar__logout" onClick={onLogout}><FaSignOutAlt /> Cerrar sesión</button>
     </div>
   </aside>
   );
@@ -422,7 +424,10 @@ const Toolbar = memo(({
         )}
     </div>
 
-    <div className="ms-auto small user-select-none opacity-75 text-end text-truncate flex-grow-1" style={{ minWidth: "0" }}>
+    <div
+      className="agua-toolbar__selection ms-auto small user-select-none opacity-75 text-end text-truncate"
+      title={usuarioSeleccionado?.nombre_completo || "Seleccione un contribuyente"}
+    >
       {usuarioSeleccionado ? 
         <span className="text-truncate d-block">Sel: <strong>{usuarioSeleccionado.nombre_completo}</strong></span> 
         : <span className="fst-italic">Seleccione un contribuyente...</span>
@@ -2201,6 +2206,7 @@ const anexoCajaPageStyle = `
 
   return (
     <div className={`municipal-app-shell agua-app-shell d-flex ${bgMain}`}>
+      <a className="app-skip-link" href="#contenido-principal">Saltar al contenido principal</a>
       <FlashNotice flash={flash} onClose={() => setFlash(null)} />
       {sidebarOpen && (
         <button
@@ -2239,7 +2245,7 @@ const anexoCajaPageStyle = `
             <button type="button" className="btn btn-sm btn-outline-light agua-mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Abrir menú">
               <FaBars />
             </button>
-            <h5 className="m-0">Área de Administración Tributaria - Agua</h5>
+            <h1 className="h5 m-0">Área de Administración Tributaria - Agua</h1>
           </div>
           <div className="app-module-header__actions d-flex align-items-center gap-2 flex-wrap">
             <span className={`badge ${realtimeBadge.className}`}>{realtimeBadge.label}</span>
@@ -2258,8 +2264,9 @@ const anexoCajaPageStyle = `
           </div>
         </header>
 
+        <main id="contenido-principal" className="d-flex flex-column flex-grow-1 overflow-hidden" tabIndex="-1">
         {mostrarRegistro && permisos.canManageContribuyentes ? (
-          <div className="p-4 overflow-auto">
+          <div className="p-4 overflow-auto flex-grow-1">
             <Suspense fallback={<LazyPanelFallback label="Cargando formulario de registro..." />}>
               <LazyRegistroForm onGuardar={() => { recargarTodo(); setMostrarRegistro(false); }} canDeleteCalles={permisos.canDeleteCalles} onFlash={showFlash} />
             </Suspense>
@@ -2364,6 +2371,7 @@ const anexoCajaPageStyle = `
 
           </div>
         )}
+        </main>
       </div>
 
       {mostrarModalDeuda && usuarioSeleccionado && (<ModalDeuda usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalDeuda(false)} alGuardar={recargarTodo} onFlash={showFlash} />)}
@@ -2543,25 +2551,35 @@ const anexoCajaPageStyle = `
       )}
 
       {/* OCULTOS PARA IMPRESION */}
-      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", height: "auto", display: "flex", justifyContent: "flex-end", background: "#fff" }}>
+      {datosReciboImprimir && (
+        <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", height: "auto", display: "flex", justifyContent: "flex-end", background: "#fff" }}>
           <Recibo ref={componentRef} datos={datosReciboImprimir} />
-      </div>
+        </div>
+      )}
 
-      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", height: "106mm", background: "#fff" }}>
+      {datosAnexoCajaImprimir && (
+        <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", height: "106mm", background: "#fff" }}>
           <ReciboAnexoCaja ref={anexoCajaRef} datos={datosAnexoCajaImprimir} />
-      </div>
+        </div>
+      )}
 
-      <div style={{ position: "absolute", width: "0px", height: "0px", overflow: "hidden" }}>
+      {datosCortesImprimir && (
+        <div style={{ position: "absolute", width: "0px", height: "0px", overflow: "hidden" }}>
           <ReporteCortes ref={cortesRef} contribuyentes={contribuyentes} datos={datosCortesImprimir} />
-      </div>
+        </div>
+      )}
 
-      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", minHeight: "297mm", background: "#fff" }}>
+      {datosActaCorteImprimir.length > 0 && (
+        <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", minHeight: "297mm", background: "#fff" }}>
           <ActasCorteLote ref={actaCorteRef} actas={datosActaCorteImprimir} />
-      </div>
+        </div>
+      )}
 
-      <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", height: "auto", display: "flex", justifyContent: "flex-end" }}>
+      {datosMasivos && (
+        <div style={{ position: "fixed", left: "-10000px", top: "0", width: "210mm", height: "auto", display: "flex", justifyContent: "flex-end" }}>
           <RecibosMasivos ref={masivoRef} datos={datosMasivos} />
-      </div>
+        </div>
+      )}
     </div>
   );
 }

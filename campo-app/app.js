@@ -2224,7 +2224,7 @@
   }
 
   function bind() {
-    window.addEventListener("beforeunload", () => {
+    window.addEventListener("pagehide", () => {
       stopCameraStream();
     });
     if (el.moduleAguaBtn) {

@@ -10,7 +10,9 @@ const https = require('https');
 const zlib = require('zlib');
 const express = require("express");
 const app = express();
+app.disable("x-powered-by");
 const cors = require("cors");
+const { createHttpCompressionMiddleware } = require("./http-compression");
 const pool = require("./db");
 const luzPool = require("./luz/db");
 const luzRouter = require("./luz/router");
@@ -37,6 +39,7 @@ const { getMigrationState } = require("./migration-health");
 const { LUZ_LEGACY_ACCEPTED_CHECKSUMS } = require("./migration-policy");
 const { decryptPassword, encryptPassword } = require("./password-vault");
 const { canAccessModule, isCajaDeniedForRole, isCajaUndoDeniedForRole, normalizeModule } = require("./role-policy");
+const { securityHeaders } = require("./security-headers");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
 
 // --- HELPERS DE DIRECCIÓN ---
@@ -7047,6 +7050,8 @@ const ensurePerformanceIndexes = async (client) => {
 };
 
 // Middleware
+app.use(securityHeaders);
+app.use(createHttpCompressionMiddleware());
 const CORS_ALLOWED_ORIGINS = String(process.env.CORS_ALLOWED_ORIGINS || "")
   .split(",")
   .map((v) => v.trim())
@@ -23241,8 +23246,16 @@ const iniciarTareaAutoDeuda = () => {
 // ==========================================
 const campoAppDir = path.join(__dirname, "../campo-app");
 if (fs.existsSync(campoAppDir)) {
-  app.use("/campo-app", express.static(campoAppDir));
+  app.use("/campo-app", express.static(campoAppDir, {
+    maxAge: "1h",
+    setHeaders: (res, filePath) => {
+      if (path.basename(filePath).toLowerCase() === "index.html") {
+        res.setHeader("Cache-Control", "no-cache");
+      }
+    }
+  }));
   app.get("/campo-app", (req, res) => {
+    res.setHeader("Cache-Control", "no-cache");
     res.sendFile(path.join(campoAppDir, "index.html"));
   });
 }
@@ -23262,9 +23275,22 @@ app.use((req, res, next) => {
   return res.status(404).json({ error: "Ruta API no encontrada." });
 });
 
-app.use(express.static(path.join(__dirname, '../client/dist')));
+const clientDistDir = path.join(__dirname, "../client/dist");
+app.use("/assets", express.static(path.join(clientDistDir, "assets"), {
+  maxAge: "1y",
+  immutable: true
+}));
+app.use(express.static(clientDistDir, {
+  maxAge: "7d",
+  setHeaders: (res, filePath) => {
+    if (path.basename(filePath).toLowerCase() === "index.html") {
+      res.setHeader("Cache-Control", "no-cache");
+    }
+  }
+}));
 app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/dist/index.html'));
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(clientDistDir, "index.html"));
 });
 
 const SERVER_PORT = Number(process.env.SERVER_PORT || 5000);

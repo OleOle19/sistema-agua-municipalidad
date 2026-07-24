@@ -2220,19 +2220,20 @@ function CajaMunicipalApp({ onBackToSelector }) {
 
   return (
     <div className="municipal-module-page d-flex flex-column min-vh-100 bg-light">
+      <a className="app-skip-link" href="#contenido-principal-caja">Saltar al contenido principal</a>
       <FlashNotice flash={flash} onClose={() => setFlash(null)} />
       <header className="app-module-header app-module-header--caja border-bottom p-3 d-flex justify-content-between align-items-center gap-2">
         <div>
-          <h5 className="m-0 d-flex align-items-center gap-2">
+          <h1 className="h5 m-0 d-flex align-items-center gap-2">
             <FaCashRegister className="text-primary" />
             Caja Municipal Unificada
-          </h5>
+          </h1>
           <div className="small text-muted">
             Usuario: <strong>{usuarioSistema?.nombre || usuarioSistema?.username}</strong> | {permisos.roleLabel}
           </div>
         </div>
         <div className="app-module-header__actions d-flex align-items-center gap-2 flex-wrap">
-          <img src="/logo.png" alt="Logo municipal" style={{ width: "42px", height: "42px", objectFit: "contain" }} className="rounded border bg-white p-1" />
+          <img src="/logo-ui.png" alt="Logo municipal" width="42" height="42" className="rounded border bg-white p-1 object-fit-contain" />
           {typeof onBackToSelector === "function" && (
             <button className="btn btn-outline-secondary btn-sm" onClick={onBackToSelector}>
               Cambiar módulo
@@ -2245,7 +2246,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
         </div>
       </header>
 
-      <div className="container-fluid py-3 flex-grow-1">
+      <main id="contenido-principal-caja" className="container-fluid py-3 flex-grow-1" tabIndex="-1">
         <ul className="nav nav-tabs">
           <li className="nav-item">
             <button className={`nav-link ${tab === "agua" ? "active" : ""}`} onClick={() => setTab("agua")}>
@@ -2549,7 +2550,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
 
           </div>
         </div>
-      </div>
+      </main>
 
       {mostrarModalConteoAgua && (
         <div className="modal show d-block" style={{ backgroundColor: "rgba(0,0,0,0.45)" }}>
@@ -3413,12 +3414,16 @@ function CajaMunicipalApp({ onBackToSelector }) {
         </div>
       )}
 
-      <div style={{ position: "fixed", left: "-9999px", top: 0 }}>
-        <ReciboAnexoCaja ref={anexoCajaRef} datos={datosAnexoCajaImprimir} />
-      </div>
-      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "210mm", background: "#fff" }}>
-        <ReciboLuz ref={reciboLuzRef} datos={reciboLuzImpresion} />
-      </div>
+      {datosAnexoCajaImprimir && (
+        <div style={{ position: "fixed", left: "-9999px", top: 0 }}>
+          <ReciboAnexoCaja ref={anexoCajaRef} datos={datosAnexoCajaImprimir} />
+        </div>
+      )}
+      {reciboLuzImpresion && (
+        <div style={{ position: "fixed", left: "-10000px", top: 0, width: "210mm", background: "#fff" }}>
+          <ReciboLuz ref={reciboLuzRef} datos={reciboLuzImpresion} />
+        </div>
+      )}
     </div>
   );
 }

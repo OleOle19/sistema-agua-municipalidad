@@ -4,15 +4,15 @@ import { FaMoneyBillWave, FaUsers, FaExclamationCircle } from "react-icons/fa";
 
 const StatCard = ({ titulo, valor, color, icon }) => (
   <div
-    className={`card shadow-sm text-white bg-${color}`}
+    className={`card shadow-sm text-white bg-${color} dashboard-stat-card`}
     style={{ flex: 1, minWidth: "200px" }}
   >
     <div className="card-body d-flex align-items-center justify-content-between">
       <div>
-        <h6 className="card-title text-uppercase small opacity-75">{titulo}</h6>
-        <h3 className="card-text fw-bold">{valor}</h3>
+        <div className="card-title text-uppercase small fw-semibold dashboard-stat-card__label">{titulo}</div>
+        <div className="card-text h3 mb-0 fw-bold">{valor}</div>
       </div>
-      <div className="opacity-50 display-6">{icon}</div>
+      <div className="dashboard-stat-card__icon display-6" aria-hidden="true">{icon}</div>
     </div>
   </div>
 );

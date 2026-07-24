@@ -1176,20 +1176,21 @@ function LuzApp({ onBackToSelector }) {
 
   return (
     <div className="municipal-module-page d-flex flex-column min-vh-100 bg-light">
+      <a className="app-skip-link" href="#contenido-principal-luz">Saltar al contenido principal</a>
       <FlashNotice flash={flash} onClose={() => setFlash(null)} />
       <header className="app-module-header app-module-header--luz border-bottom p-3 d-flex justify-content-between align-items-center gap-2">
         <div>
-          <h5 className="m-0 d-flex align-items-center gap-2">
+          <h1 className="h5 m-0 d-flex align-items-center gap-2">
             <FaBolt className="text-warning" />
             Sistema de Luz Municipal
-          </h5>
+          </h1>
           <div className="small text-muted">
             Usuario: <strong>{usuarioSistema?.nombre || usuarioSistema?.username}</strong> | {permisos.roleLabel}
           </div>
         </div>
         <div className="app-module-header__actions d-flex align-items-center gap-2 flex-wrap">
           <img
-            src="/logo.png"
+            src="/logo-ui.png"
             alt="Logo municipal"
             style={{ width: "42px", height: "42px", objectFit: "contain" }}
             className="rounded border bg-white p-1"
@@ -1206,7 +1207,7 @@ function LuzApp({ onBackToSelector }) {
         </div>
       </header>
 
-      <div className="container-fluid py-3 flex-grow-1">
+      <main id="contenido-principal-luz" className="container-fluid py-3 flex-grow-1" tabIndex="-1">
         <ul className="nav nav-tabs">
           <li className="nav-item">
             <button className={`nav-link ${tab === "padron" ? "active" : ""}`} onClick={() => setTab("padron")}>
@@ -2236,14 +2237,18 @@ function LuzApp({ onBackToSelector }) {
             )}
           </div>
         </div>
-      </div>
+      </main>
 
-      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "210mm", background: "#fff" }}>
-        <ReciboLuz ref={reciboRef} datos={reciboImpresion} />
-      </div>
-      <div style={{ position: "fixed", left: "-10000px", top: 0, width: "210mm", background: "#fff" }}>
-        <RecibosLuzLote ref={recibosLoteRef} items={recibosLoteImpresion} />
-      </div>
+      {reciboImpresion && (
+        <div style={{ position: "fixed", left: "-10000px", top: 0, width: "210mm", background: "#fff" }}>
+          <ReciboLuz ref={reciboRef} datos={reciboImpresion} />
+        </div>
+      )}
+      {recibosLoteImpresion.length > 0 && (
+        <div style={{ position: "fixed", left: "-10000px", top: 0, width: "210mm", background: "#fff" }}>
+          <RecibosLuzLote ref={recibosLoteRef} items={recibosLoteImpresion} />
+        </div>
+      )}
     </div>
   );
 }

@@ -14,12 +14,14 @@ const isVisible = (element) => Boolean(
   && (element.offsetWidth || element.offsetHeight || element.getClientRects().length)
 );
 
-const getOpenModals = () => Array.from(document.querySelectorAll(".modal.show.d-block"))
-  .filter(isVisible);
+const getOpenModals = () => Array.from(document.querySelectorAll(".modal.show.d-block"));
 
 const getTopModal = () => getOpenModals().at(-1) || null;
 
+let generatedControlId = 0;
+
 const ensureControlLabels = (root = document) => {
+  if (!(root instanceof Document || root instanceof Element)) return;
   root.querySelectorAll("label:not([for])").forEach((label, index) => {
     if (label.querySelector("input, select, textarea")) return;
     const container = label.parentElement;
@@ -28,16 +30,19 @@ const ensureControlLabels = (root = document) => {
     if (controls.length !== 1) return;
     const control = controls[0];
     if (!control.id) {
-      control.id = `ui-control-${Date.now().toString(36)}-${index}`;
+      generatedControlId += 1;
+      control.id = `ui-control-${generatedControlId}-${index}`;
     }
     label.htmlFor = control.id;
   });
 };
 
 const prepareModal = (modal, index) => {
+  if (modal.dataset.modalA11yReady === "true") return;
   modal.setAttribute("role", "dialog");
   modal.setAttribute("aria-modal", "true");
   modal.dataset.modalA11yIndex = String(index);
+  modal.dataset.modalA11yReady = "true";
 
   const title = modal.querySelector(".modal-title");
   if (title) {
@@ -125,9 +130,31 @@ export default function ModalAccessibilityManager() {
       }
     };
 
-    const observer = new MutationObserver(scheduleSync);
+    const observer = new MutationObserver((records) => {
+      let modalTreeChanged = false;
+
+      records.forEach((record) => {
+        record.addedNodes.forEach((node) => {
+          if (!(node instanceof Element)) return;
+          ensureControlLabels(node);
+          if (node.matches(".modal") || node.querySelector(".modal")) {
+            modalTreeChanged = true;
+          }
+        });
+
+        record.removedNodes.forEach((node) => {
+          if (!(node instanceof Element)) return;
+          if (node.matches(".modal") || node.querySelector(".modal")) {
+            modalTreeChanged = true;
+          }
+        });
+      });
+
+      if (modalTreeChanged) scheduleSync();
+    });
     observer.observe(document.body, { childList: true, subtree: true });
     document.addEventListener("keydown", handleKeyDown);
+    ensureControlLabels(document);
     syncUi();
 
     return () => {

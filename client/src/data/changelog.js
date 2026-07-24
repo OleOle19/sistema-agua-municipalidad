@@ -1,5 +1,24 @@
 const CHANGELOG_ENTRIES = [
   {
+    date: "24 de julio de 2026",
+    title: "Carga más rápida en la red municipal",
+    changes: [
+      "Los archivos y consultas grandes ahora se transfieren comprimidos.",
+      "La barra principal conserva su tamaño al seleccionar contribuyentes."
+    ]
+  },
+  {
+    date: "22 de julio de 2026",
+    title: "Rendimiento y accesibilidad",
+    changes: [
+      "Las tablas y pantallas cargan con menos elementos ocultos.",
+      "Mejoró la legibilidad de tarjetas, importes y botones.",
+      "Se reforzaron la navegación por teclado y la estructura de las pantallas.",
+      "El logotipo de interfaz ahora carga más rápido.",
+      "Se reforzó la protección web y se evitó la indexación del sistema interno."
+    ]
+  },
+  {
     date: "21 de julio de 2026",
     title: "Jerarquía administrativa",
     changes: [
