@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "./api";
+import { getSessionToken, LEGACY_TOKEN_KEY } from "./utils/sessionAuth";
 
 const WS_FLAG_RAW = String(import.meta.env.VITE_REALTIME_WS_ENABLED ?? "0").trim();
 const WS_ENABLED = WS_FLAG_RAW === "1";
@@ -91,7 +92,7 @@ class RealtimeManager {
   }
 
   connect(tokenFromOutside = "") {
-    const token = String(tokenFromOutside || localStorage.getItem("token") || "").trim();
+    const token = String(tokenFromOutside || getSessionToken(LEGACY_TOKEN_KEY) || "").trim();
     this.token = token;
     if (!this.enabled) {
       this.setStatus("disabled");

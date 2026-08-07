@@ -1,4 +1,4 @@
-const VERSION = "2026-03-05-3";
+const VERSION = "2026-08-07-1";
 const CACHE_NAME = "campo-app-static-" + VERSION;
 const APP_ROOT = self.location.pathname.replace(/\/service-worker\.js$/, "");
 const PRECACHE = [

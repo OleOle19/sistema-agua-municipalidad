@@ -10,10 +10,14 @@ import ReciboLuz from "../luz/ReciboLuz";
 import realtime from "../realtime";
 import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
 import { formatDireccionDisplay } from "../utils/direccionDisplay";
+import {
+  AGUA_TOKEN_KEY,
+  getSessionToken,
+  LEGACY_TOKEN_KEY,
+  removeSessionTokens
+} from "../utils/sessionAuth";
 
 const ModalCierre = lazy(() => import("../components/ModalCierre"));
-
-const AGUA_TOKEN_KEY = "token_agua";
 
 const ROLE_LABELS = {
   ADMIN: "Nivel 1 - Admin principal",
@@ -152,20 +156,21 @@ const parseJwtPayload = (token) => {
 };
 
 const readStoredAguaUser = () => {
-  const token = localStorage.getItem(AGUA_TOKEN_KEY) || localStorage.getItem("token");
+  const token = getSessionToken(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
   if (!token) return null;
   const payload = parseJwtPayload(token);
-  if (!payload) return null;
+  if (!payload) {
+    removeSessionTokens(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
+    return null;
+  }
   if (payload.exp && Date.now() / 1000 > payload.exp) {
-    localStorage.removeItem(AGUA_TOKEN_KEY);
-    localStorage.removeItem("token");
+    removeSessionTokens(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
     return null;
   }
   const role = normalizeRole(payload.rol);
   const tokenModule = String(payload.modulo || "").trim().toUpperCase();
   if ((tokenModule && tokenModule !== "CAJA") || !canEnterCajaModuleByRole(role)) {
-    localStorage.removeItem(AGUA_TOKEN_KEY);
-    localStorage.removeItem("token");
+    removeSessionTokens(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
     return null;
   }
   return {
@@ -738,8 +743,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const status = Number(err?.response?.status || 0);
     const msg = String(err?.response?.data?.error || fallback || "Error de conexión");
     if (status === 401) {
-      localStorage.removeItem(AGUA_TOKEN_KEY);
-      localStorage.removeItem("token");
+      removeSessionTokens(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
       setUsuarioSistema(null);
     }
     showFlash("danger", msg);
@@ -747,8 +751,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
   }, [showFlash]);
 
   const logout = useCallback(() => {
-    localStorage.removeItem(AGUA_TOKEN_KEY);
-    localStorage.removeItem("token");
+    removeSessionTokens(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
     setUsuarioSistema(null);
     setReporteAgua(null);
     setResumenConteoAgua({
@@ -919,7 +922,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       realtime.disconnect(true);
       return;
     }
-    const token = localStorage.getItem(AGUA_TOKEN_KEY) || localStorage.getItem("token") || "";
+    const token = getSessionToken(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
     realtime.connect(token);
     return () => {
       realtime.disconnect(true);

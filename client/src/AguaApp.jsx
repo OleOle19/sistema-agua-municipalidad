@@ -18,6 +18,12 @@ import { buildReporteEstadoConexionPdf } from "./utils/simplePdf";
 import { formatDireccionDisplay } from "./utils/direccionDisplay";
 import { ESTADOS_CONEXION, ESTADO_CONEXION_LABELS, normalizeEstadoConexion } from "./utils/estadoConexion";
 import { confirmAction } from "./utils/confirmAction";
+import {
+  AGUA_TOKEN_KEY,
+  getSessionToken,
+  LEGACY_TOKEN_KEY,
+  removeSessionTokens
+} from "./utils/sessionAuth";
 
 const LazyRegistroForm = lazy(() => import("./components/RegistroForm"));
 const LazyModalCierre = lazy(() => import("./components/ModalCierre"));
@@ -451,27 +457,22 @@ const parseJwtPayload = (token) => {
   }
 };
 
-const AGUA_TOKEN_KEY = "token_agua";
-const LEGACY_TOKEN_KEY = "token";
-
 const readStoredUser = () => {
-  const token = localStorage.getItem(AGUA_TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY);
+  const token = getSessionToken(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
   if (!token) return null;
-  if (!localStorage.getItem(AGUA_TOKEN_KEY) && token) {
-    localStorage.setItem(AGUA_TOKEN_KEY, token);
-  }
   const payload = parseJwtPayload(token);
-  if (!payload) return null;
+  if (!payload) {
+    removeSessionTokens(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
+    return null;
+  }
   if (payload.exp && Date.now() / 1000 > payload.exp) {
-    localStorage.removeItem(AGUA_TOKEN_KEY);
-    localStorage.removeItem(LEGACY_TOKEN_KEY);
+    removeSessionTokens(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
     return null;
   }
   const role = normalizeRole(payload.rol);
   const tokenModule = String(payload.modulo || "AGUA").trim().toUpperCase();
   if (tokenModule !== "AGUA" || !["ADMIN", "ADMIN_AUX", "ADMIN_SEC", "CONSULTA"].includes(role)) {
-    localStorage.removeItem(AGUA_TOKEN_KEY);
-    localStorage.removeItem(LEGACY_TOKEN_KEY);
+    removeSessionTokens(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
     return null;
   }
   return {
@@ -1715,8 +1716,7 @@ const anexoCajaPageStyle = `
 
   const handleLogout = async () => {
     if (await confirmAction("¿Desea cerrar la sesión actual?", { title: "Cerrar sesión", confirmLabel: "Cerrar sesión" })) {
-      localStorage.removeItem(AGUA_TOKEN_KEY);
-      localStorage.removeItem(LEGACY_TOKEN_KEY);
+      removeSessionTokens(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
       setUsuarioSistema(null);
       setUsuarioSeleccionado(null);
     }

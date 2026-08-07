@@ -20,6 +20,8 @@
   const SEARCH_LOCAL_LIMIT = 1200;
   const RETRY_BASE_DELAY_MS = 20 * 1000;
   const RETRY_MAX_DELAY_MS = 30 * 60 * 1000;
+  const SESSION_IDLE_MS = 30 * 60 * 1000;
+  const SESSION_WARNING_MS = 2 * 60 * 1000;
   const CAMPO_MODULES = {
     AGUA: "agua",
     LUZ: "luz"
@@ -147,12 +149,15 @@
     statusSection: document.getElementById("statusSection")
   };
 
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+
   const initialModule = readInitialModule();
   const state = {
     apiBase: normalizeBase(localStorage.getItem(API_BASE_KEY) || window.location.origin),
     activeModule: initialModule,
-    token: localStorage.getItem(TOKEN_KEY) || "",
-    user: parseJson(localStorage.getItem(USER_KEY)),
+    token: sessionStorage.getItem(TOKEN_KEY) || "",
+    user: parseJson(sessionStorage.getItem(USER_KEY)),
     online: navigator.onLine,
     calles: [],
     contribuyentes: [],
@@ -185,6 +190,12 @@
   let searchTimer = null;
   let statusTimer = null;
   let queueAutoSyncTimer = null;
+  let sessionWarningTimer = null;
+  let sessionExpiryTimer = null;
+  let sessionCountdownTimer = null;
+  let sessionDeadline = 0;
+  let lastSessionActivityAt = 0;
+  let sessionWarningActive = false;
 
   function parseJson(v) { try { return v ? JSON.parse(v) : null; } catch { return null; } }
   function normalizeBase(v) { try { return new URL(String(v || "").trim() || window.location.origin).origin; } catch { return window.location.origin; } }
@@ -193,10 +204,11 @@
   function currentModuleLabel() { return isLuzModule() ? "Luz" : "Agua"; }
   function moduleLoginPath() { return isLuzModule() ? "/luz/auth/login" : "/auth/login"; }
   function clearSessionStorage() {
+    clearSessionTimeouts();
     state.token = "";
     state.user = null;
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(USER_KEY);
   }
   function inferUserModule(user) {
     if (!user || typeof user !== "object") return CAMPO_MODULES.AGUA;
@@ -857,6 +869,72 @@
     el.statusSection.classList.remove("hidden");
     clearTimeout(statusTimer);
     statusTimer = setTimeout(() => { el.statusSection.className = "status hidden"; }, timeout || 4000);
+  }
+
+  function clearSessionTimeouts() {
+    clearTimeout(sessionWarningTimer);
+    clearTimeout(sessionExpiryTimer);
+    clearInterval(sessionCountdownTimer);
+    sessionWarningTimer = null;
+    sessionExpiryTimer = null;
+    sessionCountdownTimer = null;
+    sessionDeadline = 0;
+    if (sessionWarningActive) {
+      sessionWarningActive = false;
+      clearTimeout(statusTimer);
+      el.statusSection.className = "status hidden";
+    }
+  }
+
+  function formatSessionCountdown(milliseconds) {
+    const seconds = Math.max(0, Math.ceil(milliseconds / 1000));
+    const minutes = Math.floor(seconds / 60);
+    return minutes + ":" + String(seconds % 60).padStart(2, "0");
+  }
+
+  function updateSessionWarning() {
+    const remaining = sessionDeadline - Date.now();
+    if (remaining <= 0) {
+      expireSessionByInactivity();
+      return;
+    }
+    sessionWarningActive = true;
+    setStatus(
+      "La sesión se cerrará en " + formatSessionCountdown(remaining) + " por inactividad. Toca la pantalla para continuar.",
+      "warning",
+      1500
+    );
+  }
+
+  function beginSessionWarning() {
+    if (!(state.token && state.user)) return;
+    updateSessionWarning();
+    clearInterval(sessionCountdownTimer);
+    sessionCountdownTimer = setInterval(updateSessionWarning, 1000);
+  }
+
+  function scheduleSessionTimeout() {
+    clearSessionTimeouts();
+    if (!(state.token && state.user)) return;
+    const now = Date.now();
+    lastSessionActivityAt = now;
+    sessionDeadline = now + SESSION_IDLE_MS;
+    sessionWarningTimer = setTimeout(beginSessionWarning, SESSION_IDLE_MS - SESSION_WARNING_MS);
+    sessionExpiryTimer = setTimeout(expireSessionByInactivity, SESSION_IDLE_MS);
+  }
+
+  function expireSessionByInactivity() {
+    clearSessionStorage();
+    stopCameraStream();
+    renderAuth();
+    setStatus("Sesión cerrada automáticamente por inactividad.", "warning", 6000);
+  }
+
+  function registerSessionActivity() {
+    if (!(state.token && state.user)) return;
+    const now = Date.now();
+    if (now - lastSessionActivityAt < 1500) return;
+    scheduleSessionTimeout();
   }
 
   function renderAuth() {
@@ -2161,20 +2239,22 @@
         setStatus("Respuesta de login incompleta. Contacta al administrador.", "error", 5000);
         return;
       }
-      state.token = token;
-      state.user = {
+      const nextUser = {
         id_usuario: idUsuario,
         nombre: String(data.nombre || "").trim(),
         rol: normalizeRole(data.rol) || String(data.rol || "").trim().toUpperCase(),
         modulo: normalizeModule(state.activeModule),
         sistema: isLuzModule() ? "LUZ" : "AGUA"
       };
+      sessionStorage.setItem(TOKEN_KEY, token);
+      sessionStorage.setItem(USER_KEY, JSON.stringify(nextUser));
+      state.token = token;
+      state.user = nextUser;
       state.queueActionKey = "";
       state.lastQueueSyncError = "";
-      localStorage.setItem(TOKEN_KEY, state.token);
-      localStorage.setItem(USER_KEY, JSON.stringify(state.user));
       el.password.value = "";
       renderAuth();
+      scheduleSessionTimeout();
       if (isAguaModule()) {
         await loadLocalData();
         await refreshQueueCount();
@@ -2205,6 +2285,7 @@
   }
 
   async function logout() {
+    clearSessionTimeouts();
     await clearOfflineData();
     state.token = ""; state.user = null;
     state.calles = [];
@@ -2215,7 +2296,7 @@
     state.lastQueueSyncAt = null;
     state.lastQueueSyncOkAt = null;
     state.lastQueueSyncError = "";
-    localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY);
+    sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(USER_KEY);
     localStorage.removeItem(RECENT_SUBMISSIONS_KEY);
     await loadLocalData();
     await refreshQueueCount();
@@ -2226,6 +2307,14 @@
   function bind() {
     window.addEventListener("pagehide", () => {
       stopCameraStream();
+    });
+    ["pointerdown", "keydown", "mousemove", "touchstart", "scroll"].forEach((eventName) => {
+      window.addEventListener(eventName, registerSessionActivity, { passive: true });
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible" || !(state.token && state.user) || !sessionDeadline) return;
+      if (Date.now() >= sessionDeadline) expireSessionByInactivity();
+      else if (sessionDeadline - Date.now() <= SESSION_WARNING_MS) beginSessionWarning();
     });
     if (el.moduleAguaBtn) {
       el.moduleAguaBtn.addEventListener("click", () => {
@@ -2334,6 +2423,7 @@
     else await loadLuzZones();
     await refreshQueueCount();
     renderAuth();
+    scheduleSessionTimeout();
     renderSeguimiento();
     if (state.token && state.user && state.online && isAguaModule()) {
       if (!state.snapshot) await syncSnapshot(true);

@@ -1,5 +1,14 @@
 const CHANGELOG_ENTRIES = [
   {
+    date: "7 de agosto de 2026",
+    title: "Cierre automático de sesión",
+    changes: [
+      "La sesión se cierra después de 30 minutos sin actividad.",
+      "El sistema avisa antes del cierre para permitir continuar trabajando.",
+      "Cerrar la pestaña, el navegador o apagar la PC elimina la sesión."
+    ]
+  },
+  {
     date: "24 de julio de 2026",
     title: "Carga más rápida en la red municipal",
     changes: [

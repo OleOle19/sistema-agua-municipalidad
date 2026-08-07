@@ -2,6 +2,7 @@ import { useState } from "react";
 import { FaKey, FaUserShield } from "react-icons/fa";
 import api from "../api";
 import MunicipalBackdrop from "./MunicipalBackdrop";
+import { setSessionToken } from "../utils/sessionAuth";
 
 const MIN_PASSWORD_LEN = 8;
 
@@ -64,7 +65,11 @@ const LoginPage = ({
           modulo: moduleKey
         });
         if (res.data?.token) {
-          localStorage.setItem(tokenStorageKey, res.data.token);
+          const stored = setSessionToken(tokenStorageKey, res.data.token);
+          if (!stored) {
+            setError("El navegador no permitió guardar la sesión. Revise la configuración de privacidad.");
+            return;
+          }
         }
         onLoginSuccess(res.data);
         return;

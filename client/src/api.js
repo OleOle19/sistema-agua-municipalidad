@@ -1,4 +1,5 @@
 import axios from "axios";
+import { AGUA_TOKEN_KEY, getSessionToken, LEGACY_TOKEN_KEY } from "./utils/sessionAuth";
 
 const envBaseUrl = String(import.meta.env.VITE_API_URL || "").trim();
 const fallbackBaseUrl =
@@ -13,7 +14,7 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("token_agua") || localStorage.getItem("token");
+  const token = getSessionToken(AGUA_TOKEN_KEY, LEGACY_TOKEN_KEY);
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }

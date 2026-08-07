@@ -23,6 +23,7 @@ import ReciboLuz from "./ReciboLuz";
 import RecibosLuzLote from "./RecibosLuzLote";
 import UsuariosLuzPanel from "./UsuariosLuzPanel";
 import { confirmAction } from "../utils/confirmAction";
+import { getSessionToken, LUZ_TOKEN_KEY, removeSessionTokens } from "../utils/sessionAuth";
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -41,8 +42,6 @@ const ROLE_LABELS = {
 };
 
 const MONTH_LABELS = ["", "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-const LUZ_TOKEN_KEY = "token_luz";
-
 const normalizeRole = (role) => {
   const raw = String(role || "").trim().toUpperCase();
   if (["ADMIN", "SUPERADMIN", "ADMIN_PRINCIPAL", "NIVEL_1"].includes(raw)) return "ADMIN";
@@ -72,22 +71,25 @@ const parseJwtPayload = (token) => {
 };
 
 const readStoredLuzUser = () => {
-  const token = localStorage.getItem(LUZ_TOKEN_KEY);
+  const token = getSessionToken(LUZ_TOKEN_KEY);
   if (!token) return null;
   const payload = parseJwtPayload(token);
-  if (!payload) return null;
+  if (!payload) {
+    removeSessionTokens(LUZ_TOKEN_KEY);
+    return null;
+  }
   if (payload.exp && Date.now() / 1000 > payload.exp) {
-    localStorage.removeItem(LUZ_TOKEN_KEY);
+    removeSessionTokens(LUZ_TOKEN_KEY);
     return null;
   }
   if (String(payload.sistema || "").toUpperCase() !== "LUZ") {
-    localStorage.removeItem(LUZ_TOKEN_KEY);
+    removeSessionTokens(LUZ_TOKEN_KEY);
     return null;
   }
   const role = normalizeRole(payload.rol);
   const tokenModule = String(payload.modulo || "LUZ").trim().toUpperCase();
   if (tokenModule !== "LUZ" || !["ADMIN", "ADMIN_SEC", "CONSULTA"].includes(role)) {
-    localStorage.removeItem(LUZ_TOKEN_KEY);
+    removeSessionTokens(LUZ_TOKEN_KEY);
     return null;
   }
   return {
@@ -440,7 +442,7 @@ function LuzApp({ onBackToSelector }) {
     const status = Number(err?.response?.status || 0);
     const msg = String(err?.response?.data?.error || fallback || "Error de conexion");
     if (status === 401) {
-      localStorage.removeItem(LUZ_TOKEN_KEY);
+      removeSessionTokens(LUZ_TOKEN_KEY);
       setUsuarioSistema(null);
     }
     showFlash("danger", msg);
@@ -448,7 +450,7 @@ function LuzApp({ onBackToSelector }) {
   }, [showFlash]);
 
   const logout = useCallback(() => {
-    localStorage.removeItem(LUZ_TOKEN_KEY);
+    removeSessionTokens(LUZ_TOKEN_KEY);
     setUsuarioSistema(null);
     setSuministros([]);
     setZonas([]);

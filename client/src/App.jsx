@@ -1,30 +1,19 @@
-import { Component, Suspense, lazy, useMemo, useState } from "react";
+import { Component, Suspense, lazy, useCallback, useMemo, useState } from "react";
 import { FaTint, FaBolt, FaCashRegister, FaMobileAlt } from "react-icons/fa";
 import { API_BASE_URL } from "./api";
 import MunicipalBackdrop from "./components/MunicipalBackdrop";
+import SessionInactivityGuard from "./components/SessionInactivityGuard";
+import {
+  clearAllSessionTokens,
+  discardLegacyPersistentTokens
+} from "./utils/sessionAuth";
 
 const AguaApp = lazy(() => import("./AguaApp"));
 const LuzApp = lazy(() => import("./luz/LuzApp"));
 const CajaMunicipalApp = lazy(() => import("./caja/CajaMunicipalApp"));
 
 const MODULE_STORAGE_KEY = "sistema_modulo_activo";
-const AGUA_TOKEN_KEY = "token_agua";
-const LUZ_TOKEN_KEY = "token_luz";
-const LEGACY_TOKEN_KEY = "token";
-
-const clearAllModuleSessions = () => {
-  [
-    AGUA_TOKEN_KEY,
-    LUZ_TOKEN_KEY,
-    LEGACY_TOKEN_KEY
-  ].forEach((key) => {
-    try {
-      localStorage.removeItem(key);
-    } catch {
-      // Ignore storage cleanup failures so module switching still works.
-    }
-  });
-};
+discardLegacyPersistentTokens();
 
 const getCampoAppUrl = () => `${API_BASE_URL}/campo-app/`;
 
@@ -86,58 +75,62 @@ class ModuleErrorBoundary extends Component {
 function App() {
   const [modulo, setModulo] = useState(readStoredModule);
   const [selectorAviso, setSelectorAviso] = useState("");
+  const [sessionEpoch, setSessionEpoch] = useState(0);
+  const [sessionNotice, setSessionNotice] = useState("");
   const campoAppUrl = useMemo(() => getCampoAppUrl(), []);
+  const handleSessionExpired = useCallback(() => {
+    setSessionEpoch((current) => current + 1);
+    setSessionNotice("La sesión se cerró automáticamente por inactividad.");
+  }, []);
   const actions = useMemo(() => ({
     seleccionar: (target) => {
       const value = String(target || "").trim().toLowerCase();
       if (!["agua", "luz", "caja"].includes(value)) return;
-      clearAllModuleSessions();
+      clearAllSessionTokens();
       setSelectorAviso("");
+      setSessionNotice("");
       localStorage.setItem(MODULE_STORAGE_KEY, value);
       setModulo(value);
     },
     volver: () => {
-      clearAllModuleSessions();
+      clearAllSessionTokens();
       localStorage.removeItem(MODULE_STORAGE_KEY);
       setModulo("");
       setSelectorAviso("");
+      setSessionNotice("");
     }
   }), []);
 
+  let content;
   if (modulo === "agua") {
-    return (
+    content = (
       <ModuleErrorBoundary title="Error cargando el sistema de Agua">
         <Suspense fallback={<ModuleLoadingScreen title="Cargando sistema de Agua..." />}>
-          <AguaApp onBackToSelector={actions.volver} />
+          <AguaApp key={`agua-${sessionEpoch}`} onBackToSelector={actions.volver} />
         </Suspense>
       </ModuleErrorBoundary>
     );
-  }
-
-  if (modulo === "luz") {
-    return (
+  } else if (modulo === "luz") {
+    content = (
       <ModuleErrorBoundary title="Error cargando el sistema de Luz">
         <Suspense fallback={<ModuleLoadingScreen title="Cargando sistema de Luz..." />}>
-          <LuzApp onBackToSelector={actions.volver} />
+          <LuzApp key={`luz-${sessionEpoch}`} onBackToSelector={actions.volver} />
         </Suspense>
       </ModuleErrorBoundary>
     );
-  }
-
-  if (modulo === "caja") {
-    return (
+  } else if (modulo === "caja") {
+    content = (
       <ModuleErrorBoundary title="Error cargando Caja Municipal">
         <Suspense fallback={<ModuleLoadingScreen title="Cargando Caja Municipal..." />}>
-          <CajaMunicipalApp onBackToSelector={actions.volver} />
+          <CajaMunicipalApp key={`caja-${sessionEpoch}`} onBackToSelector={actions.volver} />
         </Suspense>
       </ModuleErrorBoundary>
     );
-  }
-
-  return (
-    <div className="landing-shell">
-      <div className="landing-content">
-        <MunicipalBackdrop className="landing-stage" contentClassName="landing-stage__content" variant="hero">
+  } else {
+    content = (
+      <div className="landing-shell">
+        <div className="landing-content">
+          <MunicipalBackdrop className="landing-stage" contentClassName="landing-stage__content" variant="hero">
           <div className="landing-poster__hero">
             <div className="landing-eyebrow">Panel municipal integrado</div>
             <h2 className="landing-title fw-bold mb-0">Municipalidad Distrital de Pueblo Nuevo</h2>
@@ -212,9 +205,32 @@ function App() {
                 </div>
               </div>
             </div>
-        </MunicipalBackdrop>
+          </MunicipalBackdrop>
+        </div>
       </div>
-    </div>
+    );
+  }
+
+  return (
+    <>
+      {content}
+      <SessionInactivityGuard onExpire={handleSessionExpired} />
+      {sessionNotice && (
+        <div
+          className="alert alert-info shadow position-fixed top-0 start-50 translate-middle-x mt-3 d-flex align-items-center gap-3"
+          role="status"
+          style={{ zIndex: 2100, maxWidth: "560px", width: "calc(100% - 2rem)" }}
+        >
+          <span className="flex-grow-1">{sessionNotice}</span>
+          <button
+            type="button"
+            className="btn-close"
+            aria-label="Cerrar aviso"
+            onClick={() => setSessionNotice("")}
+          />
+        </div>
+      )}
+    </>
   );
 }
 
