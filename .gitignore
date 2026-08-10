@@ -21,12 +21,18 @@ ops/runtime/historial_patch_*.txt
 **/build/
 **/.next/
 **/.cache/
+.docx_runtime/
+.tmp_pdf_render/
+.tmp_pdf_tools/
 
 # Backups / data exports
 **/backup*/
 **/backups/
 reports/
 tmp/
+deliverables/
+contrato_escaneo.png
+contrato_pagina.png
 *.sql
 !server/sql/migrations/*.sql
 !server/sql/luz_migrations/*.sql

@@ -1,7 +1,8 @@
 {
-  "name": "client",
+  "name": "municipal-utilities-web",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Interfaz React para la gestión municipal de agua, energía, caja y brigadas de campo.",
   "type": "module",
   "scripts": {
     "dev": "vite",
