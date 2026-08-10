@@ -1,7 +1,7 @@
 {
-  "name": "server",
+  "name": "municipal-utilities-api",
   "version": "1.0.0",
-  "description": "",
+  "description": "API segura para servicios municipales, cobranza, auditoría y operación de campo.",
   "main": "index.js",
   "scripts": {
     "start": "node --max-old-space-size=4096 index.js",
@@ -18,7 +18,13 @@
     "sanear:recibos:apply": "node scripts/sanear_recibos_montos.js --apply",
     "pagos:abril-2026": "node scripts/importar_pagos_abril_2026.js"
   },
-  "keywords": [],
+  "keywords": [
+    "municipal",
+    "utilities",
+    "water",
+    "billing",
+    "postgresql"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
