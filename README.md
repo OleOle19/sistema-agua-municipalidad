@@ -1,7 +1,5 @@
 <div align="center">
 
-![Plataforma Municipal de Servicios Públicos](docs/assets/portfolio-cover.png)
-
 # Plataforma Municipal de Servicios Públicos
 
 **Agua, energía, caja y trabajo de campo conectados en una sola solución.**
