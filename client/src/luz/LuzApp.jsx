@@ -422,12 +422,6 @@ function LuzApp({ onBackToSelector }) {
   }, []);
 
   useEffect(() => {
-    if (!flash) return undefined;
-    const timer = setTimeout(() => setFlash(null), 5000);
-    return () => clearTimeout(timer);
-  }, [flash]);
-
-  useEffect(() => {
     if (typeof window === "undefined") return undefined;
     const originalAlert = window.alert;
     window.alert = (message) => {

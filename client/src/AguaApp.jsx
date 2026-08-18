@@ -741,12 +741,6 @@ function AguaApp({ onBackToSelector = null }) {
   }, []);
 
   useEffect(() => {
-    if (!flash?.text) return undefined;
-    const timer = setTimeout(() => setFlash(null), 5000);
-    return () => clearTimeout(timer);
-  }, [flash]);
-
-  useEffect(() => {
     if (typeof window === "undefined") return undefined;
     const originalAlert = window.alert;
     window.alert = (message) => {

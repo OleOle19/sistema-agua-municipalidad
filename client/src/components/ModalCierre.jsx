@@ -855,7 +855,9 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
                           <div key={`ree-${idx}`}>- Reemisión de recibo: {a.total_ordenes} órdenes</div>
                         ))}
                         {(alertasDetalle?.cobros_fuera_horario || []).slice(0, 3).map((a, idx) => (
-                          <div key={`off-${idx}`}>- Cobro fuera de horario: orden {a.id_orden} ({a.username})</div>
+                          <div key={`off-${idx}`}>
+                            - Cobro fuera de horario: {a.id_orden ? `orden ${a.id_orden}` : `pago ${a.id_pago || "-"}`} ({a.username})
+                          </div>
                         ))}
                         {(alertasDetalle?.cierres_desviacion || []).slice(0, 3).map((a, idx) => (
                           <div key={`cierre-${idx}`}>
@@ -891,20 +893,22 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
                   {recaudacionTemporal.length === 0 ? (
                     <div className="small text-muted">Sin datos para el periodo.</div>
                   ) : (
-                    recaudacionTemporal.slice(0, 8).map((r, idx) => {
-                      const total = Number(r?.total || 0);
-                      return (
-                        <div key={`temp-${idx}`} className="mb-2">
-                          <div className="d-flex justify-content-between small">
-                            <span>{r?.etiqueta || "-"}</span>
-                            <span>S/. {formatMoney(total)}</span>
+                    <div style={recaudacionTemporal.length > 8 ? { maxHeight: "344px", overflowY: "auto", paddingRight: "0.35rem", scrollbarGutter: "stable" } : undefined}>
+                      {recaudacionTemporal.map((r, idx) => {
+                        const total = Number(r?.total || 0);
+                        return (
+                          <div key={`temp-${idx}`} className="mb-2">
+                            <div className="d-flex justify-content-between small">
+                              <span>{r?.etiqueta || "-"}</span>
+                              <span>S/. {formatMoney(total)}</span>
+                            </div>
+                            <div className="progress" style={{ height: "8px" }}>
+                              <div className="progress-bar" style={{ width: `${Math.max(2, Math.round((total / maxTemporal) * 100))}%` }}></div>
+                            </div>
                           </div>
-                          <div className="progress" style={{ height: "8px" }}>
-                            <div className="progress-bar" style={{ width: `${Math.max(2, Math.round((total / maxTemporal) * 100))}%` }}></div>
-                          </div>
-                        </div>
-                      );
-                    })
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               </div>
@@ -914,20 +918,22 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
                   {topContribuyentes.length === 0 ? (
                     <div className="small text-muted">Sin datos para el periodo.</div>
                   ) : (
-                    topContribuyentes.slice(0, 8).map((r, idx) => {
-                      const total = Number(r?.total || 0);
-                      return (
-                        <div key={`top-${idx}`} className="mb-2">
-                          <div className="d-flex justify-content-between small">
-                            <span className="text-truncate" style={{ maxWidth: "180px" }}>{r?.nombre_completo || r?.codigo_municipal || "-"}</span>
-                            <span>S/. {formatMoney(total)}</span>
+                    <div style={topContribuyentes.length > 8 ? { maxHeight: "344px", overflowY: "auto", paddingRight: "0.35rem", scrollbarGutter: "stable" } : undefined}>
+                      {topContribuyentes.map((r, idx) => {
+                        const total = Number(r?.total || 0);
+                        return (
+                          <div key={`top-${idx}`} className="mb-2">
+                            <div className="d-flex justify-content-between small">
+                              <span className="text-truncate" style={{ maxWidth: "180px" }}>{r?.nombre_completo || r?.codigo_municipal || "-"}</span>
+                              <span>S/. {formatMoney(total)}</span>
+                            </div>
+                            <div className="progress" style={{ height: "8px" }}>
+                              <div className="progress-bar bg-success" style={{ width: `${Math.max(2, Math.round((total / maxTop) * 100))}%` }}></div>
+                            </div>
                           </div>
-                          <div className="progress" style={{ height: "8px" }}>
-                            <div className="progress-bar bg-success" style={{ width: `${Math.max(2, Math.round((total / maxTop) * 100))}%` }}></div>
-                          </div>
-                        </div>
-                      );
-                    })
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               </div>
@@ -937,20 +943,22 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
                   {recaudacionPeriodo.length === 0 ? (
                     <div className="small text-muted">Sin datos para el periodo.</div>
                   ) : (
-                    recaudacionPeriodo.slice(0, 8).map((r, idx) => {
-                      const total = Number(r?.total || 0);
-                      return (
-                        <div key={`periodo-${idx}`} className="mb-2">
-                          <div className="d-flex justify-content-between small">
-                            <span>{r?.periodo || "-"}</span>
-                            <span>S/. {formatMoney(total)}</span>
+                    <div style={recaudacionPeriodo.length > 8 ? { maxHeight: "344px", overflowY: "auto", paddingRight: "0.35rem", scrollbarGutter: "stable" } : undefined}>
+                      {recaudacionPeriodo.map((r, idx) => {
+                        const total = Number(r?.total || 0);
+                        return (
+                          <div key={`periodo-${idx}`} className="mb-2">
+                            <div className="d-flex justify-content-between small">
+                              <span>{r?.periodo || "-"}</span>
+                              <span>S/. {formatMoney(total)}</span>
+                            </div>
+                            <div className="progress" style={{ height: "8px" }}>
+                              <div className="progress-bar bg-warning" style={{ width: `${Math.max(2, Math.round((total / maxPeriodo) * 100))}%` }}></div>
+                            </div>
                           </div>
-                          <div className="progress" style={{ height: "8px" }}>
-                            <div className="progress-bar bg-warning" style={{ width: `${Math.max(2, Math.round((total / maxPeriodo) * 100))}%` }}></div>
-                          </div>
-                        </div>
-                      );
-                    })
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               </div>

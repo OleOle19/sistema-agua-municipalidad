@@ -1,5 +1,16 @@
 const CHANGELOG_ENTRIES = [
   {
+    date: "18 de agosto de 2026",
+    title: "Caja y reportes más ágiles",
+    changes: [
+      "Los avisos de cobro muestran contribuyente, periodo y monto total.",
+      "Caja ya no abre ni ofrece formatos de impresión al cobrar.",
+      "Los gráficos permiten recorrer todos los resultados sin ocupar más espacio.",
+      "Se eliminó el cierre automático de Caja y los cobros posteriores a las 4:30 p. m. generan una alerta.",
+      "Las notificaciones tienen un diseño más claro y la sesión de Caja admite 49 minutos de inactividad."
+    ]
+  },
+  {
     date: "7 de agosto de 2026",
     title: "Cierre automático de sesión",
     changes: [
