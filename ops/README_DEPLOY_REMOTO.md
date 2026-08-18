@@ -42,9 +42,24 @@ Ese comando hace:
 1. `git fetch + git pull --ff-only` en `main`.
 2. valida y endurece `server/.env` (incluye rotacion de un JWT debil).
 3. aplica migraciones pendientes de Agua y Luz.
-4. `npm --prefix client run build`.
-5. reinicio backend (`ops/stop_backend.ps1 -Force` + `ops/start_backend.ps1`).
-6. verificacion de healthcheck en `http://127.0.0.1:5000/health`.
+4. reconstruye, verifica y activa el resumen financiero persistente solo si no hay diferencias.
+5. `npm --prefix client run build`.
+6. reinicio backend (`ops/stop_backend.ps1 -Force` + `ops/start_backend.ps1`).
+7. verificacion de healthcheck en `http://127.0.0.1:5000/health`.
+
+El despliegue empieza con el modo configurado y, únicamente después de que `resumen:verify`
+muestre cero diferencias, cambia `FINANCIAL_SUMMARY_MODE=on` en `server/.env`. Para dejarlo
+deliberadamente apagado usa `-KeepFinancialSummaryOff`. El modo `compare` conserva como
+respuesta el calculo original y registra cualquier diferencia, y `off` permite volver de
+inmediato al cálculo anterior.
+
+### HTTPS y HTTP/2 en la red municipal
+
+El archivo `ops/Caddyfile.example` deja al backend escuchando localmente en el puerto 5000
+y publica el sistema mediante HTTPS con HTTP/2 y compresion. Copialo como `Caddyfile`,
+ajusta el dominio interno y ejecuta Caddy como servicio de Windows. En las computadoras
+cliente debe instalarse como confiable la CA interna de Caddy; hasta completar ese paso,
+mantenga el acceso actual para no interrumpir Caja.
 
 Nota:
 - Las migraciones son incrementales y no ejecutan las conciliaciones financieras excluidas de este trabajo.

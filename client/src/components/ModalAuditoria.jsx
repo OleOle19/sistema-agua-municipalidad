@@ -7,6 +7,7 @@ import {
   FaSearch,
   FaShieldAlt,
   FaSyncAlt,
+  FaTimes,
   FaUndo
 } from "react-icons/fa";
 
@@ -681,7 +682,7 @@ const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false, ca
               {seleccionado && (
                 <aside className="col-xl-4 border-start">
                   <div className="p-3" style={{ maxHeight: "55vh", overflowY: "auto" }}>
-                    <div className="d-flex justify-content-between gap-2 mb-3"><div><div className="fw-bold">Detalle del movimiento</div><div className="small opacity-75">ID {seleccionado.id_auditoria}</div></div><button type="button" className={closeBtnClass} onClick={() => setSeleccionado(null)} aria-label="Cerrar detalle" /></div>
+                    <div className="d-flex justify-content-between align-items-start gap-2 mb-3"><div><div className="fw-bold">Detalle del movimiento</div><div className="small opacity-75">ID {seleccionado.id_auditoria}</div></div><button type="button" className="btn btn-sm btn-outline-secondary app-icon-button flex-shrink-0" onClick={() => setSeleccionado(null)} aria-label="Cerrar detalle" title="Cerrar detalle"><FaTimes /></button></div>
                     <div className={`${panelClass} p-2 mb-2 small`}><div className="fw-semibold">{toFriendlyAction(seleccionado.evento || seleccionado.accion)}</div><div>{formatFecha(seleccionado.fecha)} · {seleccionado.usuario || "SISTEMA"}</div>{seleccionado.request_id && <div className="text-break opacity-75">Solicitud: {seleccionado.request_id}</div>}</div>
                     {detalleVisible.map((item, idx) => <div key={`${seleccionado.id_auditoria}-detail-${idx}`} className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">{prettyLabel(item.label)}</div><div className="small" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{formatValueForDisplay(item.label, item.text, item.isJson)}</div></div>)}
                     {hasVisibleAuditData(metadataVisible) && <div className={`${panelClass} p-2 mb-2`}><div className="small text-uppercase fw-semibold opacity-75">Metadata estructurada</div><pre className="small mb-0" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{JSON.stringify(metadataVisible, null, 2)}</pre></div>}

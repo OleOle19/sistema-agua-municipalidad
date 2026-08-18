@@ -5,6 +5,7 @@ param(
   [switch]$SkipPull,
   [switch]$SkipBuild,
   [switch]$SkipRestart,
+  [switch]$KeepFinancialSummaryOff,
   [switch]$InstallDependencies,
   [switch]$ApplyApril2026Payments,
   [string]$AprilExcelPath = "",
@@ -26,6 +27,7 @@ $securityConfigScript = Join-Path $scriptDir "ensure_security_config.ps1"
 $aprilImportScript = Join-Path $repoRoot "server\scripts\importar_pagos_abril_2026.js"
 $pagosActaImportScript = Join-Path $repoRoot "server\scripts\importar_pagos_acta_txt.js"
 $healthUrl = "http://127.0.0.1:5000/health"
+$serverEnvPath = Join-Path $repoRoot "server\.env"
 
 function Run-OrFail {
   param(
@@ -50,6 +52,30 @@ function Invoke-OrFail {
     $argText = ($CommandArgs -join " ")
     throw "Fallo comando: $Cmd $argText"
   }
+}
+
+function Set-DotEnvValue {
+  param(
+    [string]$Path,
+    [string]$Name,
+    [string]$Value
+  )
+  if (!(Test-Path -LiteralPath $Path)) {
+    throw "No existe el archivo de configuracion: $Path"
+  }
+  $lines = [System.Collections.Generic.List[string]]::new()
+  Get-Content -LiteralPath $Path | ForEach-Object { [void]$lines.Add([string]$_) }
+  $updated = $false
+  for ($i = 0; $i -lt $lines.Count; $i += 1) {
+    if ($lines[$i] -match "^\s*$([regex]::Escape($Name))\s*=") {
+      $lines[$i] = "$Name=$Value"
+      $updated = $true
+      break
+    }
+  }
+  if (-not $updated) { [void]$lines.Add("$Name=$Value") }
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllLines((Resolve-Path -LiteralPath $Path), $lines, $utf8NoBom)
 }
 
 function Wait-BackendHealth {
@@ -151,6 +177,20 @@ try {
   }
   Run-OrFail "Aplicando migraciones de Luz" {
     Invoke-OrFail -Cmd "npm" -CommandArgs @("--prefix", "server", "run", "migrate:luz")
+  }
+
+  Run-OrFail "Reconstruyendo resumen financiero" {
+    Invoke-OrFail -Cmd "npm" -CommandArgs @("--prefix", "server", "run", "resumen:rebuild")
+  }
+  Run-OrFail "Verificando resumen financiero" {
+    Invoke-OrFail -Cmd "npm" -CommandArgs @("--prefix", "server", "run", "resumen:verify")
+  }
+  if (-not $KeepFinancialSummaryOff) {
+    Run-OrFail "Activando resumen financiero verificado" {
+      Set-DotEnvValue -Path $serverEnvPath -Name "FINANCIAL_SUMMARY_MODE" -Value "on"
+    }
+  } else {
+    Write-Host ">> Resumen financiero conservado sin activar por -KeepFinancialSummaryOff."
   }
 
   if (-not $SkipBuild) {

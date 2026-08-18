@@ -27,6 +27,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { WebSocketServer } = require("ws");
 const {
+  buildAuditHttpMethodPattern,
   inferAuditCategory,
   inferAuditEntity,
   inferAuditRisk,
@@ -40,6 +41,7 @@ const { LUZ_LEGACY_ACCEPTED_CHECKSUMS } = require("./migration-policy");
 const { decryptPassword, encryptPassword } = require("./password-vault");
 const { canAccessModule, isCajaDeniedForRole, isCajaUndoDeniedForRole, normalizeModule } = require("./role-policy");
 const { securityHeaders } = require("./security-headers");
+const { createFinancialSummaryService } = require("./financial-summary-service");
 const APP_TIMEZONE = process.env.APP_TIMEZONE || process.env.AUTO_DEUDA_TIMEZONE || "America/Lima";
 
 // --- HELPERS DE DIRECCIÓN ---
@@ -2294,9 +2296,9 @@ const buildAuditoriaWhereClause = (filters = {}) => {
         OR COALESCE(a.detalle, '') ~* '(^|;[[:space:]]*)tipo_pago=COMPENSACION(;|$)'
       )`);
     } else if (filters.method === "SISTEMA") {
-      where.push(`COALESCE(a.accion, '') !~* '^(GET|POST|PUT|PATCH|DELETE)\\b'`);
+      where.push(`COALESCE(a.accion, '') !~* '^(GET|POST|PUT|PATCH|DELETE)[[:space:]]+'`);
     } else {
-      params.push(`^${filters.method}\\b`);
+      params.push(buildAuditHttpMethodPattern(filters.method));
       where.push(`COALESCE(a.accion, '') ~* $${params.length}`);
     }
   }
@@ -3297,9 +3299,16 @@ const buildUsaTarifaActualDeudaVigenteSql = ({
   pagosAlias = "p",
   compararComponentes = false
 } = {}) => {
+  // Cualquier abono convierte al recibo en una fotografía contable. Solo los
+  // recibos todavía intactos pueden adoptar la tarifa vigente, aunque sean
+  // deudas de meses anteriores.
+  const periodoReciboSql = buildPeriodoNumSql(
+    `${reciboAlias}.anio`,
+    `${reciboAlias}.mes`
+  );
   const tarifaActualSql = buildTarifaActualReciboSql(
     predioAlias,
-    buildPeriodoNumSql(`${reciboAlias}.anio`, `${reciboAlias}.mes`)
+    periodoReciboSql
   );
   const componentesCambiaronSql = compararComponentes
     ? buildTarifaActualComponentesChangedSql({
@@ -3308,7 +3317,8 @@ const buildUsaTarifaActualDeudaVigenteSql = ({
     })
     : "FALSE";
   return `(CASE
-    WHEN COALESCE(${pagosAlias}.total_pagado, 0) < COALESCE(${reciboAlias}.total_pagar, 0) - 0.001
+    WHEN COALESCE(${pagosAlias}.total_pagado, 0) <= 0.001
+      AND COALESCE(${pagosAlias}.total_pagado, 0) < COALESCE(${reciboAlias}.total_pagar, 0) - 0.001
     THEN (
       (${tarifaActualSql}) > 0
       AND (
@@ -4089,13 +4099,8 @@ const recalcularRecibosFuturosPorServicios = async (
         subtotal_extra_actual <> nuevo_extra OR
         total_pagar_actual <> (nuevo_agua + nuevo_desague + nuevo_limpieza + nuevo_admin + nuevo_extra)
       )
-      AND (
-        estado_actual <> 'PAGADO'
-        AND (
-          total_pagar_actual <= 0.001
-          OR total_pagado < (total_pagar_actual - 0.001)
-        )
-      )
+      AND estado_actual <> 'PAGADO'
+      AND total_pagado <= 0.001
     )
     UPDATE recibos r
     SET
@@ -4303,9 +4308,16 @@ const preservarRecibosPagadosAntesDeActivarServicios = async (
   };
 };
 
-const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, idContribuyente) => {
+const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (
+  client,
+  idContribuyente,
+  { desdePeriodoNum = 0 } = {}
+) => {
   const id = parsePositiveInt(idContribuyente, 0);
   if (!id) return { actualizados: 0, periodos: buildPeriodosRecalculadosResumen([]), rows: [] };
+  const periodoDesde = Number.isFinite(Number(desdePeriodoNum))
+    ? Math.max(0, Number(desdePeriodoNum))
+    : 0;
   const periodoReciboSql = buildPeriodoNumSql("r.anio", "r.mes");
   const tarifaAguaPeriodoSql = buildTarifaPeriodoBaseSql({
     predioAlias: "p",
@@ -4441,6 +4453,7 @@ const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, i
           ) AS limpieza_hist
       ) hist ON TRUE
       WHERE p.id_contribuyente = $5
+        AND ($6::int <= 0 OR ${periodoReciboSql} >= $6::int)
         AND COALESCE(NULLIF(UPPER(TRIM(CAST(r.estado AS text))), ''), 'PENDIENTE') = 'PENDIENTE'
         AND NOT EXISTS (
           SELECT 1
@@ -4506,7 +4519,7 @@ const sincronizarRecibosPendientesSinPagoPorServiciosActuales = async (client, i
       AND COALESCE(r.subtotal_extra, 0) = a.old_extra
       AND COALESCE(r.total_pagar, 0) = a.old_total
     RETURNING r.id_recibo, r.anio, r.mes
-  `, [AUTO_DEUDA_BASE.agua, AUTO_DEUDA_BASE.desague, AUTO_DEUDA_BASE.limpieza, AUTO_DEUDA_BASE.admin, id]);
+  `, [AUTO_DEUDA_BASE.agua, AUTO_DEUDA_BASE.desague, AUTO_DEUDA_BASE.limpieza, AUTO_DEUDA_BASE.admin, id, periodoDesde]);
   return {
     actualizados: Number(fix.rowCount || 0),
     periodos: buildPeriodosRecalculadosResumen(fix.rows || []),
@@ -5375,15 +5388,19 @@ const invalidateReportesCajaCache = () => {
   reportesCajaCache.clear();
 };
 
-const invalidateContribuyentesCache = () => {
+const invalidateFinancialReadCaches = () => {
   contribuyentesCacheGeneration += 1;
-  contribuyentesBasicCache = { expiresAt: 0, data: null };
   contribuyentesFinancialCache = { expiresAt: 0, data: null };
-  contribuyentesBasicInFlight = null;
   contribuyentesFinancialInFlight = null;
   invalidateReportesCajaCache();
   dashboardCache = { expiresAt: 0, data: null, day: null };
   recaudadoHoyCache = { expiresAt: 0, total: null, day: null };
+};
+
+const invalidateContribuyentesCache = () => {
+  contribuyentesBasicCache = { expiresAt: 0, data: null };
+  contribuyentesBasicInFlight = null;
+  invalidateFinancialReadCaches();
 };
 
 const REALTIME_CHANNELS = new Set(["caja", "deuda"]);
@@ -6878,6 +6895,22 @@ const ensurePagosCorreccionesTable = async (client) => {
     CREATE INDEX IF NOT EXISTS idx_pagos_correcciones_tipo
     ON pagos_correcciones (tipo_movimiento, realizado_en DESC)
   `);
+};
+
+let historialPaymentSchemaReady = false;
+let historialPaymentSchemaPromise = null;
+const ensureHistorialPaymentSchema = async (client) => {
+  if (historialPaymentSchemaReady) return;
+  if (!historialPaymentSchemaPromise) {
+    historialPaymentSchemaPromise = (async () => {
+      await ensurePagosAnuladosTable(client);
+      await ensurePagosCorreccionesTable(client);
+      historialPaymentSchemaReady = true;
+    })().finally(() => {
+      historialPaymentSchemaPromise = null;
+    });
+  }
+  await historialPaymentSchemaPromise;
 };
 
 const registrarCorreccionPagoAdmin = async (client, {
@@ -10294,7 +10327,7 @@ const obtenerReporteEstadoConexionDetalleMensualRows = async ({
       SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
       FROM pagos p
       WHERE ${buildPagoContableValidoSql("p")}
-        AND DATE(p.fecha_pago) <= $3::date
+        AND p.fecha_pago < ($3::date + INTERVAL '1 day')
       GROUP BY p.id_recibo
     ),
     direccion_principal AS (
@@ -10908,47 +10941,72 @@ const buildContribuyentesBasicQuery = () => `
   SELECT
     c.id_contribuyente,
     c.codigo_municipal,
-    c.sec_cod,
-    c.sec_nombre,
     c.dni_ruc,
     c.nombre_completo,
-    c.telefono,
     COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion)), ''), 'CON_CONEXION') AS estado_conexion,
     COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion_fuente)), ''), 'INFERIDO') AS estado_conexion_fuente,
     COALESCE(NULLIF(UPPER(TRIM(c.estado_conexion_verificado_sn)), ''), 'N') AS estado_conexion_verificado_sn,
-    c.estado_conexion_fecha_verificacion,
-    c.estado_conexion_motivo_ultimo,
-    p.id_predio,
     ${buildDireccionSql("ca", "p")} AS direccion_completa,
-    p.id_calle,
-    p.numero_casa,
-    p.manzana,
-    p.lote,
     p.tarifa_agua,
     p.tarifa_desague,
     p.tarifa_limpieza,
     p.tarifa_admin,
-    p.tarifa_extra,
-    'N' AS verificar_caja_sn,
-    NULL::timestamp AS verificar_caja_desde,
-    NULL::text AS verificar_caja_observacion
+    p.tarifa_extra
   FROM contribuyentes c
   LEFT JOIN predio_principal p ON p.id_contribuyente = c.id_contribuyente
   LEFT JOIN calles ca ON p.id_calle = ca.id_calle
 `;
 
-const buildContribuyentesFinancialQuery = () => {
+const buildContribuyentesFinancialQuery = ({ filterContributorIds = false } = {}) => {
   const totalPagarReferenciaContribSql = buildTotalPagarDeudaVigenteSql({
     reciboAlias: "ro",
     predioAlias: "p3",
     pagosAlias: "pp"
   });
+  const totalPagarReferenciaDashboardPersistSql = buildTotalPagarDeudaVigenteSql({
+    reciboAlias: "rd",
+    predioAlias: "pd",
+    pagosAlias: "pgd"
+  });
+  const dashboardYear = getCurrentYear();
+  const dashboardMonth = getCurrentMonth();
   return `
-    WITH predio_principal AS MATERIALIZED (
+    WITH predios_dashboard_objetivo AS MATERIALIZED (
+      SELECT p.id_contribuyente, p.id_predio
+      FROM predios p
+      ${filterContributorIds ? "WHERE p.id_contribuyente = ANY($3::int[])" : ""}
+    ),
+    recibos_dashboard_objetivo AS MATERIALIZED (
+      SELECT r.id_recibo, r.id_predio, r.total_pagar, r.anio, r.mes
+      FROM recibos r
+      JOIN predios_dashboard_objetivo po ON po.id_predio = r.id_predio
+      WHERE (r.anio, r.mes) <= (${dashboardYear}, ${dashboardMonth})
+    ),
+    pagos_dashboard AS MATERIALIZED (
+      SELECT p.id_recibo, SUM(p.monto_pagado) AS total_pagado
+      FROM pagos p
+      JOIN recibos_dashboard_objetivo rd ON rd.id_recibo = p.id_recibo
+      WHERE ${buildPagoContableValidoSql("p")}
+      GROUP BY p.id_recibo
+    ),
+    predios_morosos_dashboard AS MATERIALIZED (
+      SELECT
+        po.id_contribuyente,
+        COUNT(DISTINCT rd.id_predio) FILTER (
+          WHERE (${totalPagarReferenciaDashboardPersistSql} - COALESCE(pgd.total_pagado, 0)) > 0
+        ) AS predios_morosos_actuales
+      FROM predios_dashboard_objetivo po
+      LEFT JOIN recibos_dashboard_objetivo rd ON rd.id_predio = po.id_predio
+      LEFT JOIN predios pd ON pd.id_predio = rd.id_predio
+      LEFT JOIN pagos_dashboard pgd ON pgd.id_recibo = rd.id_recibo
+      GROUP BY po.id_contribuyente
+    ),
+    predio_principal AS MATERIALIZED (
       SELECT DISTINCT ON (p.id_contribuyente)
         p.id_contribuyente,
         p.id_predio
       FROM predios p
+      ${filterContributorIds ? "WHERE p.id_contribuyente = ANY($3::int[])" : ""}
       ORDER BY p.id_contribuyente, p.id_predio
     ),
     recibos_objetivo AS MATERIALIZED (
@@ -11023,17 +11081,31 @@ const buildContribuyentesFinancialQuery = () => {
       GROUP BY id_predio
     )
     SELECT
-      principal.id_contribuyente,
+      c.id_contribuyente,
       COALESCE(rp.deuda_total, 0) AS deuda_anio,
       COALESCE(rp.abono_total, 0) AS abono_anio,
       COALESCE(rp.meses_deuda_total, 0) AS meses_deuda,
       COALESCE(rp.monto_pendiente_caja, 0) AS pendiente_caja_monto,
-      COALESCE(opr.ordenes_pendientes, 0) AS pendiente_caja_ordenes
-    FROM predio_principal principal
+      COALESCE(opr.ordenes_pendientes, 0) AS pendiente_caja_ordenes,
+      COALESCE(pmd.predios_morosos_actuales, 0) AS predios_morosos_actuales
+    FROM contribuyentes c
+    LEFT JOIN predio_principal principal ON principal.id_contribuyente = c.id_contribuyente
     LEFT JOIN resumen_predio rp ON rp.id_predio = principal.id_predio
     LEFT JOIN ordenes_pendientes_predio opr ON opr.id_predio = principal.id_predio
+    LEFT JOIN predios_morosos_dashboard pmd ON pmd.id_contribuyente = c.id_contribuyente
+    ${filterContributorIds ? "WHERE c.id_contribuyente = ANY($3::int[])" : ""}
   `;
 };
+
+const financialSummaryService = createFinancialSummaryService({
+  pool,
+  buildFinancialQuery: buildContribuyentesFinancialQuery,
+  getClosedPeriod: () => getUltimoPeriodoCerrado({
+    anio: getCurrentYear(),
+    mes: getCurrentMonth()
+  }),
+  logger: console
+});
 
 const startContribuyentesBasicLoad = () => {
   const generation = contribuyentesCacheGeneration;
@@ -11087,23 +11159,21 @@ const startContribuyentesFinancialLoad = () => {
     mes: getCurrentMonth()
   });
   const startedAt = Date.now();
-  const promise = pool.query(
-    buildContribuyentesFinancialQuery(),
-    [periodoCerrado.anio, periodoCerrado.mes]
-  )
-    .then((result) => {
+  const promise = financialSummaryService.getRows()
+    .then((rows) => {
       if (generation === contribuyentesCacheGeneration) {
         contribuyentesFinancialCache = {
           expiresAt: Date.now() + CONTRIBUYENTES_CACHE_TTL_MS,
-          data: result.rows
+          data: rows
         };
       }
       logPerfEvent("contribuyentes.financiero", {
         duracion_ms: Date.now() - startedAt,
-        filas: result.rows.length,
-        periodo: `${periodoCerrado.anio}-${String(periodoCerrado.mes).padStart(2, "0")}`
+        filas: rows.length,
+        periodo: `${periodoCerrado.anio}-${String(periodoCerrado.mes).padStart(2, "0")}`,
+        modo: financialSummaryService.mode
       });
-      return result.rows;
+      return rows;
     })
     .finally(() => {
       if (contribuyentesFinancialInFlight?.promise === promise) {
@@ -11114,14 +11184,27 @@ const startContribuyentesFinancialLoad = () => {
   return promise;
 };
 
-const getContribuyentesFinancialRows = ({ forceFresh = false } = {}) => {
+const getContribuyentesFinancialRows = async ({ forceFresh = false } = {}) => {
   const now = Date.now();
   if (
     !forceFresh
     && contribuyentesFinancialCache.data
     && now < contribuyentesFinancialCache.expiresAt
   ) {
-    return Promise.resolve(contribuyentesFinancialCache.data);
+    if (financialSummaryService.mode === "off") {
+      return contribuyentesFinancialCache.data;
+    }
+    try {
+      const state = await financialSummaryService.coverage();
+      if (
+        Number(state.pendientes) === 0
+        && Number(state.resumen) === Number(state.contribuyentes)
+      ) {
+        return contribuyentesFinancialCache.data;
+      }
+    } catch (error) {
+      console.error("[PERF][resumen_financiero.coverage]", error.message);
+    }
   }
   return startContribuyentesFinancialLoad();
 };
@@ -11754,12 +11837,20 @@ app.put("/contribuyentes/:id", async (req, res) => {
         desdePeriodoNum: 0
       });
       const recalcManual = await recalcularRecibosFuturosPorServicios(client, idContribuyente, {
-        incluirPendientesHistoricos: false,
+        incluirPendientesHistoricos: true,
         permitirPeriodoActual: estadoConexionCambio,
         usarDesdePeriodoExacto: !estadoConexionCambio,
         desdePeriodoNum: desdePeriodoRecalculo
       });
-      const syncPendientesSinPago = { actualizados: 0, rows: [] };
+      const syncPendientesSinPago = await sincronizarRecibosPendientesSinPagoPorServiciosActuales(
+        client,
+        idContribuyente,
+        {
+          // Los meses con deuda y sin abonos siguen la tarifa vigente. Los
+          // recibos con cualquier pago asociado permanecen congelados.
+          desdePeriodoNum: 0
+        }
+      );
       const filasRecalculadas = [
         ...(Array.isArray(preservacionPagados?.rows) ? preservacionPagados.rows : []),
         ...(Array.isArray(duplicateFix?.rows) ? duplicateFix.rows : []),
@@ -12901,7 +12992,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
           SELECT id_recibo, SUM(monto_pagado) AS total_pagado
           FROM pagos
           WHERE ${buildPagoContableValidoSql("pagos")}
-            AND DATE(fecha_pago) <= $2::date
+            AND fecha_pago < ($2::date + INTERVAL '1 day')
           GROUP BY id_recibo
         ) pagos_dup ON pagos_dup.id_recibo = r_dup.id_recibo
         WHERE r_dup.id_predio = r.id_predio
@@ -12941,7 +13032,7 @@ app.get("/recibos/pendientes/:id_contribuyente", async (req, res) => {
         SELECT id_recibo, SUM(monto_pagado) as total_pagado
         FROM pagos
         WHERE ${buildPagoContableValidoSql("pagos")}
-          AND DATE(fecha_pago) <= $2::date
+          AND fecha_pago < ($2::date + INTERVAL '1 day')
         GROUP BY id_recibo
       ) p ON p.id_recibo = r.id_recibo
       WHERE ${whereParts.join(" AND ")}
@@ -14166,7 +14257,7 @@ app.post("/caja/ordenes-cobro/:id/cobrar", async (req, res) => {
         FROM pagos
         WHERE ${buildPagoContableValidoSql("pagos")}
           AND id_recibo = ANY($1::int[])
-          AND DATE(fecha_pago) <= $2::date
+          AND fecha_pago < ($2::date + INTERVAL '1 day')
         GROUP BY id_recibo
       ),
       pagos_total AS (
@@ -14795,7 +14886,7 @@ app.post("/pagos", async (req, res) => {
         FROM pagos
         WHERE ${buildPagoContableValidoSql("pagos")}
           AND id_recibo = ANY($1::int[])
-          AND DATE(fecha_pago) <= $2::date
+          AND fecha_pago < ($2::date + INTERVAL '1 day')
         GROUP BY id_recibo
       ),
       pagos_total AS (
@@ -16404,10 +16495,10 @@ app.post("/actas-corte/generar-lote", authenticateToken, async (req, res) => {
 });
 
 app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
+  const startedAt = Date.now();
   const client = await pool.connect();
   try {
-    await ensurePagosAnuladosTable(client);
-    await ensurePagosCorreccionesTable(client);
+    await ensureHistorialPaymentSchema(client);
     const idContribuyente = parsePositiveInt(req.params?.id_contribuyente, 0);
     if (!idContribuyente) {
       return res.status(400).json({ error: "ID de contribuyente inválido." });
@@ -16478,17 +16569,16 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
         END as estado
       FROM recibos r
       JOIN predios p2 ON p2.id_predio = r.id_predio
-      LEFT JOIN (
+      LEFT JOIN LATERAL (
         SELECT
-          id_recibo,
           SUM(monto_pagado) AS total_pagado,
           MAX(fecha_pago) AS fecha_ultimo_pago,
           (ARRAY_AGG(id_pago ORDER BY fecha_pago DESC, id_pago DESC))[1] AS id_ultimo_pago
-        FROM pagos
-        WHERE ${buildPagoContableValidoSql("pagos")}
-          AND DATE(fecha_pago) <= $4::date
-        GROUP BY id_recibo
-      ) p ON p.id_recibo = r.id_recibo
+        FROM pagos pagos_historial
+        WHERE pagos_historial.id_recibo = r.id_recibo
+          AND ${buildPagoContableValidoSql("pagos_historial")}
+          AND pagos_historial.fecha_pago < ($4::date + INTERVAL '1 day')
+      ) p ON TRUE
       LEFT JOIN LATERAL (
         SELECT
           pa.id_anulacion,
@@ -16551,15 +16641,14 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
         AND NOT EXISTS (
           SELECT 1
           FROM recibos r_dup
-          LEFT JOIN (
+          LEFT JOIN LATERAL (
             SELECT
-              pagos_dup.id_recibo,
               SUM(pagos_dup.monto_pagado) AS total_pagado
             FROM pagos pagos_dup
-            WHERE ${buildPagoContableValidoSql("pagos_dup")}
-              AND DATE(pagos_dup.fecha_pago) <= $4::date
-            GROUP BY pagos_dup.id_recibo
-          ) pagos_dup ON pagos_dup.id_recibo = r_dup.id_recibo
+            WHERE pagos_dup.id_recibo = r_dup.id_recibo
+              AND ${buildPagoContableValidoSql("pagos_dup")}
+              AND pagos_dup.fecha_pago < ($4::date + INTERVAL '1 day')
+          ) pagos_dup ON TRUE
           WHERE r_dup.id_predio = r.id_predio
             AND r_dup.anio = r.anio
             AND r_dup.mes = r.mes
@@ -16582,6 +16671,13 @@ app.get("/recibos/historial/:id_contribuyente", async (req, res) => {
       anioFiltro: anio
     });
     const rows = normalizeHistorialArbitriosRows(rowsRaw);
+    const durationMs = Date.now() - startedAt;
+    logPerfEvent("recibos.historial", {
+      duracion_ms: durationMs,
+      filas: rows.length,
+      id_contribuyente: idContribuyente
+    });
+    res.set("Server-Timing", `historial;dur=${durationMs}`);
     res.set("Cache-Control", "no-store");
     res.json(rows);
   } catch (err) { res.status(500).send("Error historial"); }
@@ -18530,26 +18626,32 @@ app.get("/dashboard/resumen", async (req, res) => {
       predioAlias: "pr",
       pagosAlias: "pg"
     });
-    const recaudacion = await pool.query(`
-      SELECT COALESCE(SUM(p.monto_pagado), 0) AS total
-      FROM pagos p
-      WHERE ${PAGO_OPERATIVO_CAJA_SQL}
-        AND DATE(p.fecha_pago) = $1
-    `, [hoy]);
-    const usuarios = await pool.query("SELECT COUNT(*) as total FROM contribuyentes");
-    const morosos = await pool.query(`
-      SELECT COUNT(DISTINCT r.id_predio) as total
-      FROM recibos r
-      JOIN predios pr ON pr.id_predio = r.id_predio
-      LEFT JOIN (
-        SELECT id_recibo, SUM(monto_pagado) as total_pagado
-        FROM pagos
-        WHERE ${buildPagoContableValidoSql("pagos")}
-        GROUP BY id_recibo
-      ) pg ON pg.id_recibo = r.id_recibo
-      WHERE (${totalPagarReferenciaDashboardResumenSql} - COALESCE(pg.total_pagado, 0)) > 0
-        AND ((r.anio < $1) OR (r.anio = $1 AND r.mes <= $2))
-    `, [anioActual, mesActual]);
+    const morososPromise = financialSummaryService.isActive()
+      ? financialSummaryService.getDashboardMorosos().then((total) => ({ rows: [{ total }] }))
+      : pool.query(`
+          SELECT COUNT(DISTINCT r.id_predio) as total
+          FROM recibos r
+          JOIN predios pr ON pr.id_predio = r.id_predio
+          LEFT JOIN (
+            SELECT id_recibo, SUM(monto_pagado) as total_pagado
+            FROM pagos
+            WHERE ${buildPagoContableValidoSql("pagos")}
+            GROUP BY id_recibo
+          ) pg ON pg.id_recibo = r.id_recibo
+          WHERE (${totalPagarReferenciaDashboardResumenSql} - COALESCE(pg.total_pagado, 0)) > 0
+            AND ((r.anio < $1) OR (r.anio = $1 AND r.mes <= $2))
+        `, [anioActual, mesActual]);
+    const [recaudacion, usuarios, morosos] = await Promise.all([
+      pool.query(`
+        SELECT COALESCE(SUM(p.monto_pagado), 0) AS total
+        FROM pagos p
+        WHERE ${PAGO_OPERATIVO_CAJA_SQL}
+          AND p.fecha_pago >= $1::date
+          AND p.fecha_pago < ($1::date + INTERVAL '1 day')
+      `, [hoy]),
+      pool.query("SELECT COUNT(*) as total FROM contribuyentes"),
+      morososPromise
+    ]);
     const payload = {
       recaudado_hoy: recaudacion.rows[0].total || 0,
       total_usuarios: usuarios.rows[0].total || 0,
@@ -20510,8 +20612,8 @@ const buildCurrentRecaudacionDailySnapshot = async (db, fechaDesde, fechaHasta) 
       ROUND(SUM(p.monto_pagado)::numeric, 2) AS total
     FROM pagos p
     WHERE ${PAGO_OPERATIVO_CAJA_SQL}
-      AND DATE(p.fecha_pago) >= $1::date
-      AND DATE(p.fecha_pago) <= $2::date
+      AND p.fecha_pago >= $1::date
+      AND p.fecha_pago < ($2::date + INTERVAL '1 day')
     GROUP BY DATE(p.fecha_pago)
     ORDER BY DATE(p.fecha_pago)
   `, [fechaDesde, fechaHasta]);
@@ -23449,6 +23551,9 @@ const onServerStarted = (label, host, port) => {
   ensurePerformanceIndexes(pool).catch((err) => {
     console.error("[DB] Error creando índices de rendimiento:", err);
   });
+  financialSummaryService.startReconciliation({
+    onUpdated: () => invalidateFinancialReadCaches()
+  });
   repararRecibosPendientesSnLegacy().catch((err) => {
     console.error("[MIGRACION_SN] Error iniciando corrección legacy:", err);
   });
@@ -23601,6 +23706,7 @@ const closeServer = (server) => new Promise((resolve) => {
 const gracefulShutdown = async (signal) => {
   if (shuttingDown) return;
   shuttingDown = true;
+  financialSummaryService.stopReconciliation();
   console.log(`[SHUTDOWN] ${signal}: cerrando servidores y conexiones.`);
   const forceTimer = setTimeout(() => process.exit(1), 10000);
   forceTimer.unref();
@@ -23619,10 +23725,20 @@ const gracefulShutdown = async (signal) => {
 process.once("SIGINT", () => gracefulShutdown("SIGINT"));
 process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));
 
-verifyStartup()
-  .then(startServers)
-  .catch((error) => {
-    console.error(`[STARTUP] ${error.message}`);
-    process.exitCode = 1;
-    Promise.allSettled([pool.end(), luzPool.end()]).finally(() => process.exit(1));
-  });
+if (require.main === module) {
+  verifyStartup()
+    .then(startServers)
+    .catch((error) => {
+      console.error(`[STARTUP] ${error.message}`);
+      process.exitCode = 1;
+      Promise.allSettled([pool.end(), luzPool.end()]).finally(() => process.exit(1));
+    });
+}
+
+module.exports = {
+  app,
+  pool,
+  luzPool,
+  financialSummaryService,
+  buildContribuyentesFinancialQuery
+};

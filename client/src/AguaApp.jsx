@@ -2,10 +2,6 @@
 import api from "./api";
 import { Suspense, lazy } from "react";
 import { useReactToPrint } from 'react-to-print'; 
-import ModalDeuda from "./components/ModalDeuda";
-import ModalPago from "./components/ModalPago";
-import ModalEliminar from "./components/ModalEliminar";
-import ModalEditarUsuario from "./components/ModalEditarUsuario";
 import DashboardStats from "./components/DashboardStats"; 
 import Recibo from "./components/Recibo"; 
 import ReciboAnexoCaja from "./components/ReciboAnexoCaja";
@@ -26,6 +22,10 @@ import {
 } from "./utils/sessionAuth";
 
 const LazyRegistroForm = lazy(() => import("./components/RegistroForm"));
+const LazyModalDeuda = lazy(() => import("./components/ModalDeuda"));
+const LazyModalPago = lazy(() => import("./components/ModalPago"));
+const LazyModalEliminar = lazy(() => import("./components/ModalEliminar"));
+const LazyModalEditarUsuario = lazy(() => import("./components/ModalEditarUsuario"));
 const LazyModalCierre = lazy(() => import("./components/ModalCierre"));
 const LazyModalAuditoria = lazy(() => import("./components/ModalAuditoria"));
 const LazyModalUsuarios = lazy(() => import("./components/ModalUsuarios"));
@@ -38,6 +38,12 @@ const LazyModalActaCorteSelector = lazy(() => import("./components/ModalActaCort
 const LazyModalCampoSolicitudes = lazy(() => import("./components/ModalCampoSolicitudes"));
 const LazyModalCorteConexion = lazy(() => import("./components/ModalCorteConexion"));
 const LazyModalFondoInicio = lazy(() => import("./components/ModalFondoInicio"));
+const preloadOperationalDialogs = () => Promise.allSettled([
+  import("./components/ModalDeuda"),
+  import("./components/ModalPago"),
+  import("./components/ModalEliminar"),
+  import("./components/ModalEditarUsuario")
+]);
 
 const ROLE_ORDER = {
   BRIGADA: 1,
@@ -676,6 +682,8 @@ function AguaApp({ onBackToSelector = null }) {
   const selectedIdsRef = useRef(new Set());
   const usuarioSeleccionadoRef = useRef(null);
   const contribuyentesRequestRef = useRef(0);
+  const historialRequestRef = useRef({ id: 0, controller: null, cacheKey: null });
+  const dragSelectionActiveRef = useRef(false);
   const [tableViewportHeight, setTableViewportHeight] = useState(0);
   const [tableScrollRow, setTableScrollRow] = useState(0);
   const pendingScrollTopRef = useRef(0);
@@ -686,6 +694,16 @@ function AguaApp({ onBackToSelector = null }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const rowHeight = 32;
   const overscan = 24;
+
+  useEffect(() => {
+    if (!usuarioSistema) return undefined;
+    if (typeof window.requestIdleCallback === "function") {
+      const idleId = window.requestIdleCallback(() => void preloadOperationalDialogs(), { timeout: 4000 });
+      return () => window.cancelIdleCallback?.(idleId);
+    }
+    const timer = window.setTimeout(() => void preloadOperationalDialogs(), 1800);
+    return () => window.clearTimeout(timer);
+  }, [usuarioSistema]);
 
   const [refreshDashboard, setRefreshDashboard] = useState(0);
   const [resumenPendientesCaja, setResumenPendientesCaja] = useState({
@@ -1397,21 +1415,47 @@ const anexoCajaPageStyle = `
       });
     }
   }, []);
-  const cargarHistorial = async (id_contribuyente, anio = historialYear, force = false) => {
-    const cacheKey = `${HISTORIAL_CACHE_VERSION}:${id_contribuyente}:${anio}`;
+  const cancelarCargaHistorial = useCallback(() => {
+    historialRequestRef.current.id += 1;
+    historialRequestRef.current.controller?.abort?.();
+    historialRequestRef.current.controller = null;
+    historialRequestRef.current.cacheKey = null;
+  }, []);
+
+  const cargarHistorial = useCallback(async (id_contribuyente, anio = "all", force = false) => {
+    const idContribuyente = Number(id_contribuyente || 0);
+    if (!Number.isInteger(idContribuyente) || idContribuyente <= 0) return;
+
+    const cacheKey = `${HISTORIAL_CACHE_VERSION}:${idContribuyente}:${anio}`;
+    if (
+      !force
+      && historialRequestRef.current.controller
+      && historialRequestRef.current.cacheKey === cacheKey
+    ) {
+      return;
+    }
+    historialRequestRef.current.controller?.abort?.();
+    const requestId = historialRequestRef.current.id + 1;
+    const controller = new AbortController();
+    historialRequestRef.current = { id: requestId, controller, cacheKey };
+    const sigueVigente = () => historialRequestRef.current.id === requestId;
     if (!force && historialCacheRef.current.has(cacheKey)) {
       const cached = historialCacheRef.current.get(cacheKey);
+      if (!sigueVigente()) return;
       setHistorial(cached.rows);
       if (anio === "all") setHistorialYears(cached.years);
+      historialRequestRef.current.controller = null;
+      historialRequestRef.current.cacheKey = null;
       return;
     }
     try {
-      const res = await api.get(`/recibos/historial/${id_contribuyente}`, {
+      const res = await api.get(`/recibos/historial/${idContribuyente}`, {
         params: {
           anio,
           incluir_futuros: "S",
           ...(force ? { _ts: Date.now() } : {})
         },
+        signal: controller.signal,
         headers: force
           ? {
             "Cache-Control": "no-cache",
@@ -1419,6 +1463,7 @@ const anexoCajaPageStyle = `
           }
           : undefined
       });
+      if (!sigueVigente()) return;
       const rows = Array.isArray(res.data) ? res.data : [];
       setHistorial(rows);
       if (anio === "all") {
@@ -1428,10 +1473,16 @@ const anexoCajaPageStyle = `
       } else {
         historialCacheRef.current.set(cacheKey, { rows, years: [] });
       }
-    } catch {
+    } catch (error) {
+      if (controller.signal.aborted || error?.code === "ERR_CANCELED") return;
       console.error("Error historial");
+    } finally {
+      if (sigueVigente()) {
+        historialRequestRef.current.controller = null;
+        historialRequestRef.current.cacheKey = null;
+      }
     }
-  };
+  }, []);
 
   const handleHistorialYearChange = (e) => {
     const value = e.target.value;
@@ -1617,7 +1668,10 @@ const anexoCajaPageStyle = `
       await cargarContribuyentes(0, { forceFresh: true });
       if (SHOW_LEGACY_CAJA_MENU && permisos.canCaja) cargarResumenPendientesCaja();
       if (permisos.canCaja) cargarResumenConteoEfectivo();
-      if (selectedId > 0) {
+      if (
+        selectedId > 0
+        && Number(usuarioSeleccionadoRef.current?.id_contribuyente || 0) === selectedId
+      ) {
         await cargarHistorial(selectedId, "all", true);
       }
       setRefreshDashboard(prev => prev + 1);
@@ -1680,15 +1734,19 @@ const anexoCajaPageStyle = `
     cargarResumenConteoEfectivo();
     return undefined;
   }, [usuarioSistema, permisos.canCaja, cargarResumenPendientesCaja, cargarResumenConteoEfectivo]);
+  const usuarioSeleccionadoId = Number(usuarioSeleccionado?.id_contribuyente || 0);
   useEffect(() => {
-    if (usuarioSeleccionado) {
+    if (usuarioSeleccionadoId > 0) {
       setHistorialYear("all");
-      cargarHistorial(usuarioSeleccionado.id_contribuyente, "all");
+      setHistorial([]);
+      setHistorialYears([]);
+      void cargarHistorial(usuarioSeleccionadoId, "all");
     } else {
+      cancelarCargaHistorial();
       setHistorial([]);
       setHistorialYears([]);
     }
-  }, [usuarioSeleccionado]);
+  }, [usuarioSeleccionadoId, cargarHistorial, cancelarCargaHistorial]);
   useEffect(() => {
     if (freezeContribuyenteRefresh) return;
     if (usuarioSeleccionado) {
@@ -1925,6 +1983,7 @@ const anexoCajaPageStyle = `
 
     setSelectedIdsIfChanged(baseSelected);
     setUsuarioSeleccionado(usuario);
+    dragSelectionActiveRef.current = true;
     startScrollSelect(id, mode, baseSelected);
     setIsDragging(true);
   }, [setSelectedIdsIfChanged, startScrollSelect]);
@@ -2060,6 +2119,7 @@ const anexoCajaPageStyle = `
   };
 
   const applyScrollSelectAtPoint = (x, y) => {
+    if (!dragSelectionActiveRef.current) return;
     let row = null;
     if (typeof x === "number" && typeof y === "number") {
       row = findRowAtPoint(x, y);
@@ -2141,11 +2201,14 @@ const anexoCajaPageStyle = `
     if (Number.isNaN(id)) return;
     const usuario = contribuyenteById.get(id);
     if (!usuario) return;
+    dragSelectionActiveRef.current = false;
+    setIsDragging(false);
+    clearScrollSelect();
     setUsuarioSeleccionado(usuario);
     setHistorialYear("all");
-    cargarHistorial(usuario.id_contribuyente, "all", true);
+    void cargarHistorial(usuario.id_contribuyente, "all");
     setMostrarModalArbitrios(true);
-  }, [contribuyenteById, cargarHistorial]);
+  }, [contribuyenteById, cargarHistorial, clearScrollSelect]);
 
   const handleRowKeyDown = useCallback((e) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -2167,7 +2230,7 @@ const anexoCajaPageStyle = `
     setSelectedIds(new Set([id]));
     if (e.key === "Enter") {
       setHistorialYear("all");
-      cargarHistorial(usuario.id_contribuyente, "all", true);
+      void cargarHistorial(usuario.id_contribuyente, "all");
       setMostrarModalArbitrios(true);
     }
   }, [contribuyenteById, cargarHistorial]);
@@ -2208,11 +2271,14 @@ const anexoCajaPageStyle = `
   useEffect(() => {
     return () => {
       if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+      dragSelectionActiveRef.current = false;
+      cancelarCargaHistorial();
     };
-  }, []);
+  }, [cancelarCargaHistorial]);
 
   useEffect(() => {
     const handleUp = () => {
+      dragSelectionActiveRef.current = false;
       if (!isDragging) return;
       setIsDragging(false);
       clearScrollSelect();
@@ -2497,16 +2563,22 @@ const anexoCajaPageStyle = `
         </main>
       </div>
 
-      {mostrarModalDeuda && usuarioSeleccionado && (<ModalDeuda usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalDeuda(false)} alGuardar={recargarTodo} onFlash={showFlash} />)}
+      {mostrarModalDeuda && usuarioSeleccionado && (
+        <Suspense fallback={<LazyModalFallback label="Cargando registro de deuda..." />}>
+          <LazyModalDeuda usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalDeuda(false)} alGuardar={recargarTodo} onFlash={showFlash} />
+        </Suspense>
+      )}
       {SHOW_LEGACY_CAJA_MENU && mostrarModalPago && usuarioSeleccionado && (
-        <ModalPago
-          usuario={{...usuarioSeleccionado, recibos: historial}} // Pasamos el historial actual como recibos
-          usuarioSistema={usuarioSistema}
-          cerrarModal={() => setMostrarModalPago(false)}
-          alGuardar={recargarTodo}
-          onImprimirAnexo={(datos) => setDatosAnexoCajaImprimir(datos)}
-          onFlash={showFlash}
-        />
+        <Suspense fallback={<LazyModalFallback label="Cargando registro de pago..." />}>
+          <LazyModalPago
+            usuario={{...usuarioSeleccionado, recibos: historial}}
+            usuarioSistema={usuarioSistema}
+            cerrarModal={() => setMostrarModalPago(false)}
+            alGuardar={recargarTodo}
+            onImprimirAnexo={(datos) => setDatosAnexoCajaImprimir(datos)}
+            onFlash={showFlash}
+          />
+        </Suspense>
       )}
       {mostrarModalArbitrios && usuarioSeleccionado && (
         <ModalArbitriosDetalle
@@ -2520,7 +2592,11 @@ const anexoCajaPageStyle = `
           exportandoExcel={exportandoArbitriosExcel}
         />
       )}
-      {mostrarModalEliminar && usuarioSeleccionado && (<ModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} onFlash={showFlash} />)}
+      {mostrarModalEliminar && usuarioSeleccionado && (
+        <Suspense fallback={<LazyModalFallback label="Cargando eliminación de deuda..." />}>
+          <LazyModalEliminar usuario={usuarioSeleccionado} cerrarModal={() => setMostrarModalEliminar(false)} alGuardar={recargarTodo} onFlash={showFlash} />
+        </Suspense>
+      )}
       {mostrarModalCierre && (
         <Suspense fallback={<LazyModalFallback label="Cargando reporte de cobranzas..." />}>
           <LazyModalCierre
@@ -2531,7 +2607,11 @@ const anexoCajaPageStyle = `
           />
         </Suspense>
       )}
-      {mostrarModalEditarUsuario && usuarioSeleccionado && (<ModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={cerrarModalEditarUsuario} alGuardar={recargarTodo} onFlash={showFlash} />)}
+      {mostrarModalEditarUsuario && usuarioSeleccionado && (
+        <Suspense fallback={<LazyModalFallback label="Cargando datos del contribuyente..." />}>
+          <LazyModalEditarUsuario usuario={usuarioSeleccionado} cerrarModal={cerrarModalEditarUsuario} alGuardar={recargarTodo} onFlash={showFlash} />
+        </Suspense>
+      )}
       {mostrarModalAuditoria && (
         <Suspense fallback={<LazyModalFallback label="Cargando auditoria..." />}>
           <LazyModalAuditoria

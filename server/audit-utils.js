@@ -94,6 +94,12 @@ const normalizeAuditActivityFilter = (value) => {
     : "TODOS";
 };
 
+const buildAuditHttpMethodPattern = (value) => {
+  const method = normalizeAuditActivityFilter(value);
+  if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method)) return "";
+  return `^${method}[[:space:]]+`;
+};
+
 const inferAuditCategory = (eventCode, method = "") => {
   const event = normalizeAuditEventCode(eventCode);
   const httpMethod = String(method || "").trim().toUpperCase();
@@ -156,6 +162,7 @@ const inferAuditEntity = (pathRaw = "", params = {}) => {
 };
 
 module.exports = {
+  buildAuditHttpMethodPattern,
   inferAuditCategory,
   inferAuditEntity,
   inferAuditRisk,

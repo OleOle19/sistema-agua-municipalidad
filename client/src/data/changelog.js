@@ -7,7 +7,11 @@ const CHANGELOG_ENTRIES = [
       "Caja ya no abre ni ofrece formatos de impresión al cobrar.",
       "Los gráficos permiten recorrer todos los resultados sin ocupar más espacio.",
       "Se eliminó el cierre automático de Caja y los cobros posteriores a las 4:30 p. m. generan una alerta.",
-      "Las notificaciones tienen un diseño más claro y la sesión de Caja admite 49 minutos de inactividad."
+      "Las notificaciones tienen un diseño más claro y la sesión de Caja admite 49 minutos de inactividad.",
+      "Los cambios de tarifa actualizan deudas sin abonos y meses futuros; los recibos con pagos conservan sus importes.",
+      "El detalle de arbitrios abre más rápido y ya no mezcla información al cambiar de contribuyente.",
+      "La relación y el tablero consultan resúmenes financieros verificados para cargar con mayor rapidez.",
+      "Los filtros por tipo de Auditoría funcionan correctamente y el detalle puede cerrarse con una X."
     ]
   },
   {

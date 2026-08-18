@@ -1,0 +1,16 @@
+{
+  # Reemplace el correo y use un dominio interno con certificado confiable.
+  email sistemas@municipalidad.local
+}
+
+agua.municipalidad.local {
+  # Para una red LAN, instale la CA local de Caddy como confiable en las PCs cliente.
+  tls internal
+  encode zstd gzip
+  reverse_proxy 127.0.0.1:5000
+
+  header {
+    -Server
+    X-Content-Type-Options nosniff
+  }
+}

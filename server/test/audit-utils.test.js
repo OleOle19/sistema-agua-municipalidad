@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  buildAuditHttpMethodPattern,
   inferAuditCategory,
   inferAuditEntity,
   inferAuditRisk,
@@ -10,6 +11,12 @@ const {
   redactAuditPayload,
   shouldRedactAuditKey
 } = require("../audit-utils");
+
+test("construye patrones PostgreSQL para filtrar métodos HTTP", () => {
+  assert.equal(buildAuditHttpMethodPattern("get"), "^GET[[:space:]]+");
+  assert.equal(buildAuditHttpMethodPattern("PUT"), "^PUT[[:space:]]+");
+  assert.equal(buildAuditHttpMethodPattern("COMPENSACION"), "");
+});
 
 test("redactAuditPayload oculta secretos sin distinguir mayusculas y conserva contexto util", () => {
   const result = redactAuditPayload({

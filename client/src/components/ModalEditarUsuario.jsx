@@ -291,7 +291,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, onFlash = null })
           lote: formData.lote
         })
       };
-      showFlash("success", `Usuario actualizado.\nRecibos pendientes/futuros recalculados: ${recalc}${resumenPeriodos}`);
+      showFlash("success", `Contribuyente actualizado.\nRecibos con deuda/futuros recalculados: ${recalc}${resumenPeriodos}`);
       setNombreOriginal(String(formData.nombre_completo || ""));
       await Promise.resolve(typeof alGuardar === "function" ? alGuardar({
         optimisticContribuyente,
