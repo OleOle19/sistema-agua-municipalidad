@@ -1,6 +1,7 @@
 import { Component, Suspense, lazy, useCallback, useMemo, useState } from "react";
 import { FaTint, FaBolt, FaCashRegister, FaMobileAlt } from "react-icons/fa";
 import { API_BASE_URL } from "./api";
+import FlashNotice from "./components/FlashNotice";
 import MunicipalBackdrop from "./components/MunicipalBackdrop";
 import SessionInactivityGuard from "./components/SessionInactivityGuard";
 import {
@@ -214,21 +215,21 @@ function App() {
   return (
     <>
       {content}
-      <SessionInactivityGuard onExpire={handleSessionExpired} />
+      <SessionInactivityGuard
+        onExpire={handleSessionExpired}
+        idleMinutes={modulo === "caja" ? 49 : undefined}
+      />
       {sessionNotice && (
-        <div
-          className="alert alert-info shadow position-fixed top-0 start-50 translate-middle-x mt-3 d-flex align-items-center gap-3"
-          role="status"
-          style={{ zIndex: 2100, maxWidth: "560px", width: "calc(100% - 2rem)" }}
-        >
-          <span className="flex-grow-1">{sessionNotice}</span>
-          <button
-            type="button"
-            className="btn-close"
-            aria-label="Cerrar aviso"
-            onClick={() => setSessionNotice("")}
-          />
-        </div>
+        <FlashNotice
+          flash={{
+            type: "info",
+            title: "Sesión cerrada",
+            text: sessionNotice,
+            ts: sessionEpoch
+          }}
+          onClose={() => setSessionNotice("")}
+          duration={8000}
+        />
       )}
     </>
   );

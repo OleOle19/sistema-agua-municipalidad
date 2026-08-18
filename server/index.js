@@ -1004,9 +1004,7 @@ const normalizeHoraHM = (value, fallback) => {
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 };
 const CAJA_HORA_INICIO = normalizeHoraHM(process.env.CAJA_HORA_INICIO, "07:00");
-const CAJA_HORA_FIN = normalizeHoraHM(process.env.CAJA_HORA_FIN, "19:00");
-const CAJA_AUTO_CIERRE_HORA = normalizeHoraHM(process.env.CAJA_AUTO_CIERRE_HORA, "16:00");
-const CAJA_AUTO_CIERRE_CHECK_MS = Math.max(60 * 1000, Number(process.env.CAJA_AUTO_CIERRE_CHECK_MS || (5 * 60 * 1000)));
+const CAJA_HORA_FIN = normalizeHoraHM(process.env.CAJA_HORA_FIN, "16:30");
 const AUTO_BACKUP_TIMEZONE = process.env.AUTO_BACKUP_TIMEZONE || APP_TIMEZONE;
 const AUTO_BACKUP_ACTIVO = process.env.AUTO_BACKUP_ACTIVO !== "0";
 const AUTO_BACKUP_HORA = normalizeHoraHM(process.env.AUTO_BACKUP_HORA, "23:55");
@@ -15138,7 +15136,7 @@ app.post("/pagos", async (req, res) => {
     if (pagosAplicados.length === 1) {
       const p = pagosAplicados[0];
       return res.json({
-        mensaje: esCompensacion ? "Compensacion registrada correctamente." : "Pago OK",
+        mensaje: esCompensacion ? "Compensacion registrada correctamente." : "Pago registrado correctamente.",
         estado: p.estado,
         total_pagado: p.total_pagado,
         saldo: p.saldo,
@@ -18277,26 +18275,58 @@ app.get("/caja/alertas-riesgo", async (req, res) => {
     `, [windowHours]);
 
     const cobrosFueraHorario = await pool.query(`
+      WITH cobros AS (
+        SELECT
+          oc.id_orden,
+          NULL::bigint AS id_pago,
+          'ORDEN'::text AS origen,
+          oc.cobrado_en,
+          COALESCE(oc.codigo_municipal, '') AS codigo_municipal,
+          COALESCE(oc.total_orden, 0)::numeric AS total_orden,
+          COALESCE(u.username, 'SISTEMA') AS username,
+          COALESCE(u.nombre_completo, '') AS nombre
+        FROM ordenes_cobro oc
+        LEFT JOIN usuarios_sistema u ON u.id_usuario = oc.id_usuario_cobra
+        WHERE oc.estado = 'COBRADA'
+          AND oc.cobrado_en IS NOT NULL
+
+        UNION ALL
+
+        SELECT
+          NULL::bigint AS id_orden,
+          p.id_pago::bigint AS id_pago,
+          'PAGO_DIRECTO'::text AS origen,
+          p.fecha_pago AS cobrado_en,
+          COALESCE(c.codigo_municipal, '') AS codigo_municipal,
+          COALESCE(p.monto_pagado, 0)::numeric AS total_orden,
+          COALESCE(NULLIF(TRIM(p.usuario_cajero), ''), 'SISTEMA') AS username,
+          COALESCE(c.nombre_completo, '') AS nombre
+        FROM pagos p
+        JOIN recibos r ON r.id_recibo = p.id_recibo
+        JOIN predios pr ON pr.id_predio = r.id_predio
+        JOIN contribuyentes c ON c.id_contribuyente = pr.id_contribuyente
+        WHERE p.id_orden_cobro IS NULL
+          AND ${PAGO_OPERATIVO_CAJA_SQL}
+      )
       SELECT
-        oc.id_orden,
-        oc.cobrado_en,
-        COALESCE(oc.codigo_municipal, '') AS codigo_municipal,
-        COALESCE(oc.total_orden, 0)::numeric AS total_orden,
-        COALESCE(u.username, 'SISTEMA') AS username,
-        COALESCE(u.nombre_completo, '') AS nombre
-      FROM ordenes_cobro oc
-      LEFT JOIN usuarios_sistema u ON u.id_usuario = oc.id_usuario_cobra
-      WHERE oc.estado = 'COBRADA'
-        AND oc.cobrado_en IS NOT NULL
-        AND oc.cobrado_en >= NOW() - make_interval(hours => $1::int)
+        id_orden,
+        id_pago,
+        origen,
+        cobrado_en,
+        codigo_municipal,
+        total_orden,
+        username,
+        nombre
+      FROM cobros
+      WHERE cobrado_en >= NOW() - make_interval(hours => $1::int)
         AND (
           CASE
             WHEN $2::time <= $3::time
-              THEN (oc.cobrado_en::time < $2::time OR oc.cobrado_en::time > $3::time)
-            ELSE (oc.cobrado_en::time < $2::time AND oc.cobrado_en::time > $3::time)
+              THEN (TO_CHAR(cobrado_en, 'HH24:MI') < $2 OR TO_CHAR(cobrado_en, 'HH24:MI') > $3)
+            ELSE (TO_CHAR(cobrado_en, 'HH24:MI') < $2 AND TO_CHAR(cobrado_en, 'HH24:MI') > $3)
           END
         )
-      ORDER BY oc.cobrado_en DESC
+      ORDER BY cobrado_en DESC
       LIMIT 50
     `, [windowHours, CAJA_HORA_INICIO, CAJA_HORA_FIN]);
 
@@ -18356,7 +18386,9 @@ app.get("/caja/alertas-riesgo", async (req, res) => {
           anio: Number(r.anio || 0)
         })),
         cobros_fuera_horario: cobrosFueraHorario.rows.map((r) => ({
-          id_orden: Number(r.id_orden),
+          id_orden: parsePositiveInt(r.id_orden, 0) || null,
+          id_pago: parsePositiveInt(r.id_pago, 0) || null,
+          origen: r.origen || null,
           cobrado_en: r.cobrado_en,
           codigo_municipal: r.codigo_municipal || null,
           total_orden: parseMonto(r.total_orden, 0),
@@ -23026,8 +23058,6 @@ const getFechaLocalPartes = (timeZone = AUTO_DEUDA_TIMEZONE, fecha = new Date())
   return getFechaPartesZona(fecha, timeZone);
 };
 
-let autoCierreCajaEnCurso = false;
-let ultimoDiaAutoCierreCaja = "";
 const getHoraMinuto = (hhmm = "16:00") => {
   const [hTxt, mTxt] = String(hhmm || "16:00").split(":");
   const hora = Number(hTxt);
@@ -23204,131 +23234,6 @@ const iniciarTareaAutoBackup = () => {
       console.error("[AUTO_BACKUP] Error en ciclo:", err?.message || err);
     });
   }, AUTO_BACKUP_CHECK_MS);
-};
-
-const registrarAutoCierreCajaDiario = async () => {
-  if (autoCierreCajaEnCurso) return;
-
-  const partesHoy = getFechaPartesZona(new Date(), APP_TIMEZONE);
-  const meta = getHoraMinuto(CAJA_AUTO_CIERRE_HORA);
-  const yaEsHora = (partesHoy.hora > meta.hora) || (partesHoy.hora === meta.hora && partesHoy.minuto >= meta.minuto);
-  if (!yaEsHora) return;
-
-  const fechaHoy = toISODate();
-  if (ultimoDiaAutoCierreCaja === fechaHoy) return;
-
-  autoCierreCajaEnCurso = true;
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    await ensureCajaCierresTable(client);
-    await ensureCajaConteosEfectivoTable(client);
-
-    const existe = await client.query(
-      `SELECT id_cierre
-       FROM caja_cierres
-       WHERE tipo = 'diario'
-         AND fecha_referencia = $1::date
-       LIMIT 1
-       FOR UPDATE`,
-      [fechaHoy]
-    );
-    if (existe.rows[0]) {
-      await client.query("COMMIT");
-      ultimoDiaAutoCierreCaja = fechaHoy;
-      return;
-    }
-
-    const resumen = await construirResumenCaja("diario", fechaHoy);
-    const totalSistema = roundMonto2(parseMonto(resumen?.total, 0));
-    const totalesSistemaMetodos = normalizeDeclaracionMetodosCaja(resumen?.totales_por_metodo || {});
-    let totalDeclarado = sumDeclaracionMetodosCaja(totalesSistemaMetodos);
-    if (totalDeclarado <= 0 && totalSistema > 0) {
-      totalesSistemaMetodos[METODOS_PAGO_CAJA.EFECTIVO] = totalSistema;
-      totalDeclarado = totalSistema;
-    }
-    const desviacionesMetodos = buildDesviacionesMetodosCaja(totalesSistemaMetodos, totalesSistemaMetodos);
-    const efectivoDeclarado = roundMonto2(parseMonto(totalesSistemaMetodos?.[METODOS_PAGO_CAJA.EFECTIVO], 0));
-    const rango = await obtenerRangoCaja("diario", fechaHoy);
-    const insertAuto = await client.query(
-      `INSERT INTO caja_cierres (
-        id_usuario,
-        tipo,
-        fecha_referencia,
-        desde,
-        hasta_exclusivo,
-        total_sistema,
-        total_declarado,
-        efectivo_declarado,
-        desviacion,
-        alerta_desviacion_sn,
-        declaracion_metodos_json,
-        totales_metodos_json,
-        desviaciones_metodos_json,
-        observacion
-      )
-      VALUES ($1, 'diario', $2::date, $3::date, $4::date, $5, $6, $7, $8, 'N', $9::jsonb, $10::jsonb, $11::jsonb, $12)
-      RETURNING id_cierre`,
-      [
-        null,
-        fechaHoy,
-        rango?.desde || fechaHoy,
-        rango?.hasta || fechaHoy,
-        totalSistema,
-        totalDeclarado,
-        efectivoDeclarado,
-        0,
-        JSON.stringify(totalesSistemaMetodos),
-        JSON.stringify(totalesSistemaMetodos),
-        JSON.stringify(desviacionesMetodos),
-        `AUTO_CIERRE_${CAJA_AUTO_CIERRE_HORA}`
-      ]
-    );
-    const idCierreAuto = Number(insertAuto.rows[0]?.id_cierre || 0);
-    await client.query(
-      `UPDATE caja_conteos_efectivo
-       SET estado = $2,
-           actualizado_en = NOW(),
-           id_cierre = $3
-       WHERE fecha_referencia = $1::date
-         AND estado = $4`,
-      [
-        fechaHoy,
-        ESTADOS_CONTEO_EFECTIVO.APLICADO,
-        idCierreAuto || null,
-        ESTADOS_CONTEO_EFECTIVO.PENDIENTE
-      ]
-    );
-    await registrarAuditoria(
-      client,
-      "CAJA_CIERRE_AUTO",
-      `fecha=${fechaHoy}; total_sistema=${totalSistema.toFixed(2)}; total_declarado=${totalDeclarado.toFixed(2)}; hora_programada=${CAJA_AUTO_CIERRE_HORA}`,
-      "SISTEMA"
-    );
-    await client.query("COMMIT");
-    realtimeHub.broadcast("caja", "cierre_auto", {
-      fecha_referencia: fechaHoy,
-      id_cierre: idCierreAuto || null
-    });
-    ultimoDiaAutoCierreCaja = fechaHoy;
-  } catch (err) {
-    try { await client.query("ROLLBACK"); } catch {}
-    console.error("[CAJA] Error en cierre automatico diario:", err.message);
-  } finally {
-    client.release();
-    autoCierreCajaEnCurso = false;
-  }
-};
-
-const iniciarTareaAutoCierreCaja = () => {
-  registrarAutoCierreCajaDiario().catch((err) => {
-    console.error("[CAJA] Error inicial cierre automatico:", err.message);
-  });
-  setInterval(() => {
-    registrarAutoCierreCajaDiario().catch((err) => {
-      console.error("[CAJA] Error ciclo cierre automatico:", err.message);
-    });
-  }, CAJA_AUTO_CIERRE_CHECK_MS);
 };
 
 const generarDeudaMensualAutomatica = async () => {
@@ -23548,7 +23453,6 @@ const onServerStarted = (label, host, port) => {
     console.error("[MIGRACION_SN] Error iniciando corrección legacy:", err);
   });
   iniciarTareaAutoDeuda();
-  iniciarTareaAutoCierreCaja();
   iniciarTareaAutoBackup();
 };
 

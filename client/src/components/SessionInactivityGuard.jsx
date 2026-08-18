@@ -10,10 +10,8 @@ const parsePositiveNumber = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-const IDLE_MINUTES = parsePositiveNumber(import.meta.env.VITE_SESSION_IDLE_MINUTES, 30);
-const IDLE_MS = Math.max(60_000, Math.round(IDLE_MINUTES * 60_000));
+const DEFAULT_IDLE_MINUTES = parsePositiveNumber(import.meta.env.VITE_SESSION_IDLE_MINUTES, 30);
 const configuredWarningSeconds = parsePositiveNumber(import.meta.env.VITE_SESSION_WARNING_SECONDS, 120);
-const WARNING_MS = Math.min(Math.round(configuredWarningSeconds * 1000), IDLE_MS - 10_000);
 
 const formatCountdown = (seconds) => {
   const safe = Math.max(0, Number(seconds) || 0);
@@ -21,7 +19,9 @@ const formatCountdown = (seconds) => {
   return `${minutes}:${String(safe % 60).padStart(2, "0")}`;
 };
 
-function SessionInactivityGuard({ onExpire }) {
+function SessionInactivityGuard({ onExpire, idleMinutes = DEFAULT_IDLE_MINUTES }) {
+  const idleMs = Math.max(60_000, Math.round(parsePositiveNumber(idleMinutes, DEFAULT_IDLE_MINUTES) * 60_000));
+  const warningMs = Math.min(Math.round(configuredWarningSeconds * 1000), idleMs - 10_000);
   const [remainingSeconds, setRemainingSeconds] = useState(null);
   const warningTimerRef = useRef(0);
   const expiryTimerRef = useRef(0);
@@ -72,10 +72,10 @@ function SessionInactivityGuard({ onExpire }) {
 
     const now = Date.now();
     lastResetRef.current = now;
-    deadlineRef.current = now + IDLE_MS;
-    warningTimerRef.current = window.setTimeout(beginWarning, IDLE_MS - WARNING_MS);
-    expiryTimerRef.current = window.setTimeout(expireSession, IDLE_MS);
-  }, [beginWarning, clearTimers, expireSession]);
+    deadlineRef.current = now + idleMs;
+    warningTimerRef.current = window.setTimeout(beginWarning, idleMs - warningMs);
+    expiryTimerRef.current = window.setTimeout(expireSession, idleMs);
+  }, [beginWarning, clearTimers, expireSession, idleMs, warningMs]);
 
   useEffect(() => {
     const initialScheduleTimer = window.setTimeout(scheduleSession, 0);
@@ -91,7 +91,7 @@ function SessionInactivityGuard({ onExpire }) {
       if (document.visibilityState !== "visible" || !hasActiveSession()) return;
       if (deadlineRef.current && Date.now() >= deadlineRef.current) {
         expireSession();
-      } else if (deadlineRef.current && deadlineRef.current - Date.now() <= WARNING_MS) {
+      } else if (deadlineRef.current && deadlineRef.current - Date.now() <= warningMs) {
         beginWarning();
       }
     };
@@ -110,7 +110,7 @@ function SessionInactivityGuard({ onExpire }) {
       window.removeEventListener(SESSION_AUTH_CHANGED_EVENT, handleSessionChange);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [beginWarning, clearTimers, expireSession, scheduleSession]);
+  }, [beginWarning, clearTimers, expireSession, scheduleSession, warningMs]);
 
   if (remainingSeconds === null) return null;
 
