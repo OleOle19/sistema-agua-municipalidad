@@ -1,6 +1,6 @@
 const CHANGELOG_ENTRIES = [
   {
-    date: "18 de agosto de 2026",
+    date: "24 de agosto de 2026",
     title: "Caja y reportes más ágiles",
     changes: [
       "Los avisos de cobro muestran contribuyente, periodo y monto total.",
