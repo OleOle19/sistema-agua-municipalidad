@@ -45,6 +45,11 @@ if ([string]::IsNullOrWhiteSpace($healthUrl)) { $healthUrl = $defaultHealthUrl }
 $backendRunning = if ($backendManaged) { Is-Running $backendPid } else { Test-BackendHealth $healthUrl }
 $tunnelRunning = Is-Running $tunnelPid
 
+$systemUrl = [string]($state.system_url | ForEach-Object { $_ })
+if ([string]::IsNullOrWhiteSpace($systemUrl)) {
+  $systemUrl = "$(([string]$state.base_url).TrimEnd('/'))/"
+}
+Write-Host "URL Sistema: $systemUrl"
 Write-Host "URL Campo: $($state.campo_url)"
 if ($backendManaged) {
   Write-Host "Backend PID: $backendPid (running=$backendRunning, managed=true)"

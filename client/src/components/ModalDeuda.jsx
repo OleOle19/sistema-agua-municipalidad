@@ -7,6 +7,12 @@ const toNumber = (value, fallback = 0) => {
   const parsed = parseFloat(normalized);
   return Number.isFinite(parsed) ? parsed : fallback;
 };
+const isServicioActivo = (value, fallbackMonto = 0) => {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  if (["S", "SI", "1", "TRUE"].includes(normalized)) return true;
+  if (["N", "NO", "0", "FALSE"].includes(normalized)) return false;
+  return toNumber(fallbackMonto, 0) > 0;
+};
 const getPeriodoActual = () => {
   const now = new Date();
   return { anio: now.getFullYear(), mes: now.getMonth() + 1 };
@@ -40,20 +46,25 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, onFlash = null }) => {
     extra: toNumber(usuario?.tarifa_extra, 0)
   };
 
+  const predioActivo = isServicioActivo(usuario?.activo_sn, 1);
+  const serviciosDisponibles = {
+    agua: predioActivo && isServicioActivo(usuario?.agua_sn, tarifasBase.agua),
+    desague: predioActivo && isServicioActivo(usuario?.desague_sn, tarifasBase.desague),
+    limpieza: predioActivo && isServicioActivo(usuario?.limpieza_sn, tarifasBase.limpieza),
+    admin: predioActivo && tarifasBase.admin > 0,
+    extra: predioActivo && tarifasBase.extra > 0
+  };
+
   const [form, setForm] = useState({
-    agua: tarifasBase.agua.toFixed(2),
-    desague: tarifasBase.desague.toFixed(2),
-    limpieza: tarifasBase.limpieza.toFixed(2),
-    admin: tarifasBase.admin.toFixed(2),
-    extra: tarifasBase.extra.toFixed(2)
+    agua: serviciosDisponibles.agua ? tarifasBase.agua.toFixed(2) : "0.00",
+    desague: serviciosDisponibles.desague ? tarifasBase.desague.toFixed(2) : "0.00",
+    limpieza: serviciosDisponibles.limpieza ? tarifasBase.limpieza.toFixed(2) : "0.00",
+    admin: serviciosDisponibles.admin ? tarifasBase.admin.toFixed(2) : "0.00",
+    extra: serviciosDisponibles.extra ? tarifasBase.extra.toFixed(2) : "0.00"
   });
 
   const [servicios, setServicios] = useState({
-    agua: true,
-    desague: true,
-    limpieza: true,
-    admin: true,
-    extra: tarifasBase.extra > 0
+    ...serviciosDisponibles
   });
 
   const toggleServicio = (key) => {

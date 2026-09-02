@@ -22,6 +22,16 @@ Esta guia deja un flujo simple para operacion municipal:
 - PostgreSQL operativo.
 - Git.
 - Usuario con permisos para firewall/tareas programadas.
+- `cloudflared` para el acceso remoto temporal (no es necesario para uso local/LAN).
+
+Para instalar `cloudflared` en Windows:
+
+```powershell
+winget install --exact --id Cloudflare.cloudflared
+```
+
+Despues de instalarlo, cerrar y volver a abrir la terminal. Como alternativa sin
+instalacion, guardar el ejecutable oficial como `tools\cloudflared.exe`.
 
 ## 4) Instalacion inicial (una sola vez)
 
@@ -68,6 +78,8 @@ SERVER_PORT=5000
 
 # Permitir quick tunnels temporales
 CORS_ALLOW_TRYCLOUDFLARE=1
+# Modo seguro predeterminado: publicar solamente Campo
+TRYCLOUDFLARE_FULL_APP=0
 CAMPO_PUBLIC_ONLY=1
 CAMPO_PUBLIC_HOST_PATTERN=\.trycloudflare\.com$
 
@@ -136,9 +148,23 @@ Se agregaron accesos directos `.bat` en la raiz del proyecto para no escribir co
 
 ### Flujo recomendado
 
+Para permitir tambien el sistema completo mediante el mismo tunnel, habilitarlo
+de forma explicita en `server/.env` y reiniciar el backend:
+
+```env
+TRYCLOUDFLARE_FULL_APP=1
+CAMPO_PUBLIC_ONLY=0
+```
+
+El sistema completo conserva autenticacion JWT, permisos por rol y bloqueo de
+intentos. Para una publicacion permanente se recomienda VPN municipal o dominio
+propio con HTTPS y controles de acceso adicionales.
+
 1. Ejecutar `INICIAR_CAMPO_REMOTO.bat`.
-2. Tomar la URL `https://xxxx.trycloudflare.com/campo-app/` que muestra el script.
-3. Compartir esa URL a la brigada.
+2. El script muestra dos direcciones del mismo tunnel:
+   - Sistema completo: `https://xxxx.trycloudflare.com/`
+   - Trabajo de campo: `https://xxxx.trycloudflare.com/campo-app/`
+3. Compartir con cada usuario la URL que corresponda a su trabajo.
 4. Ejecutar `ESTADO_CAMPO_REMOTO.bat` para verificar estado.
 5. Ejecutar `DETENER_CAMPO_REMOTO.bat` al cerrar jornada.
 

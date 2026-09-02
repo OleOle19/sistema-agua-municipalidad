@@ -1,5 +1,16 @@
 const CHANGELOG_ENTRIES = [
   {
+    date: "2 de septiembre de 2026",
+    title: "Acceso remoto y deudas más rápidas",
+    changes: [
+      "El acceso remoto ahora muestra una dirección para el sistema completo y otra para la app de Campo.",
+      "El sistema completo mantiene el inicio de sesión y los permisos de cada usuario cuando se usa de forma remota.",
+      "Al registrar una deuda individual se seleccionan automáticamente solo los servicios activos del predio.",
+      "Los servicios inactivos comienzan desmarcados y el total se calcula con la tarifa correspondiente.",
+      "El inicio y cierre del acceso remoto detectan mejor Cloudflare y evitan procesos abiertos después de reiniciar."
+    ]
+  },
+  {
     date: "24 de agosto de 2026",
     title: "Caja y reportes más ágiles",
     changes: [

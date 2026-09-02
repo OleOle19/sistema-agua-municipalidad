@@ -24,6 +24,7 @@ ops/runtime/historial_patch_*.txt
 .docx_runtime/
 .tmp_pdf_render/
 .tmp_pdf_tools/
+tools/cloudflared.exe
 
 # Backups / data exports
 **/backup*/

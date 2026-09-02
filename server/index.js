@@ -7111,13 +7111,14 @@ const CORS_ALLOWED_ORIGINS = String(process.env.CORS_ALLOWED_ORIGINS || "")
   .map((v) => v.trim())
   .filter(Boolean);
 const CORS_ALLOW_TRYCLOUDFLARE = process.env.CORS_ALLOW_TRYCLOUDFLARE === "1";
-const CAMPO_PUBLIC_ONLY = process.env.CAMPO_PUBLIC_ONLY === "1";
+const TRYCLOUDFLARE_FULL_APP = process.env.TRYCLOUDFLARE_FULL_APP === "1";
+const CAMPO_PUBLIC_ONLY = process.env.CAMPO_PUBLIC_ONLY === "1" && !TRYCLOUDFLARE_FULL_APP;
 const CAMPO_PUBLIC_HOST_PATTERN = new RegExp(
   process.env.CAMPO_PUBLIC_HOST_PATTERN || "\\.trycloudflare\\.com$",
   "i"
 );
-if (SECURITY_STRICT_STARTUP && CORS_ALLOW_TRYCLOUDFLARE && !CAMPO_PUBLIC_ONLY) {
-  throw new Error("[SECURITY] CAMPO_PUBLIC_ONLY=1 es obligatorio al publicar mediante trycloudflare.");
+if (SECURITY_STRICT_STARTUP && CORS_ALLOW_TRYCLOUDFLARE && !CAMPO_PUBLIC_ONLY && !TRYCLOUDFLARE_FULL_APP) {
+  throw new Error("[SECURITY] Configure CAMPO_PUBLIC_ONLY=1 o autorice TRYCLOUDFLARE_FULL_APP=1 al publicar mediante trycloudflare.");
 }
 const JSON_BODY_LIMIT = String(process.env.JSON_BODY_LIMIT || "2mb");
 const corsOptionsDelegate = (req, callback) => {
@@ -7256,6 +7257,11 @@ app.use((err, req, res, next) => {
 });
 
 const CAMPO_REMOTE_STATE_FILE = path.join(__dirname, "../ops/runtime/campo_remote_state.json");
+const normalizeRemoteSystemUrl = (value) => {
+  const raw = String(value || "").trim();
+  if (!/^https?:\/\//i.test(raw)) return "";
+  return `${raw.replace(/\/campo-app\/?$/i, "").replace(/\/+$/g, "")}/`;
+};
 const normalizeCampoAppUrl = (value) => {
   const raw = String(value || "").trim();
   if (!/^https?:\/\//i.test(raw)) return "";
@@ -7290,6 +7296,7 @@ app.get("/admin/campo-remoto/estado", (req, res) => {
   if (!state) {
     return res.json({
       active: false,
+      system_url: null,
       campo_url: null,
       tunnel_running: false,
       backend_running: null,
@@ -7300,11 +7307,13 @@ app.get("/admin/campo-remoto/estado", (req, res) => {
   const tunnelRunning = isProcessRunning(state.tunnel_pid);
   const backendManaged = Boolean(state.backend_managed);
   const backendRunning = backendManaged ? isProcessRunning(state.backend_pid) : null;
+  const systemUrl = normalizeRemoteSystemUrl(state.system_url || state.base_url || state.campo_url || "");
   const campoUrl = normalizeCampoAppUrl(state.campo_url || state.base_url || "");
-  const active = Boolean(tunnelRunning && campoUrl);
+  const active = Boolean(tunnelRunning && systemUrl && campoUrl);
 
   return res.json({
     active,
+    system_url: active ? systemUrl : null,
     campo_url: active ? campoUrl : null,
     tunnel_running: tunnelRunning,
     backend_running: backendRunning,
@@ -10934,7 +10943,11 @@ const buildContribuyentesBasicQuery = () => `
       p.tarifa_desague,
       p.tarifa_limpieza,
       p.tarifa_admin,
-      p.tarifa_extra
+      p.tarifa_extra,
+      p.activo_sn,
+      p.agua_sn,
+      p.desague_sn,
+      p.limpieza_sn
     FROM predios p
     ORDER BY p.id_contribuyente, p.id_predio
   )
@@ -10951,7 +10964,11 @@ const buildContribuyentesBasicQuery = () => `
     p.tarifa_desague,
     p.tarifa_limpieza,
     p.tarifa_admin,
-    p.tarifa_extra
+    p.tarifa_extra,
+    COALESCE(NULLIF(UPPER(TRIM(p.activo_sn)), ''), 'S') AS activo_sn,
+    COALESCE(NULLIF(UPPER(TRIM(p.agua_sn)), ''), 'S') AS agua_sn,
+    COALESCE(NULLIF(UPPER(TRIM(p.desague_sn)), ''), 'S') AS desague_sn,
+    COALESCE(NULLIF(UPPER(TRIM(p.limpieza_sn)), ''), 'S') AS limpieza_sn
   FROM contribuyentes c
   LEFT JOIN predio_principal p ON p.id_contribuyente = c.id_contribuyente
   LEFT JOIN calles ca ON p.id_calle = ca.id_calle

@@ -170,13 +170,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\ops\deploy_from_github.ps1
 
 ## 4) Publicacion remota segura
 
-El Quick Tunnel solo debe publicar Campo. Mantener siempre:
+El modo seguro predeterminado del Quick Tunnel publica solamente Campo:
 
 ```env
+TRYCLOUDFLARE_FULL_APP=0
 CAMPO_PUBLIC_ONLY=1
 CORS_ALLOW_TRYCLOUDFLARE=1
 ```
 
-No expongas Agua, Luz, Caja ni Administracion mediante `trycloudflare`. Para acceso remoto completo usa una VPN municipal o un dominio propio con HTTPS, autenticacion adicional y una lista cerrada de origenes.
+Si una operacion temporal necesita tambien Agua, Luz, Caja y Administracion,
+se debe habilitar de forma explicita:
+
+```env
+TRYCLOUDFLARE_FULL_APP=1
+CAMPO_PUBLIC_ONLY=0
+```
+
+El sistema conserva autenticacion y permisos por rol, pero aumenta la superficie
+publica. Para acceso remoto permanente usa una VPN municipal o un dominio propio
+con HTTPS, autenticacion adicional y una lista cerrada de origenes.
 
 El despliegue ejecuta `ops/ensure_security_config.ps1`: activa el arranque estricto y reemplaza automaticamente un `JWT_SECRET` debil. La rotacion cierra las sesiones anteriores.

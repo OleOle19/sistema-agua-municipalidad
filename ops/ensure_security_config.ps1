@@ -48,7 +48,12 @@ if ($weakJwt) {
 Set-EnvValue "NODE_ENV" "production"
 Set-EnvValue "SECURITY_STRICT_STARTUP" "1"
 if ((Get-EnvValue "CORS_ALLOW_TRYCLOUDFLARE") -eq "1") {
-  Set-EnvValue "CAMPO_PUBLIC_ONLY" "1"
+  if ((Get-EnvValue "TRYCLOUDFLARE_FULL_APP") -eq "1") {
+    Set-EnvValue "CAMPO_PUBLIC_ONLY" "0"
+  } else {
+    Set-EnvValue "TRYCLOUDFLARE_FULL_APP" "0"
+    Set-EnvValue "CAMPO_PUBLIC_ONLY" "1"
+  }
 }
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)

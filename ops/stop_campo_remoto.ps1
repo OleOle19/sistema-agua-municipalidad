@@ -22,6 +22,15 @@ function Stop-Safe([int]$ProcessId) {
   } catch {}
 }
 
+function Stop-ProcessTreeSafe([int]$ProcessId) {
+  if (!(Is-Running $ProcessId)) { return }
+  try {
+    & taskkill.exe /PID $ProcessId /T /F 2>$null | Out-Null
+  } catch {
+    Stop-Safe $ProcessId
+  }
+}
+
 if (!(Test-Path $stateFile)) {
   Write-Host "No hay sesion remota activa registrada."
   exit 0
@@ -36,12 +45,14 @@ try {
 }
 
 $backendPid = [int]($state.backend_pid | ForEach-Object { $_ })
+$backendManagerPid = [int]($state.backend_manager_pid | ForEach-Object { $_ })
 $tunnelPid = [int]($state.tunnel_pid | ForEach-Object { $_ })
 $backendManaged = To-Bool(($state.backend_managed | ForEach-Object { $_ }))
 
 Stop-Safe $tunnelPid
 if ($backendManaged) {
-  Stop-Safe $backendPid
+  if ($backendManagerPid -le 0) { $backendManagerPid = $backendPid }
+  Stop-ProcessTreeSafe $backendManagerPid
 } else {
   Write-Host "Backend externo detectado; no se detendra."
 }
