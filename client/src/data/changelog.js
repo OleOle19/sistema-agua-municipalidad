@@ -3,7 +3,8 @@ const CHANGELOG_ENTRIES = [
     date: "3 de septiembre de 2026",
     title: "Anulación de varios periodos",
     changes: [
-      "Caja permite seleccionar uno o varios periodos pagados y anularlos en una sola operación.",
+      "Las casillas de cada periodo permiten seleccionar tanto cobros pendientes como anulaciones de periodos pagados.",
+      "Caja permite anular uno o varios periodos pagados en una sola operación.",
       "La anulación solicita un único motivo y mantiene los permisos, plazos de corrección y registros de auditoría."
     ]
   },

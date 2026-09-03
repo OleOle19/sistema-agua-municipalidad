@@ -2340,6 +2340,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                 <div className="small text-muted mb-3">
                   Se muestran deudas pendientes y periodos adelantados ya emitidos por ventanilla (Agua).
                   Si el usuario no trae recibo, puede activarse contingencia para generar periodos faltantes desde Caja.
+                  Use la casilla izquierda de cada periodo: si está pendiente se selecciona para cobrar y si está pagado se selecciona para anular.
                   Caja puede registrar y corregir cobros solo hasta 3 dias atras; administrador no tiene limite retroactivo. Para cambiar monto use "Editar monto"; para cambiar fecha primero anule y luego registre de nuevo el cobro.
                 </div>
                 <div className="row g-2 align-items-end mb-3">
@@ -2517,18 +2518,17 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         <th className="text-end">Saldo</th>
                         <th className="text-end">Monto pagado</th>
                         <th className="text-end">Monto a cobrar</th>
-                        <th className="text-center" style={{ width: "76px" }}>Anular</th>
                       </tr>
                     </thead>
                     <tbody>
                       {loadingPendientesCobroAgua && recibosPendientesCobroAgua.length === 0 && (
                         <tr>
-                          <td colSpan="6" className="text-center text-muted py-3">Actualizando periodos...</td>
+                          <td colSpan="5" className="text-center text-muted py-3">Actualizando periodos...</td>
                         </tr>
                       )}
                       {!loadingPendientesCobroAgua && recibosPendientesCobroAgua.length === 0 && (
                         <tr>
-                          <td colSpan="6" className="text-center text-muted py-3">Sin meses disponibles para cobro.</td>
+                          <td colSpan="5" className="text-center text-muted py-3">Sin meses disponibles para cobro.</td>
                         </tr>
                       )}
                       {recibosPendientesCobroAguaVista.map((row) => {
@@ -2555,11 +2555,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
                           || anulandoSeleccionCobroAgua
                           || loadingPendientesCobroAgua
                           || actualizandoPeriodosCobroAgua
-                          || !puedeCobrar;
-                        const checkboxChecked = puedeCobrar ? Boolean(sel?.checked) : false;
-                        const anulacionChecked = puedeAnularPagoPeriodo
-                          ? Boolean(seleccionAnulacionCobroAgua[rowKey])
-                          : false;
+                          || (!puedeCobrar && !puedeAnularPagoPeriodo);
+                        const checkboxChecked = puedeCobrar
+                          ? Boolean(sel?.checked)
+                          : (puedeAnularPagoPeriodo ? Boolean(seleccionAnulacionCobroAgua[rowKey]) : false);
                         const anulandoEstaFila = idRecibo > 0 && anulandoReciboCobroAguaId === idRecibo;
                         const editandoEstaFila = idPagoUltimo > 0 && editandoPagoCobroAguaId === idPagoUltimo;
                         return (
@@ -2567,14 +2566,22 @@ function CajaMunicipalApp({ onBackToSelector }) {
                             <td className="text-center">
                               <input
                                 type="checkbox"
-                                className="form-check-input"
+                                className={`form-check-input ${puedeAnularPagoPeriodo ? "border-danger" : ""}`}
                                 checked={checkboxChecked}
                                 onChange={() => {
                                   if (puedeCobrar) {
                                     toggleCobroAgua(rowKey);
+                                  } else if (puedeAnularPagoPeriodo) {
+                                    toggleAnulacionCobroAgua(rowKey);
                                   }
                                 }}
                                 disabled={checkboxBloqueado || anulandoEstaFila || editandoEstaFila}
+                                aria-label={puedeAnularPagoPeriodo
+                                  ? `Seleccionar periodo ${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"} para anular`
+                                  : `Seleccionar periodo ${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"} para cobrar`}
+                                title={puedeAnularPagoPeriodo
+                                  ? "Seleccionar este periodo pagado para anular"
+                                  : "Seleccionar este periodo pendiente para cobrar"}
                               />
                             </td>
                             <td>
@@ -2621,21 +2628,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
                                   disabled={!sel?.checked || cobrandoDirectoAgua || anulandoSeleccionCobroAgua || actualizandoPeriodosCobroAgua || !puedeCobrar || anulandoEstaFila || editandoEstaFila}
                                 />
                               </div>
-                            </td>
-                            <td className="text-center">
-                              {puedeAnularPagoPeriodo ? (
-                                <input
-                                  type="checkbox"
-                                  className="form-check-input border-danger"
-                                  checked={anulacionChecked}
-                                  onChange={() => toggleAnulacionCobroAgua(rowKey)}
-                                  disabled={cobrandoDirectoAgua || anulandoSeleccionCobroAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || editandoEstaFila}
-                                  aria-label={`Seleccionar periodo ${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"} para anular`}
-                                  title="Seleccionar este periodo pagado para anular"
-                                />
-                              ) : (
-                                <span className="text-muted">-</span>
-                              )}
                             </td>
                           </tr>
                         );
