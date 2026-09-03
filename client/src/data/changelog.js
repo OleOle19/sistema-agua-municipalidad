@@ -5,7 +5,8 @@ const CHANGELOG_ENTRIES = [
     changes: [
       "Las casillas de cada periodo permiten seleccionar tanto cobros pendientes como anulaciones de periodos pagados.",
       "Caja permite anular uno o varios periodos pagados en una sola operación.",
-      "La anulación solicita un único motivo y mantiene los permisos, plazos de corrección y registros de auditoría."
+      "La anulación solicita un único motivo y mantiene los permisos, plazos de corrección y registros de auditoría.",
+      "Al editar las tarifas de Agua, Desagüe o Limpieza, un monto de cero desactiva el servicio y un monto mayor que cero lo activa."
     ]
   },
   {

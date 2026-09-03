@@ -44,6 +44,18 @@ const normalizeTarifaPayload = (value) => {
   const parsed = parseMontoNumber(raw, Number.NaN);
   return Number.isFinite(parsed) && parsed >= 0 ? Number(parsed.toFixed(2)) : null;
 };
+const SERVICIO_POR_CAMPO_TARIFA = {
+  tarifa_agua: "agua_sn",
+  tarifa_desague: "desague_sn",
+  tarifa_limpieza: "limpieza_sn"
+};
+const resolveServicioDesdeTarifa = (value, servicioActual = "N") => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return servicioActual;
+  const monto = parseMontoNumber(raw, Number.NaN);
+  if (!Number.isFinite(monto) || monto < 0) return servicioActual;
+  return monto > 0 ? "S" : "N";
+};
 const normalizeCodigoMunicipalInput = (value) => {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -216,6 +228,15 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, onFlash = null })
     }
     if (["numero_casa", "manzana", "lote"].includes(name)) {
       setFormData((prev) => ({ ...prev, [name]: normalizeStructuredAddressInput(name, value) }));
+      return;
+    }
+    const campoServicio = SERVICIO_POR_CAMPO_TARIFA[name];
+    if (campoServicio) {
+      setFormData((prev) => ({
+        ...prev,
+        [name]: value,
+        [campoServicio]: resolveServicioDesdeTarifa(value, prev[campoServicio])
+      }));
       return;
     }
     setFormData((prev) => ({ ...prev, [name]: value }));
