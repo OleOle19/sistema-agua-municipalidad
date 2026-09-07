@@ -78,23 +78,21 @@ export default function MunicipalBackdrop({
               preload="auto"
             />
           ) : (
-            <>
-              <img
-                src={displayMedia.url}
-                alt=""
-                className="municipal-backdrop__image"
-                draggable="false"
-              />
-              <LandingWaterCanvas
-                src={displayMedia.url}
-                hostRef={hostRef}
-                className="municipal-backdrop__canvas"
-              />
-            </>
+            <img
+              src={displayMedia.url}
+              alt=""
+              className="municipal-backdrop__image"
+              draggable="false"
+            />
           )
         ) : (
           <div className="municipal-backdrop__placeholder"></div>
         )}
+        <LandingWaterCanvas
+          hostRef={hostRef}
+          variant={variant}
+          className="municipal-backdrop__canvas"
+        />
         <div className="municipal-backdrop__veil"></div>
       </div>
 

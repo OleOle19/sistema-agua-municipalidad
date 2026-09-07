@@ -442,7 +442,8 @@ const canSelectCobroAguaRow = (row = {}, permisos = {}, hoyIso = toIsoDate()) =>
 function CajaMunicipalApp({ onBackToSelector }) {
   const [usuarioSistema, setUsuarioSistema] = useState(readStoredAguaUser);
   const [tab, setTab] = useState("agua");
-  const [flash, setFlash] = useState(null);
+  const [flash, setFlash] = useState([]);
+  const flashSequenceRef = useRef(0);
 
   const [loadingAgua, setLoadingAgua] = useState(false);
   const [reporteAgua, setReporteAgua] = useState(null);
@@ -538,12 +539,15 @@ function CajaMunicipalApp({ onBackToSelector }) {
 
   const showFlash = useCallback((type, message) => {
     const payload = message && typeof message === "object" ? message : { text: message };
-    setFlash({
+    const ts = Date.now();
+    const notice = {
+      id: `caja-${ts}-${flashSequenceRef.current += 1}`,
       type,
       title: String(payload?.title || "").trim() || undefined,
       text: String(payload?.text || "").trim(),
-      ts: Date.now()
-    });
+      ts
+    };
+    setFlash((current) => [...(Array.isArray(current) ? current : []), notice].slice(-12));
   }, []);
 
   useEffect(() => {
@@ -1898,7 +1902,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
   return (
     <div className="municipal-module-page d-flex flex-column min-vh-100 bg-light">
       <a className="app-skip-link" href="#contenido-principal-caja">Saltar al contenido principal</a>
-      <FlashNotice flash={flash} onClose={() => setFlash(null)} duration={6500} />
+      <FlashNotice flash={flash} onClose={() => setFlash([])} />
       <header className="app-module-header app-module-header--caja border-bottom p-3 d-flex justify-content-between align-items-center gap-2">
         <div>
           <h1 className="h5 m-0 d-flex align-items-center gap-2">
@@ -2648,7 +2652,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   >
                     {anulandoSeleccionCobroAgua
                       ? "Anulando periodos..."
-                      : `Anular seleccionados (${periodosSeleccionadosAnulacionCobroAgua.length})`}
+                      : `Anular (${periodosSeleccionadosAnulacionCobroAgua.length})`}
                   </button>
                 )}
                 <button

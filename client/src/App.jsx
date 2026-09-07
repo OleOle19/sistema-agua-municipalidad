@@ -228,7 +228,6 @@ function App() {
             ts: sessionEpoch
           }}
           onClose={() => setSessionNotice("")}
-          duration={8000}
         />
       )}
     </>

@@ -288,7 +288,8 @@ const reciboLuzPageStyle = `
 function LuzApp({ onBackToSelector }) {
   const [usuarioSistema, setUsuarioSistema] = useState(readStoredLuzUser);
   const [tab, setTab] = useState("padron");
-  const [flash, setFlash] = useState(null);
+  const [flash, setFlash] = useState([]);
+  const flashSequenceRef = useRef(0);
 
   const [zonas, setZonas] = useState([]);
   const [filtros, setFiltros] = useState({ q: "", id_zona: "", estado: "TODOS" });
@@ -418,7 +419,14 @@ function LuzApp({ onBackToSelector }) {
   );
 
   const showFlash = useCallback((type, text) => {
-    setFlash({ type, text, ts: Date.now() });
+    const ts = Date.now();
+    const notice = {
+      id: `luz-${ts}-${flashSequenceRef.current += 1}`,
+      type,
+      text: String(text || "").trim(),
+      ts
+    };
+    setFlash((current) => [...(Array.isArray(current) ? current : []), notice].slice(-12));
   }, []);
 
   useEffect(() => {
@@ -1173,7 +1181,7 @@ function LuzApp({ onBackToSelector }) {
   return (
     <div className="municipal-module-page d-flex flex-column min-vh-100 bg-light">
       <a className="app-skip-link" href="#contenido-principal-luz">Saltar al contenido principal</a>
-      <FlashNotice flash={flash} onClose={() => setFlash(null)} />
+      <FlashNotice flash={flash} onClose={() => setFlash([])} />
       <header className="app-module-header app-module-header--luz border-bottom p-3 d-flex justify-content-between align-items-center gap-2">
         <div>
           <h1 className="h5 m-0 d-flex align-items-center gap-2">

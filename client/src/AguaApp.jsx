@@ -690,7 +690,8 @@ function AguaApp({ onBackToSelector = null }) {
   const scrollRafRef = useRef(0);
   const lastHoverIdRef = useRef(null);
   const historialCacheRef = useRef(new Map());
-  const [flash, setFlash] = useState(null);
+  const [flash, setFlash] = useState([]);
+  const flashSequenceRef = useRef(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const rowHeight = 32;
   const overscan = 24;
@@ -755,7 +756,14 @@ function AguaApp({ onBackToSelector = null }) {
     return Number.isFinite(parsed) ? parsed.toFixed(2) : "0.00";
   }, []);
   const showFlash = useCallback((type, text) => {
-    setFlash({ type, text: String(text || "").trim(), ts: Date.now() });
+    const ts = Date.now();
+    const notice = {
+      id: `agua-${ts}-${flashSequenceRef.current += 1}`,
+      type,
+      text: String(text || "").trim(),
+      ts
+    };
+    setFlash((current) => [...(Array.isArray(current) ? current : []), notice].slice(-12));
   }, []);
 
   useEffect(() => {
@@ -2389,7 +2397,7 @@ const anexoCajaPageStyle = `
   return (
     <div className={`municipal-app-shell agua-app-shell d-flex ${bgMain}`}>
       <a className="app-skip-link" href="#contenido-principal">Saltar al contenido principal</a>
-      <FlashNotice flash={flash} onClose={() => setFlash(null)} />
+      <FlashNotice flash={flash} onClose={() => setFlash([])} />
       {sidebarOpen && (
         <button
           type="button"

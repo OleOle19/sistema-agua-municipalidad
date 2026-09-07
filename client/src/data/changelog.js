@@ -1,5 +1,16 @@
 const CHANGELOG_ENTRIES = [
   {
+    date: "7 de septiembre de 2026",
+    title: "Inicio estable, reintegros y avisos claros",
+    changes: [
+      "El efecto de agua del inicio ahora usa una animación ligera que permanece en reposo cuando no hay ondas ni gotas.",
+      "Los pagos anulados que se registran nuevamente quedan identificados automáticamente como reintegrados.",
+      "El historial también reconoce reintegros anteriores que conservaron por error la etiqueta de eliminado.",
+      "Caja cobra la tarifa vigente de los periodos que quedan nuevamente pendientes después de anular un pago.",
+      "Las notificaciones duran cinco segundos, agrupan avisos repetidos y muestran como máximo tres en formato desplegable."
+    ]
+  },
+  {
     date: "3 de septiembre de 2026",
     title: "Anulación de varios periodos",
     changes: [
