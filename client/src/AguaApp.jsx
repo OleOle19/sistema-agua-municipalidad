@@ -591,7 +591,7 @@ const ModalArbitriosDetalle = ({
               <table className="table table-sm table-bordered mb-0">
                 <thead className="text-center">
                   <tr>
-                    {["Mes", "Agua", "Desague", "Limpieza", "Admin", "Extra"].map((title) => (
+                    {["Mes", "Agua", "Desagüe", "Limpieza", "Admin", "Extra"].map((title) => (
                       <th key={title}>{title}</th>
                     ))}
                     <th className="text-danger">Deuda</th>
@@ -1109,7 +1109,7 @@ const anexoCajaPageStyle = `
       }
 
       if (generadas.length === 0) {
-        showFlash("danger", "No se pudo generar ninguna acta para la seleccion.");
+        showFlash("danger", "No se pudo generar ninguna acta para la selección.");
         return;
       }
 
@@ -1161,7 +1161,7 @@ const anexoCajaPageStyle = `
       });
 
       if (actasGeneradas.length === 0) {
-        showFlash("danger", "No se pudo generar ninguna acta para la seleccion.");
+        showFlash("danger", "No se pudo generar ninguna acta para la selección.");
         return;
       }
 
@@ -1703,7 +1703,7 @@ const anexoCajaPageStyle = `
       showFlash("warning", "Ingrese un monto válido de efectivo.");
       return;
     }
-    const observacionRaw = window.prompt("Observacion opcional del conteo:", "") || "";
+    const observacionRaw = window.prompt("Observación opcional del conteo:", "") || "";
     try {
       const res = await api.post("/caja/conteo-efectivo", {
         monto_efectivo: monto,
@@ -2621,7 +2621,7 @@ const anexoCajaPageStyle = `
         </Suspense>
       )}
       {mostrarModalAuditoria && (
-        <Suspense fallback={<LazyModalFallback label="Cargando auditoria..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando auditoría..." />}>
           <LazyModalAuditoria
             cerrarModal={() => setMostrarModalAuditoria(false)}
             canUndo={permisos.canSuperAdmin}
@@ -2653,7 +2653,7 @@ const anexoCajaPageStyle = `
         </Suspense>
       )}
       {mostrarModalCorteConexion && (
-        <Suspense fallback={<LazyModalFallback label="Cargando corte y reconexion..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando corte y reconexión..." />}>
           <LazyModalCorteConexion
             cerrarModal={() => setMostrarModalCorteConexion(false)}
             contribuyentes={contribuyentes}
@@ -2731,7 +2731,7 @@ const anexoCajaPageStyle = `
       
       {/* Modales Masivos */}
       {mostrarModalMasivo && (
-        <Suspense fallback={<LazyModalFallback label="Cargando impresion masiva..." />}>
+        <Suspense fallback={<LazyModalFallback label="Cargando impresión masiva..." />}>
           <LazyModalImpresionMasiva
             cerrarModal={() => setMostrarModalMasivo(false)}
             alConfirmar={(datos) => { setDatosMasivos(datos); }}

@@ -8,6 +8,24 @@ import realtime from "../realtime";
 import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
 import { formatDireccionDisplay } from "../utils/direccionDisplay";
 import {
+  buildCobroAguaVisibleYears,
+  buildCobroAguaYearRows,
+  canAnnulCobroAguaRow,
+  canCorrectCobroAguaRowByDate,
+  canCorregirPagosByRole,
+  canEnterCajaModuleByRole,
+  canSelectCobroAguaRow,
+  getCobroAguaRowKey,
+  getCobroAguaRowSaldo,
+  hasCobroAguaPendingReingreso,
+  isValidIsoDate,
+  MAX_RETROACTIVE_COBRO_DAYS_CAJA,
+  normalizeCobroAguaRowConsistency,
+  normalizeRole,
+  resolveCobroDateWindow,
+  toIsoDate
+} from "./cobroAguaRules";
+import {
   AGUA_TOKEN_KEY,
   getSessionToken,
   LEGACY_TOKEN_KEY,
@@ -33,7 +51,7 @@ const METODOS_PAGO_CAJA = [
 ];
 const ESTADOS_CONFIRMACION_PAGO = [
   { value: "CONFIRMADO", label: "Confirmado" },
-  { value: "PENDIENTE_VERIFICACION", label: "Pendiente verificacion" },
+  { value: "PENDIENTE_VERIFICACION", label: "Pendiente de verificación" },
   { value: "RECHAZADO", label: "Rechazado" }
 ];
 const buildEmptyDeclaracionMetodos = () => METODOS_PAGO_CAJA.reduce((acc, metodo) => ({
@@ -68,7 +86,6 @@ const totalDeclaracionMetodos = (declaracion = {}) => METODOS_PAGO_CAJA.reduce(
   0
 );
 
-const MAX_RETROACTIVE_COBRO_DAYS_CAJA = 3;
 const SEARCH_RESULTS_CACHE_TTL_MS = 30000;
 const SEARCH_RESULTS_LIMIT_AGUA = 120;
 const SEARCH_RESULTS_LIMIT_LUZ = 300;
@@ -85,25 +102,6 @@ const LazyModalFallback = ({ label = "Cargando..." }) => (
     </div>
   </div>
 );
-
-const normalizeRole = (role) => {
-  const raw = String(role || "").trim().toUpperCase();
-  if (["ADMIN", "SUPERADMIN", "ADMIN_PRINCIPAL", "NIVEL_1"].includes(raw)) return "ADMIN";
-  if (["ADMIN_AUX", "ADMINISTRADOR_SECUNDARIO", "SUBADMIN"].includes(raw)) return "ADMIN_AUX";
-  if (["ADMIN_SEC", "ADMIN_SECUNDARIO", "JEFE_CAJA", "NIVEL_2"].includes(raw)) return "ADMIN_SEC";
-  if (["CAJERO", "OPERADOR_CAJA", "OPERADOR", "NIVEL_3"].includes(raw)) return "CAJERO";
-  if (["BRIGADA", "BRIGADISTA", "CAMPO", "NIVEL_5"].includes(raw)) return "BRIGADA";
-  return "CONSULTA";
-};
-
-const canEnterCajaModuleByRole = (role) => {
-  const normalized = normalizeRole(role);
-  return normalized === "ADMIN" || normalized === "ADMIN_SEC" || normalized === "CAJERO";
-};
-const canCorregirPagosByRole = (role) => {
-  const normalized = normalizeRole(role);
-  return normalized === "ADMIN" || normalized === "CAJERO";
-};
 
 const parseJwtPayload = (token) => {
   const parts = String(token || "").split(".");
@@ -141,52 +139,6 @@ const readStoredAguaUser = () => {
     username: payload.username,
     nombre: payload.nombre,
     rol: role
-  };
-};
-
-const toIsoDate = (date = new Date()) => {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-};
-const isValidIsoDate = (isoDate) => {
-  const text = String(isoDate || "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return false;
-  const [year, month, day] = text.split("-").map((v) => Number(v));
-  const probe = new Date(Date.UTC(year, month - 1, day));
-  return probe.getUTCFullYear() === year
-    && (probe.getUTCMonth() + 1) === month
-    && probe.getUTCDate() === day;
-};
-const shiftIsoDateByDays = (isoDate, deltaDays) => {
-  const text = String(isoDate || "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return toIsoDate();
-  const probe = new Date(`${text}T12:00:00`);
-  if (Number.isNaN(probe.getTime())) return toIsoDate();
-  probe.setDate(probe.getDate() + Number(deltaDays || 0));
-  return toIsoDate(probe);
-};
-const resolveCobroDateWindow = (role, hoyIso = toIsoDate()) => {
-  const rol = normalizeRole(role);
-  if (rol === "ADMIN") {
-    return {
-      min: "",
-      max: hoyIso,
-      maxDiasRetroactivo: null
-    };
-  }
-  if (rol === "CAJERO") {
-    return {
-      min: shiftIsoDateByDays(hoyIso, -MAX_RETROACTIVE_COBRO_DAYS_CAJA),
-      max: hoyIso,
-      maxDiasRetroactivo: MAX_RETROACTIVE_COBRO_DAYS_CAJA
-    };
-  }
-  return {
-    min: hoyIso,
-    max: hoyIso,
-    maxDiasRetroactivo: 0
   };
 };
 
@@ -243,7 +195,7 @@ const formatPeriodosCobro = (pagos = []) => {
       .map((periodo) => [`${periodo.anio}-${String(periodo.mes).padStart(2, "0")}`, periodo])
   ).values()).sort((a, b) => (a.anio - b.anio) || (a.mes - b.mes));
 
-  if (periodos.length === 0) return "Periodo no especificado";
+  if (periodos.length === 0) return "Período no especificado";
   if (periodos.length === 1) {
     const periodo = periodos[0];
     return `${MESES_ES[periodo.mes]} ${periodo.anio}`;
@@ -259,7 +211,7 @@ const formatPeriodosCobro = (pagos = []) => {
 
   const labels = periodos.map((periodo) => `${MESES_ES[periodo.mes]} ${periodo.anio}`);
   if (labels.length <= 3) return labels.join(", ");
-  return `${labels[0]}, ${labels[1]} y ${labels.length - 2} periodos más`;
+  return `${labels[0]}, ${labels[1]} y ${labels.length - 2} períodos más`;
 };
 const buildCobroSuccessNotice = ({ contribuyente, pagos, total, compensacion = false, nota = "" }) => {
   const nombre = String(contribuyente || "").trim() || "Contribuyente sin nombre";
@@ -281,105 +233,7 @@ const formatFechaHora = (value) => {
 const buildCobroAguaCacheKey = (idContribuyente, fecha, permitirContingencia = false, permitirOverrideAdminFuturos = false) => (
   `${Number(idContribuyente || 0)}|${String(fecha || "").trim()}|${permitirContingencia ? "1" : "0"}|${permitirOverrideAdminFuturos ? "1" : "0"}`
 );
-const buildCobroAguaVisibleYears = (rows = [], preferredYear = 0) => {
-  const detected = Array.from(new Set(
-    (Array.isArray(rows) ? rows : [])
-      .map((row) => Number(row?.anio || 0))
-      .filter((year) => year >= 1900 && year <= 9999)
-  ));
-  if (detected.length === 0) return [];
-  if (preferredYear >= 1900 && preferredYear <= 9999) {
-    detected.push(preferredYear);
-  }
-  const minYear = Math.min(...detected);
-  const maxYear = Math.max(...detected);
-  const years = [];
-  for (let year = maxYear; year >= minYear; year -= 1) {
-    years.push(year);
-  }
-  return years;
-};
-const buildCobroAguaYearRows = (rows = [], anio = 0) => {
-  const year = Number(anio || 0);
-  if (year < 1900 || year > 9999) return [];
-  const byMes = new Map();
-  (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const rowYear = Number(row?.anio || 0);
-    const mes = Number(row?.mes || 0);
-    if (rowYear !== year || mes < 1 || mes > 12) return;
-    byMes.set(mes, row);
-  });
-  return Array.from({ length: 12 }, (_, index) => {
-    const mes = index + 1;
-    return byMes.get(mes) || {
-      anio: year,
-      mes,
-      placeholder_sin_recibo: true,
-      estado: "SIN_RECIBO",
-      subtotal_agua: 0,
-      subtotal_desague: 0,
-      subtotal_limpieza: 0,
-      subtotal_admin: 0,
-      total_pagar: 0,
-      abono_mes: 0,
-      deuda_mes: 0,
-      es_adelantado: false
-    };
-  });
-};
-
 const round2 = (value) => Math.round((parseMonto(value) + Number.EPSILON) * 100) / 100;
-const getCobroAguaRowKey = (row = {}) => {
-  const idRecibo = Number(row?.id_recibo || 0);
-  if (idRecibo > 0) return `r-${idRecibo}`;
-  const anio = Number(row?.anio || 0);
-  const mes = Number(row?.mes || 0);
-  return `p-${anio}-${mes}`;
-};
-const getCobroAguaRowSaldo = (row = {}) => round2(parseMonto(row?.deuda_mes ?? row?.total_pagar ?? 0));
-const getPeriodoNumFromIsoDate = (isoDate) => {
-  if (!isValidIsoDate(isoDate)) return 0;
-  const [year, month] = String(isoDate).split("-").map((value) => Number(value));
-  if (!Number.isInteger(year) || !Number.isInteger(month)) return 0;
-  return (year * 100) + month;
-};
-const hasCobroAguaPendingReingreso = (row = {}) => {
-  const idAnulacionPendiente = Number(row?.id_anulacion_pendiente || 0);
-  if (idAnulacionPendiente <= 0) return false;
-  const montoPagado = round2(parseMonto(row?.abono_mes ?? 0));
-  const idPagoUltimo = Number(row?.id_ultimo_pago || 0);
-  return montoPagado > 0.001 || idPagoUltimo > 0;
-};
-const normalizeCobroAguaRowConsistency = (row = {}, fechaCorte = toIsoDate()) => {
-  const next = { ...row };
-  const estadoUpper = String(next?.estado || "").trim().toUpperCase();
-  const abono = round2(parseMonto(next?.abono_mes ?? 0));
-  const saldo = round2(parseMonto(next?.deuda_mes ?? next?.total_pagar ?? 0));
-  const idPagoUltimo = Number(next?.id_ultimo_pago || 0);
-  const idAnulacionPendiente = Number(next?.id_anulacion_pendiente || 0);
-  const sinPagoActivo = abono <= 0.001 && idPagoUltimo <= 0;
-  const periodoFila = (Number(next?.anio || 0) * 100) + Number(next?.mes || 0);
-  const periodoFecha = getPeriodoNumFromIsoDate(fechaCorte);
-
-  if (idAnulacionPendiente > 0 && sinPagoActivo) {
-    next.id_anulacion_pendiente = 0;
-    next.anulado_en_pendiente = null;
-    next.monto_anulado_pendiente = 0;
-    next.motivo_anulacion_pendiente = null;
-  }
-
-  if (estadoUpper === "PAGADO" && sinPagoActivo) {
-    if (saldo > 0.001) {
-      next.estado = "PENDIENTE";
-    } else if (periodoFecha > 0 && periodoFila > periodoFecha) {
-      next.estado = "NO_EXIGIBLE";
-    } else {
-      next.estado = "PENDIENTE";
-    }
-  }
-
-  return next;
-};
 const getCobroLuzRowKey = (row = {}) => {
   const idRecibo = Number(row?.id_recibo || 0);
   if (idRecibo > 0) return `r-${idRecibo}`;
@@ -388,57 +242,6 @@ const getCobroLuzRowKey = (row = {}) => {
   return `p-${anio}-${mes}`;
 };
 const getCobroLuzRowSaldo = (row = {}) => round2(parseMonto(row?.deuda_mes ?? row?.total_pagar ?? 0));
-const normalizeDateOnlyText = (value) => {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
-    const iso = raw.slice(0, 10);
-    return isValidIsoDate(iso) ? iso : "";
-  }
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return "";
-  return toIsoDate(parsed);
-};
-const isIsoDateWithinWindow = (dateRaw, { min = "", max = "" } = {}) => {
-  const iso = normalizeDateOnlyText(dateRaw);
-  if (!iso) return false;
-  if (min && iso < min) return false;
-  if (max && iso > max) return false;
-  return true;
-};
-const canCorrectCobroAguaRowByDate = (row = {}, permisos = {}, hoyIso = toIsoDate()) => {
-  if (!permisos?.canCorregirPagos) return false;
-  const role = normalizeRole(permisos?.role);
-  if (role === "ADMIN") return true;
-  if (role !== "CAJERO") return false;
-  const estado = String(row?.estado || "").trim().toUpperCase();
-  const fechaReferencia = estado === "PAGADO"
-    ? normalizeDateOnlyText(row?.fecha_ultimo_pago)
-    : normalizeDateOnlyText(row?.anulado_en_pendiente || row?.fecha_ultimo_pago);
-  return isIsoDateWithinWindow(fechaReferencia, resolveCobroDateWindow(role, hoyIso));
-};
-const canAnnulCobroAguaRow = (row = {}, permisos = {}, hoyIso = toIsoDate()) => (
-  Number(row?.id_recibo || 0) > 0
-  && String(row?.estado || "").trim().toUpperCase() === "PAGADO"
-  && canCorrectCobroAguaRowByDate(row, permisos, hoyIso)
-);
-const canSelectCobroAguaRow = (row = {}, permisos = {}, hoyIso = toIsoDate()) => {
-  const saldo = getCobroAguaRowSaldo(row);
-  const estado = String(row?.estado || "").trim().toUpperCase();
-  if (saldo <= 0.001) return false;
-  if (estado === "PAGADO") return false;
-  if (hasCobroAguaPendingReingreso(row)) {
-    const role = normalizeRole(permisos?.role);
-    if (role === "ADMIN") return true;
-    if (role !== "CAJERO") return false;
-    return isIsoDateWithinWindow(
-      row?.anulado_en_pendiente || row?.fecha_ultimo_pago,
-      resolveCobroDateWindow(role, hoyIso)
-    );
-  }
-  return true;
-};
-
 function CajaMunicipalApp({ onBackToSelector }) {
   const [usuarioSistema, setUsuarioSistema] = useState(readStoredAguaUser);
   const [tab, setTab] = useState("agua");
@@ -1026,7 +829,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
         return next;
       });
       if (avisarVacio && nextRows.length === 0) {
-        showFlash("warning", "No hay periodos disponibles para mostrar en cobro.");
+        showFlash("warning", "No hay períodos disponibles para mostrar en cobro.");
       }
       return nextRows;
     };
@@ -1167,7 +970,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       });
     } catch (err) {
       setMostrarModalCobroAgua(false);
-      handleApiError(err, "No se pudo cargar los periodos de cobro del contribuyente.");
+      handleApiError(err, "No se pudieron cargar los períodos de cobro del contribuyente.");
     } finally {
       setLoadingPendientesCobroAgua(false);
     }
@@ -1190,7 +993,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
         permitirContingencia: permitirContingenciaAgua
       });
     } catch (err) {
-      handleApiError(err, "No se pudo actualizar los periodos para la fecha seleccionada.");
+      handleApiError(err, "No se pudieron actualizar los períodos para la fecha seleccionada.");
     } finally {
       setActualizandoPeriodosCobroAgua(false);
     }
@@ -1216,7 +1019,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
         permitirContingencia: next
       });
     } catch (err) {
-      handleApiError(err, "No se pudo actualizar los periodos al cambiar modo de contingencia.");
+      handleApiError(err, "No se pudieron actualizar los períodos al cambiar el modo de contingencia.");
     } finally {
       setActualizandoPeriodosCobroAgua(false);
     }
@@ -1232,7 +1035,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
   const editarMontoPagoAgua = useCallback(async (row) => {
     if (!permisos.canCorregirPagos) return;
     if (!canCorrectCobroAguaRowByDate(row, permisos, toIsoDate())) {
-      showFlash("warning", `Caja solo puede editar pagos registrados dentro de los ultimos ${MAX_RETROACTIVE_COBRO_DAYS_CAJA} dias.`);
+      showFlash("warning", `Caja solo puede editar pagos registrados dentro de los últimos ${MAX_RETROACTIVE_COBRO_DAYS_CAJA} días.`);
       return;
     }
     const idPago = Number(row?.id_ultimo_pago || 0);
@@ -1244,7 +1047,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const montoActual = round2(parseMonto(row?.abono_mes ?? 0));
     const montoMaximo = round2(parseMonto(row?.total_pagar ?? montoActual));
     const montoRaw = window.prompt(
-      `Nuevo monto para ${periodo} (maximo ${montoMaximo.toFixed(2)}):`,
+      `Nuevo monto para ${periodo} (máximo ${montoMaximo.toFixed(2)}):`,
       montoActual.toFixed(2)
     );
     if (montoRaw === null) return;
@@ -1258,7 +1061,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       return;
     }
     const motivo = String(
-      window.prompt("Motivo de la edicion de monto:", `Correccion administrativa del periodo ${periodo}.`) || ""
+      window.prompt("Motivo de la edición del monto:", `Corrección administrativa del período ${periodo}.`) || ""
     ).trim();
     if (!motivo) {
       showFlash("warning", "Debe indicar un motivo para editar el monto del pago.");
@@ -1339,8 +1142,8 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const periodos = rows.map((row) => `${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"}`);
     const motivo = String(
       window.prompt(
-        `Motivo para anular ${rows.length === 1 ? "el periodo seleccionado" : `los ${rows.length} periodos seleccionados`}:`,
-        `Corrección administrativa de ${rows.length === 1 ? "periodo" : "periodos"} ${periodos.join(", ")}.`
+        `Motivo para anular ${rows.length === 1 ? "el período seleccionado" : `los ${rows.length} períodos seleccionados`}:`,
+        `Corrección administrativa de ${rows.length === 1 ? "período" : "períodos"} ${periodos.join(", ")}.`
       ) || ""
     ).trim();
     if (!motivo) {
@@ -1390,14 +1193,14 @@ function CajaMunicipalApp({ onBackToSelector }) {
         showFlash(
           "success",
           anulados.length === 1
-            ? `Se anuló el periodo ${periodos[0]}.`
-            : `Se anularon los ${anulados.length} periodos seleccionados.`
+            ? `Se anuló el período ${periodos[0]}.`
+            : `Se anularon los ${anulados.length} períodos seleccionados.`
         );
       } else if (anulados.length > 0) {
-        const detalle = String(errores[0]?.err?.response?.data?.error || "Revise los periodos que permanecen pagados.");
-        showFlash("warning", `Se anularon ${anulados.length} de ${rows.length} periodos. ${detalle}`);
+        const detalle = String(errores[0]?.err?.response?.data?.error || "Revise los períodos que permanecen pagados.");
+        showFlash("warning", `Se anularon ${anulados.length} de ${rows.length} períodos. ${detalle}`);
       } else {
-        handleApiError(errores[0]?.err, "No se pudieron anular los periodos seleccionados.");
+        handleApiError(errores[0]?.err, "No se pudieron anular los períodos seleccionados.");
       }
     } catch (err) {
       handleApiError(err, "Los pagos se anularon, pero no se pudo actualizar la vista completa.");
@@ -1528,7 +1331,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       showFlash(
         "warning",
         Number.isFinite(limiteDias) && limiteDias >= 0
-          ? `Solo se permite registrar cobros con antiguedad maxima de ${limiteDias} dia(s). Fecha minima: ${fechaMinimaPermitida}.`
+          ? `Solo se permite registrar cobros con una antigüedad máxima de ${limiteDias} día(s). Fecha mínima: ${fechaMinimaPermitida}.`
           : `No se permite registrar cobros con fecha menor a ${fechaMinimaPermitida}.`
       );
       return;
@@ -1547,7 +1350,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const estadoConfirmacion = normalizeEstadoConfirmacionPago(estadoConfirmacionPagoAgua);
     const observacionPago = String(observacionPagoAgua || "").trim();
     if (!esCompensacion && metodoConfig.requiereReferencia && !referenciaPago) {
-      showFlash("warning", `Ingrese numero de operacion o referencia para ${metodoConfig.label}.`);
+      showFlash("warning", `Ingrese número de operación o referencia para ${metodoConfig.label}.`);
       return;
     }
     const pagos = [];
@@ -1663,7 +1466,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
     const referenciaPago = String(referenciaPagoLuz || "").trim();
     const estadoConfirmacion = normalizeEstadoConfirmacionPago(estadoConfirmacionPagoLuz);
     if (metodoConfig.requiereReferencia && !referenciaPago) {
-      showFlash("warning", `Ingrese numero de operacion o referencia para ${metodoConfig.label}.`);
+      showFlash("warning", `Ingrese número de operación o referencia para ${metodoConfig.label}.`);
       return;
     }
 
@@ -1698,7 +1501,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       });
       const idOrden = Number(emision?.data?.orden?.id_orden || 0);
       if (!idOrden) {
-        showFlash("warning", "No se pudo obtener el numero de orden de luz.");
+        showFlash("warning", "No se pudo obtener el número de orden de luz.");
         return;
       }
       await cajaLuzApi.post(`/caja/ordenes-cobro/${idOrden}/cobrar`, {
@@ -1881,16 +1684,16 @@ function CajaMunicipalApp({ onBackToSelector }) {
           <div className="card-body">
             <h5 className="card-title mb-2">Acceso restringido a Caja Municipal</h5>
             <p className="text-muted mb-3">
-              Solo cuentas de tipo <strong>Administrador</strong> o <strong>Cajero</strong> pueden ingresar a este modulo.
+              Solo las cuentas de tipo <strong>Administrador</strong> o <strong>Cajero</strong> pueden ingresar a este módulo.
             </p>
             <div className="d-flex gap-2">
               {typeof onBackToSelector === "function" && (
                 <button className="btn btn-primary" onClick={onBackToSelector}>
-                  Cambiar modulo
+                  Cambiar módulo
                 </button>
               )}
               <button className="btn btn-outline-danger" onClick={logout}>
-                Cerrar sesion
+                Cerrar sesión
               </button>
             </div>
           </div>
@@ -2342,10 +2145,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
               </div>
               <div className="modal-body">
                 <div className="small text-muted mb-3">
-                  Se muestran deudas pendientes y periodos adelantados ya emitidos por ventanilla (Agua).
-                  Si el usuario no trae recibo, puede activarse contingencia para generar periodos faltantes desde Caja.
+                  Se muestran deudas pendientes y períodos adelantados ya emitidos por ventanilla (Agua).
+                  Si el usuario no trae recibo, puede activarse la contingencia para generar períodos faltantes desde Caja.
                   Use la casilla izquierda de cada periodo: si está pendiente se selecciona para cobrar y si está pagado se selecciona para anular.
-                  Caja puede registrar y corregir cobros solo hasta 3 dias atras; administrador no tiene limite retroactivo. Para cambiar monto use "Editar monto"; para cambiar fecha primero anule y luego registre de nuevo el cobro.
+                  Caja puede registrar y corregir cobros solo hasta 3 días atrás; el administrador no tiene límite retroactivo. Para cambiar el monto use "Editar monto"; para cambiar la fecha primero anule y luego registre de nuevo el cobro.
                 </div>
                 <div className="row g-2 align-items-end mb-3">
                   <div className="col-sm-4 col-md-3">
@@ -2366,10 +2169,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         ? "La compensacion se registrara con la fecha seleccionada, afectara la deuda y quedara fuera del reporte de caja."
                         : permisos.canAdminPagos
                         ? "El cobro se registrara en el reporte de la fecha seleccionada. Administrador puede usar cualquier fecha pasada."
-                        : `El cobro se registrara en el reporte de la fecha seleccionada. Caja puede usar hoy o hasta ${permisos.maxDiasRetroactivoCobro || 0} dia(s) atras.`}
+                        : `El cobro se registrará en el reporte de la fecha seleccionada. Caja puede usar hoy o hasta ${permisos.maxDiasRetroactivoCobro || 0} día(s) atrás.`}
                     </div>
                     {actualizandoPeriodosCobroAgua && !loadingPendientesCobroAgua && (
-                      <div className="small text-muted mt-1">Actualizando periodos para la fecha seleccionada...</div>
+                      <div className="small text-muted mt-1">Actualizando períodos para la fecha seleccionada...</div>
                     )}
                   </div>
                   {permisos.canAdminPagos && (
@@ -2405,7 +2208,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                 {modoCobroAgua === COBRO_AGUA_MODOS.COMPENSACION && permisos.canAdminPagos && (
                   <div className="mb-3">
                     <div className="alert alert-warning py-2 small mb-2">
-                      La compensacion cancelara la deuda y quedara en auditoria, pero no entrara al reporte de caja.
+                      La compensación cancelará la deuda y quedará en auditoría, pero no entrará al reporte de caja.
                     </div>
                     <label className="form-label form-label-sm mb-1">Motivo de la compensación</label>
                     <textarea
@@ -2448,7 +2251,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                           className="form-control form-control-sm"
                           value={referenciaPagoAgua}
                           onChange={(e) => setReferenciaPagoAgua(e.target.value)}
-                          placeholder={getMetodoPagoConfig(metodoPagoAgua).requiereReferencia ? "Nro. operacion" : "Opcional"}
+                          placeholder={getMetodoPagoConfig(metodoPagoAgua).requiereReferencia ? "Nro. de operación" : "Opcional"}
                           disabled={cobrandoDirectoAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || metodoPagoAgua === "EFECTIVO"}
                         />
                       </div>
@@ -2482,7 +2285,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                 {aniosCobroAgua.length > 0 && (
                   <div className="d-flex align-items-center justify-content-between gap-2 mb-2">
                     <div className="small text-muted">
-                      Vista anual de periodos. Use las flechas para revisar anos anteriores o volver a anos mas recientes.
+                      Vista anual de períodos. Use las flechas para revisar años anteriores o volver a años más recientes.
                     </div>
                     <div className="d-flex align-items-center gap-2">
                       <button
@@ -2497,7 +2300,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                       >
                         <FaChevronLeft />
                       </button>
-                      <span className="badge text-bg-light border">Ano {anioVistaCobroAgua || "-"}</span>
+                      <span className="badge text-bg-light border">Año {anioVistaCobroAgua || "-"}</span>
                       <button
                         type="button"
                         className="btn btn-sm btn-outline-secondary"
@@ -2506,7 +2309,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                           if (nextYear) setAnioVistaCobroAgua(nextYear);
                         }}
                         disabled={indiceAnioVistaCobroAgua <= 0}
-                        title="Ver un año mas reciente"
+                        title="Ver un año más reciente"
                       >
                         <FaChevronRight />
                       </button>
@@ -2518,7 +2321,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                     <thead className="table-light">
                       <tr>
                         <th style={{ width: "36px" }}></th>
-                        <th>Periodo</th>
+                        <th>Período</th>
                         <th className="text-end">Saldo</th>
                         <th className="text-end">Monto pagado</th>
                         <th className="text-end">Monto a cobrar</th>
@@ -2527,7 +2330,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                     <tbody>
                       {loadingPendientesCobroAgua && recibosPendientesCobroAgua.length === 0 && (
                         <tr>
-                          <td colSpan="5" className="text-center text-muted py-3">Actualizando periodos...</td>
+                          <td colSpan="5" className="text-center text-muted py-3">Actualizando períodos...</td>
                         </tr>
                       )}
                       {!loadingPendientesCobroAgua && recibosPendientesCobroAgua.length === 0 && (
@@ -2651,7 +2454,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                     disabled={cobrandoDirectoAgua || anulandoSeleccionCobroAgua || loadingPendientesCobroAgua || actualizandoPeriodosCobroAgua || editandoPagoCobroAguaId > 0 || periodosSeleccionadosAnulacionCobroAgua.length === 0}
                   >
                     {anulandoSeleccionCobroAgua
-                      ? "Anulando periodos..."
+                      ? "Anulando períodos..."
                       : `Anular (${periodosSeleccionadosAnulacionCobroAgua.length})`}
                   </button>
                 )}
@@ -2692,7 +2495,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
               </div>
               <div className="modal-body">
                 <div className="small text-muted mb-3">
-                  Seleccione los periodos de luz pendientes y confirme el cobro.
+                  Seleccione los períodos de luz pendientes y confirme el cobro.
                 </div>
                 <div className="border rounded p-2 mb-3">
                   <div className="fw-semibold small mb-2">Medio de pago</div>
@@ -2723,7 +2526,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         className="form-control form-control-sm"
                         value={referenciaPagoLuz}
                         onChange={(e) => setReferenciaPagoLuz(e.target.value)}
-                        placeholder={getMetodoPagoConfig(metodoPagoLuz).requiereReferencia ? "Nro. operacion" : "Opcional"}
+                        placeholder={getMetodoPagoConfig(metodoPagoLuz).requiereReferencia ? "Nro. de operación" : "Opcional"}
                         disabled={cobrandoDirectoLuz || loadingPendientesCobroLuz || metodoPagoLuz === "EFECTIVO"}
                       />
                     </div>
@@ -2747,7 +2550,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                     <thead className="table-light">
                       <tr>
                         <th style={{ width: "36px" }}></th>
-                        <th>Periodo</th>
+                        <th>Período</th>
                         <th className="text-end">Saldo</th>
                         <th className="text-end">Monto pagado</th>
                         <th className="text-end">Monto a cobrar</th>
@@ -2755,7 +2558,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                     </thead>
                     <tbody>
                       {loadingPendientesCobroLuz && (
-                        <tr><td colSpan="5" className="text-center text-muted py-3">Actualizando periodos...</td></tr>
+                        <tr><td colSpan="5" className="text-center text-muted py-3">Actualizando períodos...</td></tr>
                       )}
                       {!loadingPendientesCobroLuz && recibosPendientesCobroLuz.length === 0 && (
                         <tr><td colSpan="5" className="text-center text-muted py-3">Sin meses disponibles para cobro.</td></tr>
@@ -2888,7 +2691,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                         <th>Zona</th>
                         <th>ID usuario</th>
                         <th>Contribuyente</th>
-                        <th>Periodo</th>
+                        <th>Período</th>
                         <th className="text-end">Monto</th>
                         <th className="text-end">Orden</th>
                       </tr>

@@ -504,7 +504,7 @@ const ModalReporteCortes = ({
             <div className={`${cardClass} mb-3`}>
               <div className="row g-2 align-items-end">
                 <div className="col-md-3">
-                  <label className="form-label form-label-sm mb-1">Periodo</label>
+                  <label className="form-label form-label-sm mb-1">Período</label>
                   <select
                     className={inputClass}
                     value={tipoPeriodo}
@@ -694,7 +694,7 @@ const ModalReporteCortes = ({
 
             <div className="alert alert-warning mt-3 mb-2">
               <div><strong>Criterio:</strong> {criterioDescripcion}</div>
-              <div><strong>Orden:</strong> Calle y numero ascendente</div>
+              <div><strong>Orden:</strong> Calle y número ascendente</div>
               <div><strong>Usuarios seleccionados:</strong> {seleccion.length}</div>
               {isProyeccion ? (
                 <>
@@ -708,7 +708,7 @@ const ModalReporteCortes = ({
                   <div><strong>Total abono:</strong> S/. {totalAbono.toFixed(2)}</div>
                 </>
               )}
-              {cargandoReporte && <div className="small mt-1">Actualizando importes segun el periodo seleccionado...</div>}
+              {cargandoReporte && <div className="small mt-1">Actualizando importes según el período seleccionado...</div>}
               {!cargandoReporte && errorReporte && <div className="small mt-1 text-danger">{errorReporte}</div>}
             </div>
 
@@ -723,7 +723,7 @@ const ModalReporteCortes = ({
                     {isProyeccion ? (
                       <>
                         <th className="text-end">Agua</th>
-                        <th className="text-end">Desague</th>
+                        <th className="text-end">Desagüe</th>
                         <th className="text-end">Limpieza</th>
                         <th className="text-end">Admin</th>
                         <th className="text-end">Extra</th>

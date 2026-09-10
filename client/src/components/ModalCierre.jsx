@@ -697,7 +697,7 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
           <div className="modal-body">
             <div className="row g-2 align-items-end mb-3 no-print">
               <div className="col-12 col-md-4 col-lg-3">
-                <label className="form-label small mb-1">Periodo</label>
+                <label className="form-label small mb-1">Período</label>
                 <select
                   className="form-select form-select-sm"
                   value={reporteTipo}
@@ -754,7 +754,7 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
                   <input
                     type="text"
                     className="form-control form-control-sm"
-                    placeholder="Nombre, codigo, direccion, recibo..."
+                    placeholder="Nombre, código, dirección, recibo..."
                     value={busquedaMovimiento}
                     onChange={(e) => setBusquedaMovimiento(e.target.value)}
                   />
@@ -804,7 +804,7 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
                   </div>
                 )}
                 {esAdminPrincipal && (
-                  <div className="small text-muted">Admin: movimientos de correccion y pendientes abiertos = {movimientosAdmin.length}</div>
+                  <div className="small text-muted">Admin: movimientos de corrección y pendientes abiertos = {movimientosAdmin.length}</div>
                 )}
               </div>
               <div className="col-12 col-md-auto d-flex justify-content-md-end">
@@ -1002,7 +1002,7 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
                   <table className="table table-sm mb-3 border border-dark" style={{ fontSize: "12px" }}>
                     <thead>
                       <tr className="border border-dark">
-                        <th>Periodo</th>
+                        <th>Período</th>
                         <th>Inicio mes</th>
                         <th className="text-end">Total estimado</th>
                       </tr>
@@ -1068,7 +1068,7 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
                       <th className="text-center" style={{ width: "7%" }}>Año</th>
                       <th className="text-center" style={{ width: "6%" }}>Mes</th>
                       <th className="text-end" style={{ width: "8%" }}>Agua</th>
-                      <th className="text-end" style={{ width: "8%" }}>Desague</th>
+                      <th className="text-end" style={{ width: "8%" }}>Desagüe</th>
                       <th className="text-end" style={{ width: "8%" }}>Limpieza</th>
                       <th className="text-end" style={{ width: "7%" }}>Gastos</th>
                       <th className="text-end" style={{ width: "7%" }}>Extra</th>
@@ -1179,7 +1179,7 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
                     <div className="small fw-semibold">Pendiente sin reintegro: S/. {totalPendienteReintegroAdmin}</div>
                   </div>
                   <div className="small mb-2">
-                    Este anexo es solo para administrador e incluye trazabilidad completa de correcciones: eliminacion, reintegracion y edicion de monto. Las anulaciones pendientes siguen visibles hasta que se reintegren.
+                    Este anexo es solo para el administrador e incluye la trazabilidad completa de las correcciones: eliminación, reintegración y edición de monto. Las anulaciones pendientes siguen visibles hasta que se reintegren.
                   </div>
                   {cargandoAdmin && (
                     <div className="small text-muted mb-2">Actualizando movimientos administrativos...</div>
@@ -1191,9 +1191,9 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
                         <th>TIPO</th>
                         <th>ESTADO</th>
                         <th>MOVIMIENTO</th>
-                        <th>CODIGO</th>
+                        <th>CÓDIGO</th>
                         <th>CONTRIBUYENTE</th>
-                        <th className="text-center">PERIODO</th>
+                        <th className="text-center">PERÍODO</th>
                         <th className="text-end">MONTO ANT.</th>
                         <th className="text-end">MONTO NUEVO</th>
                         <th>MOTIVO</th>

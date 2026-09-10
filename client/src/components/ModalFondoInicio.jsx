@@ -246,7 +246,7 @@ export default function ModalFondoInicio({ cerrarModal, onFlash }) {
                     disabled={saving}
                   />
                   <div className="form-text">
-                    Formatos permitidos: {SUPPORTED_BACKGROUND_LABEL}. Tamano maximo: {MAX_FILE_MB} MB.
+                    Formatos permitidos: {SUPPORTED_BACKGROUND_LABEL}. Tamaño máximo: {MAX_FILE_MB} MB.
                   </div>
                 </div>
 

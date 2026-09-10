@@ -160,7 +160,7 @@ const ModalExportaciones = ({ cerrarModal, onBackup }) => {
                 <FaUsers /> Usuarios completos
               </div>
               <div className="small opacity-75 mb-2">
-                Exporta padron completo con codigos, DNI/RUC, calle, direccion y datos del predio.
+                Exporta el padrón completo con códigos, DNI/RUC, calle, dirección y datos del predio.
               </div>
               <button
                 type="button"
@@ -225,7 +225,7 @@ const ModalExportaciones = ({ cerrarModal, onBackup }) => {
                 <FaBalanceScale /> Comparacion Base Antigua vs Actual
               </div>
               <div className="small opacity-75 mb-2">
-                Sube la base legacy (plantilla fija), compara padron/deuda/recaudacion y guarda historial auditable.
+                Sube la base anterior (plantilla fija), compara padrón, deuda y recaudación, y guarda un historial auditable.
               </div>
               <button
                 type="button"
@@ -262,10 +262,10 @@ const ModalExportaciones = ({ cerrarModal, onBackup }) => {
                       <tr>
                         <th>Fecha</th>
                         <th>Origen</th>
-                        <th>Codigo</th>
+                        <th>Código</th>
                         <th>Nombre</th>
                         <th>Archivo</th>
-                        <th>Tamano</th>
+                        <th>Tamaño</th>
                         <th>Acciones</th>
                       </tr>
                     </thead>

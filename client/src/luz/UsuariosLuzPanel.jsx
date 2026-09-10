@@ -100,15 +100,15 @@ function UsuariosLuzPanel({ visible, usuarioActivo, canManageUsers, onFlash }) {
     const nombre = String(nuevo.nombre_completo || "").trim();
     const password = String(nuevo.password || "");
     if (username.length < 3) {
-      showFlash("warning", "Username invalido. Minimo 3 caracteres.");
+      showFlash("warning", "Usuario inválido. Mínimo 3 caracteres.");
       return;
     }
     if (nombre.length < 5) {
-      showFlash("warning", "Nombre invalido. Minimo 5 caracteres.");
+      showFlash("warning", "Nombre inválido. Mínimo 5 caracteres.");
       return;
     }
     if (password.length < MIN_PASSWORD_LEN) {
-      showFlash("warning", `La contrasena debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
+      showFlash("warning", `La contraseña debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
       return;
     }
 
@@ -140,7 +140,7 @@ function UsuariosLuzPanel({ visible, usuarioActivo, canManageUsers, onFlash }) {
     if (String(edit.estado || "") !== String(usuario.estado || "")) payload.estado = edit.estado;
     if (String(edit.password || "").length > 0) {
       if (String(edit.password).length < MIN_PASSWORD_LEN) {
-        showFlash("warning", `La contrasena debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
+        showFlash("warning", `La contraseña debe tener al menos ${MIN_PASSWORD_LEN} caracteres.`);
         return;
       }
       payload.password = edit.password;
@@ -196,7 +196,7 @@ function UsuariosLuzPanel({ visible, usuarioActivo, canManageUsers, onFlash }) {
   if (!canManageUsers) {
     return (
       <div className="alert alert-warning mb-0">
-        Solo el Nivel 1 puede gestionar usuarios en el modulo de luz.
+        Solo el Nivel 1 puede gestionar usuarios en el módulo de luz.
       </div>
     );
   }

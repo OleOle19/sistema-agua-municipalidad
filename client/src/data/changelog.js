@@ -1,21 +1,31 @@
 const CHANGELOG_ENTRIES = [
   {
+    date: "10 de septiembre de 2026",
+    title: "Textos más claros y validaciones reforzadas",
+    changes: [
+      "Se corrigieron textos visibles como Año, Código, Dirección, Desagüe, Operación y Sesión en formularios y reportes.",
+      "La tipografía ahora se muestra de forma uniforme en las computadoras de la municipalidad, sin depender de descargas externas.",
+      "Se reforzaron las validaciones automáticas de selección, cobro, anulación y reintegro de períodos en Caja.",
+      "Las notificaciones cuentan con comprobaciones automáticas para conservar su límite, agrupación y cierre a los cinco segundos."
+    ]
+  },
+  {
     date: "7 de septiembre de 2026",
     title: "Inicio estable, reintegros y avisos claros",
     changes: [
       "El efecto de agua del inicio ahora usa una animación ligera que permanece en reposo cuando no hay ondas ni gotas.",
       "Los pagos anulados que se registran nuevamente quedan identificados automáticamente como reintegrados.",
       "El historial también reconoce reintegros anteriores que conservaron por error la etiqueta de eliminado.",
-      "Caja cobra la tarifa vigente de los periodos que quedan nuevamente pendientes después de anular un pago.",
+      "Caja cobra la tarifa vigente de los períodos que quedan nuevamente pendientes después de anular un pago.",
       "Las notificaciones duran cinco segundos, agrupan avisos repetidos y muestran como máximo tres en formato desplegable."
     ]
   },
   {
     date: "3 de septiembre de 2026",
-    title: "Anulación de varios periodos",
+    title: "Anulación de varios períodos",
     changes: [
-      "Las casillas de cada periodo permiten seleccionar tanto cobros pendientes como anulaciones de periodos pagados.",
-      "Caja permite anular uno o varios periodos pagados en una sola operación.",
+      "Las casillas de cada período permiten seleccionar tanto cobros pendientes como anulaciones de períodos pagados.",
+      "Caja permite anular uno o varios períodos pagados en una sola operación.",
       "La anulación solicita un único motivo y mantiene los permisos, plazos de corrección y registros de auditoría.",
       "Al editar las tarifas de Agua, Desagüe o Limpieza, un monto de cero desactiva el servicio y un monto mayor que cero lo activa."
     ]
@@ -138,7 +148,7 @@ const CHANGELOG_ENTRIES = [
     changes: [
       "Pagos históricos protegidos al activar servicios.",
       "Recibos duplicados corregidos.",
-      "Recargos limitados a periodos válidos."
+      "Recargos limitados a períodos válidos."
     ]
   }
 ];

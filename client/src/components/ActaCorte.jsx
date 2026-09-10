@@ -215,7 +215,7 @@ const ActaCorte = forwardRef(({ datos, compact = false }, ref) => {
         <div style={styles.value}>{c.nombre_completo || "-"}</div>
       </div>
       <div style={styles.datosFila}>
-        <div style={styles.label}>DIRECCION:</div>
+        <div style={styles.label}>DIRECCIÓN:</div>
         <div style={styles.valueNormal}>{c.direccion_completa || "-"}</div>
       </div>
 

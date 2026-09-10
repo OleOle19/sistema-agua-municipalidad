@@ -133,7 +133,7 @@ const LoginPage = ({
           {typeof onBackToSelector === "function" && (
             <div className="d-flex justify-content-end mb-2">
               <button type="button" className="btn btn-outline-secondary btn-sm" onClick={onBackToSelector}>
-                Cambiar modulo
+                Cambiar módulo
               </button>
             </div>
           )}

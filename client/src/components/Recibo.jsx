@@ -39,7 +39,6 @@ const RECIBO_SIZE_MM = {
 const RECIBO_TEXTOS = {
   distrito: "PUEBLO NUEVO",
   tipoServicio: "Servicio: Domestico",
-  notaPago: "El pago de este recibo\nno cancela deudas anteriores.",
   tituloDeudaAnterior: "Deuda Anterior",
   tituloDeudaMes: "Mes",
   labelDeuda: "Deuda S/."
@@ -171,7 +170,7 @@ const Recibo = forwardRef(({ datos }, ref) => {
     }))
     : [
       { concepto: "SERVICIO DE AGUA", monto: toNum(detalles.agua) },
-      { concepto: "SERVICIO DE DESAGUE", monto: toNum(detalles.desague) },
+      { concepto: "SERVICIO DE DESAGÜE", monto: toNum(detalles.desague) },
       { concepto: "LIMPIEZA PUBLICA", monto: toNum(detalles.limpieza) },
       { concepto: "GASTOS ADMINISTRATIVOS", monto: toNum(detalles.admin) }
     ].filter((row) => row.monto > 0);
@@ -351,21 +350,6 @@ const Recibo = forwardRef(({ datos }, ref) => {
         }}
       >
         {formatMonto(totalRecibo)}
-      </div>
-
-      <div
-        style={{
-          ...baseText,
-          left: xTop(CAL.top.xNota),
-          top: yTop(CAL.top.yNota),
-          fontSize: "2.5mm",
-          width: mm(58),
-          whiteSpace: "pre-line",
-          lineHeight: 1.05,
-          textAlign: "left"
-        }}
-      >
-        {RECIBO_TEXTOS.notaPago}
       </div>
 
       <div style={{ ...baseText, left: xTop(CAL.top.xFechaTop), top: yTop(CAL.top.yFechaEmisionTop), width: mm(CAL.top.fechaWidth), textAlign: "right", fontSize: "3.0mm", fontWeight: 700 }}>

@@ -82,7 +82,7 @@ const ReciboLuzCard = ({ datos }) => {
           </div>
           <div style={{ textTransform: "uppercase", marginBottom: "1.15mm" }}>{formatUserUbicacion(suministro)}</div>
           <div style={{ display: "grid", gridTemplateColumns: "41mm 1fr", alignItems: "baseline" }}>
-            <span>Periodo Facturacion:</span>
+            <span>Período de facturación:</span>
             <strong style={{ textAlign: "left" }}>{formatPeriodo(recibo.anio, recibo.mes)}</strong>
           </div>
         </div>
@@ -93,7 +93,7 @@ const ReciboLuzCard = ({ datos }) => {
               <img src="/logo.png" alt="Logo Municipalidad" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
             </div>
             <div style={{ border: "1px solid #222", textAlign: "center", fontSize: "3.2mm", fontWeight: 700, lineHeight: 1.16, padding: "1.6mm 1.1mm", textTransform: "uppercase" }}>
-              Administracion del servicio de energia electrica de la Municipalidad Distrital de Pueblo Nuevo
+              Administración del servicio de energía eléctrica de la Municipalidad Distrital de Pueblo Nuevo
             </div>
           </div>
         </div>
@@ -128,7 +128,7 @@ const ReciboLuzCard = ({ datos }) => {
 
           <div style={{ marginTop: "11.6mm", fontSize: "4.1mm", lineHeight: 1.28 }}>
             <div style={{ display: "grid", gridTemplateColumns: "37mm 1fr", marginBottom: "0.6mm" }}>
-              <strong>Fecha de emision:</strong>
+              <strong>Fecha de emisión:</strong>
               <strong>{formatFecha(recibo.fecha_emision)}</strong>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "37mm 1fr", marginBottom: "0.6mm" }}>

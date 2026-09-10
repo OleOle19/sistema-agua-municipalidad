@@ -148,11 +148,11 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
 
   const lines = [];
   if (esProyeccion) {
-    lines.push("REPORTE DE PROYECCION FUTURA - CONEXION ACTIVA");
+    lines.push("REPORTE DE PROYECCIÓN FUTURA - CONEXIÓN ACTIVA");
     lines.push("Municipalidad Distrital de Pueblo Nuevo");
     lines.push(`Fecha: ${fechaValida.toLocaleDateString("es-PE")} ${fechaValida.toLocaleTimeString("es-PE")}`);
     lines.push(`Criterio: ${criterio?.descripcion || "Seleccion manual"}`);
-    lines.push(`Estado: ${criterio?.estado_label || "Con conexion"}`);
+    lines.push(`Estado: ${criterio?.estado_label || "Con conexión"}`);
     lines.push(`Mes inicial: ${proyeccion?.fecha_referencia_mes || "-"}`);
     lines.push(`Meses proyectados: ${Number(proyeccion?.meses_proyeccion || 0)} | Base mensual: ${formatMoney(totalMensual)} | Total proyectado: ${formatMoney(totalProyectado)}`);
     lines.push("=".repeat(90));
@@ -168,8 +168,8 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
     } else {
       lista.forEach((row, idx) => {
         pushWrapped(lines, `${idx + 1}. [${row?.codigo_municipal || "-"}] ${row?.nombre_completo || ""}`);
-        pushWrapped(lines, `   Direccion: ${row?.direccion_completa || ""}`);
-        pushWrapped(lines, `   Tarifas: Agua ${formatMoney(row?.tarifa_agua || 0)} | Desague ${formatMoney(row?.tarifa_desague || 0)} | Limpieza ${formatMoney(row?.tarifa_limpieza || 0)}`);
+        pushWrapped(lines, `   Dirección: ${row?.direccion_completa || ""}`);
+        pushWrapped(lines, `   Tarifas: Agua ${formatMoney(row?.tarifa_agua || 0)} | Desagüe ${formatMoney(row?.tarifa_desague || 0)} | Limpieza ${formatMoney(row?.tarifa_limpieza || 0)}`);
         pushWrapped(lines, `   Admin ${formatMoney(row?.tarifa_admin || 0)} | Extra ${formatMoney(row?.tarifa_extra || 0)} | Base ${formatMoney(row?.monto_mensual || 0)} | Proyectado ${formatMoney(row?.total_proyectado || 0)}`);
         lines.push("-".repeat(90));
       });
@@ -178,12 +178,12 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
     return buildPdfBlobFromStreams(streams);
   }
 
-  lines.push("REPORTE DE ESTADO DE CONEXION");
+  lines.push("REPORTE DE ESTADO DE CONEXIÓN");
   lines.push("Municipalidad Distrital de Pueblo Nuevo");
   lines.push(`Fecha: ${fechaValida.toLocaleDateString("es-PE")} ${fechaValida.toLocaleTimeString("es-PE")}`);
   lines.push(`Criterio: ${criterio?.descripcion || "Seleccion manual"}`);
   lines.push(`Estado: ${criterio?.estado_label || "Contribuyentes"}`);
-  lines.push("Orden: Calle y numero ascendente");
+  lines.push("Orden: Calle y número ascendente");
   lines.push(`Registros: ${lista.length} | Total deuda: ${formatMoney(totalDeuda)} | Total abono: ${formatMoney(totalAbono)}`);
   if (mostrarEvidencia) {
     lines.push("Incluye evidencia de corte adjunta.");
@@ -204,7 +204,7 @@ export const buildReporteEstadoConexionPdf = (payload = {}) => {
 
       pushWrapped(lines, `${idx + 1}. [${codigo}] ${nombre}`);
       pushWrapped(lines, `   DNI: ${dni}`);
-      pushWrapped(lines, `   Direccion: ${direccion}`);
+      pushWrapped(lines, `   Dirección: ${direccion}`);
       pushWrapped(lines, `   Meses deuda: ${meses} | Deuda total: ${deuda} | Abono total: ${abono}`);
 
       if (mostrarDetalleCorte) {

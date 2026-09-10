@@ -1,5 +1,12 @@
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  --municipal-font-sans: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+  --municipal-font-size-sm: 0.875rem;
+  --municipal-font-size-base: 1rem;
+  --municipal-font-size-lg: 1.125rem;
+  --municipal-line-height-compact: 1.25;
+  --municipal-line-height-base: 1.5;
+  --bs-body-font-family: var(--municipal-font-sans);
+  font-family: var(--municipal-font-sans);
   line-height: 1.5;
   font-weight: 400;
   color-scheme: light;
@@ -24,8 +31,30 @@ body,
 }
 
 body {
+  font-family: var(--municipal-font-sans);
+  font-size: var(--municipal-font-size-base);
+  line-height: var(--municipal-line-height-base);
   color: #f8fafc;
   overflow-x: hidden;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  line-height: var(--municipal-line-height-compact);
+  text-wrap: balance;
 }
 
 body.has-app-modal {

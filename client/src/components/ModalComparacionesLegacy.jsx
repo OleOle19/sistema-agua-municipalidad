@@ -339,7 +339,7 @@ const ModalComparacionesLegacy = ({ cerrarModal }) => {
                     <label className="form-label small mb-1">Modo de carga</label>
                     <select className={selectClass} value={modoCarga} onChange={(e) => setModoCarga(e.target.value)}>
                       <option value="exportes">2 archivos exportados (Usuarios + Finanzas)</option>
-                      <option value="plantilla">Plantilla unica (3 hojas)</option>
+                      <option value="plantilla">Plantilla única (3 hojas)</option>
                     </select>
                   </div>
                   {modoCarga === "exportes" ? (
@@ -542,7 +542,7 @@ const ModalComparacionesLegacy = ({ cerrarModal }) => {
                         </div>
                         <div className="col-md-7">
                           <label className="form-label small mb-1">Buscar</label>
-                          <input className={inputClass} value={detalleQ} onChange={(e) => setDetalleQ(e.target.value)} placeholder="Codigo, DNI, campo..." />
+                          <input className={inputClass} value={detalleQ} onChange={(e) => setDetalleQ(e.target.value)} placeholder="Código, DNI, campo..." />
                         </div>
                         <div className="col-md-2 d-grid">
                           <label className="form-label small mb-1">&nbsp;</label>

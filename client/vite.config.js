@@ -4,8 +4,13 @@ import react from '@vitejs/plugin-react'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    setupFiles: './src/test/setup.js',
+    clearMocks: true,
+    restoreMocks: true,
+  },
   build: {
-    // El motor líquido queda aislado y se descarga en segundo plano cuando el navegador está libre.
     chunkSizeWarningLimit: 550,
     rollupOptions: {
       output: {

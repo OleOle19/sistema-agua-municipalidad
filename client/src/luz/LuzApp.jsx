@@ -442,7 +442,7 @@ function LuzApp({ onBackToSelector }) {
 
   const handleApiError = useCallback((err, fallback) => {
     const status = Number(err?.response?.status || 0);
-    const msg = String(err?.response?.data?.error || fallback || "Error de conexion");
+    const msg = String(err?.response?.data?.error || fallback || "Error de conexión");
     if (status === 401) {
       removeSessionTokens(LUZ_TOKEN_KEY);
       setUsuarioSistema(null);
@@ -664,7 +664,7 @@ function LuzApp({ onBackToSelector }) {
         setAuditoriaUsuarios([]);
         showFlash("warning", "Auditoria no disponible en el backend actual. Reinicie backend para aplicar la nueva ruta.");
       } else {
-        handleApiError(err, "No se pudo cargar auditoria.");
+        handleApiError(err, "No se pudo cargar la auditoría.");
       }
     } finally {
       setLoadingAuditoria(false);
@@ -709,7 +709,7 @@ function LuzApp({ onBackToSelector }) {
             monto_autorizado: saldoPendiente
           }
         ],
-        observacion: "Emitida automaticamente desde ventanilla de luz al imprimir."
+        observacion: "Emitida automáticamente desde ventanilla de luz al imprimir."
       });
     } catch (err) {
       const status = Number(err?.response?.status || 0);
@@ -1023,7 +1023,7 @@ function LuzApp({ onBackToSelector }) {
     const anio = parseEntero(periodoImpresion.anio, 0);
     const mes = parseEntero(periodoImpresion.mes, 0);
     if (!anio || mes < 1 || mes > 12) {
-      showFlash("warning", "Periodo de impresion invalido.");
+      showFlash("warning", "Período de impresión inválido.");
       return;
     }
 
@@ -1034,10 +1034,10 @@ function LuzApp({ onBackToSelector }) {
         return;
       }
       if (String(modo || "").toLowerCase() === "seleccion") {
-        showFlash("warning", "Seleccione al menos un contribuyente para impresion.");
+        showFlash("warning", "Seleccione al menos un contribuyente para impresión.");
         return;
       }
-      showFlash("warning", "No hay contribuyentes para impresion.");
+      showFlash("warning", "No hay contribuyentes para impresión.");
       return;
     }
 
@@ -1069,7 +1069,7 @@ function LuzApp({ onBackToSelector }) {
         .sort((a, b) => compareMedidorAsc(a?.suministro, b?.suministro));
 
       if (!recibos.length) {
-        showFlash("warning", `No hay recibos emitidos para ${formatPeriodo(anio, mes)} en seleccion solicitada.`);
+        showFlash("warning", `No hay recibos emitidos para ${formatPeriodo(anio, mes)} en la selección solicitada.`);
         return;
       }
 
@@ -1123,7 +1123,7 @@ function LuzApp({ onBackToSelector }) {
 
   const importarArchivo = async (tipo) => {
     if (!permisos.canImportarPadron) {
-      showFlash("warning", "Solo administrador puede importar en el modulo de luz.");
+      showFlash("warning", "Solo el administrador puede importar en el módulo de luz.");
       return;
     }
     const isPadron = tipo === "padron";
@@ -1410,7 +1410,7 @@ function LuzApp({ onBackToSelector }) {
                             required
                           />
                           {!suministroForm.id_suministro && (
-                            <div className="form-text">Se calcula segun orden creciente de IDs en zona seleccionada.</div>
+                            <div className="form-text">Se calcula según el orden creciente de IDs en la zona seleccionada.</div>
                           )}
                         </div>
                         <div className="mb-2">
@@ -1551,7 +1551,7 @@ function LuzApp({ onBackToSelector }) {
                                     <>Auto desde {formatPeriodoCorto(lecturaAnteriorInfo.periodoAnterior.anio, lecturaAnteriorInfo.periodoAnterior.mes)}.</>
                                   )}
                                   {!lecturaAnteriorInfo.loading && !lecturaAnteriorInfo.encontrada && lecturaAnteriorInfo.periodoAnterior && (
-                                    <>Sin registro en {formatPeriodoCorto(lecturaAnteriorInfo.periodoAnterior.anio, lecturaAnteriorInfo.periodoAnterior.mes)}. Puede dejar valor referencial vacio o ingresarlo manual.</>
+                                    <>Sin registro en {formatPeriodoCorto(lecturaAnteriorInfo.periodoAnterior.anio, lecturaAnteriorInfo.periodoAnterior.mes)}. Puede dejar el valor referencial vacío o ingresarlo manualmente.</>
                                   )}
                                   {!lecturaAnteriorInfo.loading && !lecturaAnteriorInfo.periodoAnterior && "Ingrese año y mes validos."}
                                   {!lecturaAnteriorInfo.loading && lecturaAnteriorInfo.error && ` ${lecturaAnteriorInfo.error}`}
@@ -1630,7 +1630,7 @@ function LuzApp({ onBackToSelector }) {
                           <table className="table table-sm mb-0">
                             <thead>
                               <tr>
-                                <th>Periodo</th>
+                                <th>Período</th>
                                 <th className="text-end">Saldo</th>
                               </tr>
                             </thead>
@@ -1719,9 +1719,9 @@ function LuzApp({ onBackToSelector }) {
                       <div className="d-flex flex-wrap gap-2 mt-2">
                         <span className="badge text-bg-light border">Activos: {suministrosActivosImpresion.length}</span>
                         <span className="badge text-bg-light border">Seleccionados: {idsSuministrosImpresion.length}</span>
-                        <span className="badge text-bg-light border">Periodo: {periodoImpresion.mes}/{periodoImpresion.anio}</span>
+                        <span className="badge text-bg-light border">Período: {periodoImpresion.mes}/{periodoImpresion.anio}</span>
                       </div>
-                      <div className="small text-muted mt-2">Solo se consideran conexiones activas. Si un activo no tiene recibo en ese periodo, sistema lo omite.</div>
+                      <div className="small text-muted mt-2">Solo se consideran conexiones activas. Si una conexión activa no tiene recibo en ese período, el sistema la omite.</div>
 
                       <div className="row g-3 mt-1">
                         <div className="col-12 col-lg-4">
@@ -1739,7 +1739,7 @@ function LuzApp({ onBackToSelector }) {
                               ))}
                             </select>
                             <div className="small text-muted mt-2">
-                              {filtroZonaImpresion ? `${totalZonaImpresion} conexion(es) activa(s) en zona.` : "Seleccione zona para filtrar."}
+                              {filtroZonaImpresion ? `${totalZonaImpresion} conexión(es) activa(s) en la zona.` : "Seleccione una zona para filtrar."}
                             </div>
                             <button
                               className="btn btn-outline-dark btn-sm d-flex align-items-center justify-content-center gap-2 mt-3 w-100"
@@ -1803,7 +1803,7 @@ function LuzApp({ onBackToSelector }) {
                     <table className="table table-sm table-hover align-middle mb-0">
                       <thead className="table-light sticky-top">
                         <tr>
-                          <th>Periodo</th>
+                          <th>Período</th>
                           <th className="text-end">Lect. Ant</th>
                           <th className="text-end">Lect. Act</th>
                           <th className="text-end">Consumo</th>
@@ -1979,7 +1979,7 @@ function LuzApp({ onBackToSelector }) {
                               <th>Zona</th>
                               <th>ID usuario</th>
                               <th>Contribuyente</th>
-                              <th>Periodo</th>
+                              <th>Período</th>
                               <th className="text-end">Monto</th>
                               <th className="text-end">Orden</th>
                             </tr>

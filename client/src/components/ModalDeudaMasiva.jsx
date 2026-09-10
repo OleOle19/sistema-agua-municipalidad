@@ -13,10 +13,10 @@ const validarPeriodoRecibo = (anioInput, mesInput) => {
   const anio = Number.parseInt(String(anioInput ?? ""), 10);
   const mes = Number.parseInt(String(mesInput ?? ""), 10);
   if (!Number.isFinite(anio) || anio < 2000 || anio > 9999) {
-    return { ok: false, error: "Ano invalido." };
+    return { ok: false, error: "Año inválido." };
   }
   if (!Number.isFinite(mes) || mes < 1 || mes > 12) {
-    return { ok: false, error: "Mes invalido." };
+    return { ok: false, error: "Mes inválido." };
   }
   return { ok: true, anio, mes };
 };
@@ -169,7 +169,7 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], onFla
                   </select>
                 </div>
                 <div className="col-6">
-                  <label className="small fw-bold">Ano</label>
+                  <label className="small fw-bold">Año</label>
                   <input type="number" className={inputClass} value={form.anio} onChange={(e) => setForm({ ...form, anio: e.target.value })} />
                 </div>
               </div>
@@ -186,7 +186,7 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], onFla
                 <div className="col-3">
                   <div className="form-check">
                     <input className="form-check-input" type="checkbox" id="masivo-desague" checked={servicios.desague} onChange={() => toggleServicio("desague")} />
-                    <label className="form-check-label small" htmlFor="masivo-desague">Desague</label>
+                    <label className="form-check-label small" htmlFor="masivo-desague">Desagüe</label>
                   </div>
                   <input type="text" inputMode="decimal" className={inputClass} value={form.desague} onChange={(e) => onChangeMonto("desague", e.target.value)} onBlur={() => onBlurMonto("desague")} disabled={!servicios.desague} />
                 </div>

@@ -22,11 +22,11 @@ const ACTION_LABELS = {
   COBRO_DIRECTO_REGISTRADO: "Cobro directo registrado",
   AUTH_PASSWORD_CAMBIO: "Cambio de clave",
   AUTH_REGISTRO: "Registro de usuario",
-  AUTH_LOGIN: "Inicio de sesion",
+  AUTH_LOGIN: "Inicio de sesión",
   ACCESO_NO_AUTENTICADO: "Acceso no autenticado",
   ACCESO_DENEGADO_ROL: "Acceso denegado por rol",
   AUDITORIA_DESHECHA: "Cambio deshecho",
-  AUDITORIA_REVERSION_APLICADA: "Reversion de auditoria aplicada",
+  AUDITORIA_REVERSION_APLICADA: "Reversión de auditoría aplicada",
   ADMIN_LUZ_USUARIO_CREADO: "Usuario de luz creado",
   ADMIN_LUZ_USUARIO_ACTUALIZADO: "Usuario de luz actualizado",
   ADMIN_LUZ_USUARIO_ELIMINADO: "Usuario de luz eliminado",
@@ -34,13 +34,13 @@ const ACTION_LABELS = {
 };
 const CAMPO_TIPO_SOLICITUD_LABELS = {
   ACTUALIZACION: "Actualizacion ficha",
-  ALTA_DIRECCION_ALTERNA: "Alta direccion alterna",
+  ALTA_DIRECCION_ALTERNA: "Alta dirección alterna",
   ALTA_PREDIO: "Alta predio nuevo",
   ALTA_PREDIO_TEMPORAL: "Alta predio temporal"
 };
 
 const SIMPLE_ROUTE_RULES = [
-  { method: "POST", pattern: /^\/auth\/login$/i, label: "Inicio de sesion" },
+  { method: "POST", pattern: /^\/auth\/login$/i, label: "Inicio de sesión" },
   { method: "POST", pattern: /^\/auth\/change-password$/i, label: "Cambio de clave" },
   { method: "POST", pattern: /^\/auth\/cambiar-password$/i, label: "Cambio de clave" },
   { method: "POST", pattern: /^\/caja\/ordenes-cobro$/i, label: "Emitir orden de cobro" },
@@ -53,7 +53,7 @@ const SIMPLE_ROUTE_RULES = [
   { method: "POST", pattern: /^\/caja\/cierre$/i, label: "Registrar cierre de caja" },
   { method: "GET", pattern: /^\/contribuyentes\/reporte-estado-conexion$/i, label: "Consultar reporte de conexiones" },
   { method: "GET", pattern: /^\/contribuyentes\/reporte-estado-conexion\.xlsx$/i, label: "Exportar reporte de conexiones" },
-  { method: "GET", pattern: /^\/exportar\/auditoria$/i, label: "Exportar auditoria" },
+  { method: "GET", pattern: /^\/exportar\/auditoria$/i, label: "Exportar auditoría" },
   { method: "GET", pattern: /^\/caja\/reporte\/excel$/i, label: "Exportar reporte de caja (Excel)" },
   { method: "POST", pattern: /^\/importar\/historial$/i, label: "Importar historial" },
   { method: "POST", pattern: /^\/importar\/padron$/i, label: "Importar padron" },
@@ -89,8 +89,8 @@ const LABEL_TRANSLATIONS = {
   estado: "Estado",
   cargo_reimpresion: "Cargo reimpresion",
   motivo: "Motivo",
-  codigo_recibo: "Codigo recibo",
-  codigo: "Codigo",
+  codigo_recibo: "Código de recibo",
+  codigo: "Código",
   autorizacion: "Autorizacion",
   minutos: "Minutos",
   acceso: "Tipo acceso",
@@ -100,15 +100,15 @@ const LABEL_TRANSLATIONS = {
   cambios_aplicados: "Cambios aplicados",
   cambios_solicitados: "Cambios solicitados",
   recibos_recalculados: "Recibos futuros recalculados",
-  id_direccion_alterna: "ID direccion alterna",
+  id_direccion_alterna: "ID de dirección alterna",
   nota_revision: "Nota revision",
-  codigo_municipal: "Codigo municipal",
+  codigo_municipal: "Código municipal",
   nombre_completo: "Nombre completo",
-  observacion_campo: "Observacion de campo",
-  direccion_verificada: "Direccion verificada",
-  referencia_direccion: "Referencia direccion",
-  verificacion_estado: "Estado verificacion",
-  verificacion_motivo: "Motivo verificacion",
+  observacion_campo: "Observación de campo",
+  direccion_verificada: "Dirección verificada",
+  referencia_direccion: "Referencia de dirección",
+  verificacion_estado: "Estado de verificación",
+  verificacion_motivo: "Motivo de verificación",
   auditoria_origen: "Auditoria origen",
   recibos_restaurados: "Recibos restaurados",
   deshecho_por: "Deshecho por",
@@ -118,7 +118,7 @@ const LABEL_TRANSLATIONS = {
   detalle_recibos: "Detalle de cobros",
   monto_cobrado: "Monto cobrado",
   saldo_pendiente: "Saldo pendiente",
-  periodo: "Periodo",
+  periodo: "Período",
   anulaciones_reintegradas: "Anulaciones reintegradas",
   tipo_pago: "Tipo pago"
 };
@@ -438,13 +438,13 @@ const isCajaUndoType = (undoType = "") => ["PAGO_ANULADO", "ORDEN_COBRO_ANULADA"
 );
 const getUndoPrompt = (undoType = "", accion = "") => {
   const type = String(undoType || "").trim().toUpperCase();
-  if (type === "CONTRIBUYENTE_EDITADO") return "Se intentara deshacer esta edicion de contribuyente. Continuar?";
+  if (type === "CONTRIBUYENTE_EDITADO") return "Se intentará deshacer esta edición del contribuyente. ¿Continuar?";
   if (type === "CONTRIBUYENTE_ELIMINADO") return "Se intentara restaurar este contribuyente eliminado. Continuar?";
-  if (type === "RECIBO_ELIMINADO") return "Se intentara restaurar esta deuda eliminada. Continuar?";
-  if (type === "PAGO_ANULADO") return "Se intentara deshacer esta anulacion de pago. Continuar?";
-  if (type === "ORDEN_COBRO_ANULADA") return "Se intentara deshacer esta anulacion de orden. Continuar?";
+  if (type === "RECIBO_ELIMINADO") return "Se intentará restaurar esta deuda eliminada. ¿Continuar?";
+  if (type === "PAGO_ANULADO") return "Se intentará deshacer esta anulación de pago. ¿Continuar?";
+  if (type === "ORDEN_COBRO_ANULADA") return "Se intentará deshacer esta anulación de orden. ¿Continuar?";
   if (String(accion || "").trim().toUpperCase() === "CAMPO_SOLICITUD_APROBADA") {
-    return "Se intentara deshacer esta aprobacion de solicitud de campo. Continuar?";
+    return "Se intentará deshacer esta aprobación de solicitud de campo. ¿Continuar?";
   }
   return "Se intentara deshacer este movimiento. Continuar?";
 };
@@ -525,7 +525,7 @@ const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false, ca
       if (sequence !== requestSequenceRef.current) return;
       setLogs([]);
       setTotalLogs(0);
-      setError(String(err?.response?.data?.error || "No se pudo cargar la auditoria."));
+      setError(String(err?.response?.data?.error || "No se pudo cargar la auditoría."));
     } finally {
       if (sequence === requestSequenceRef.current) setCargando(false);
     }
@@ -576,7 +576,7 @@ const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false, ca
       window.URL.revokeObjectURL(url);
       setMensaje("Auditoria exportada con los filtros actuales.");
     } catch (err) {
-      setError(String(err?.response?.data?.error || "No se pudo exportar la auditoria."));
+      setError(String(err?.response?.data?.error || "No se pudo exportar la auditoría."));
     } finally {
       setExportando(false);
     }
@@ -600,7 +600,7 @@ const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false, ca
       if (typeof onUndoApplied === "function") await onUndoApplied(res?.data || null, log);
       await cargarLogs();
     } catch (err) {
-      setError(String(err?.response?.data?.error || "No se pudo deshacer la auditoria."));
+      setError(String(err?.response?.data?.error || "No se pudo deshacer la auditoría."));
     } finally {
       setDeshaciendoId(0);
     }
@@ -625,7 +625,7 @@ const ModalAuditoria = ({ cerrarModal, onUndoApplied = null, canUndo = false, ca
               <h5 className="modal-title"><FaShieldAlt className="me-2" /> Auditoría Municipal</h5>
               <div className="small opacity-75">Movimientos y cambios realizados en el sistema de agua</div>
             </div>
-            <button type="button" className={closeBtnClass} onClick={cerrarModal} aria-label="Cerrar auditoria" />
+            <button type="button" className={closeBtnClass} onClick={cerrarModal} aria-label="Cerrar auditoría" />
           </div>
           <div className="modal-body p-0">
             <div className="p-3 border-bottom">

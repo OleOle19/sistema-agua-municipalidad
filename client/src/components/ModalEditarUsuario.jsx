@@ -350,7 +350,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, onFlash = null })
                 <div className="row g-3 mb-3">
                   <div className="col-md-3"><label className="form-label small fw-bold">ID Contribuyente</label><input type="text" className={inputClass} value={idContribuyente} readOnly disabled /></div>
                   <div className="col-md-3">
-                    <label className="form-label small fw-bold">Codigo Municipal</label>
+                    <label className="form-label small fw-bold">Código municipal</label>
                     <input
                       type="text"
                       className={inputClass}
@@ -411,7 +411,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, onFlash = null })
                     </select>
                   </div>
                   <div className="col-md-6">
-                    <label className="form-label small fw-bold">Estado de Conexion</label>
+                    <label className="form-label small fw-bold">Estado de conexión</label>
                     <select className={selectClass} name="estado_conexion" value={formData.estado_conexion} onChange={handleChange}>
                       <option value="CON_CONEXION">Con conexión</option>
                       <option value="SIN_CONEXION">Sin conexión</option>
@@ -438,7 +438,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, onFlash = null })
                             checked={formData.desague_sn === "S"}
                             onChange={(e) => setFormData((prev) => ({ ...prev, desague_sn: e.target.checked ? "S" : "N" }))}
                           />
-                          Desague
+                          Desagüe
                         </label>
                         <label className="form-check-label d-flex align-items-center gap-2">
                           <input
@@ -457,7 +457,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, onFlash = null })
                           <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_agua" value={formData.tarifa_agua} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.agua)} />
                         </div>
                         <div className="col-md-3">
-                          <label className="form-label small">Desague</label>
+                          <label className="form-label small">Desagüe</label>
                           <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_desague" value={formData.tarifa_desague} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.desague)} />
                         </div>
                         <div className="col-md-3">
@@ -499,7 +499,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, onFlash = null })
                           <div className="small fw-bold mb-2">Nueva tarifa desde</div>
                           <div className="row g-2">
                             <div className="col-md-3">
-                              <label className="form-label small">Periodo inicio</label>
+                              <label className="form-label small">Período de inicio</label>
                               <input
                                 type="month"
                                 className={inputClass}
@@ -514,7 +514,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, onFlash = null })
                               <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_programada_agua" value={formData.tarifa_programada_agua} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.agua)} />
                             </div>
                             <div className="col-md-3">
-                              <label className="form-label small">Desague</label>
+                              <label className="form-label small">Desagüe</label>
                               <input type="number" min="0" step="0.01" className={inputClass} name="tarifa_programada_desague" value={formData.tarifa_programada_desague} onChange={handleChange} placeholder={formatMontoPlaceholder(tarifasReferencia.desague)} />
                             </div>
                             <div className="col-md-3">
@@ -531,7 +531,7 @@ const ModalEditarUsuario = ({ usuario, cerrarModal, alGuardar, onFlash = null })
                             </div>
                           </div>
                           <div className={`small mt-2 ${placeholderHintClass}`}>
-                            Llena solo los servicios que cambiaran desde ese mes. Desactiva esta opcion para quitar la programacion.
+                            Complete solo los servicios que cambiarán desde ese mes. Desactive esta opción para quitar la programación.
                           </div>
                         </div>
                       )}

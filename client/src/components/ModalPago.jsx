@@ -24,7 +24,7 @@ const METODOS_PAGO_CAJA = [
 ];
 const ESTADOS_CONFIRMACION_PAGO = [
   { value: "CONFIRMADO", label: "Confirmado" },
-  { value: "PENDIENTE_VERIFICACION", label: "Pendiente verificacion" },
+  { value: "PENDIENTE_VERIFICACION", label: "Pendiente de verificación" },
   { value: "RECHAZADO", label: "Rechazado" }
 ];
 const normalizeMetodoPagoCaja = (value) => {
@@ -292,7 +292,7 @@ const ModalPago = ({
     const estadoConfirmacion = normalizeEstadoConfirmacionPago(estadoConfirmacionPagoCaja);
     const observacionPago = String(observacionPagoCaja || "").trim();
     if (metodoConfig.requiereReferencia && !referenciaPago) {
-      return showFlash("warning", `Ingrese numero de operacion o referencia para ${metodoConfig.label}.`);
+      return showFlash("warning", `Ingrese número de operación o referencia para ${metodoConfig.label}.`);
     }
     setCargando(true);
     try {
@@ -373,7 +373,7 @@ const ModalPago = ({
     });
     const detalles = [
       { concepto: "SERVICIO DE AGUA", importe: resumenServicios.agua },
-      { concepto: "SERVICIO DE DESAGUE", importe: resumenServicios.desague },
+      { concepto: "SERVICIO DE DESAGÜE", importe: resumenServicios.desague },
       { concepto: "LIMPIEZA PUBLICA", importe: resumenServicios.limpieza },
       { concepto: "SERVICIO ADMIN", importe: resumenServicios.admin }
     ].filter((row) => row.importe > 0);
@@ -498,7 +498,7 @@ const ModalPago = ({
                           className="form-control form-control-sm"
                           value={referenciaPagoCaja}
                           onChange={(e) => setReferenciaPagoCaja(e.target.value)}
-                          placeholder={getMetodoPagoConfig(metodoPagoCaja).requiereReferencia ? "Nro. operacion" : "Opcional"}
+                          placeholder={getMetodoPagoConfig(metodoPagoCaja).requiereReferencia ? "Nro. de operación" : "Opcional"}
                           disabled={cargando || metodoPagoCaja === "EFECTIVO"}
                         />
                       </div>
@@ -533,7 +533,7 @@ const ModalPago = ({
                   <div className="border rounded p-2">
                     <div className="small fw-bold mb-2">Detalle de orden #{ordenSeleccionada.id_orden}</div>
                     <table className="table table-sm mb-0">
-                      <thead><tr><th>Periodo</th><th className="text-end">Monto</th></tr></thead>
+                      <thead><tr><th>Período</th><th className="text-end">Monto</th></tr></thead>
                       <tbody>
                         {(ordenSeleccionada.items || []).map((it) => (
                           <tr key={`${ordenSeleccionada.id_orden}-${it.id_recibo}`}>

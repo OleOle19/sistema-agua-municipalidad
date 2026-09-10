@@ -140,7 +140,7 @@ const ModalCorteConexion = ({
               <input
                 type="text"
                 className={inputClass}
-                placeholder="Buscar por nombre, codigo, DNI o direccion..."
+                placeholder="Buscar por nombre, código, DNI o dirección..."
                 value={busqueda}
                 onChange={(e) => setBusqueda(e.target.value)}
                 autoFocus
@@ -151,7 +151,7 @@ const ModalCorteConexion = ({
               <table className="table table-sm table-hover mb-0">
                 <thead>
                   <tr>
-                    <th>Codigo</th>
+                    <th>Código</th>
                     <th>Contribuyente</th>
                     <th>DNI</th>
                     <th>Dirección</th>

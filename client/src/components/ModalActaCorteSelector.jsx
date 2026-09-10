@@ -130,7 +130,7 @@ const ModalActaCorteSelector = ({
               <div className={cardClass}>
                 <div className="d-flex gap-2 mb-2">
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set(selectedIds))}>
-                    Usar seleccion actual ({selectedIds.length})
+                    Usar selección actual ({selectedIds.length})
                   </button>
                   <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setManualIds(new Set(deudores.map((m) => m.id_contribuyente)))}>
                     Marcar todos (con conexión, 3+ meses)
@@ -197,7 +197,7 @@ const ModalActaCorteSelector = ({
             <div className="alert alert-warning mt-3 mb-2">
               <div><strong>Regla fija:</strong> acta de corte sólo para contribuyentes con conexión activa y 3 o más meses de deuda.</div>
               <div><strong>Criterio:</strong> {criterioDescripcion}</div>
-              <div><strong>Orden:</strong> Calle y numero ascendente</div>
+              <div><strong>Orden:</strong> Calle y número ascendente</div>
               <div><strong>Contribuyentes seleccionados (con conexión, 3+ meses):</strong> {seleccion.length}</div>
               <div><strong>Total deuda:</strong> S/. {totalDeuda.toFixed(2)}</div>
             </div>
@@ -207,7 +207,7 @@ const ModalActaCorteSelector = ({
                 <thead>
                   <tr>
                     <th>#</th>
-                    <th>Codigo</th>
+                    <th>Código</th>
                     <th>Contribuyente</th>
                     <th>Dirección</th>
                     <th>Sector</th>

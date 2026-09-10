@@ -35,7 +35,7 @@ const ORDEN_ITEMS_OPTIONS = [
 ];
 const TIPO_SOLICITUD_LABELS = {
   ACTUALIZACION: "Actualizacion ficha",
-  ALTA_DIRECCION_ALTERNA: "Alta direccion alterna",
+  ALTA_DIRECCION_ALTERNA: "Alta dirección alterna",
   ALTA_PREDIO: "Alta predio nuevo",
   ALTA_PREDIO_TEMPORAL: "Alta predio temporal"
 };
@@ -53,9 +53,9 @@ const seguimientoMotivoLabel = (value) => {
   if (!raw) return "";
   if (raw === "NO_VISITADO") return "No visitado";
   if (raw === "NO_VERIFICADO") return "No verificado";
-  if (raw === "OBSERVACION") return "Con observacion";
-  if (raw === "NO_VISITADO|OBSERVACION" || raw === "NO_VISITADO_Y_OBSERVACION") return "No visitado + observacion";
-  if (raw.includes("NO_VERIFICADO") && raw.includes("OBSERVACION")) return "No verificado + observacion";
+  if (raw === "OBSERVACION") return "Con observación";
+  if (raw === "NO_VISITADO|OBSERVACION" || raw === "NO_VISITADO_Y_OBSERVACION") return "No visitado + observación";
+  if (raw.includes("NO_VERIFICADO") && raw.includes("OBSERVACION")) return "No verificado + observación";
   if (raw.includes("NO_VERIFICADO") && raw.includes("NO_VISITADO")) return "No visitado + no verificado";
   return raw;
 };
@@ -63,7 +63,7 @@ const verificacionMotivoLabel = (value) => {
   const raw = normalizeText(value);
   if (!raw) return "";
   if (raw === "AUSENTE") return "Usuario ausente";
-  if (raw === "DIRECCION_INCORRECTA") return "Direccion incorrecta";
+  if (raw === "DIRECCION_INCORRECTA") return "Dirección incorrecta";
   if (raw === "SIN_RECIBO") return "Sin recibo de agua";
   if (raw === "NO_UBICADO") return "No se ubico el predio";
   return raw;
@@ -368,7 +368,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
           : s?.direccion_actual_db;
         if (isDifferent(s.direccion_verificada, direccionBase)) {
           changes.push(renderChangeLine(
-            tipoSolicitud === "ALTA_DIRECCION_ALTERNA" ? "Direccion adicional" : "Direccion",
+            tipoSolicitud === "ALTA_DIRECCION_ALTERNA" ? "Dirección adicional" : "Dirección",
             s.direccion_verificada,
             direccionBase
           ));
@@ -628,9 +628,9 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
               </button>
               <div className="ms-auto small opacity-75 d-flex flex-wrap gap-3">
                 <span>Mostrando {rangoInicio}-{rangoFin} de {totalVisibleSolicitudes} solicitud(es)</span>
-                <span>Pagina {pagina} de {totalPaginas}</span>
+                <span>Página {pagina} de {totalPaginas}</span>
                 <span>Lote de {SOLICITUDES_PAGE_SIZE}</span>
-                <span>Grupos en pagina: {groupedRows.length}</span>
+                <span>Grupos en página: {groupedRows.length}</span>
               </div>
             </div>
 
@@ -685,7 +685,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
                             <div className="fw-bold">{s.codigo_municipal || (isAltaPredio ? "PREDIO-NUEVO" : "-")}</div>
                             <div>{s.nombre_actual_db || (isAltaPredio ? (s.nombre_verificado || "Sin nombre") : "-")}</div>
                             {isAltaPredio && (
-                              <div className="small opacity-75">Direccion: {s.direccion_verificada || metadata.referencia_direccion || "-"}</div>
+                              <div className="small opacity-75">Dirección: {s.direccion_verificada || metadata.referencia_direccion || "-"}</div>
                             )}
                             <div className="small opacity-75">Calle: {calleLabel || "-"}</div>
                             <div className="small opacity-75">Solicita: {s.nombre_solicitante || "Usuario"}</div>
@@ -697,7 +697,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
                             {isAltaPredio ? (
                               <>
                                 <div className="mt-1">
-                                  Direccion: <strong>{s.direccion_verificada || "-"}</strong>
+                                  Dirección: <strong>{s.direccion_verificada || "-"}</strong>
                                 </div>
                                 {metadata.referencia_direccion && (
                                   <div className="mt-1">
@@ -708,7 +708,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
                                   Inspector: <strong>{metadata.inspector || "-"}</strong>
                                 </div>
                                 <div className="mt-1">
-                                  Verificacion: <strong>{verificacionEstado === "NO_VERIFICADO" ? "No verificado" : "Verificado"}</strong>
+                                  Verificación: <strong>{verificacionEstado === "NO_VERIFICADO" ? "No verificado" : "Verificado"}</strong>
                                   {verificacionMotivo && (
                                     <> | Motivo: <strong>{verificacionMotivoLabel(verificacionMotivo)}</strong></>
                                   )}
@@ -733,13 +733,13 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
                                   Visitado: <strong>{metadata.visitado_sn || "N"}</strong> | Estado nuevo: <strong>{s.estado_conexion_nuevo || "-"}</strong>
                                 </div>
                                 <div className="mt-1">
-                                  Servicios: Agua <strong>{servicios.aguaNuevo}</strong> | Desague <strong>{servicios.desagueNuevo}</strong> | Limpieza <strong>{servicios.limpiezaNuevo}</strong>
+                                  Servicios: Agua <strong>{servicios.aguaNuevo}</strong> | Desagüe <strong>{servicios.desagueNuevo}</strong> | Limpieza <strong>{servicios.limpiezaNuevo}</strong>
                                 </div>
                                 <div className="mt-1">
                                   Fecha corte: <strong>{metadata.fecha_corte || "-"}</strong> | Inspector: <strong>{metadata.inspector || "-"}</strong>
                                 </div>
                                 <div className="mt-1">
-                                  Verificacion: <strong>{verificacionEstado === "NO_VERIFICADO" ? "No verificado" : "Verificado"}</strong>
+                                  Verificación: <strong>{verificacionEstado === "NO_VERIFICADO" ? "No verificado" : "Verificado"}</strong>
                                   {verificacionMotivo && (
                                     <> | Motivo: <strong>{verificacionMotivoLabel(verificacionMotivo)}</strong></>
                                   )}
@@ -756,10 +756,10 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
                                   Mensual sistema: <strong>S/. {Number(metadata.cargo_mensual_ultimo || 0).toFixed(2)}</strong> | Montos referencia 24m: <strong>{montosAbonoTxt}</strong>
                                 </div>
                                 <div className="mt-1">
-                                  Ultima emision recibo: <strong>{metadata.ultima_emision_periodo || "-"}</strong>
+                                  Última emisión de recibo: <strong>{metadata.ultima_emision_periodo || "-"}</strong>
                                 </div>
                                 <div className="mt-1">
-                                  Ultimo mes pagado: <strong>{metadata.ultimo_mes_pagado_periodo || "-"}</strong>
+                                  Último mes pagado: <strong>{metadata.ultimo_mes_pagado_periodo || "-"}</strong>
                                 </div>
                                 <div className="mt-1" style={seguimientoLineStyle}>
                                   {seguimientoPendiente && (
@@ -773,7 +773,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
                                 </div>
                                 {visitadoSN === "S" && hasObservacion && (
                                   <div className="mt-1 small" style={tone ? { color: tone.line } : {}}>
-                                    Observacion registrada en visita efectiva (queda para seguimiento).
+                                    Observación registrada en visita efectiva (queda para seguimiento).
                                   </div>
                                 )}
                                 <div className="mt-1 small">
@@ -781,7 +781,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
                                 </div>
                               </>
                             )}
-                            <div className="mt-1 opacity-75">{s.observacion_campo || "Sin observacion."}</div>
+                            <div className="mt-1 opacity-75">{s.observacion_campo || "Sin observación."}</div>
                             {s.motivo_revision && <div className="mt-1 text-info">Revision: {s.motivo_revision}</div>}
                           </td>
                           <td className="align-top">
@@ -836,7 +836,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
               >
                 <FaChevronLeft />
               </button>
-              <span className="small opacity-75">Pagina {pagina} de {totalPaginas}</span>
+              <span className="small opacity-75">Página {pagina} de {totalPaginas}</span>
               <button
                 type="button"
                 className="btn btn-sm btn-outline-secondary"

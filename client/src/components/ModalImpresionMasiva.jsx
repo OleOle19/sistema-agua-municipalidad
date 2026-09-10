@@ -230,7 +230,7 @@ const ModalImpresionMasiva = ({
       .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
     const mesesFuturosSeleccionados = mesesNormalizados.filter((mes) => esMesNoEmitido(mes, anioNum));
     if (soloSeleccion && mesesFuturosSeleccionados.length > 0 && !permitirMesesFuturos) {
-      return showFlash("warning", "Active \"Habilitar meses futuros\" para reimprimir periodos no emitidos y solicitar permiso para Caja.");
+      return showFlash("warning", "Active \"Habilitar meses futuros\" para reimprimir períodos no emitidos y solicitar permiso para Caja.");
     }
     setCargando(true);
     try {

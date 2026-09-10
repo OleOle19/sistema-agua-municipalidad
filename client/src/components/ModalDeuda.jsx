@@ -152,7 +152,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, onFlash = null }) => {
           <div className="modal-body">
             <p className="mb-3">
               Contribuyente: <strong>{usuario.nombre_completo}</strong><br />
-              <span className="small opacity-75">Codigo: {usuario.codigo_municipal}</span>
+              <span className="small opacity-75">Código: {usuario.codigo_municipal}</span>
             </p>
 
             <div className="row g-3">
@@ -184,7 +184,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, onFlash = null }) => {
               <div className="d-flex align-items-center justify-content-between mt-1 gap-2">
                 <div className="form-check">
                   <input className="form-check-input" type="checkbox" id="svc-desague" checked={servicios.desague} onChange={() => toggleServicio("desague")} />
-                  <label className="form-check-label" htmlFor="svc-desague">Desague</label>
+                  <label className="form-check-label" htmlFor="svc-desague">Desagüe</label>
                 </div>
                 <input type="text" inputMode="decimal" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.desague} onChange={(e) => onChangeMonto("desague", e.target.value)} onBlur={() => onBlurMonto("desague")} disabled={!servicios.desague} />
               </div>
@@ -192,7 +192,7 @@ const ModalDeuda = ({ usuario, cerrarModal, alGuardar, onFlash = null }) => {
               <div className="d-flex align-items-center justify-content-between mt-1 gap-2">
                 <div className="form-check">
                   <input className="form-check-input" type="checkbox" id="svc-limpieza" checked={servicios.limpieza} onChange={() => toggleServicio("limpieza")} />
-                  <label className="form-check-label" htmlFor="svc-limpieza">Limpieza Publica</label>
+                  <label className="form-check-label" htmlFor="svc-limpieza">Limpieza Pública</label>
                 </div>
                 <input type="text" inputMode="decimal" className={`${inputClass} text-end`} style={{ maxWidth: "120px" }} value={form.limpieza} onChange={(e) => onChangeMonto("limpieza", e.target.value)} onBlur={() => onBlurMonto("limpieza")} disabled={!servicios.limpieza} />
               </div>

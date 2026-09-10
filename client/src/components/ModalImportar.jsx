@@ -227,8 +227,8 @@ const ModalImportar = ({ cerrarModal, alTerminar }) => {
                       <thead>
                         <tr>
                           <th>Linea</th>
-                          <th>Codigo/Nombre</th>
-                          <th>Periodo</th>
+                          <th>Código/Nombre</th>
+                          <th>Período</th>
                           <th>Tipo</th>
                           <th>Motivo</th>
                         </tr>
@@ -293,8 +293,8 @@ const ModalImportar = ({ cerrarModal, alTerminar }) => {
                       <thead>
                         <tr>
                           <th>Linea</th>
-                          <th>Codigo/Nombre</th>
-                          <th>Periodo</th>
+                          <th>Código/Nombre</th>
+                          <th>Período</th>
                           <th>Tipo</th>
                           <th>Motivo</th>
                         </tr>

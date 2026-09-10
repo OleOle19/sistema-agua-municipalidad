@@ -36,7 +36,7 @@ const ReciboAgrupado = React.forwardRef(({ datos }, ref) => {
       <table className="table table-sm table-borderless mb-2">
         <thead style={{ borderBottom: "1px solid #000" }}>
           <tr>
-            <th className="text-start">PERIODO</th>
+            <th className="text-start">PERÍODO</th>
             <th className="text-start">CONCEPTO</th>
             <th className="text-end">SUBTOTAL</th>
           </tr>

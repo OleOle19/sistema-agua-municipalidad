@@ -50,7 +50,7 @@ const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) =>
           style={{ width: "54px", height: "54px", objectFit: "contain" }}
         />
         <div className="text-center">
-          <h3 className="fw-bold mb-1">REPORTE DE ESTADO DE CONEXION</h3>
+          <h3 className="fw-bold mb-1">REPORTE DE ESTADO DE CONEXIÓN</h3>
           <p className="text-muted mb-1">Municipalidad Distrital de Pueblo Nuevo</p>
         </div>
       </div>
@@ -58,7 +58,7 @@ const ReporteCortes = forwardRef(({ contribuyentes = [], datos = null }, ref) =>
         <p className="small mb-0">Fecha: {fechaGeneracion.toLocaleDateString()} {fechaGeneracion.toLocaleTimeString()}</p>
         <p className="small mb-0"><strong>Criterio:</strong> {criterio}</p>
         <p className="small mb-0"><strong>Estado:</strong> {estadoLabel}</p>
-        <p className="small"><strong>Orden:</strong> Calle y numero ascendente</p>
+        <p className="small"><strong>Orden:</strong> Calle y número ascendente</p>
       </div>
 
       <div className="alert alert-danger border-danger mb-3 p-2 text-center">
