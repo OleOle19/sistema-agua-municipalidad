@@ -119,7 +119,7 @@ La validación local reproduce las comprobaciones principales del flujo de integ
 npm run validate
 ```
 
-Este comando ejecuta las pruebas del backend, el análisis estático del frontend y el build de producción. GitHub Actions añade además una auditoría de vulnerabilidades de dependencias en cada cambio enviado a `main` y en cada pull request.
+Este comando ejecuta las pruebas del backend y frontend, el análisis estático, el build de producción y la comprobación de su presupuesto de tamaño. GitHub Actions reproduce estas validaciones y añade una auditoría de vulnerabilidades de dependencias en cada cambio enviado a `main` y en cada pull request.
 
 ### Auditorías con Lighthouse
 

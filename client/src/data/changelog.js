@@ -1,6 +1,15 @@
 const CHANGELOG_ENTRIES = [
   {
     date: "11 de septiembre de 2026",
+    title: "Controles automáticos de calidad",
+    changes: [
+      "Las pruebas del sistema web ahora se ejecutan también antes de aceptar cambios en el repositorio.",
+      "El tamaño de la carga inicial se vigila automáticamente para evitar pérdidas importantes de rendimiento.",
+      "La validación general comprueba servidor, interfaz, estilos y build de producción en un solo proceso."
+    ]
+  },
+  {
+    date: "11 de septiembre de 2026",
     title: "Mejor compatibilidad con la red municipal",
     changes: [
       "Se eliminó un aviso técnico del navegador al ingresar mediante la dirección local del servidor.",
