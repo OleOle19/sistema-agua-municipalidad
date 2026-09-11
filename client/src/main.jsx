@@ -7,10 +7,12 @@ import ModalAccessibilityManager from './components/ModalAccessibilityManager.js
 import ChangelogButton from './components/ChangelogButton.jsx'
 import AppDialogHost from './components/AppDialogHost.jsx'
 
+const showChangelog = !/^\/manual(?:\/|$)/i.test(window.location.pathname)
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ModalAccessibilityManager />
-    <ChangelogButton />
+    {showChangelog && <ChangelogButton />}
     <App />
     <AppDialogHost />
   </StrictMode>,

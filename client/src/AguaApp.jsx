@@ -152,8 +152,8 @@ const getHistorialMovimientoBadge = (row = {}) => {
 };
 
 // Iconos
-import { 
-  FaUserPlus, FaMoneyBillWave, FaFileInvoiceDollar, 
+import {
+  FaBookOpen, FaUserPlus, FaMoneyBillWave, FaFileInvoiceDollar,
   FaPrint, FaTrashAlt, FaSearch, FaUserEdit, FaUserTimes, 
   FaSort, FaCut, FaShieldAlt, FaFileExcel, FaSignOutAlt, 
   FaUserShield, FaDatabase, FaPlug, FaLink, FaSyncAlt,
@@ -344,6 +344,16 @@ const Sidebar = memo(({
           </button>
         </li>
       )}
+      <li className="nav-item mt-2 border-top pt-2">
+        <a
+          className="nav-link py-2 text-white w-100 d-flex align-items-center gap-2"
+          href="/manual/"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <FaBookOpen /> <span>Manual de uso</span>
+        </a>
+      </li>
     </ul>
     
     <div className="mt-2 pt-2 border-top flex-shrink-0">

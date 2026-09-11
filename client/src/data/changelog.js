@@ -1,6 +1,17 @@
 const CHANGELOG_ENTRIES = [
   {
     date: "11 de septiembre de 2026",
+    title: "Manual de uso integrado",
+    changes: [
+      "Agua y Caja Municipal incorporan un acceso directo al nuevo manual de uso.",
+      "El manual se abre en otra pestaña para poder consultar una instrucción sin cerrar el trabajo actual.",
+      "El índice permite buscar tareas y mostrar únicamente las que corresponden al perfil seleccionado.",
+      "Las instrucciones de Caja explican cobros de Agua y Luz, correcciones, contingencias, compensaciones y cierre diario con capturas de demostración.",
+      "Las guías operativas y sus capturas se incorporarán progresivamente dentro de esta estructura."
+    ]
+  },
+  {
+    date: "11 de septiembre de 2026",
     title: "Controles automáticos de calidad",
     changes: [
       "Las pruebas del sistema web ahora se ejecutan también antes de aceptar cambios en el repositorio.",

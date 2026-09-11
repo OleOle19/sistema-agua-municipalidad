@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FaBolt, FaCashRegister, FaChevronLeft, FaChevronRight, FaSignOutAlt, FaSyncAlt, FaTint } from "react-icons/fa";
+import { FaBolt, FaBookOpen, FaCashRegister, FaChevronLeft, FaChevronRight, FaSignOutAlt, FaSyncAlt, FaTint } from "react-icons/fa";
 import api from "../api";
 import LoginPage from "../components/LoginPage";
 import FlashNotice from "../components/FlashNotice";
@@ -1742,6 +1742,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
         </div>
         <div className="app-module-header__actions d-flex align-items-center gap-2 flex-wrap">
           <img src="/logo-ui.png" alt="Logo municipal" width="42" height="42" className="rounded border bg-white p-1 object-fit-contain" />
+          <a className="btn btn-outline-primary btn-sm d-flex align-items-center gap-2" href="/manual/" target="_blank" rel="noopener noreferrer">
+            <FaBookOpen />
+            Manual de uso
+          </a>
           {typeof onBackToSelector === "function" && (
             <button className="btn btn-outline-secondary btn-sm" onClick={onBackToSelector}>
               Cambiar módulo

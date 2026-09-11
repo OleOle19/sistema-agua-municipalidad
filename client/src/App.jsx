@@ -12,6 +12,7 @@ import {
 const AguaApp = lazy(() => import("./AguaApp"));
 const LuzApp = lazy(() => import("./luz/LuzApp"));
 const CajaMunicipalApp = lazy(() => import("./caja/CajaMunicipalApp"));
+const ManualApp = lazy(() => import("./manual/ManualApp"));
 
 const MODULE_STORAGE_KEY = "sistema_modulo_activo";
 discardLegacyPersistentTokens();
@@ -101,6 +102,16 @@ function App() {
       setSessionNotice("");
     }
   }), []);
+
+  if (/^\/manual(?:\/|$)/i.test(window.location.pathname)) {
+    return (
+      <ModuleErrorBoundary title="Error cargando el manual de uso">
+        <Suspense fallback={<ModuleLoadingScreen title="Cargando manual de uso..." />}>
+          <ManualApp />
+        </Suspense>
+      </ModuleErrorBoundary>
+    );
+  }
 
   let content;
   if (modulo === "agua") {
