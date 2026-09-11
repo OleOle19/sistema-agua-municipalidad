@@ -716,33 +716,63 @@ tr[tabindex="0"]:focus-visible {
   .landing-content,
   .landing-stage,
   .login-stage {
-    height: 100dvh;
+    height: auto;
     min-height: 100dvh;
   }
 
+  .landing-stage__content,
+  .login-stage__content {
+    min-height: 100dvh;
+  }
+
+  .landing-stage__content {
+    padding-bottom: 4.75rem;
+  }
+
   .landing-poster__hero {
-    padding: 22px 18px 392px;
+    padding: clamp(30px, 8vh, 64px) 18px 28px;
+  }
+
+  .landing-eyebrow {
+    margin-bottom: 12px;
+    padding: 8px 14px;
+    font-size: 0.7rem;
   }
 
   .landing-title {
-    font-size: clamp(2.2rem, 10vw, 3.7rem);
+    font-size: clamp(2.15rem, 10vw, 3.7rem);
+    line-height: 0.98;
   }
 
   .landing-panel {
-    left: 12px;
-    right: 12px;
-    bottom: 12px;
+    position: relative;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    width: auto;
+    margin: auto 12px 12px;
     padding: 14px;
     border-radius: 20px;
   }
 
+  .module-selector-grid {
+    --bs-gutter-y: 0.75rem;
+  }
+
   .module-entry {
-    min-height: 140px;
+    min-height: 104px;
+    padding: 1rem !important;
     border-radius: 18px;
   }
 
+  .module-entry__icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
+  }
+
   .login-stage__content {
-    padding: 20px 12px;
+    padding: 20px 12px 4.75rem;
   }
 
   .login-card {
@@ -988,6 +1018,23 @@ tr[tabindex="0"]:focus-visible {
 }
 
 @media (max-width: 575.98px) {
+  .modal.show.d-block .modal-dialog {
+    width: auto;
+    max-width: none;
+  }
+
+  .modal.show.d-block .modal-header,
+  .modal.show.d-block .modal-body,
+  .modal.show.d-block .modal-footer {
+    padding-right: 1rem;
+    padding-left: 1rem;
+  }
+
+  .modal.show.d-block .modal-footer .btn {
+    flex: 1 1 auto;
+    min-height: 44px;
+  }
+
   .municipal-toast-viewport {
     top: 10px;
     right: 10px;

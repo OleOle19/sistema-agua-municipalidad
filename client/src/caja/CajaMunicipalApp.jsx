@@ -1358,7 +1358,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       return;
     }
     if (esCompensacion && !permisos.canAdminPagos) {
-      showFlash("warning", "Solo Administracion puede registrar compensaciones.");
+      showFlash("warning", "Solo Administración puede registrar compensaciones.");
       return;
     }
     if (esCompensacion && !motivoCompensacion) {

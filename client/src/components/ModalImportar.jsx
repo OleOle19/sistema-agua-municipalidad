@@ -20,7 +20,7 @@ const TIPOS_IMPORTACION = {
     accept: ".txt,.csv,.xlsx,.xls",
     ayuda: [
       { icono: <FaHistory className="me-1" />, titulo: "TXT/CSV", detalle: "historial de deudas y pagos (ej. CATORCE.txt)." },
-      { icono: <FaFileExcel className="me-1" />, titulo: "Excel (XLSX)", detalle: "recomendado para reemplazar historial antiguo. Columna CONTRIBUYENTE acepta codigo municipal o nombre exacto. Orden esperado: CONTRIBUYENTE, FECHA, ANIO/AÑO, MES, AGUA, DESAGUE, LIMPIEZA, ADMINISTRACION o GASTOS ADMINISTRATIVOS, EXTRAS, ABONO, TOTAL. Si FECHA viene llena, se respeta como fecha real de pago." }
+      { icono: <FaFileExcel className="me-1" />, titulo: "Excel (XLSX)", detalle: "recomendado para reemplazar historial antiguo. La columna CONTRIBUYENTE acepta código municipal o nombre exacto. Orden esperado: CONTRIBUYENTE, FECHA, ANIO/AÑO, MES, AGUA, DESAGUE, LIMPIEZA, ADMINISTRACION o GASTOS ADMINISTRATIVOS, EXTRAS, ABONO, TOTAL. Si FECHA viene llena, se respeta como fecha real de pago." }
     ],
     procesando: "Importando historial de deudas y pagos (puede tardar varios minutos)..."
   }

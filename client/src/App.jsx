@@ -130,14 +130,14 @@ function App() {
   } else {
     content = (
       <div className="landing-shell">
-        <div className="landing-content">
+        <main className="landing-content">
           <MunicipalBackdrop className="landing-stage" contentClassName="landing-stage__content" variant="hero">
           <div className="landing-poster__hero">
             <div className="landing-eyebrow">Panel municipal integrado</div>
-            <h2 className="landing-title fw-bold mb-0">Municipalidad Distrital de Pueblo Nuevo</h2>
+            <h1 className="landing-title fw-bold mb-0">Municipalidad Distrital de Pueblo Nuevo</h1>
           </div>
 
-          <div className="landing-panel">
+          <nav className="landing-panel" aria-label="Módulos municipales">
             {selectorAviso && (
               <div className="alert alert-warning py-2 mb-4">{selectorAviso}</div>
             )}
@@ -205,9 +205,9 @@ function App() {
                 </a>
                 </div>
               </div>
-            </div>
+            </nav>
           </MunicipalBackdrop>
-        </div>
+        </main>
       </div>
     );
   }

@@ -1796,7 +1796,7 @@ function LuzApp({ onBackToSelector }) {
                           <th className="text-end">Lect. Ant</th>
                           <th className="text-end">Lect. Act</th>
                           <th className="text-end">Consumo</th>
-                          <th className="text-end">Energia</th>
+                          <th className="text-end">Energía</th>
                           <th className="text-end">Mantenimiento</th>
                           <th className="text-end">Total</th>
                           <th>Estado</th>

@@ -1,6 +1,16 @@
 const CHANGELOG_ENTRIES = [
   {
     date: "11 de septiembre de 2026",
+    title: "Mejoras de diseño y presentación",
+    changes: [
+      "Se refinó la distribución de la portada y de las tarjetas de acceso a cada módulo.",
+      "El inicio de sesión y los diálogos conservan una presentación ordenada en diferentes tamaños de ventana.",
+      "Se mejoró la jerarquía del contenido para facilitar la lectura y la navegación asistida.",
+      "Se corrigieron textos y tildes pendientes en Agua, Luz, Caja y las herramientas administrativas."
+    ]
+  },
+  {
+    date: "11 de septiembre de 2026",
     title: "Carga inicial más ligera",
     changes: [
       "El historial de novedades ahora se descarga únicamente al abrirlo, reduciendo el JavaScript necesario para iniciar el sistema.",

@@ -145,7 +145,7 @@ const ReciboLuzCard = ({ datos }) => {
         <div style={{ padding: "1.8mm 1.8mm 1.5mm", display: "flex", flexDirection: "column" }}>
           <div style={{ fontSize: "4.45mm", lineHeight: 1.3 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 16mm", marginBottom: "1.05mm", alignItems: "baseline" }}>
-              <span style={{ textTransform: "uppercase" }}>Energia activa</span>
+              <span style={{ textTransform: "uppercase" }}>Energía activa</span>
               <strong style={{ textAlign: "right" }}>{energiaActiva}</strong>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 16mm", alignItems: "baseline" }}>

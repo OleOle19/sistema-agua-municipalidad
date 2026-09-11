@@ -142,7 +142,7 @@ const LoginPage = ({
             <div className="bg-primary text-white rounded-circle d-inline-flex p-3 mb-2">
               <FaUserShield size={40} />
             </div>
-            <h3 className="fw-bold text-primary">{titulo}</h3>
+            <h1 className="h3 fw-bold text-primary">{titulo}</h1>
             <p className="text-muted small">{subtitulo}</p>
           </div>
 

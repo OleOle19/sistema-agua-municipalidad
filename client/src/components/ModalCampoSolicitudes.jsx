@@ -362,7 +362,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
       s?.direccion_actual_db || s?.direccion_verificada || metadata?.referencia_direccion
     ) || "Sin calle";
     if (changes.length === 0 && isAltaPredio) {
-      if (s?.direccion_verificada) changes.push(renderInfoLine("Direccion", s.direccion_verificada));
+      if (s?.direccion_verificada) changes.push(renderInfoLine("Dirección", s.direccion_verificada));
       if (metadata?.referencia_direccion) changes.push(renderInfoLine("Referencia", metadata.referencia_direccion));
       if (s?.nombre_verificado) changes.push(renderInfoLine("Nombre", s.nombre_verificado));
       if (s?.dni_verificado) changes.push(renderInfoLine("DNI/RUC", s.dni_verificado));
@@ -396,7 +396,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
         changes.push(renderChangeLine("Servicio agua", aguaNuevo, aguaActual));
       }
       if (isDifferent(desagueNuevo, desagueActual)) {
-        changes.push(renderChangeLine("Servicio desague", desagueNuevo, desagueActual));
+        changes.push(renderChangeLine("Servicio de desagüe", desagueNuevo, desagueActual));
       }
       if (isDifferent(limpiezaNuevo, limpiezaActual)) {
         changes.push(renderChangeLine("Servicio limpieza", limpiezaNuevo, limpiezaActual));

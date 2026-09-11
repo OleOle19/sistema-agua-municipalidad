@@ -134,7 +134,7 @@ const ModalDeudaMasiva = ({ cerrarModal, alGuardar, idsSeleccionados = [], onFla
       <div className="modal-dialog">
         <div className="modal-content" style={modalStyle}>
           <div className="modal-header bg-primary text-white">
-            <h5 className="modal-title">Generacion Masiva de Deuda</h5>
+            <h5 className="modal-title">Generación masiva de deuda</h5>
             <button className="btn-close btn-close-white" onClick={cerrarModal}></button>
           </div>
           <div className="modal-body">
