@@ -3,6 +3,7 @@ import api from "../api";
 import { FaCut, FaFileExcel, FaFilePdf, FaPrint } from "react-icons/fa";
 import { compareByDireccionAsc } from "../utils/cortesAddress";
 import { ESTADOS_CONEXION, normalizeEstadoConexion } from "../utils/estadoConexion";
+import { showAppAlert } from "../utils/appDialog";
 
 const STATUS_META = {
   CORTADO: {
@@ -336,7 +337,9 @@ const ModalReporteCortes = ({
 
   const prepararReporte = async (formato) => {
     if (seleccion.length === 0) {
-      alert("No hay usuarios seleccionados para el reporte.");
+      await showAppAlert("No hay usuarios seleccionados para el reporte.", {
+        title: "Selección requerida"
+      });
       return;
     }
     const ids = modo === "todos"
@@ -410,7 +413,10 @@ const ModalReporteCortes = ({
         generado_en: new Date().toISOString()
       });
     } catch (error) {
-      alert(error?.response?.data?.error || "No se pudo preparar el reporte.");
+      await showAppAlert(error?.response?.data?.error || "No se pudo preparar el reporte.", {
+        title: "No se pudo preparar el reporte",
+        tone: "danger"
+      });
     } finally {
       setProcesando(false);
     }
@@ -471,7 +477,10 @@ const ModalReporteCortes = ({
       } else if (payload && typeof payload === "object") {
         msg = String(payload?.error || "").trim();
       }
-      alert(msg || "No se pudo exportar el Excel del reporte.");
+      await showAppAlert(msg || "No se pudo exportar el Excel del reporte.", {
+        title: "Error de exportación",
+        tone: "danger"
+      });
     } finally {
       setExportandoExcel(false);
     }

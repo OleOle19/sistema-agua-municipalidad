@@ -61,6 +61,21 @@ body.has-app-modal {
   overflow: hidden;
 }
 
+.app-dialog {
+  z-index: 2100;
+  color: #212529;
+  background: rgba(15, 23, 42, 0.58);
+  backdrop-filter: blur(2px);
+}
+
+.app-dialog .modal-dialog {
+  width: min(92vw, 34rem);
+}
+
+.app-dialog__message {
+  white-space: pre-line;
+}
+
 .municipal-module-page,
 .municipal-app-shell {
   color: #212529;

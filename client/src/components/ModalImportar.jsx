@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { FaFileUpload, FaFileExcel, FaFileCode, FaHistory } from "react-icons/fa";
 import api from "../api";
+import { showAppAlert } from "../utils/appDialog";
 
 const TIPOS_IMPORTACION = {
   padron: {
@@ -45,7 +46,9 @@ const ModalImportar = ({ cerrarModal, alTerminar }) => {
   const handleSubir = async (e) => {
     e.preventDefault();
     if (!archivo) {
-      alert("Selecciona un archivo");
+      await showAppAlert("Seleccione un archivo antes de continuar.", {
+        title: "Archivo requerido"
+      });
       return;
     }
 

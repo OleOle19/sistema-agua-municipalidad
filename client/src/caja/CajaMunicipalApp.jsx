@@ -7,6 +7,7 @@ import cajaLuzApi from "./apiCajaLuz";
 import realtime from "../realtime";
 import { finalizeMoneyInput, normalizeMoneyTyping } from "../utils/moneyInput";
 import { formatDireccionDisplay } from "../utils/direccionDisplay";
+import { requestAppInput, showAppAlert } from "../utils/appDialog";
 import {
   buildCobroAguaVisibleYears,
   buildCobroAguaYearRows,
@@ -352,16 +353,6 @@ function CajaMunicipalApp({ onBackToSelector }) {
     };
     setFlash((current) => [...(Array.isArray(current) ? current : []), notice].slice(-12));
   }, []);
-
-  useEffect(() => {
-    const originalAlert = window.alert;
-    window.alert = (message) => {
-      showFlash("warning", String(message || "").trim() || "Aviso del sistema.");
-    };
-    return () => {
-      window.alert = originalAlert;
-    };
-  }, [showFlash]);
 
   const handleApiError = useCallback((err, fallback) => {
     const status = Number(err?.response?.status || 0);
@@ -1040,15 +1031,23 @@ function CajaMunicipalApp({ onBackToSelector }) {
     }
     const idPago = Number(row?.id_ultimo_pago || 0);
     if (!idPago) {
-      showFlash("warning", "No se encontro el pago activo para editar este periodo.");
+      showFlash("warning", "No se encontró el pago activo para editar este período.");
       return;
     }
     const periodo = `${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"}`;
     const montoActual = round2(parseMonto(row?.abono_mes ?? 0));
     const montoMaximo = round2(parseMonto(row?.total_pagar ?? montoActual));
-    const montoRaw = window.prompt(
+    const montoRaw = await requestAppInput(
       `Nuevo monto para ${periodo} (máximo ${montoMaximo.toFixed(2)}):`,
-      montoActual.toFixed(2)
+      montoActual.toFixed(2),
+      {
+        title: "Editar monto del pago",
+        inputLabel: "Nuevo monto (S/.)",
+        confirmLabel: "Continuar",
+        inputMode: "decimal",
+        required: true,
+        requiredMessage: "Ingrese el nuevo monto."
+      }
     );
     if (montoRaw === null) return;
     const nuevoMonto = round2(parseMonto(String(montoRaw || "").replace(",", ".")));
@@ -1057,11 +1056,23 @@ function CajaMunicipalApp({ onBackToSelector }) {
       return;
     }
     if (nuevoMonto > montoMaximo + 0.001) {
-      showFlash("warning", `El monto no puede exceder ${formatMoney(montoMaximo)} en este periodo.`);
+      showFlash("warning", `El monto no puede exceder ${formatMoney(montoMaximo)} en este período.`);
       return;
     }
     const motivo = String(
-      window.prompt("Motivo de la edición del monto:", `Corrección administrativa del período ${periodo}.`) || ""
+      await requestAppInput(
+        "Motivo de la edición del monto:",
+        `Corrección administrativa del período ${periodo}.`,
+        {
+          title: "Justificar corrección",
+          inputLabel: "Motivo",
+          confirmLabel: "Guardar cambio",
+          required: true,
+          requiredMessage: "Debe indicar un motivo para editar el monto.",
+          multiline: true,
+          maxLength: 500
+        }
+      ) || ""
     ).trim();
     if (!motivo) {
       showFlash("warning", "Debe indicar un motivo para editar el monto del pago.");
@@ -1136,14 +1147,24 @@ function CajaMunicipalApp({ onBackToSelector }) {
     if (!permisos.canCorregirPagos) return;
     const rows = periodosSeleccionadosAnulacionCobroAgua;
     if (rows.length === 0) {
-      showFlash("warning", "Seleccione al menos un periodo pagado para anular.");
+      showFlash("warning", "Seleccione al menos un período pagado para anular.");
       return;
     }
     const periodos = rows.map((row) => `${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"}`);
     const motivo = String(
-      window.prompt(
+      await requestAppInput(
         `Motivo para anular ${rows.length === 1 ? "el período seleccionado" : `los ${rows.length} períodos seleccionados`}:`,
-        `Corrección administrativa de ${rows.length === 1 ? "período" : "períodos"} ${periodos.join(", ")}.`
+        `Corrección administrativa de ${rows.length === 1 ? "período" : "períodos"} ${periodos.join(", ")}.`,
+        {
+          title: rows.length === 1 ? "Anular pago" : "Anular pagos seleccionados",
+          inputLabel: "Motivo de anulación",
+          confirmLabel: "Anular",
+          required: true,
+          requiredMessage: "Debe indicar un motivo para anular los pagos.",
+          multiline: true,
+          maxLength: 500,
+          tone: "danger"
+        }
       ) || ""
     ).trim();
     if (!motivo) {
@@ -1366,7 +1387,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const monto = round2(parseMonto(sel?.monto));
       if (monto <= 0) continue;
       if (monto > saldo + 0.001) {
-        showFlash("warning", `El monto ingresado excede el saldo del periodo ${mes}/${anio}.`);
+        showFlash("warning", `El monto ingresado excede el saldo del período ${mes}/${anio}.`);
         return;
       }
       if (idRecibo > 0) {
@@ -1380,7 +1401,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       } else if (mes >= 1 && mes <= 12 && anio >= 1900) {
         pagos.push({ anio, mes, monto_pagado: monto });
       } else {
-        showFlash("warning", "Hay un periodo inválido seleccionado para cobro.");
+        showFlash("warning", "Hay un período inválido seleccionado para cobro.");
         return;
       }
     }
@@ -1479,7 +1500,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
       const monto = round2(parseMonto(sel?.monto));
       if (monto <= 0) continue;
       if (monto > saldo + 0.001) {
-        showFlash("warning", `El monto ingresado excede el saldo del periodo ${row?.mes}/${row?.anio}.`);
+        showFlash("warning", `El monto ingresado excede el saldo del período ${row?.mes}/${row?.anio}.`);
         return;
       }
       items.push({
@@ -1668,7 +1689,10 @@ function CajaMunicipalApp({ onBackToSelector }) {
         onLoginSuccess={(datos) => {
           const nextUser = datos ? { ...datos, rol: normalizeRole(datos.rol) } : null;
           if (!nextUser || !canEnterCajaModuleByRole(nextUser.rol)) {
-            alert("Acceso denegado. Caja Municipal está disponible para administrador principal, Ventanilla y cajeros.");
+            void showAppAlert(
+              "Caja Municipal está disponible para administrador principal, Ventanilla y cajeros.",
+              { title: "Acceso denegado", tone: "danger" }
+            );
             return;
           }
           setUsuarioSistema(nextUser);
@@ -2103,7 +2127,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                 </div>
                 {Math.abs(diferenciaConteoAgua) >= 0.01 && (
                   <div className="alert alert-warning py-2 small mt-3 mb-0">
-                    Hay diferencia entre sistema y declarado. Puede cerrarse igual, pero quedara registrada para revision.
+                    Hay diferencia entre el sistema y lo declarado. Puede cerrarse igualmente, pero quedará registrada para revisión.
                   </div>
                 )}
               </div>
@@ -2147,7 +2171,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                 <div className="small text-muted mb-3">
                   Se muestran deudas pendientes y períodos adelantados ya emitidos por ventanilla (Agua).
                   Si el usuario no trae recibo, puede activarse la contingencia para generar períodos faltantes desde Caja.
-                  Use la casilla izquierda de cada periodo: si está pendiente se selecciona para cobrar y si está pagado se selecciona para anular.
+                  Use la casilla izquierda de cada período: si está pendiente se selecciona para cobrar y si está pagado se selecciona para anular.
                   Caja puede registrar y corregir cobros solo hasta 3 días atrás; el administrador no tiene límite retroactivo. Para cambiar el monto use "Editar monto"; para cambiar la fecha primero anule y luego registre de nuevo el cobro.
                 </div>
                 <div className="row g-2 align-items-end mb-3">
@@ -2166,7 +2190,7 @@ function CajaMunicipalApp({ onBackToSelector }) {
                   <div className="col-sm-8 col-md-6">
                     <div className="small text-muted">
                       {modoCobroAgua === COBRO_AGUA_MODOS.COMPENSACION && permisos.canAdminPagos
-                        ? "La compensacion se registrara con la fecha seleccionada, afectara la deuda y quedara fuera del reporte de caja."
+                        ? "La compensación se registrará con la fecha seleccionada, afectará la deuda y quedará fuera del reporte de caja."
                         : permisos.canAdminPagos
                         ? "El cobro se registrara en el reporte de la fecha seleccionada. Administrador puede usar cualquier fecha pasada."
                         : `El cobro se registrará en el reporte de la fecha seleccionada. Caja puede usar hoy o hasta ${permisos.maxDiasRetroactivoCobro || 0} día(s) atrás.`}
@@ -2384,11 +2408,11 @@ function CajaMunicipalApp({ onBackToSelector }) {
                                 }}
                                 disabled={checkboxBloqueado || anulandoEstaFila || editandoEstaFila}
                                 aria-label={puedeAnularPagoPeriodo
-                                  ? `Seleccionar periodo ${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"} para anular`
-                                  : `Seleccionar periodo ${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"} para cobrar`}
+                                  ? `Seleccionar período ${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"} para anular`
+                                  : `Seleccionar período ${String(row?.mes || "").padStart(2, "0")}/${row?.anio || "-"} para cobrar`}
                                 title={puedeAnularPagoPeriodo
-                                  ? "Seleccionar este periodo pagado para anular"
-                                  : "Seleccionar este periodo pendiente para cobrar"}
+                                  ? "Seleccionar este período pagado para anular"
+                                  : "Seleccionar este período pendiente para cobrar"}
                               />
                             </td>
                             <td>

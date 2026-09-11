@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import api from "../api";
 import { FaLayerGroup, FaBuilding, FaUsers, FaPrint } from "react-icons/fa";
+import { showAppAlert } from "../utils/appDialog";
 
 const MONTH_OPTIONS = [
   { value: 1, label: "Ene" },
@@ -224,7 +225,9 @@ const ModalImpresionMasiva = ({
     if (!seleccion.meses || seleccion.meses.length === 0) return showFlash("warning", "Seleccione al menos un mes.");
 
     const anioNum = Number(seleccion.anio || 0);
-    if (!Number.isInteger(anioNum) || anioNum < 1900) return alert("Ingrese un año válido.");
+    if (!Number.isInteger(anioNum) || anioNum < 1900) {
+      return showAppAlert("Ingrese un año válido.", { title: "Año inválido" });
+    }
     const mesesNormalizados = (seleccion.meses || [])
       .map((m) => Number(m))
       .filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);

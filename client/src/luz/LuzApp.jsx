@@ -429,17 +429,6 @@ function LuzApp({ onBackToSelector }) {
     setFlash((current) => [...(Array.isArray(current) ? current : []), notice].slice(-12));
   }, []);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return undefined;
-    const originalAlert = window.alert;
-    window.alert = (message) => {
-      showFlash("warning", String(message || "").trim() || "Aviso del sistema.");
-    };
-    return () => {
-      window.alert = originalAlert;
-    };
-  }, [showFlash]);
-
   const handleApiError = useCallback((err, fallback) => {
     const status = Number(err?.response?.status || 0);
     const msg = String(err?.response?.data?.error || fallback || "Error de conexión");

@@ -2,6 +2,7 @@
 import api from "../api";
 import { FaFileInvoiceDollar } from "react-icons/fa";
 import { compareByDireccionAsc } from "../utils/cortesAddress";
+import { showAppAlert } from "../utils/appDialog";
 
 const esDeudor = (c) => {
   const meses = Number(c?.meses_deuda || 0);
@@ -86,12 +87,14 @@ const ModalActaCorteSelector = ({
     });
   };
 
-  const confirmar = () => {
+  const confirmar = async () => {
     const ids = seleccion
       .map((m) => Number(m.id_contribuyente))
       .filter((id) => Number.isInteger(id) && id > 0);
     if (ids.length === 0) {
-      alert("No hay contribuyentes con conexión activa y 3 o más meses seleccionados para generar actas.");
+      await showAppAlert("No hay contribuyentes con conexión activa y 3 o más meses seleccionados para generar actas.", {
+        title: "Sin contribuyentes disponibles"
+      });
       return;
     }
     onConfirmar?.(ids, criterioDescripcion);

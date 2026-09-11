@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import api from "../api";
 import { FaCheck, FaChevronLeft, FaChevronRight, FaClipboardCheck, FaFileDownload, FaSyncAlt, FaTimes } from "react-icons/fa";
 import { confirmAction } from "../utils/confirmAction";
+import { requestAppInput, showAppAlert } from "../utils/appDialog";
 
 const ESTADO_LABELS = {
   PENDIENTE: "Pendiente",
@@ -34,7 +35,7 @@ const ORDEN_ITEMS_OPTIONS = [
   { value: "ASC", label: "Solicitudes: antiguas primero" }
 ];
 const TIPO_SOLICITUD_LABELS = {
-  ACTUALIZACION: "Actualizacion ficha",
+  ACTUALIZACION: "Actualización de ficha",
   ALTA_DIRECCION_ALTERNA: "Alta dirección alterna",
   ALTA_PREDIO: "Alta predio nuevo",
   ALTA_PREDIO_TEMPORAL: "Alta predio temporal"
@@ -243,16 +244,30 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
         );
         aplicarCambiosSN = aplicarAhora ? "S" : "N";
       } else {
-        window.alert("Esta solicitud quedara aprobada sin aplicacion automatica. Primero revisa ficha y haz cambios manuales si hace falta.");
+        await showAppAlert(
+          "Esta solicitud quedará aprobada sin aplicación automática. Primero revise la ficha y haga los cambios manuales necesarios.",
+          { title: "Revisión manual necesaria" }
+        );
       }
       payload = {
         aplicar_cambios_sn: aplicarCambiosSN
       };
     } else {
-      const motivo = window.prompt("Motivo de rechazo (obligatorio):", "");
+      const motivo = await requestAppInput("Explique por qué se rechaza esta solicitud.", "", {
+        title: "Rechazar solicitud",
+        inputLabel: "Motivo de rechazo",
+        confirmLabel: "Rechazar",
+        required: true,
+        requiredMessage: "Debe escribir el motivo de rechazo.",
+        multiline: true,
+        maxLength: 500,
+        tone: "danger"
+      });
       if (motivo === null) return;
       if (!motivo.trim()) {
-        alert("Debe escribir el motivo de rechazo.");
+        await showAppAlert("Debe escribir el motivo de rechazo.", {
+          title: "Motivo requerido"
+        });
         return;
       }
       payload = { motivo_revision: motivo.trim() };
@@ -375,7 +390,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
         }
       }
       if (normalizeText(s.estado_conexion_nuevo) !== normalizeText(s.estado_actual_db)) {
-        changes.push(renderChangeLine("Estado conexion", s.estado_conexion_nuevo, s.estado_actual_db));
+        changes.push(renderChangeLine("Estado de conexión", s.estado_conexion_nuevo, s.estado_actual_db));
       }
       if (isDifferent(aguaNuevo, aguaActual)) {
         changes.push(renderChangeLine("Servicio agua", aguaNuevo, aguaActual));
@@ -692,7 +707,7 @@ const ModalCampoSolicitudes = ({ cerrarModal, onAplicado, onFlash }) => {
                           </td>
                           <td className="small align-top">
                             <div>
-                              Tipo: <strong>{TIPO_SOLICITUD_LABELS[tipoSolicitud] || tipoSolicitud || "Actualizacion ficha"}</strong>
+                              Tipo: <strong>{TIPO_SOLICITUD_LABELS[tipoSolicitud] || tipoSolicitud || "Actualización de ficha"}</strong>
                             </div>
                             {isAltaPredio ? (
                               <>

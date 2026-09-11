@@ -14,6 +14,7 @@ import { buildReporteEstadoConexionPdf } from "./utils/simplePdf";
 import { formatDireccionDisplay } from "./utils/direccionDisplay";
 import { ESTADOS_CONEXION, ESTADO_CONEXION_LABELS, normalizeEstadoConexion } from "./utils/estadoConexion";
 import { confirmAction } from "./utils/confirmAction";
+import { requestAppInput } from "./utils/appDialog";
 import {
   AGUA_TOKEN_KEY,
   getSessionToken,
@@ -765,17 +766,6 @@ function AguaApp({ onBackToSelector = null }) {
     };
     setFlash((current) => [...(Array.isArray(current) ? current : []), notice].slice(-12));
   }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return undefined;
-    const originalAlert = window.alert;
-    window.alert = (message) => {
-      showFlash("warning", String(message || "").trim() || "Aviso del sistema.");
-    };
-    return () => {
-      window.alert = originalAlert;
-    };
-  }, [showFlash]);
 
   const construirDetalleDeudaActa = (rows = [], deudaTotalFallback = 0) => {
     const pendientes = (Array.isArray(rows) ? rows : [])
@@ -1696,14 +1686,28 @@ const anexoCajaPageStyle = `
     if (!permisos.canConteoEfectivo) return;
     const montoSugerido = Number(resumenConteoEfectivo?.ultimo_pendiente?.monto_efectivo || 0);
     const montoDefault = montoSugerido > 0 ? montoSugerido.toFixed(2) : "";
-    const montoRaw = window.prompt("Ingrese el conteo de efectivo (S/.):", montoDefault);
+    const montoRaw = await requestAppInput("Ingrese el conteo de efectivo (S/.):", montoDefault, {
+      title: "Conteo de efectivo",
+      inputLabel: "Monto contado (S/.)",
+      confirmLabel: "Continuar",
+      inputMode: "decimal",
+      required: true,
+      requiredMessage: "Ingrese el monto contado."
+    });
     if (montoRaw === null) return;
     const monto = Number.parseFloat(String(montoRaw).replace(",", "."));
     if (!Number.isFinite(monto) || monto < 0) {
       showFlash("warning", "Ingrese un monto válido de efectivo.");
       return;
     }
-    const observacionRaw = window.prompt("Observación opcional del conteo:", "") || "";
+    const observacionIngresada = await requestAppInput("Observación opcional del conteo:", "", {
+      title: "Conteo de efectivo",
+      inputLabel: "Observación",
+      confirmLabel: "Enviar conteo",
+      multiline: true,
+      maxLength: 500
+    });
+    const observacionRaw = observacionIngresada || "";
     try {
       const res = await api.post("/caja/conteo-efectivo", {
         monto_efectivo: monto,
@@ -1784,7 +1788,7 @@ const anexoCajaPageStyle = `
 
   const abrirModalCorteConexion = () => {
     if (!permisos.canCambiarEstadoConexion) {
-      showFlash("warning", "Tu nivel no tiene permiso para cambiar estado de conexion.");
+      showFlash("warning", "Su nivel no tiene permiso para cambiar el estado de conexión.");
       return;
     }
     setMostrarModalCorteConexion(true);
@@ -1831,7 +1835,7 @@ const anexoCajaPageStyle = `
       return;
     }
     if (!permisos.canCambiarEstadoConexion) {
-      showFlash("warning", "Tu nivel no tiene permiso para cambiar estado de conexion.");
+      showFlash("warning", "Su nivel no tiene permiso para cambiar el estado de conexión.");
       return;
     }
 
@@ -1841,15 +1845,23 @@ const anexoCajaPageStyle = `
       return;
     }
     if (estadoDestino === ESTADOS_CONEXION.CON_CONEXION && estadoActual === ESTADOS_CONEXION.CON_CONEXION) {
-      showFlash("warning", "El contribuyente ya tiene conexion activa.");
+      showFlash("warning", "El contribuyente ya tiene conexión activa.");
       return;
     }
 
     const accion = estadoDestino === ESTADOS_CONEXION.CON_CONEXION ? "reconectar" : "actualizar estado";
     const motivoDefault = estadoDestino === ESTADOS_CONEXION.CON_CONEXION
-      ? "Reconexion por regularizacion de pago."
-      : "Actualizacion de estado desde oficina.";
-    const motivo = window.prompt(`Motivo para ${accion}:`, motivoDefault);
+      ? "Reconexión por regularización de pago."
+      : "Actualización de estado desde oficina.";
+    const motivo = await requestAppInput(`Motivo para ${accion}:`, motivoDefault, {
+      title: estadoDestino === ESTADOS_CONEXION.CON_CONEXION ? "Reconectar contribuyente" : "Actualizar conexión",
+      inputLabel: "Motivo",
+      confirmLabel: "Continuar",
+      required: true,
+      requiredMessage: "Debe ingresar un motivo.",
+      multiline: true,
+      maxLength: 500
+    });
     if (motivo === null) return;
     const motivoFinal = String(motivo || "").trim();
     if (!motivoFinal) {
@@ -1871,7 +1883,7 @@ const anexoCajaPageStyle = `
       );
       recargarTodo();
     } catch (error) {
-      showFlash("danger", error?.response?.data?.error || "No se pudo actualizar el estado de conexion.");
+      showFlash("danger", error?.response?.data?.error || "No se pudo actualizar el estado de conexión.");
     }
   };
 
@@ -2351,7 +2363,7 @@ const anexoCajaPageStyle = `
   const bgMain = "bg-light text-dark";
   const bgCard = "bg-white border text-dark";
   const tableClass = "table table-hover table-bordered mb-0 table-sm small";
-  const realtimeBadge = useMemo(() => ({ label: "Actualizacion: Manual", className: "bg-secondary" }), []);
+  const realtimeBadge = useMemo(() => ({ label: "Actualización: Manual", className: "bg-secondary" }), []);
 
   if (!usuarioSistema) {
     return (

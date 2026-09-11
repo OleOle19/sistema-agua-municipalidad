@@ -3,6 +3,7 @@ import { useReactToPrint } from "react-to-print";
 import { useDeferredValue } from "react";
 import { FaPrint, FaMoneyBillWave } from "react-icons/fa";
 import api from "../api";
+import { showAppAlert } from "../utils/appDialog";
 
 const MOVIMIENTOS_PAGE_SIZE = 120;
 const EMPTY_REPORTE = {
@@ -399,7 +400,10 @@ const ModalCierre = ({ cerrarModal, origen = "ventanilla", usuarioSistema = null
       a.remove();
       window.URL.revokeObjectURL(url);
     } catch {
-      alert("No se pudo exportar el reporte en Excel.");
+      await showAppAlert("No se pudo exportar el reporte en Excel.", {
+        title: "Error de exportación",
+        tone: "danger"
+      });
     } finally {
       setExportandoExcel(false);
     }

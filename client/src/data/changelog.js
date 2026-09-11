@@ -1,5 +1,15 @@
 const CHANGELOG_ENTRIES = [
   {
+    date: "11 de septiembre de 2026",
+    title: "Diálogos integrados y más claros",
+    changes: [
+      "Los avisos y solicitudes de información ahora aparecen dentro del sistema y ya no usan ventanas nativas del navegador.",
+      "La edición de pagos, las anulaciones y los cambios de conexión muestran campos claros con valores sugeridos.",
+      "Los motivos obligatorios se validan en el mismo diálogo antes de continuar.",
+      "Los diálogos respetan el foco, la navegación por teclado y atienden varios avisos en orden."
+    ]
+  },
+  {
     date: "10 de septiembre de 2026",
     title: "Textos más claros y validaciones reforzadas",
     changes: [

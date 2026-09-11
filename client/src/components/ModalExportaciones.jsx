@@ -1,6 +1,7 @@
 import { Suspense, lazy, useState } from "react";
 import { FaBalanceScale, FaDatabase, FaDownload, FaEye, FaFileAlt, FaFileExcel, FaFolderOpen, FaMoneyBillWave, FaUsers } from "react-icons/fa";
 import api from "../api";
+import { showAppAlert } from "../utils/appDialog";
 
 const ModalComparacionesLegacy = lazy(() => import("./ModalComparacionesLegacy"));
 
@@ -45,7 +46,10 @@ const ModalExportaciones = ({ cerrarModal, onBackup }) => {
       a.remove();
       window.URL.revokeObjectURL(url);
     } catch {
-      alert("No se pudo exportar el archivo.");
+      await showAppAlert("No se pudo exportar el archivo.", {
+        title: "Error de exportación",
+        tone: "danger"
+      });
     } finally {
       setExportando("");
     }
@@ -71,7 +75,10 @@ const ModalExportaciones = ({ cerrarModal, onBackup }) => {
       setAdjuntosSistema(Array.isArray(res.data?.items) ? res.data.items : []);
       setMostrarAdjuntos(true);
     } catch (err) {
-      alert(err?.response?.data?.error || "No se pudieron cargar los adjuntos del sistema.");
+      await showAppAlert(err?.response?.data?.error || "No se pudieron cargar los adjuntos del sistema.", {
+        title: "No se pudieron cargar los archivos",
+        tone: "danger"
+      });
     } finally {
       setCargandoAdjuntos(false);
     }
@@ -100,7 +107,10 @@ const ModalExportaciones = ({ cerrarModal, onBackup }) => {
       a.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
-      alert(err?.response?.data?.error || "No se pudo abrir el adjunto.");
+      await showAppAlert(err?.response?.data?.error || "No se pudo abrir el adjunto.", {
+        title: "No se pudo abrir el archivo",
+        tone: "danger"
+      });
     } finally {
       setExportando("");
     }
