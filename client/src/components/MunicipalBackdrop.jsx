@@ -82,6 +82,9 @@ export default function MunicipalBackdrop({
               src={displayMedia.url}
               alt=""
               className="municipal-backdrop__image"
+              decoding="async"
+              fetchPriority="high"
+              loading="eager"
               draggable="false"
             />
           )

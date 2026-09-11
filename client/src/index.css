@@ -76,6 +76,10 @@ body.has-app-modal {
   white-space: pre-line;
 }
 
+.changelog-modal {
+  background: rgba(15, 23, 42, 0.58);
+}
+
 .municipal-module-page,
 .municipal-app-shell {
   color: #212529;

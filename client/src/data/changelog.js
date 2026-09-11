@@ -1,6 +1,15 @@
 const CHANGELOG_ENTRIES = [
   {
     date: "11 de septiembre de 2026",
+    title: "Carga inicial más ligera",
+    changes: [
+      "El historial de novedades ahora se descarga únicamente al abrirlo, reduciendo el JavaScript necesario para iniciar el sistema.",
+      "La imagen principal recibe prioridad de carga para mostrar el acceso al sistema cuanto antes.",
+      "Se conservaron la imagen y los estilos actuales porque ya están optimizados y reemplazarlos no aportaba una mejora apreciable."
+    ]
+  },
+  {
+    date: "11 de septiembre de 2026",
     title: "Diálogos integrados y más claros",
     changes: [
       "Los avisos y solicitudes de información ahora aparecen dentro del sistema y ya no usan ventanas nativas del navegador.",
