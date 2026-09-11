@@ -121,6 +121,12 @@ npm run validate
 
 Este comando ejecuta las pruebas del backend, el análisis estático del frontend y el build de producción. GitHub Actions añade además una auditoría de vulnerabilidades de dependencias en cada cambio enviado a `main` y en cada pull request.
 
+### Auditorías con Lighthouse
+
+Para comparar rendimiento y accesibilidad, ejecuta Lighthouse sobre el build de producción y conserva el mismo equipo, navegador y tipo de conexión entre mediciones.
+
+El acceso directo mediante una dirección local `http://192.168.x.x` recibirá penalizaciones esperadas en HTTPS, redirección segura y HTTP/2. Esas comprobaciones corresponden a la capa de publicación y deben evaluarse mediante el acceso remoto HTTPS. La aplicación también bloquea intencionalmente la indexación con `noindex`: es un sistema municipal interno y no debe modificarse únicamente para aumentar la puntuación SEO.
+
 ## Estructura
 
 ```text

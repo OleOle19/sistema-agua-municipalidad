@@ -22,7 +22,7 @@ test("detecta HTTPS directo y detrás de proxy", () => {
   assert.equal(requestUsesHttps({ secure: false, headers: { "x-forwarded-proto": "http" } }), false);
 });
 
-test("envía las cabeceras defensivas y HSTS solamente por HTTPS", () => {
+test("envía las cabeceras que requieren un contexto seguro cuando usa HTTPS", () => {
   const headers = new Map();
   const res = { setHeader: (name, value) => headers.set(name, value) };
   let continued = false;
@@ -37,5 +37,24 @@ test("envía las cabeceras defensivas y HSTS solamente por HTTPS", () => {
   assert.equal(headers.get("X-Content-Type-Options"), "nosniff");
   assert.equal(headers.get("Cross-Origin-Opener-Policy"), "same-origin-allow-popups");
   assert.equal(headers.get("Strict-Transport-Security"), "max-age=31536000");
+  assert.ok(headers.has("Content-Security-Policy"));
+});
+
+test("omite COOP y HSTS en HTTP sin retirar las demás protecciones", () => {
+  const headers = new Map();
+  const res = { setHeader: (name, value) => headers.set(name, value) };
+  let continued = false;
+
+  securityHeaders(
+    { secure: false, headers: { "x-forwarded-proto": "http" } },
+    res,
+    () => { continued = true; }
+  );
+
+  assert.equal(continued, true);
+  assert.equal(headers.has("Cross-Origin-Opener-Policy"), false);
+  assert.equal(headers.has("Strict-Transport-Security"), false);
+  assert.equal(headers.get("X-Frame-Options"), "DENY");
+  assert.equal(headers.get("X-Content-Type-Options"), "nosniff");
   assert.ok(headers.has("Content-Security-Policy"));
 });

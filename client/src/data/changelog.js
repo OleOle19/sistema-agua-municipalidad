@@ -1,6 +1,15 @@
 const CHANGELOG_ENTRIES = [
   {
     date: "11 de septiembre de 2026",
+    title: "Mejor compatibilidad con la red municipal",
+    changes: [
+      "Se eliminó un aviso técnico del navegador al ingresar mediante la dirección local del servidor.",
+      "Las protecciones compatibles con la red interna permanecen activas durante la navegación.",
+      "El acceso remoto por HTTPS conserva también las protecciones exclusivas de una conexión segura."
+    ]
+  },
+  {
+    date: "11 de septiembre de 2026",
     title: "Mejoras de diseño y presentación",
     changes: [
       "Se refinó la distribución de la portada y de las tarjetas de acceso a cada módulo.",

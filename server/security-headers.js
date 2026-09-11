@@ -47,9 +47,12 @@ const securityHeaders = (req, res, next) => {
   const cspHeader = process.env.SECURITY_CSP_REPORT_ONLY === "1"
     ? "Content-Security-Policy-Report-Only"
     : "Content-Security-Policy";
+  const usesHttps = requestUsesHttps(req);
 
   res.setHeader(cspHeader, buildContentSecurityPolicy());
-  res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+  if (usesHttps) {
+    res.setHeader("Cross-Origin-Opener-Policy", "same-origin-allow-popups");
+  }
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -58,7 +61,7 @@ const securityHeaders = (req, res, next) => {
     "camera=(self), geolocation=(self), microphone=(), payment=(), usb=()"
   );
 
-  if (process.env.SECURITY_HSTS_ENABLED !== "0" && requestUsesHttps(req)) {
+  if (process.env.SECURITY_HSTS_ENABLED !== "0" && usesHttps) {
     const configuredMaxAge = Number(process.env.SECURITY_HSTS_MAX_AGE || 31536000);
     const maxAge = Number.isSafeInteger(configuredMaxAge) && configuredMaxAge >= 0
       ? configuredMaxAge
